@@ -1,0 +1,64 @@
+syntax = "proto3";
+package engine.v1;
+
+service Engine {
+  rpc Process (ProcessRequest) returns (ProcessResponse);
+  rpc StreamProcess (ProcessRequest) returns (stream ProcessResponse);
+  rpc RegisterService (RegisterServiceRequest) returns (RegisterServiceResponse);
+  rpc ListServices (ListServicesRequest) returns (ListServicesResponse);
+}
+
+service Worker {
+  rpc Process (ProcessRequest) returns (ProcessResponse);
+  rpc StreamProcess (ProcessRequest) returns (stream ProcessResponse);
+}
+
+enum MethodKind {
+  METHOD_KIND_UNSPECIFIED = 0;
+  METHOD_KIND_UNARY = 1;
+  METHOD_KIND_SERVER_STREAMING = 2;
+}
+
+message MethodDescriptor {
+  string name = 1;
+  string description = 2;
+  MethodKind kind = 3;
+  string request_format = 4;
+  string response_format = 5;
+}
+
+message RegisterServiceRequest {
+  string name = 1;
+  string address = 2;
+  string service_type = 3;
+  repeated MethodDescriptor methods = 4;
+}
+
+message RegisterServiceResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message ServiceInfo {
+  string name = 1;
+  string address = 2;
+  string service_type = 3;
+  repeated MethodDescriptor methods = 4;
+}
+
+message ListServicesRequest {}
+
+message ListServicesResponse {
+  repeated ServiceInfo services = 1;
+}
+
+message ProcessRequest {
+  string payload = 1;
+  map<string, string> meta = 2;
+  string service = 3;
+  string method = 4;
+}
+
+message ProcessResponse {
+  string result = 1;
+}
