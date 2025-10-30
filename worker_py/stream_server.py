@@ -1,4 +1,5 @@
 from concurrent import futures
+import json
 import os
 import time
 from typing import Iterator
@@ -6,6 +7,7 @@ from typing import Iterator
 import engine_pb2
 import engine_pb2_grpc
 import grpc
+from google.protobuf import json_format, struct_pb2
 
 
 def chunk_text(value: str, chunk_size: int) -> Iterator[str]:
@@ -15,6 +17,10 @@ def chunk_text(value: str, chunk_size: int) -> Iterator[str]:
 
     for index in range(0, len(value), chunk_size):
         yield value[index : index + chunk_size]
+
+
+def to_value(data):
+    return json_format.Parse(json.dumps(data), struct_pb2.Value())
 
 
 class StreamWorkerServicer(engine_pb2_grpc.WorkerServicer):
@@ -77,15 +83,40 @@ def register_with_engine():
                 name="stream_chunks",
                 description="Emit payload in fixed-size chunks",
                 kind=engine_pb2.METHOD_KIND_SERVER_STREAMING,
-                request_format="ProcessRequest.payload (string); meta.chunk_size/meta.delay_ms (optional)",
-                response_format="Stream<ProcessResponse.result (string chunk)>",
+                request_format=to_value(
+                    {
+                        "payload": {"type": "string"},
+                        "meta": {
+                            "chunk_size": {"type": "integer", "optional": True},
+                            "delay_ms": {"type": "integer", "optional": True},
+                        },
+                    }
+                ),
+                response_format=to_value(
+                    {
+                        "stream": {
+                            "result": {"type": "string", "description": "chunk"}
+                        }
+                    }
+                ),
             ),
             engine_pb2.MethodDescriptor(
                 name="service_registered",
                 description="Receive notifications about new services",
                 kind=engine_pb2.METHOD_KIND_UNARY,
-                request_format="ProcessRequest.meta contains new_service_* keys",
-                response_format="ProcessResponse.result (ack)",
+                request_format=to_value(
+                    {
+                        "meta": {
+                            "event": "service_registered",
+                            "registration_kind": {"type": "string"},
+                            "new_service_name": {"type": "string"},
+                            "new_service_address": {"type": "string"},
+                            "new_service_type": {"type": "string", "optional": True},
+                            "new_service_methods": {"type": "string", "optional": True},
+                        }
+                    }
+                ),
+                response_format=to_value({"result": "ack"}),
             ),
         ],
     )

@@ -1,6 +1,8 @@
 syntax = "proto3";
 package engine.v1;
 
+import "google/protobuf/struct.proto";
+
 service Engine {
   rpc Process (ProcessRequest) returns (ProcessResponse);
   rpc StreamProcess (ProcessRequest) returns (stream ProcessResponse);
@@ -23,8 +25,8 @@ message MethodDescriptor {
   string name = 1;
   string description = 2;
   MethodKind kind = 3;
-  string request_format = 4;
-  string response_format = 5;
+  google.protobuf.Value request_format = 4;
+  google.protobuf.Value response_format = 5;
 }
 
 message RegisterServiceRequest {

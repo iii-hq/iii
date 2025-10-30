@@ -1,6 +1,7 @@
 use std::{collections::HashMap, convert::TryFrom, pin::Pin, sync::Arc, time::Duration};
 
 use futures_core::Stream;
+use prost_types::{Value, value::Kind as ValueKind};
 use tokio::{sync::RwLock, time::timeout};
 use tonic::{
     Request, Response, Status,
@@ -23,8 +24,8 @@ use engine::{
 struct RegisteredMethod {
     kind: MethodKind,
     description: String,
-    request_format: String,
-    response_format: String,
+    request_format: Option<Value>,
+    response_format: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -42,6 +43,47 @@ struct EngineSvc {
 }
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<ProcessResponse, Status>> + Send + 'static>>;
+
+fn value_to_summary(value: &Option<Value>) -> String {
+    value
+        .as_ref()
+        .map(value_to_string)
+        .unwrap_or_else(|| "unspecified".to_string())
+}
+
+fn value_to_string(value: &Value) -> String {
+    match value.kind.as_ref() {
+        Some(ValueKind::NullValue(_)) => "null".to_string(),
+        Some(ValueKind::BoolValue(v)) => v.to_string(),
+        Some(ValueKind::NumberValue(v)) => v.to_string(),
+        Some(ValueKind::StringValue(v)) => v.clone(),
+        Some(ValueKind::ListValue(list)) => {
+            let inner = list
+                .values
+                .iter()
+                .map(value_to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{inner}]")
+        }
+        Some(ValueKind::StructValue(st)) => {
+            let mut parts = st
+                .fields
+                .iter()
+                .map(|(key, val)| format!("{key}: {}", value_to_string(val)))
+                .collect::<Vec<_>>();
+            parts.sort();
+            format!("{{{}}}", parts.join(", "))
+        }
+        None => "unspecified".to_string(),
+    }
+}
+
+fn string_value<S: Into<String>>(value: S) -> Value {
+    Value {
+        kind: Some(ValueKind::StringValue(value.into())),
+    }
+}
 
 #[tonic::async_trait]
 impl Engine for EngineSvc {
@@ -249,18 +291,10 @@ impl Engine for EngineSvc {
 
             let kind = MethodKind::try_from(m.kind).unwrap_or(MethodKind::Unary);
             let description = m.description.trim().to_owned();
-            let request_format = m.request_format.trim().to_owned();
-            let response_format = m.response_format.trim().to_owned();
-            let request_summary = if request_format.is_empty() {
-                "unspecified"
-            } else {
-                request_format.as_str()
-            };
-            let response_summary = if response_format.is_empty() {
-                "unspecified"
-            } else {
-                response_format.as_str()
-            };
+            let request_format = m.request_format;
+            let response_format = m.response_format;
+            let request_summary = value_to_summary(&request_format);
+            let response_summary = value_to_summary(&response_format);
 
             method_summaries.push(format!(
                 "{method_name}: request={request_summary} response={response_summary}"
@@ -454,8 +488,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             RegisteredMethod {
                 kind: MethodKind::Unary,
                 description: "Default unary process handler".to_string(),
-                request_format: "ProcessRequest".to_string(),
-                response_format: "ProcessResponse".to_string(),
+                request_format: Some(string_value("ProcessRequest")),
+                response_format: Some(string_value("ProcessResponse")),
             },
         );
         let default_service = RegisteredService {

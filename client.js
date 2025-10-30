@@ -17,6 +17,37 @@ const client = new engine.Engine(
   grpc.credentials.createInsecure()
 );
 
+const renderValue = (value) => {
+  if (!value) {
+    return "unspecified";
+  }
+
+  if (value.stringValue !== undefined) {
+    return value.stringValue || "";
+  }
+  if (value.numberValue !== undefined) {
+    return String(value.numberValue);
+  }
+  if (value.boolValue !== undefined) {
+    return String(value.boolValue);
+  }
+  if (value.nullValue !== undefined) {
+    return "null";
+  }
+  if (value.listValue) {
+    const items = (value.listValue.values || []).map(renderValue).join(", ");
+    return `[${items}]`;
+  }
+  if (value.structValue) {
+    const entries = Object.entries(value.structValue.fields || {})
+      .map(([key, val]) => `${key}: ${renderValue(val)}`)
+      .join(", ");
+    return `{${entries}}`;
+  }
+
+  return "unspecified";
+};
+
 client.ListServices({}, (err, res) => {
   if (err) {
     console.error("ListServices error:", err);
@@ -31,8 +62,8 @@ client.ListServices({}, (err, res) => {
       name: m.name,
       kind: m.kind,
       description: m.description,
-      requestFormat: m.requestFormat,
-      responseFormat: m.responseFormat,
+      requestFormat: renderValue(m.requestFormat),
+      responseFormat: renderValue(m.responseFormat),
     })),
   }));
 

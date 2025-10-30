@@ -146,6 +146,7 @@ dependencies = [
  "futures-core",
  "prost",
  "prost-build",
+ "prost-types",
  "thiserror",
  "tokio",
  "tonic",

@@ -2,3 +2,4 @@
 node_modules
 .mypy_cache
 worker_py/__pycache__/
+.venv
