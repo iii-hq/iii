@@ -56,6 +56,7 @@ struct EngineSvc {
 }
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<ProcessResponse, Status>> + Send + 'static>>;
+type WorkerRegistry = Arc<RwLock<HashMap<String, RegisteredService>>>;
 
 fn value_to_summary(value: &Option<Value>) -> String {
     value
@@ -399,13 +400,14 @@ impl Engine for EngineSvc {
         {
             let routes = self.http_routes.read().await;
             for (key, _) in &http_route_entries {
-                if let Some(existing) = routes.get(key) {
-                    if existing.service != name && !existing_http_keys.contains(key) {
-                        return Err(Status::already_exists(format!(
-                            "http route '{key}' already registered by service '{}'",
-                            existing.service
-                        )));
-                    }
+                if let Some(existing) = routes.get(key)
+                    && existing.service != name
+                    && !existing_http_keys.contains(key)
+                {
+                    return Err(Status::already_exists(format!(
+                        "http route '{key}' already registered by service '{}'",
+                        existing.service
+                    )));
                 }
             }
         }
