@@ -11,3 +11,8 @@ run_stream_server:
 run_worker_server:
 	source .venv/bin/activate && python worker_py/worker_server.py
 
+run_socket_server:
+	cargo run --bin server
+
+run_socket_client:
+	cargo run --bin client

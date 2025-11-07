@@ -564,6 +564,8 @@ impl Engine for EngineSvc {
     }
 }
 
+type WorkerRegistry = Arc<RwLock<HashMap<String, RegisteredService>>>;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
