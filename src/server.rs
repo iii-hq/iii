@@ -1,226 +1,188 @@
-use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use bytes::{Bytes, BytesMut};
+use dashmap::DashMap;
+use futures_util::{SinkExt, StreamExt};
+use jsonschema::JSONSchema;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
-    sync::{Mutex, mpsc},
-    task::JoinHandle,
+    sync::{mpsc, oneshot},
 };
+use tokio_util::codec::{Decoder, LengthDelimitedCodec};
 use uuid::Uuid;
 
 type ClientId = Uuid;
-mod protocol {
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
-    use uuid::Uuid;
+/// Logical key used for bookkeeping in the engine's maps.
+mod protocol;
+use protocol::*;
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(tag = "type", rename_all = "lowercase")]
-    pub enum Message {
-        Register {
-            from: Uuid,
-            methods: Vec<MethodDef>,
-        },
-        Call {
-            id: Uuid,
-            from: Uuid,
-            to: Option<Uuid>,
-            method: String,
-            params: Value,
-        },
-        Result {
-            id: Uuid,
-            from: Uuid,
-            ok: bool,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            result: Option<Value>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            error: Option<ErrorBody>,
-        },
-        Error {
-            id: Uuid,
-            from: Uuid,
-            code: String,
-            message: String,
-        },
-        Notify {
-            from: Uuid,
-            to: Option<Uuid>,
-            method: String,
-            params: Value,
-        },
-        Ping {
-            from: Uuid,
-        },
-        Pong {
-            from: Uuid,
-        },
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct MethodDef {
-        pub name: String,
-        pub params_schema: serde_json::Value,
-        pub result_schema: serde_json::Value,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct ErrorBody {
-        pub code: String,
-        pub message: String,
-    }
+#[derive(Clone, PartialEq)]
+enum ClientStatus {
+    Pending,
+    Registered,
 }
 
-use protocol::*;
-struct Client {
-    id: ClientId,
-    addr: SocketAddr,
-    tx: mpsc::UnboundedSender<String>,
-    handle: JoinHandle<()>,
+#[derive(Clone)]
+pub struct ClientHandle {
+    pub tx: mpsc::Sender<Message>,
+    pub methods: Arc<Vec<CompiledMethod>>,
+    pub status: ClientStatus,
+}
+
+#[derive(Clone)]
+pub struct CompiledMethod {
+    pub name: String,
+    pub params_schema: Arc<JSONSchema>,
+    pub result_schema: Arc<JSONSchema>,
 }
 
 #[derive(Default)]
 struct Engine {
-    clients: HashMap<ClientId, Client>,
+    id: Uuid,
+    clients: Arc<DashMap<ClientAddr, ClientHandle>>,
+    routing: Arc<DashMap<String, Uuid>>,
+    pending: Arc<DashMap<ClientAddr, oneshot::Sender<Message>>>,
 }
 
 impl Engine {
+    fn new() -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            clients: Arc::new(DashMap::new()),
+            routing: Arc::new(DashMap::new()),
+            pending: Arc::new(DashMap::new()),
+        }
+    }
+
     fn add_client(
-        &mut self,
-        addr: SocketAddr,
-        writer: tokio::net::tcp::OwnedWriteHalf,
-    ) -> ClientId {
-        let id = Uuid::new_v4();
-        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-        let mut writer = writer;
-
-        // Write task
-        let handle = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if writer.write_all(msg.as_bytes()).await.is_err() {
-                    break;
-                }
-                if writer.write_all(b"\n").await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        let client = Client {
-            id,
-            addr,
+        &self,
+        client_address: ClientAddr,
+        tx: tokio::sync::mpsc::Sender<Message>,
+        methods: Vec<CompiledMethod>,
+        status: ClientStatus,
+    ) -> ClientAddr {
+        let handle = ClientHandle {
             tx,
-            handle,
+            methods: Arc::new(methods),
+            status,
         };
-        self.clients.insert(id, client);
-        println!(">> client {id} conected ({} active clients)", self.count());
-        id
+        println!(">> new client connected: {}", client_address);
+        self.clients.insert(client_address.clone(), handle);
+        client_address
     }
 
-    fn remove_client(&mut self, id: &ClientId) {
-        if let Some(client) = self.clients.remove(id) {
-            println!("<< client {id} disconected");
-            client.handle.abort();
+    pub async fn listen(self: Arc<Self>, addr: &str) -> anyhow::Result<()> {
+        let listener = TcpListener::bind(addr).await?;
+        println!("Engine {} listening on {}", self.id, addr);
+
+        loop {
+            let (socket, peer) = listener.accept().await?;
+            let this = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = this.handle_client(socket, peer).await {
+                    eprintln!("client error: {e:?}");
+                }
+            });
         }
     }
 
-    fn count(&self) -> usize {
-        self.clients.len()
-    }
-
-    fn broadcast(&self, msg: &str) {
-        for client in self.clients.values() {
-            let _ = client.tx.send(msg.to_string());
-        }
-    }
-
-    fn send_msg(&self, client_id: &ClientId, msg: &str) -> bool {
-        if let Some(client) = self.clients.get(client_id) {
-            let _ = client.tx.send(msg.to_string());
-            true
+    async fn send_msg(&self, client_address: &ClientAddr, msg: Message) -> bool {
+        if let Some(client) = self.clients.get(&client_address.to_string()) {
+            client.tx.send(msg).await.is_ok()
         } else {
             false
         }
     }
 
-    async fn handle_connection(
-        state: Arc<Mutex<Self>>,
-        stream: TcpStream,
-        addr: SocketAddr,
-    ) -> anyhow::Result<()> {
-        let (reader, writer) = stream.into_split();
-
-        // Register client and create write task
-        let id = {
-            let mut guard = state.lock().await;
-            guard.add_client(addr, writer)
-        };
-
-        // notify other clients
-        {
-            let guard = state.lock().await;
-            guard.broadcast(&format!("* client {id} ({addr}) available *"));
-        }
-
-        // Read messages from the client in a loop
-        let mut lines = BufReader::new(reader).lines();
-        while let Some(line) = lines.next_line().await? {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Try to parse as JSON
-            if let Ok(json_msg) = serde_json::from_str::<Value>(line) {
-                let msg_type = json_msg.get("msg_type");
-                if let Some(msg_type) = msg_type {
-                    println!("cliente {id} (json): tipo de mensagem = {}", msg_type);
-                } else {
-                    println!("cliente {id} (json): mensagem sem tipo");
+    async fn router_msg(&self, msg: &Message) -> anyhow::Result<()> {
+        match msg {
+            Message::Call { to: Some(to), .. } | Message::Notify { to: Some(to), .. } => {
+                if !self.send_msg(to, msg.clone()).await {
+                    eprintln!("no such client to route message to: {to}");
                 }
-            } else {
-                let message = format!("cliente {id}: {line}");
-                println!("{}", message);
+            }
+            _ => {
+                eprintln!("cannot route message without 'to' field");
             }
         }
+        Ok(())
+    }
 
-        // Client disconnected, clean up
-        {
-            let mut guard = state.lock().await;
-            guard.remove_client(&id);
-            guard.broadcast(&format!("* client {id} disconnected *"));
+    fn register_new_client(
+        &self,
+        client_address: ClientAddr,
+        tx: tokio::sync::mpsc::Sender<Message>,
+    ) -> anyhow::Result<()> {
+        // Start with no method metadata; a REGISTER message will update this later
+        let methods: Vec<CompiledMethod> = Vec::new();
+        self.add_client(client_address, tx, methods, ClientStatus::Pending);
+        Ok(())
+    }
+
+    fn remove_client_by_addr(&self, client_address: &ClientAddr) {
+        println!(">> removing client: {}", client_address);
+        if let Some(client) = self.clients.get(client_address) {
+            let client_id = client_address.clone();
+            for method in client.methods.iter() {
+                let route_key = format!("{}:{}", method.name, client_id);
+                println!(">> removing route: {}", route_key);
+                self.routing.remove(&route_key);
+            }
+        }
+        self.clients.remove(client_address);
+    }
+
+    async fn handle_client(
+        self: Arc<Self>,
+        socket: TcpStream,
+        peer: SocketAddr,
+    ) -> anyhow::Result<()> {
+        let str_peer_addr = peer.to_string();
+        let codec = LengthDelimitedCodec::builder()
+            .max_frame_length(64 * 1024 * 1024) // 64 MiB, just for testing
+            .new_codec();
+        let framed = codec.framed(socket);
+        let (mut wr, mut rd) = framed.split::<Bytes>();
+
+        // Channel used to push outbound messages to this client
+        let (tx, mut rx) = mpsc::channel::<Message>(64);
+
+        // Writer task
+        let writer = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let bytes = serde_json::to_vec(&msg).unwrap();
+                if let Err(e) = wr.send(Bytes::from(bytes)).await {
+                    eprintln!("send error: {e:?}");
+                    break;
+                }
+            }
+        });
+
+        self.register_new_client(str_peer_addr.clone(), tx.clone())?;
+        // Reader loop
+        while let Some(frame) = rd.next().await {
+            let bytes: BytesMut = frame?;
+            let msg: Message = serde_json::from_slice(&bytes)?;
+            println!("Received message from client {}: {:?}", str_peer_addr, msg);
+            self.router_msg(&msg).await?;
         }
 
+        writer.abort();
+        println!(">> Client {} disconnected", str_peer_addr);
+        self.remove_client_by_addr(&str_peer_addr);
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let state = Arc::new(Mutex::new(Engine::default()));
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
-    println!("Server listening on 127.0.0.1:8080");
+    let engine = Arc::new(Engine::new());
+    let eng = engine.clone();
 
-    // example of broadcasting a message every 2 seconds
-    {
-        let state = state.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                let guard = state.lock().await;
-                guard.broadcast("Broadcast message to all clients every 2 seconds .");
-            }
-        });
-    }
+    tokio::spawn(async move {
+        eng.listen("127.0.0.1:8080").await.unwrap();
+    });
 
     loop {
-        let (socket, addr) = listener.accept().await?;
-        let state = state.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = Engine::handle_connection(state, socket, addr).await {
-                eprintln!("Erro com {addr}: {e}");
-            }
-        });
-        // example of broadcasting a message every 30 seconds
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }
