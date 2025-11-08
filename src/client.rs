@@ -120,7 +120,6 @@ async fn main() {
 async fn run_client(config: Config) -> Result<()> {
     println!("Client connecting to {}", config.addr);
     let stream = TcpStream::connect(&config.addr).await?;
-    let client_addr = config.addr.clone();
     let codec = LengthDelimitedCodec::builder()
         .max_frame_length(64 * 1024 * 1024)
         .new_codec();
@@ -148,7 +147,6 @@ async fn run_client(config: Config) -> Result<()> {
 
     // Registrar "math.add"
     let register = Message::Register {
-        from: client_addr.clone(),
         methods: vec![MethodDef {
             name: "math.add".into(),
             params_schema: json!({
@@ -170,7 +168,6 @@ async fn run_client(config: Config) -> Result<()> {
     let reader_shutdown = shutdown.clone();
     let reader_tx = tx.clone();
     let mut reader_stream = rd;
-    let reader_addr = client_addr.clone();
     let reader = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -180,7 +177,7 @@ async fn run_client(config: Config) -> Result<()> {
                 frame = reader_stream.next() => {
                     match frame {
                         Some(Ok(bytes)) => {
-                            if let Err(err) = handle_message(bytes, &reader_tx, reader_addr.clone()) {
+                            if let Err(err) = handle_message(bytes, &reader_tx) {
                                 eprintln!("message error: {err:?}");
                             }
                         }
@@ -203,7 +200,6 @@ async fn run_client(config: Config) -> Result<()> {
     let heartbeat_handle = if let Some(period) = config.heartbeat {
         let hb_shutdown = shutdown.clone();
         let hb_tx = tx.clone();
-        let heartbeat_addr = client_addr.clone();
         Some(tokio::spawn(async move {
             let mut interval = time::interval(period);
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -212,7 +208,6 @@ async fn run_client(config: Config) -> Result<()> {
                     _ = hb_shutdown.notified() => break,
                     _ = interval.tick() => {
                         let notify = Message::Notify {
-                            from: heartbeat_addr.clone(),
                             to: None,
                             method: "client.heartbeat".into(),
                             params: json!({"ts": Utc::now().to_rfc3339()}),
@@ -252,16 +247,12 @@ async fn run_client(config: Config) -> Result<()> {
     Ok(())
 }
 
-fn handle_message(
-    bytes: BytesMut,
-    tx: &mpsc::UnboundedSender<Message>,
-    client_address: ClientAddr,
-) -> Result<()> {
+fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Result<()> {
     let msg: Message = serde_json::from_slice(&bytes)?;
     match msg {
         Message::Call {
             id, method, params, ..
-        } => handle_call(method, params, id, tx, client_address),
+        } => handle_call(method, params, id, tx),
         Message::Notify { method, params, .. } => {
             println!("notify<{method}>: {params}");
         }
@@ -274,35 +265,26 @@ fn handle_message(
         } => {
             println!("result<{id}> ok={ok} result={result:?} error={error:?}");
         }
-        Message::Error { code, message, .. } => {
-            eprintln!("engine error {code}: {message}");
+        Message::Error {
+            id, code, message, ..
+        } => {
+            eprintln!("engine error for {id}: {code} - {message}");
         }
-        Message::Ping { from } => {
-            println!("ping from {from}, replying with pong");
-            send_message(
-                tx,
-                Message::Pong {
-                    from: client_address,
-                },
-            );
+        Message::Ping => {
+            println!("ping received; replying with pong");
+            send_message(tx, Message::Pong);
         }
-        Message::Pong { from } => {
-            println!("pong from {from}");
+        Message::Pong => {
+            println!("pong received");
         }
-        Message::Register { from, methods } => {
-            println!("register ack from {from}: {} methods", methods.len());
+        Message::Register { methods } => {
+            println!("register ack: {} methods", methods.len());
         }
     }
     Ok(())
 }
 
-fn handle_call(
-    method: String,
-    params: Value,
-    id: Uuid,
-    tx: &mpsc::UnboundedSender<Message>,
-    client_address: ClientAddr,
-) {
+fn handle_call(method: String, params: Value, id: Uuid, tx: &mpsc::UnboundedSender<Message>) {
     match method.as_str() {
         "math.add" => {
             let a = params.get("a").and_then(Value::as_f64);
@@ -310,11 +292,10 @@ fn handle_call(
             match (a, b) {
                 (Some(a), Some(b)) => {
                     let result = json!(a + b);
-                    respond_with_result(tx, client_address, id, result);
+                    respond_with_result(tx, id, result);
                 }
                 _ => respond_with_error(
                     tx,
-                    client_address,
                     id,
                     "invalid_params",
                     "expected numeric fields 'a' and 'b'",
@@ -324,7 +305,6 @@ fn handle_call(
         other => {
             respond_with_error(
                 tx,
-                client_address,
                 id,
                 "method_not_found",
                 format!("no handler for method {other}"),
@@ -333,17 +313,11 @@ fn handle_call(
     }
 }
 
-fn respond_with_result(
-    tx: &mpsc::UnboundedSender<Message>,
-    client_address: ClientAddr,
-    id: Uuid,
-    payload: Value,
-) {
+fn respond_with_result(tx: &mpsc::UnboundedSender<Message>, id: Uuid, payload: Value) {
     send_message(
         tx,
         Message::Result {
             id,
-            from: client_address,
             ok: true,
             result: Some(payload),
             error: None,
@@ -353,7 +327,6 @@ fn respond_with_result(
 
 fn respond_with_error(
     tx: &mpsc::UnboundedSender<Message>,
-    client_address: ClientAddr,
     id: Uuid,
     code: &str,
     message: impl Into<String>,
@@ -362,7 +335,6 @@ fn respond_with_error(
         tx,
         Message::Result {
             id,
-            from: client_address,
             ok: false,
             result: None,
             error: Some(ErrorBody {

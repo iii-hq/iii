@@ -10,8 +10,6 @@ use tokio::{
 use tokio_util::codec::{Decoder, LengthDelimitedCodec};
 use uuid::Uuid;
 
-type ClientId = Uuid;
-/// Logical key used for bookkeeping in the engine's maps.
 mod protocol;
 use protocol::*;
 
