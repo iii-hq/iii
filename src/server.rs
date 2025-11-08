@@ -21,6 +21,8 @@ enum ClientStatus {
 
 #[derive(Clone)]
 pub struct ClientHandle {
+    pub name: String,
+    pub description: String,
     pub tx: mpsc::Sender<Message>,
     pub methods: Arc<Vec<CompiledMethod>>,
     status: ClientStatus,
@@ -56,12 +58,16 @@ impl Engine {
         client_address: ClientAddr,
         tx: tokio::sync::mpsc::Sender<Message>,
         methods: Vec<CompiledMethod>,
+        name: String,
+        description: String,
         status: ClientStatus,
     ) -> ClientAddr {
         let handle = ClientHandle {
             tx,
             methods: Arc::new(methods),
             status,
+            name,
+            description,
         };
         println!(">> new client connected: {}", client_address);
         self.clients.insert(client_address.clone(), handle);
@@ -99,6 +105,8 @@ impl Engine {
                 }
             }
             Message::Register {
+                name: worker_name,
+                description: worker_description,
                 methods: method_defs,
             } => {
                 let mut client = self
@@ -120,6 +128,8 @@ impl Engine {
                 // (In a real implementation, we would identify the client properly)
                 client.methods = Arc::new(compiled_methods.clone());
                 client.status = ClientStatus::Registered;
+                client.name = worker_name.clone();
+                client.description = worker_description.clone();
 
                 // (In a real implementation, we would identify the client properly)
                 // Here we just print the registered methods for demonstration
@@ -145,7 +155,16 @@ impl Engine {
     ) -> anyhow::Result<()> {
         // Start with no method metadata; a REGISTER message will update this later
         let methods: Vec<CompiledMethod> = Vec::new();
-        self.add_client(client_address, tx, methods, ClientStatus::Pending);
+        let name = String::from("unnamed");
+        let description = String::from("no description");
+        self.add_client(
+            client_address,
+            tx,
+            methods,
+            name,
+            description,
+            ClientStatus::Pending,
+        );
         Ok(())
     }
 

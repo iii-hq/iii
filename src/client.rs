@@ -145,8 +145,10 @@ async fn run_client(config: Config) -> Result<()> {
         }
     });
 
-    // Registrar "math.add"
+    // Register "math.add"
     let register = Message::Register {
+        name: "example_client".into(),
+        description: "An example client that provides math.add method".into(),
         methods: vec![MethodDef {
             name: "math.add".into(),
             params_schema: json!({
@@ -164,7 +166,6 @@ async fn run_client(config: Config) -> Result<()> {
 
     let shutdown = Arc::new(Notify::new());
 
-    // Task de leitura/atendimento
     let reader_shutdown = shutdown.clone();
     let reader_tx = tx.clone();
     let mut reader_stream = rd;
@@ -277,8 +278,12 @@ fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Resul
         Message::Pong => {
             println!("pong received");
         }
-        Message::Register { methods } => {
-            println!("register ack: {} methods", methods.len());
+        Message::Register {
+            name,
+            description,
+            methods,
+        } => {
+            println!("register {} ack: {} methods", name, methods.len());
         }
     }
     Ok(())

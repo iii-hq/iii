@@ -8,6 +8,8 @@ pub type ClientAddr = String;
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
     Register {
+        name: String,
+        description: String,
         methods: Vec<MethodDef>,
     },
     Call {
