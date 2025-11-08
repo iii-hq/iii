@@ -1,6 +1,13 @@
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::{Duration, sleep};
+
+#[derive(Serialize)]
+struct MessageClient {
+    msg_type: String,
+    content: String,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -46,6 +53,13 @@ async fn send_random_message(writer: &mut tokio::net::tcp::OwnedWriteHalf) -> an
         sleep(Duration::from_secs(1)).await;
     }
     sleep(Duration::from_secs(5)).await;
+    let json_msg = MessageClient {
+        msg_type: "greeting".to_string(),
+        content: "Hello from client in JSON!".to_string(),
+    };
+    let jason_msg = serde_json::to_string(&json_msg)?;
+    writer.write_all(jason_msg.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
 
     Ok(())
 }

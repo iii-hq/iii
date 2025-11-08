@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -8,7 +9,69 @@ use tokio::{
 use uuid::Uuid;
 
 type ClientId = Uuid;
+mod protocol {
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use uuid::Uuid;
 
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "type", rename_all = "lowercase")]
+    pub enum Message {
+        Register {
+            from: Uuid,
+            methods: Vec<MethodDef>,
+        },
+        Call {
+            id: Uuid,
+            from: Uuid,
+            to: Option<Uuid>,
+            method: String,
+            params: Value,
+        },
+        Result {
+            id: Uuid,
+            from: Uuid,
+            ok: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            result: Option<Value>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            error: Option<ErrorBody>,
+        },
+        Error {
+            id: Uuid,
+            from: Uuid,
+            code: String,
+            message: String,
+        },
+        Notify {
+            from: Uuid,
+            to: Option<Uuid>,
+            method: String,
+            params: Value,
+        },
+        Ping {
+            from: Uuid,
+        },
+        Pong {
+            from: Uuid,
+        },
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MethodDef {
+        pub name: String,
+        pub params_schema: serde_json::Value,
+        pub result_schema: serde_json::Value,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ErrorBody {
+        pub code: String,
+        pub message: String,
+    }
+}
+
+use protocol::*;
 struct Client {
     id: ClientId,
     addr: SocketAddr,
@@ -17,11 +80,11 @@ struct Client {
 }
 
 #[derive(Default)]
-struct ServerState {
+struct Engine {
     clients: HashMap<ClientId, Client>,
 }
 
-impl ServerState {
+impl Engine {
     fn add_client(
         &mut self,
         addr: SocketAddr,
@@ -106,8 +169,18 @@ impl ServerState {
             if line.is_empty() {
                 continue;
             }
-            let message = format!("cliente {id}: {line}");
-            println!("{}", message);
+            // Try to parse as JSON
+            if let Ok(json_msg) = serde_json::from_str::<Value>(line) {
+                let msg_type = json_msg.get("msg_type");
+                if let Some(msg_type) = msg_type {
+                    println!("cliente {id} (json): tipo de mensagem = {}", msg_type);
+                } else {
+                    println!("cliente {id} (json): mensagem sem tipo");
+                }
+            } else {
+                let message = format!("cliente {id}: {line}");
+                println!("{}", message);
+            }
         }
 
         // Client disconnected, clean up
@@ -123,7 +196,7 @@ impl ServerState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let state = Arc::new(Mutex::new(ServerState::default()));
+    let state = Arc::new(Mutex::new(Engine::default()));
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     println!("Server listening on 127.0.0.1:8080");
 
@@ -144,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
         let state = state.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = ServerState::handle_connection(state, socket, addr).await {
+            if let Err(e) = Engine::handle_connection(state, socket, addr).await {
                 eprintln!("Erro com {addr}: {e}");
             }
         });
