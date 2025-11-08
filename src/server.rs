@@ -23,7 +23,7 @@ enum ClientStatus {
 pub struct ClientHandle {
     pub tx: mpsc::Sender<Message>,
     pub methods: Arc<Vec<CompiledMethod>>,
-    pub status: ClientStatus,
+    status: ClientStatus,
 }
 
 #[derive(Clone)]
@@ -91,12 +91,45 @@ impl Engine {
         }
     }
 
-    async fn router_msg(&self, msg: &Message) -> anyhow::Result<()> {
+    async fn router_msg(&self, str_peer_addr: &ClientAddr, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::Call { to: Some(to), .. } | Message::Notify { to: Some(to), .. } => {
                 if !self.send_msg(to, msg.clone()).await {
                     eprintln!("no such client to route message to: {to}");
                 }
+            }
+            Message::Register {
+                methods: method_defs,
+            } => {
+                let mut client = self
+                    .clients
+                    .get_mut(str_peer_addr)
+                    .expect("No client found for REGISTER message");
+
+                // Compile method schemas
+                let compiled_methods: Vec<CompiledMethod> = method_defs
+                    .iter()
+                    .map(|md| CompiledMethod {
+                        name: md.name.clone(),
+                        params_schema: Arc::new(JSONSchema::compile(&md.params_schema).unwrap()),
+                        result_schema: Arc::new(JSONSchema::compile(&md.result_schema).unwrap()),
+                    })
+                    .collect();
+
+                // Update client handle with methods and status
+                // (In a real implementation, we would identify the client properly)
+                client.methods = Arc::new(compiled_methods.clone());
+                client.status = ClientStatus::Registered;
+
+                // (In a real implementation, we would identify the client properly)
+                // Here we just print the registered methods for demonstration
+                println!(
+                    "Registered methods: {:?}",
+                    compiled_methods
+                        .iter()
+                        .map(|m| &m.name)
+                        .collect::<Vec<&String>>()
+                );
             }
             _ => {
                 eprintln!("cannot route message without 'to' field");
@@ -161,7 +194,7 @@ impl Engine {
             let bytes: BytesMut = frame?;
             let msg: Message = serde_json::from_slice(&bytes)?;
             println!("Received message from client {}: {:?}", str_peer_addr, msg);
-            self.router_msg(&msg).await?;
+            self.router_msg(&str_peer_addr, &msg).await?;
         }
 
         writer.abort();
