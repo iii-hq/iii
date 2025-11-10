@@ -19,11 +19,6 @@ pub enum Message {
         request_format: Value,
         response_format: Option<Value>,
     },
-    Register {
-        name: String,
-        description: String,
-        methods: Vec<MethodDef>,
-    },
     InvokeFunction {
         invocation_id: Uuid,
         function_path: String,

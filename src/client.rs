@@ -145,24 +145,31 @@ async fn run_client(config: Config) -> Result<()> {
         }
     });
 
-    // Register "math.add"
-    let register = Message::Register {
-        name: "example_client".into(),
-        description: "An example client that provides math.add method".into(),
-        methods: vec![MethodDef {
-            name: "math.add".into(),
-            params_schema: json!({
-              "$schema":"https://json-schema.org/draft/2020-12/schema",
-              "type":"object",
-              "properties": { "a": {"type":"number"}, "b":{"type":"number"} },
-              "required": ["a","b"],
-              "additionalProperties": false
-            }),
-            result_schema: json!({ "type":"number" }),
-        }],
+    // Service + function registration (mirrors current server expectations)
+    let service_id = Uuid::new_v4();
+    let register_service = Message::RegisterService {
+        id: service_id,
+        description: Some("example_client service".into()),
+        parent_service_id: None,
     };
-    tx.send(register)
-        .context("writer dropped before sending register")?;
+    tx.send(register_service)
+        .context("writer dropped before sending register_service")?;
+
+    let register_function = Message::RegisterFunctionFormat {
+        function_path: "math.add".into(),
+        name: "math.add".into(),
+        description: Some("Adds two floating point numbers".into()),
+        request_format: json!({
+          "$schema":"https://json-schema.org/draft/2020-12/schema",
+          "type":"object",
+          "properties": { "a": {"type":"number"}, "b":{"type":"number"} },
+          "required": ["a","b"],
+          "additionalProperties": false
+        }),
+        response_format: Some(json!({ "type":"number" })),
+    };
+    tx.send(register_function)
+        .context("writer dropped before sending register_function_format")?;
 
     let shutdown = Arc::new(Notify::new());
 
@@ -252,14 +259,16 @@ fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Resul
     let msg: Message = serde_json::from_slice(&bytes)?;
     match msg {
         Message::RegisterService { .. } => {
-            // Not expected from server
+            println!("register_service ack received");
         }
-        Message::RegisterFunctionFormat { .. } => {
-            // Not expected from server
+        Message::RegisterFunctionFormat { function_path, .. } => {
+            println!("register_function ack for {function_path}");
         }
         Message::InvokeFunction {
-            id, method, params, ..
-        } => handle_call(method, params, id, tx),
+            invocation_id,
+            function_path,
+            params,
+        } => handle_call(function_path, params, invocation_id, tx),
         Message::Notify { method, params, .. } => {
             println!("notify<{method}>: {params}");
         }
@@ -284,30 +293,30 @@ fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Resul
         Message::Pong => {
             println!("pong received");
         }
-        Message::Register {
-            name,
-            description,
-            methods,
-        } => {
-            println!("register {} ack: {} methods", name, methods.len());
-        }
     }
     Ok(())
 }
 
-fn handle_call(method: String, params: Value, id: Uuid, tx: &mpsc::UnboundedSender<Message>) {
-    match method.as_str() {
+fn handle_call(
+    function_path: String,
+    params: Option<Value>,
+    invocation_id: Uuid,
+    tx: &mpsc::UnboundedSender<Message>,
+) {
+    match function_path.as_str() {
         "math.add" => {
-            let a = params.get("a").and_then(Value::as_f64);
-            let b = params.get("b").and_then(Value::as_f64);
+            let payload = params.unwrap_or_default();
+            let obj = payload.as_object();
+            let a = obj.and_then(|m| m.get("a")).and_then(Value::as_f64);
+            let b = obj.and_then(|m| m.get("b")).and_then(Value::as_f64);
             match (a, b) {
                 (Some(a), Some(b)) => {
                     let result = json!(a + b);
-                    respond_with_result(tx, id, result);
+                    respond_with_result(tx, invocation_id, result);
                 }
                 _ => respond_with_error(
                     tx,
-                    id,
+                    invocation_id,
                     "invalid_params",
                     "expected numeric fields 'a' and 'b'",
                 ),
@@ -316,9 +325,9 @@ fn handle_call(method: String, params: Value, id: Uuid, tx: &mpsc::UnboundedSend
         other => {
             respond_with_error(
                 tx,
-                id,
+                invocation_id,
                 "method_not_found",
-                format!("no handler for method {other}"),
+                format!("no handler for function_path {other}"),
             );
         }
     }

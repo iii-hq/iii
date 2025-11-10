@@ -18,14 +18,16 @@ enum ClientStatus {
     Pending,
     Registered,
 }
+type FunctionPath = String;
 
 #[derive(Clone)]
-struct CompiledMethod {
-    function_path: String,
+struct FunctionMeta {
+    function_path: FunctionPath,
     name: String,
     description: Option<String>,
     request_format: Arc<JSONSchema>,
     response_format: Option<Arc<JSONSchema>>,
+    client_address: ClientAddr,
 }
 
 #[derive(Clone)]
@@ -33,7 +35,7 @@ struct ClientHandle {
     name: String,
     description: Option<String>,
     tx: mpsc::Sender<Message>,
-    functions: Arc<Vec<CompiledMethod>>,
+    functions: Arc<Vec<FunctionMeta>>,
     status: ClientStatus,
 }
 
@@ -41,6 +43,7 @@ struct ClientHandle {
 struct Engine {
     id: Uuid,
     clients: Arc<DashMap<ClientAddr, ClientHandle>>,
+    functions: Arc<DashMap<FunctionPath, FunctionMeta>>,
     routing: Arc<DashMap<String, Uuid>>,
     pending: Arc<DashMap<ClientAddr, oneshot::Sender<Message>>>,
 }
@@ -50,6 +53,7 @@ impl Engine {
         Self {
             id: Uuid::new_v4(),
             clients: Arc::new(DashMap::new()),
+            functions: Arc::new(DashMap::new()),
             routing: Arc::new(DashMap::new()),
             pending: Arc::new(DashMap::new()),
         }
@@ -59,7 +63,7 @@ impl Engine {
         &self,
         client_address: ClientAddr,
         tx: tokio::sync::mpsc::Sender<Message>,
-        methods: Vec<CompiledMethod>,
+        methods: Vec<FunctionMeta>,
         name: String,
         description: Option<String>,
         status: ClientStatus,
@@ -184,13 +188,20 @@ impl Engine {
                 // We are overwriting the Arc to create a new mutable Vec
                 // Future optimizations could avoid lose the current methods
                 let methods = Arc::make_mut(&mut client.functions);
-                methods.push(CompiledMethod {
+                let func_meta = FunctionMeta {
                     function_path: function_path.clone(),
                     name: name.clone(),
-                    request_format: params_schema,
                     description: description.clone(),
-                    response_format: rs_schema,
-                });
+                    request_format: params_schema.clone(),
+                    response_format: rs_schema.clone(),
+                    client_address: str_peer_addr.clone(),
+                };
+                methods.push(func_meta.clone());
+
+                // Add to global function registry
+                // Also we need to validate that the function path is unique globally
+                // (For simplicity, we skip that check here)
+                self.functions.insert(function_path.clone(), func_meta);
 
                 println!("Registered new method: {}", name);
             }
@@ -229,7 +240,7 @@ impl Engine {
         tx: tokio::sync::mpsc::Sender<Message>,
     ) -> anyhow::Result<()> {
         // Start with no method metadata; a REGISTER message will update this later
-        let methods: Vec<CompiledMethod> = Vec::new();
+        let methods: Vec<FunctionMeta> = Vec::new();
         let name = String::from("unnamed");
         let description = Some(String::from("no description"));
         self.add_client(
