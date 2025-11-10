@@ -20,19 +20,19 @@ enum ClientStatus {
 }
 
 #[derive(Clone)]
-pub struct ClientHandle {
-    pub name: String,
-    pub description: String,
-    pub tx: mpsc::Sender<Message>,
-    pub methods: Arc<Vec<CompiledMethod>>,
-    status: ClientStatus,
+struct CompiledMethod {
+    name: String,
+    params_schema: Arc<JSONSchema>,
+    result_schema: Arc<JSONSchema>,
 }
 
 #[derive(Clone)]
-pub struct CompiledMethod {
-    pub name: String,
-    pub params_schema: Arc<JSONSchema>,
-    pub result_schema: Arc<JSONSchema>,
+struct ClientHandle {
+    name: String,
+    description: String,
+    tx: mpsc::Sender<Message>,
+    methods: Arc<Vec<CompiledMethod>>,
+    status: ClientStatus,
 }
 
 #[derive(Default)]
@@ -90,7 +90,7 @@ impl Engine {
     }
 
     async fn send_msg(&self, client_address: &ClientAddr, msg: Message) -> bool {
-        if let Some(client) = self.clients.get(&client_address.to_string()) {
+        if let Some(client) = self.clients.get(client_address) {
             client.tx.send(msg).await.is_ok()
         } else {
             false
@@ -99,7 +99,8 @@ impl Engine {
 
     async fn router_msg(&self, str_peer_addr: &ClientAddr, msg: &Message) -> anyhow::Result<()> {
         match msg {
-            Message::Call { to: Some(to), .. } | Message::Notify { to: Some(to), .. } => {
+            Message::InvokeFunctionMessage { to: Some(to), .. }
+            | Message::Notify { to: Some(to), .. } => {
                 if !self.send_msg(to, msg.clone()).await {
                     eprintln!("no such client to route message to: {to}");
                 }
@@ -115,14 +116,54 @@ impl Engine {
                     .expect("No client found for REGISTER message");
 
                 // Compile method schemas
-                let compiled_methods: Vec<CompiledMethod> = method_defs
-                    .iter()
-                    .map(|md| CompiledMethod {
+                let mut compiled_methods = Vec::with_capacity(method_defs.len());
+                for md in method_defs {
+                    let params_schema = match JSONSchema::compile(&md.params_schema) {
+                        Ok(schema) => Arc::new(schema),
+                        Err(err) => {
+                            let _ = self
+                                .send_msg(
+                                    str_peer_addr,
+                                    Message::Error {
+                                        id: Uuid::new_v4(),
+                                        code: "invalid_params_schema".into(),
+                                        message: format!(
+                                            "method {} params schema invalid: {err}",
+                                            md.name
+                                        ),
+                                    },
+                                )
+                                .await;
+                            return Ok(());
+                        }
+                    };
+
+                    let result_schema = match JSONSchema::compile(&md.result_schema) {
+                        Ok(schema) => Arc::new(schema),
+                        Err(err) => {
+                            let _ = self
+                                .send_msg(
+                                    str_peer_addr,
+                                    Message::Error {
+                                        id: Uuid::new_v4(),
+                                        code: "invalid_result_schema".into(),
+                                        message: format!(
+                                            "method {} result schema invalid: {err}",
+                                            md.name
+                                        ),
+                                    },
+                                )
+                                .await;
+                            return Ok(());
+                        }
+                    };
+
+                    compiled_methods.push(CompiledMethod {
                         name: md.name.clone(),
-                        params_schema: Arc::new(JSONSchema::compile(&md.params_schema).unwrap()),
-                        result_schema: Arc::new(JSONSchema::compile(&md.result_schema).unwrap()),
-                    })
-                    .collect();
+                        params_schema,
+                        result_schema,
+                    });
+                }
 
                 // Update client handle with methods and status
                 // (In a real implementation, we would identify the client properly)

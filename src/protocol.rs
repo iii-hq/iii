@@ -12,7 +12,7 @@ pub enum Message {
         description: String,
         methods: Vec<MethodDef>,
     },
-    Call {
+    InvokeFunctionMessage {
         id: Uuid,
         to: Option<ClientAddr>,
         method: String,
