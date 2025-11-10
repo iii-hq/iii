@@ -7,16 +7,28 @@ pub type ClientAddr = String;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
+    RegisterService {
+        id: Uuid,
+        description: Option<String>,
+        parent_service_id: Option<Uuid>,
+        functions: Vec<MethodDef>,
+    },
+    RegisterFunctionFormat {
+        id: Uuid,
+        name: String,
+        description: Option<String>,
+        params_schema: Value,
+        result_schema: Option<Value>,
+    },
     Register {
         name: String,
         description: String,
         methods: Vec<MethodDef>,
     },
-    InvokeFunctionMessage {
-        id: Uuid,
-        to: Option<ClientAddr>,
-        method: String,
-        params: Value,
+    InvokeFunction {
+        invocation_id: Uuid,
+        function_path: String,
+        params: Option<Value>,
     },
     Result {
         id: Uuid,

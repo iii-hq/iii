@@ -251,7 +251,13 @@ async fn run_client(config: Config) -> Result<()> {
 fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Result<()> {
     let msg: Message = serde_json::from_slice(&bytes)?;
     match msg {
-        Message::InvokeFunctionMessage {
+        Message::RegisterService { .. } => {
+            // Not expected from server
+        }
+        Message::RegisterFunctionFormat { .. } => {
+            // Not expected from server
+        }
+        Message::InvokeFunction {
             id, method, params, ..
         } => handle_call(method, params, id, tx),
         Message::Notify { method, params, .. } => {

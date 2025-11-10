@@ -29,7 +29,7 @@ struct CompiledMethod {
 #[derive(Clone)]
 struct ClientHandle {
     name: String,
-    description: String,
+    description: Option<String>,
     tx: mpsc::Sender<Message>,
     methods: Arc<Vec<CompiledMethod>>,
     status: ClientStatus,
@@ -99,16 +99,14 @@ impl Engine {
 
     async fn router_msg(&self, str_peer_addr: &ClientAddr, msg: &Message) -> anyhow::Result<()> {
         match msg {
-            Message::InvokeFunctionMessage { to: Some(to), .. }
-            | Message::Notify { to: Some(to), .. } => {
-                if !self.send_msg(to, msg.clone()).await {
-                    eprintln!("no such client to route message to: {to}");
-                }
+            Message::InvokeFunction { .. } | Message::Notify { .. } => {
+                eprintln!("routing INVOKE or NOTIFY messages not implemented yet");
             }
-            Message::Register {
-                name: worker_name,
-                description: worker_description,
-                methods: method_defs,
+            Message::RegisterService {
+                id: id,
+                description: description,
+                parent_service_id: parent_service_id,
+                functions: method_defs,
             } => {
                 let mut client = self
                     .clients
@@ -169,8 +167,8 @@ impl Engine {
                 // (In a real implementation, we would identify the client properly)
                 client.methods = Arc::new(compiled_methods.clone());
                 client.status = ClientStatus::Registered;
-                client.name = worker_name.clone();
-                client.description = worker_description.clone();
+                client.name = id.to_string();
+                client.description = description.clone();
 
                 // (In a real implementation, we would identify the client properly)
                 // Here we just print the registered methods for demonstration
