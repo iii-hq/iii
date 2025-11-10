@@ -11,10 +11,9 @@ pub enum Message {
         id: Uuid,
         description: Option<String>,
         parent_service_id: Option<Uuid>,
-        functions: Vec<MethodDef>,
     },
     RegisterFunctionFormat {
-        id: Uuid,
+        function_path: String,
         name: String,
         description: Option<String>,
         params_schema: Value,
@@ -54,9 +53,10 @@ pub enum Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodDef {
+    pub id: Uuid,
     pub name: String,
     pub params_schema: serde_json::Value,
-    pub result_schema: serde_json::Value,
+    pub result_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

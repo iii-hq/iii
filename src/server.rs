@@ -21,9 +21,11 @@ enum ClientStatus {
 
 #[derive(Clone)]
 struct CompiledMethod {
+    function_path: String,
     name: String,
+    description: Option<String>,
     params_schema: Arc<JSONSchema>,
-    result_schema: Arc<JSONSchema>,
+    result_schema: Option<Arc<JSONSchema>>,
 }
 
 #[derive(Clone)]
@@ -31,7 +33,7 @@ struct ClientHandle {
     name: String,
     description: Option<String>,
     tx: mpsc::Sender<Message>,
-    methods: Arc<Vec<CompiledMethod>>,
+    functions: Arc<Vec<CompiledMethod>>,
     status: ClientStatus,
 }
 
@@ -59,12 +61,12 @@ impl Engine {
         tx: tokio::sync::mpsc::Sender<Message>,
         methods: Vec<CompiledMethod>,
         name: String,
-        description: String,
+        description: Option<String>,
         status: ClientStatus,
     ) -> ClientAddr {
         let handle = ClientHandle {
             tx,
-            methods: Arc::new(methods),
+            functions: Arc::new(methods),
             status,
             name,
             description,
@@ -102,42 +104,64 @@ impl Engine {
             Message::InvokeFunction { .. } | Message::Notify { .. } => {
                 eprintln!("routing INVOKE or NOTIFY messages not implemented yet");
             }
-            Message::RegisterService {
-                id: id,
-                description: description,
-                parent_service_id: parent_service_id,
-                functions: method_defs,
+            Message::RegisterFunctionFormat {
+                function_path,
+                name,
+                description,
+                params_schema,
+                result_schema,
             } => {
                 let mut client = self
                     .clients
                     .get_mut(str_peer_addr)
-                    .expect("No client found for REGISTER message");
+                    .expect("No client found for REGISTER_FUNCTION_FORMAT message");
+
+                // Before adding the new method, check if it already exists
+                if client
+                    .functions
+                    .iter()
+                    .any(|m| m.function_path == *function_path)
+                {
+                    let _ = self
+                        .send_msg(
+                            str_peer_addr,
+                            Message::Error {
+                                id: Uuid::new_v4(),
+                                code: "method_already_exists".into(),
+                                message: format!("method {} already exists", name),
+                            },
+                        )
+                        .await;
+                    return Ok(());
+                }
 
                 // Compile method schemas
-                let mut compiled_methods = Vec::with_capacity(method_defs.len());
-                for md in method_defs {
-                    let params_schema = match JSONSchema::compile(&md.params_schema) {
-                        Ok(schema) => Arc::new(schema),
-                        Err(err) => {
-                            let _ = self
-                                .send_msg(
-                                    str_peer_addr,
-                                    Message::Error {
-                                        id: Uuid::new_v4(),
-                                        code: "invalid_params_schema".into(),
-                                        message: format!(
-                                            "method {} params schema invalid: {err}",
-                                            md.name
-                                        ),
-                                    },
-                                )
-                                .await;
-                            return Ok(());
-                        }
-                    };
+                let params_schema = match JSONSchema::compile(params_schema) {
+                    Ok(schema) => Arc::new(schema),
+                    Err(err) => {
+                        let _ = self
+                            .send_msg(
+                                str_peer_addr,
+                                Message::Error {
+                                    id: Uuid::new_v4(),
+                                    code: "invalid_params_schema".into(),
+                                    message: format!(
+                                        "method {} params schema invalid: {err}",
+                                        name
+                                    ),
+                                },
+                            )
+                            .await;
+                        return Ok(());
+                    }
+                };
 
-                    let result_schema = match JSONSchema::compile(&md.result_schema) {
-                        Ok(schema) => Arc::new(schema),
+                let mut rs_schema = None;
+                if let Some(rs) = result_schema {
+                    match JSONSchema::compile(rs) {
+                        Ok(schema) => {
+                            rs_schema = Some(Arc::new(schema));
+                        }
                         Err(err) => {
                             let _ = self
                                 .send_msg(
@@ -147,38 +171,48 @@ impl Engine {
                                         code: "invalid_result_schema".into(),
                                         message: format!(
                                             "method {} result schema invalid: {err}",
-                                            md.name
+                                            name
                                         ),
                                     },
                                 )
                                 .await;
                             return Ok(());
                         }
-                    };
-
-                    compiled_methods.push(CompiledMethod {
-                        name: md.name.clone(),
-                        params_schema,
-                        result_schema,
-                    });
+                    }
                 }
+                // Update client handle with new method
+                let methods = Arc::make_mut(&mut client.functions);
+                methods.push(CompiledMethod {
+                    function_path: function_path.clone(),
+                    name: name.clone(),
+                    params_schema,
+                    description: description.clone(),
+                    result_schema: rs_schema,
+                });
+
+                println!("Registered new method: {}", name);
+            }
+
+            Message::RegisterService {
+                id,
+                description,
+                parent_service_id: _parent_service_id,
+            } => {
+                let mut client = self
+                    .clients
+                    .get_mut(str_peer_addr)
+                    .expect("No client found for REGISTER message");
 
                 // Update client handle with methods and status
                 // (In a real implementation, we would identify the client properly)
-                client.methods = Arc::new(compiled_methods.clone());
+                client.functions = Arc::new(Vec::new());
                 client.status = ClientStatus::Registered;
                 client.name = id.to_string();
                 client.description = description.clone();
 
                 // (In a real implementation, we would identify the client properly)
                 // Here we just print the registered methods for demonstration
-                println!(
-                    "Registered methods: {:?}",
-                    compiled_methods
-                        .iter()
-                        .map(|m| &m.name)
-                        .collect::<Vec<&String>>()
-                );
+                println!("Registered methods: {:?}", client.name);
             }
             _ => {
                 eprintln!("cannot route message without 'to' field");
@@ -195,7 +229,7 @@ impl Engine {
         // Start with no method metadata; a REGISTER message will update this later
         let methods: Vec<CompiledMethod> = Vec::new();
         let name = String::from("unnamed");
-        let description = String::from("no description");
+        let description = Some(String::from("no description"));
         self.add_client(
             client_address,
             tx,
@@ -211,7 +245,7 @@ impl Engine {
         println!(">> removing client: {}", client_address);
         if let Some(client) = self.clients.get(client_address) {
             let client_id = client_address.clone();
-            for method in client.methods.iter() {
+            for method in client.functions.iter() {
                 let route_key = format!("{}:{}", method.name, client_id);
                 println!(">> removing route: {}", route_key);
                 self.routing.remove(&route_key);
