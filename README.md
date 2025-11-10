@@ -1,178 +1,120 @@
-# Engine
+Process Communication Engine
+============================
 
-This workspace hosts a Rust gRPC routing engine plus a pair of sample Python workers and example
-clients in Node.js and Lua. The engine accepts incoming `Process`/`StreamProcess` requests, forwards
-them to registered workers, and relays the responses back to the caller.
+A lightweight Rust playground for experimenting with process-to-process RPC over a single
+length-delimited TCP stream. The `server` binary accepts arbitrary “clients” that
+register the methods they implement (with JSON Schema validation), and then routes
+`invoke`, `notify`, and heartbeat frames between them. The repo also ships with an
+example Rust client (`src/client.rs`) and a parity Python client (`python_client.py`)
+to demonstrate cross-language interoperability.
 
-## Project Layout
-- `src/main.rs` – engine implementation that registers workers and proxies requests.
-- `proto/engine.proto` – shared protobuf definitions used by the engine, workers, and clients.
-- `worker_py/` – Python worker examples (`server.py` for unary + streaming formatters, `stream_server.py` for chunk streaming).
-- `client.js` – Node.js sample client that exercises the engine API.
-- `client_stream_only.js` – Node.js streaming-only client that targets the `text-formatter.stream_format` method.
-- `client_lua/grpcurl_client.lua` – Lua sample client built on top of `grpcurl`.
-- `Makefile` – convenience targets for Python setup and code generation.
+Features at a Glance
+--------------------
+- JSON Schema validation for every advertised method (ensures bad clients are rejected early).
+- Concurrent client management via Tokio + `DashMap`, with automatic cleanup on disconnect.
+- Built-in heartbeat/notify loop so the engine can detect stalled peers.
+- Optional runtime limit for clients—helpful for integration tests and CI jobs.
+- Message protocol expressed as plain Serde enums, which keeps the on-wire format obvious.
 
-## Prerequisites
-- Rust toolchain with edition 2024 support (install via [`rustup`](https://rustup.rs); `rustup default
-  nightly` works if your stable toolchain predates the 2024 edition).
-- `protoc` (Protocol Buffers compiler) available on PATH – required by `tonic-build` and Python stub generation.
-- Python 3.10+ with `venv` module.
-- Node.js 18+ and `npm`.
-- Optional clients:
-  - `lua` 5.4+, `luarocks`, and the `dkjson` rock.
-  - [`grpcurl`](https://github.com/fullstorydev/grpcurl).
+Repository Layout
+-----------------
+- `src/server.rs` – TCP router that tracks connected clients, validates registrations, and forwards messages.
+- `src/client.rs` – Async Rust client showcasing method registration, heartbeat emission, and request handling.
+- `src/protocol.rs` – Shared message and schema definitions used by both binaries.
+- `python_client.py` – asyncio-based client with the same framing logic (useful for scripting or quick demos).
+- `Makefile` – Convenience targets for `run_socket_server` and `run_socket_client`.
+- `requirements.txt` – Python dependencies if you want to experiment with the (WIP) gRPC surface.
 
-## Setup
+Prerequisites
+-------------
+- Rust 1.80+ (Rust 2024 edition used by the crate; install via `rustup`).
+- Python 3.10+ (only if you plan to run `python_client.py`).
+- `make` (optional, for the convenience targets).
 
-### 1. Rust engine
+Running the Server
+------------------
 ```bash
-# from engine/
-rustup toolchain install nightly
-rustup default nightly   # only required if your stable toolchain cannot build edition 2024
-cargo build
+# from /engine
+cargo run --bin server
+# or
+make run_socket_server
 ```
 
-### 2. Python workers
+The server listens on `127.0.0.1:8080` by default. Adjust the address by editing
+`src/server.rs` or by wrapping the listener in your own launcher binary.
+
+Running the Rust Example Client
+-------------------------------
 ```bash
-make setup_python          # creates .venv/ and installs grpcio / grpcio-tools
-make generate_python       # regenerates worker stubs from proto/ (run when proto changes)
+cargo run --bin client -- --addr 127.0.0.1:8080 --heartbeat 5 --run-for 30
+# environment variable equivalents
+ENGINE_ADDR=127.0.0.1:8080 ENGINE_HEARTBEAT=5 ENGINE_RUN_FOR=30 cargo run --bin client
 ```
 
-If you prefer manual steps:
+Flags & env vars:
+- `--addr` / `ENGINE_ADDR`: target engine address (default `127.0.0.1:8080`).
+- `--heartbeat` / `ENGINE_HEARTBEAT`: seconds between heartbeat `notify` frames (set to 0 to disable).
+- `--run-for` / `ENGINE_RUN_FOR`: optional runtime limit in seconds; omit to run indefinitely.
+
+Using the Python Client
+-----------------------
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m grpc_tools.protoc -I proto --python_out=worker_py --grpc_python_out=worker_py proto/engine.proto
+python python_client.py --addr 127.0.0.1:8080 --heartbeat 5 --run-for 30
 ```
 
-### 3. Node.js client
-```bash
-npm install
+`python_client.py` mirrors the Rust client: it registers `math.add`, listens for
+`call` messages, emits heartbeats, and prints `notify/result` frames as they arrive.
+This is a convenient way to script workloads or reproduce issues without recompiling Rust.
+
+Message Protocol Cheat Sheet
+----------------------------
+All frames are JSON serialized and prefixed with a 4-byte big-endian length (Tokio’s
+`LengthDelimitedCodec` format). The primary message types are defined in `src/protocol.rs`:
+
+- `register`: `{ "type": "register", "name": "...", "methods": [MethodDef] }`
+- `invoke`: `{ "type": "invokefunctionmessage", "id": "...", "to": "...", "method": "...", "params": {...} }`
+- `result`: `{ "type": "result", "id": "...", "ok": true, "result": {...} }`
+- `notify`: fire-and-forget events or heartbeats; `to` may be omitted to broadcast.
+- `ping` / `pong`: keepalive frames used by the sample clients.
+- `error`: structured errors when schema compilation or invocation fails.
+
+Example register payload:
+
+```json
+{
+  "type": "register",
+  "name": "example_client",
+  "description": "Provides math.add",
+  "methods": [
+    {
+      "name": "math.add",
+      "params_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": { "type": "number" },
+          "b": { "type": "number" }
+        },
+        "required": ["a", "b"],
+        "additionalProperties": false
+      },
+      "result_schema": { "type": "number" }
+    }
+  ]
+}
 ```
 
-### 4. Lua + grpcurl client (optional)
-```bash
-brew install grpcurl        # or your platform’s package manager
-luarocks install dkjson
-```
+Development Notes
+-----------------
+- Lint/format: `cargo fmt && cargo clippy -- -D warnings`.
+- Integration smoke test: run the server, then start one or more clients (Rust or Python) and observe routed `InvokeFunctionMessage` logs.
+- The `routing` map inside `Engine` currently keys by `method + client_id`. Extend this if you need round-robin or fan-out semantics.
+- `requirements.txt` currently only lists packages used for a future gRPC transport; the pure TCP client requires no third-party modules.
 
-## Running the Demo
-Open three terminals inside `engine/`:
-
-1. **Engine** – start the Rust server (defaults to `0.0.0.0:50051`):
-   ```bash
-   cargo run
-   ```
-   - Override listening address with `ENGINE_ADDR=127.0.0.1:50051 cargo run`.
-   - Pre-register a default worker by pointing `WORKER_ADDR` at a reachable worker endpoint.
-   - The HTTP bridge listens on `HTTP_ADDR` (default `0.0.0.0:8080`).
-
-2. **Unary/stream worker** – register the formatting service (defaults to `text-formatter` on `http://127.0.0.1:50052`):
-   ```bash
-   source .venv/bin/activate
-   ENGINE_ADDR=localhost:50051 SERVICE_NAME=text-formatter SERVICE_ADDR=http://127.0.0.1:50052 \
-     python worker_py/server.py
-   ```
-   The script connects to the engine, registers its unary `format_text` and streaming `stream_format` methods, and waits for requests.
-
-3. **Streaming worker** – register the streaming service (`text-streamer` on `http://127.0.0.1:50053`):
-   ```bash
-   source .venv/bin/activate
-   ENGINE_ADDR=localhost:50051 SERVICE_NAME=text-streamer SERVICE_ADDR=http://127.0.0.1:50053 \
-     python worker_py/stream_server.py
-   ```
-
-With the services running you can drive them from the sample clients:
-- **Node.js:** `ENGINE_ADDR=localhost:50051 node client.js`
-- **Lua/grpcurl:** `ENGINE_ADDR=localhost:50051 lua client_lua/grpcurl_client.lua proto/engine.proto`
-
-Both clients will list the registered services, issue a unary `Process` call, and exercise the streaming API.
-
-
-### Streaming Example: Python Publisher → Node Consumer
-This example shows the Python streaming worker (`worker_py/stream_server.py`) acting as a publisher. It emits
-chunks of text over the gRPC stream, the Rust engine relays each chunk, and the Node.js client consumes the
-stream.
-
-1. Start the engine in the first terminal (same as above):
-   ```bash
-   cargo run
-   ```
-
-2. In a second terminal, launch the Python streaming publisher. It registers the `text-streamer` service and
-   streams the string payload it receives, chunk by chunk. The `chunk_size` and `delay_ms` values can be set
-   through the request metadata.
-   ```bash
-   source .venv/bin/activate
-   ENGINE_ADDR=localhost:50051 SERVICE_NAME=text-streamer SERVICE_ADDR=http://127.0.0.1:50053 \
-     python worker_py/stream_server.py
-   ```
-   You should see log lines such as:
-   ```
-   Streaming worker listening on 0.0.0.0:50053
-   Registered 'text-streamer' at http://127.0.0.1:50053: service 'text-streamer' registered
-   [streamer] received new service notification: service=text-formatter ...
-   ```
-
-3. In a third terminal, run the Node.js consumer. It calls `Engine.StreamProcess` for the `text-streamer`
-   service and prints every chunk that flows back from the Python publisher via the engine.
-   ```bash
-   ENGINE_ADDR=localhost:50051 node client.js
-   ```
-   Sample output:
-   ```
-   Stream chunk: { result: 'strea' }
-   Stream chunk: { result: 'ming ' }
-   Stream chunk: { result: 'hello' }
-   Stream chunk: { result: ' from ' }
-   Stream chunk: { result: 'node' }
-   Stream completed
-   ```
-
-Need a focused publisher? Use `client_stream_only.js` to send a streaming payload without listing or unary calls.
-```bash
-ENGINE_ADDR=localhost:50051 node client_stream_only.js "stream data from node" 5 100 "[" "]"
-```
-The `text-formatter` worker (`worker_py/server.py`) consumes the payload, uppercases it, applies optional `prefix`/`suffix`, slices it into `chunk_size` segments, and the Node client logs each chunk as the engine relays them. Omit the trailing arguments or set `PREFIX`/`SUFFIX` environment variables if you do not need adornments.
-
-To change the published payload, adjust the `payload` and `meta` fields inside `client.js` or `client_stream_only.js`, or author your own client that calls `StreamProcess`. The engine will keep forwarding the stream to whichever consumer requests it.
-
-
-
-### HTTP API Example
-The formatter worker also registers an API-facing service (`text-formatter-api`). The engine maps that
-service to an Axum router mounted at `HTTP_ADDR` (defaults to `0.0.0.0:8080`). Each method that declares
-`request_format.http` data is exposed as an HTTP endpoint, and by default the path is built as
-`/<service_name>/<method_name>` (for example `/text-formatter/format_text`).
-
-Call the formatter via HTTP using JSON payloads that mirror the gRPC `ProcessRequest` fields:
-```bash
-curl -s -X POST http://localhost:8080/text-formatter/format_text \
-  -H 'content-type: application/json' \
-  -d '{"payload":"hello api","meta":{"prefix":"<<","suffix":">>"}}'
-# {"result":"<<HELLO API>>"}
-```
-
-Quickly list every registered HTTP route from the engine itself:
-```bash
-curl -s http://localhost:8080/apis | jq
-```
-
-Adjust the route with environment variables on the Python worker: `SERVICE_API_NAME`,
-`SERVICE_API_PATH`, and `SERVICE_API_METHOD`. You can also set `HTTP_ADDR` before launching the engine
-if you need a different bind address or port.
-
-## Regenerating Code After Proto Changes
-- Rust: `cargo clean` (optional) then `cargo build`; `tonic-build` compiles the protobuf during the build.
-- Python: rerun `make generate_python` (or the equivalent `python -m grpc_tools.protoc` command).
-- Node & Lua clients read `proto/engine.proto` directly; restart them after updating the proto.
-
-## Troubleshooting
-- `tonic-build` errors about `protoc`: ensure the compiler is installed and visible via `which protoc`.
-- Python worker fails to register: confirm `ENGINE_ADDR` points at a reachable engine instance and that the engine is already listening.
-- Makefile target `run_worker_server` expects `worker_py/worker_server.py`; the current unary worker entry point is `worker_py/server.py`. Run the script directly or adjust the target.
-- Streaming requests time out: increase the engine timeout by editing `request_timeout` in `src/main.rs` or reduce the worker’s `delay_ms` meta value.
-
-Happy hacking!
+Next Ideas
+----------
+- Add persistence or service discovery so clients can restart without re-registering.
+- Gate schema compilation failures behind a retry or quarantine flow.
+- Extend the Makefile with `fmt`, `clippy`, and `test` helpers for easier CI wiring.
