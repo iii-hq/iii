@@ -9,6 +9,7 @@ pub type ClientAddr = String;
 pub enum Message {
     RegisterService {
         id: Uuid,
+        name: String,
         description: Option<String>,
         parent_service_id: Option<Uuid>,
     },

@@ -148,8 +148,9 @@ async fn run_client(config: Config) -> Result<()> {
     // Service + function registration (mirrors current server expectations)
     let service_id = Uuid::new_v4();
     let register_service = Message::RegisterService {
+        name: "example_service".into(),
         id: service_id,
-        description: Some("example_client service".into()),
+        description: Some("example_service description".into()),
         parent_service_id: None,
     };
     tx.send(register_service)

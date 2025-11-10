@@ -208,6 +208,7 @@ impl Engine {
 
             Message::RegisterService {
                 id,
+                name,
                 description,
                 parent_service_id: _parent_service_id,
             } => {
@@ -220,12 +221,12 @@ impl Engine {
                 // (In a real implementation, we would identify the client properly)
                 client.functions = Arc::new(Vec::new());
                 client.status = ClientStatus::Registered;
-                client.name = id.to_string();
+                client.name = name.clone();
                 client.description = description.clone();
 
                 // (In a real implementation, we would identify the client properly)
                 // Here we just print the registered methods for demonstration
-                println!("Registered methods: {:?}", client.name);
+                println!("Registered service: {:?}", client.name);
             }
             _ => {
                 eprintln!("cannot route message without 'to' field");
