@@ -16,8 +16,8 @@ pub enum Message {
         function_path: String,
         name: String,
         description: Option<String>,
-        params_schema: Value,
-        result_schema: Option<Value>,
+        request_format: Value,
+        response_format: Option<Value>,
     },
     Register {
         name: String,

@@ -24,8 +24,8 @@ struct CompiledMethod {
     function_path: String,
     name: String,
     description: Option<String>,
-    params_schema: Arc<JSONSchema>,
-    result_schema: Option<Arc<JSONSchema>>,
+    request_format: Arc<JSONSchema>,
+    response_format: Option<Arc<JSONSchema>>,
 }
 
 #[derive(Clone)]
@@ -108,8 +108,8 @@ impl Engine {
                 function_path,
                 name,
                 description,
-                params_schema,
-                result_schema,
+                request_format,
+                response_format,
             } => {
                 let mut client = self
                     .clients
@@ -136,7 +136,7 @@ impl Engine {
                 }
 
                 // Compile method schemas
-                let params_schema = match JSONSchema::compile(params_schema) {
+                let params_schema = match JSONSchema::compile(request_format) {
                     Ok(schema) => Arc::new(schema),
                     Err(err) => {
                         let _ = self
@@ -157,7 +157,7 @@ impl Engine {
                 };
 
                 let mut rs_schema = None;
-                if let Some(rs) = result_schema {
+                if let Some(rs) = response_format {
                     match JSONSchema::compile(rs) {
                         Ok(schema) => {
                             rs_schema = Some(Arc::new(schema));
@@ -181,13 +181,15 @@ impl Engine {
                     }
                 }
                 // Update client handle with new method
+                // We are overwriting the Arc to create a new mutable Vec
+                // Future optimizations could avoid lose the current methods
                 let methods = Arc::make_mut(&mut client.functions);
                 methods.push(CompiledMethod {
                     function_path: function_path.clone(),
                     name: name.clone(),
-                    params_schema,
+                    request_format: params_schema,
                     description: description.clone(),
-                    result_schema: rs_schema,
+                    response_format: rs_schema,
                 });
 
                 println!("Registered new method: {}", name);
