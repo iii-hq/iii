@@ -1,0 +1,7 @@
+{
+  "watch": [
+    "src"
+  ],
+  "ext": "ts,js,json,graphql",
+  "exec": "node esbuild.js && (node --enable-source-maps dist/index.js)"
+}

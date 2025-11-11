@@ -1,0 +1,17 @@
+{
+  "name": "iii",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "III",
+  "type": "module",
+  "description": "III Core",
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@grpc/proto-loader": "^0.8.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  }
+}
