@@ -32,6 +32,14 @@ const engine = new Engine()
 // Not quite necessary to do it
 bridge.registerService({ id: 'engine', description: 'Example of an engine service' })
 
-bridge.registerFunction({ functionPath: 'engine.enable' }, async () => engine.enable())
-bridge.registerFunction({ functionPath: 'engine.disable' }, async () => engine.disable())
-bridge.registerFunction({ functionPath: 'engine.work' }, async () => engine.work())
+bridge.registerFunction({ functionPath: 'engine.enable', description: 'Enable the engine' }, async () =>
+  engine.enable(),
+)
+bridge.registerFunction({ functionPath: 'engine.disable', description: 'Disable the engine' }, async () =>
+  engine.disable(),
+)
+bridge.registerFunction({ functionPath: 'engine.work', description: 'Work the engine' }, async () => engine.work())
+
+setInterval(() => {
+  logger.info('Working...')
+}, 1000)

@@ -1,7 +1,6 @@
 import { WebSocket } from 'ws'
 import {
   BridgeMessage,
-  BridgeMessageData,
   InvocationResultMessage,
   InvokeFunctionMessage,
   MessageType,
@@ -23,19 +22,19 @@ export class Bridge implements BridgeClient {
     this.connect()
   }
 
-  registerTrigger(trigger: RegisterTriggerMessage) {
+  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type'>) {
     this.sendMessage(MessageType.RegisterTrigger, trigger, true)
-    this.triggers.set(trigger.id, trigger)
+    this.triggers.set(trigger.id, { ...trigger, type: MessageType.RegisterTrigger })
   }
 
-  registerFunction(message: RegisterFunctionMessage, handler: RemoteFunctionHandler) {
+  registerFunction(message: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler) {
     this.sendMessage(MessageType.RegisterFunction, message, true)
-    this.functions.set(message.functionPath, { message, handler })
+    this.functions.set(message.functionPath, { message: { ...message, type: MessageType.RegisterFunction }, handler })
   }
 
-  registerService(message: RegisterServiceInput) {
+  registerService(message: Omit<RegisterServiceMessage, 'type'>) {
     this.sendMessage(MessageType.RegisterService, message, true)
-    this.services.set(message.id, message)
+    this.services.set(message.id, { ...message, type: MessageType.RegisterService })
   }
 
   async invokeFunction<TInput, TOutput>(functionPath: string, data: TInput): Promise<TOutput> {
@@ -66,26 +65,19 @@ export class Bridge implements BridgeClient {
     this.triggers.forEach((trigger) => this.sendMessage(MessageType.RegisterTrigger, trigger, true))
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
-      .forEach((message) => this.sendLengthPrefixedMessage(JSON.stringify(message)))
+      .forEach((message) => this.ws.send(JSON.stringify(message)))
   }
 
   private isOpen() {
     return this.ws.readyState === WebSocket.OPEN
   }
 
-  private sendLengthPrefixedMessage(message: string) {
-    const json = JSON.stringify(message)
-    const payload = Buffer.from(json, 'utf8')
-    const header = Buffer.allocUnsafe(4)
-    header.writeUInt32BE(payload.length, 0)
-    this.ws.send(Buffer.concat([header, payload]))
-  }
-
-  private sendMessage(type: MessageType, message: BridgeMessageData, skipIfClosed = false) {
+  private sendMessage(type: MessageType, message: Omit<BridgeMessage, 'type'>, skipIfClosed = false) {
+    console.log('sendMessage', type, message)
     if (this.isOpen()) {
-      this.sendLengthPrefixedMessage(JSON.stringify({ type, message }))
+      this.ws.send(JSON.stringify({ ...message, type }))
     } else if (!skipIfClosed) {
-      this.messagesToSend.push({ type, message })
+      this.messagesToSend.push({ ...message, type } as BridgeMessage)
     }
   }
 
@@ -119,7 +111,7 @@ export class Bridge implements BridgeClient {
   }
 
   private onMessage(socketMessage: WebSocket.Data) {
-    const { type, message }: BridgeMessage = JSON.parse(socketMessage.toString())
+    const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
 
     if (type === MessageType.InvocationResult) {
       const { invocationId, data, error } = message as InvocationResultMessage

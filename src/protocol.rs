@@ -13,11 +13,10 @@ pub enum Message {
     },
     InvokeFunction {
         #[serde(rename = "invocationId")]
-        invocation_id: Uuid,
+        invocation_id: Option<Uuid>,
         #[serde(rename = "functionPath")]
         function_path: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        data: Option<Value>,
+        data: Value,
     },
     InvocationResult {
         #[serde(rename = "invocationId")]

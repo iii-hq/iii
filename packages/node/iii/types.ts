@@ -16,9 +16,9 @@ export type RemoteServiceFunctionData = {
 export type RegisterServiceInput = Omit<RegisterServiceMessage, 'functions'>
 
 export interface BridgeClient {
-  registerTrigger(trigger: RegisterTriggerMessage): void
-  registerService(service: RegisterServiceInput): void
-  registerFunction(func: RegisterFunctionMessage, handler: RemoteFunctionHandler): void
+  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type'>): void
+  registerService(service: Omit<RegisterServiceMessage, 'type'>): void
+  registerFunction(func: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler): void
   invokeFunction<TInput, TOutput>(functionId: string, data: TInput): Promise<TOutput>
   invokeFunctionAsync<TInput>(functionId: string, data: TInput): void
 

@@ -1,14 +1,16 @@
 export enum MessageType {
-  RegisterFunction = 'register-function',
-  RegisterService = 'register-service',
-  InvokeFunction = 'invoke-function',
-  InvocationResult = 'invocation-result',
-  RegisterTrigger = 'register-trigger',
+  RegisterFunction = 'registerfunction',
+  RegisterService = 'registerservice',
+  InvokeFunction = 'invokefunction',
+  InvocationResult = 'invocationresult',
+  RegisterTrigger = 'registertrigger',
 }
 
 export type RegisterTriggerMessage = {
+  type: MessageType.RegisterTrigger
+
   id: string
-  type: string
+  triggerType: string // 'cron', 'event', 'http'
   /**
    * Entine path for the function, including the service and function name
    * Example: software.engineering.code.rust
@@ -19,6 +21,7 @@ export type RegisterTriggerMessage = {
 }
 
 export type RegisterServiceMessage = {
+  type: MessageType.RegisterService
   id: string
   description?: string
   parentServiceId?: string
@@ -34,6 +37,7 @@ export type RegisterFunctionFormat = {
 }
 
 export type RegisterFunctionMessage = {
+  type: MessageType.RegisterFunction
   functionPath: string
   description?: string
   requestFormat?: RegisterFunctionFormat
@@ -41,6 +45,7 @@ export type RegisterFunctionMessage = {
 }
 
 export type InvokeFunctionMessage = {
+  type: MessageType.InvokeFunction
   /**
    * This is optional for async invocations
    */
@@ -50,20 +55,16 @@ export type InvokeFunctionMessage = {
 }
 
 export type InvocationResultMessage = {
+  type: MessageType.InvocationResult
   invocationId: string
   functionPath: string
   data?: any
   error?: any
 }
 
-export type BridgeMessageData =
+export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage
   | InvocationResultMessage
   | RegisterServiceMessage
   | RegisterTriggerMessage
-
-export type BridgeMessage = {
-  type: MessageType
-  message: BridgeMessageData
-}

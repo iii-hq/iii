@@ -4,3 +4,4 @@ node_modules
 worker_py/__pycache__/
 .venv
 .vscode/
+dist/

@@ -29,7 +29,18 @@ enum Outbound {
 }
 
 struct Function {
-    worker: Worker,
+    handler: Box<
+        dyn Fn(
+                Option<Uuid>,
+                serde_json::Value,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<serde_json::Value>, ErrorBody>>
+                        + Send,
+                >,
+            > + Send
+            + Sync,
+    >,
     _function_path: String,
     _description: Option<String>,
 }
@@ -65,21 +76,32 @@ impl Engine {
                 function_path,
                 data,
             } => {
+                println!("InvokeFunction {function_path} {invocation_id:?} {data:?}");
+
                 if let Some(function) = self.functions.get(function_path) {
-                    function
-                        .worker
-                        .channel
-                        .send(Outbound::Protocol(Message::InvokeFunction {
-                            invocation_id: *invocation_id,
-                            function_path: function_path.clone(),
-                            data: data.clone(),
-                        }))
-                        .await?;
-                } else {
+                    if let Ok(result) =
+                        (function.handler)(invocation_id.clone(), data.clone()).await
+                    {
+                        if let Some(invocation_id) = invocation_id
+                            && result.is_some()
+                        {
+                            self.send_msg(
+                                worker,
+                                Message::InvocationResult {
+                                    invocation_id: invocation_id.clone(),
+                                    function_path: function_path.clone(),
+                                    result: result.clone(),
+                                    error: None,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                } else if let Some(invocation_id) = invocation_id {
                     self.send_msg(
                         worker,
                         Message::InvocationResult {
-                            invocation_id: *invocation_id,
+                            invocation_id: invocation_id.clone(),
                             function_path: function_path.clone(),
                             result: None,
                             error: Some(ErrorBody {
@@ -98,6 +120,8 @@ impl Engine {
                 result,
                 error,
             } => {
+                println!("InvocationResult {function_path} {invocation_id} {result:?} {error:?}");
+
                 if let Some(invocation) = self.invocations.get(invocation_id) {
                     invocation
                         .worker
@@ -116,8 +140,38 @@ impl Engine {
                 function_path,
                 description,
             } => {
+                println!(
+                    "RegisterFunction {function_path} {}",
+                    description.as_ref().unwrap_or(&"".to_string())
+                );
+
+                let handler_worker = worker.clone();
+                let handler_function_path = function_path.clone();
+
                 let new_function = Function {
-                    worker: worker.clone(),
+                    handler: Box::new(
+                        move |invocation_id: Option<Uuid>, input: serde_json::Value| {
+                            let worker = handler_worker.clone();
+                            let function_path = handler_function_path.clone();
+
+                            Box::pin(async move {
+                                worker
+                                    .channel
+                                    .send(Outbound::Protocol(Message::InvokeFunction {
+                                        invocation_id,
+                                        function_path,
+                                        data: input,
+                                    }))
+                                    .await
+                                    .map_err(|err| ErrorBody {
+                                        code: "channel_send_failed".into(),
+                                        message: err.to_string(),
+                                    })?;
+
+                                Ok(None)
+                            })
+                        },
+                    ),
                     _function_path: function_path.clone(),
                     _description: description.clone(),
                 };
@@ -179,13 +233,15 @@ impl Engine {
                     Ok(msg) => self.router_msg(&worker, &msg).await?,
                     Err(err) => eprintln!("binary decode error from {peer}: {err}"),
                 },
-                Ok(WsMessage::Close(_)) => break,
+                Ok(WsMessage::Close(_)) => {
+                    println!("Worker {peer} disconnected");
+                    break;
+                }
                 Ok(WsMessage::Ping(payload)) => {
                     let _ = tx.send(Outbound::Raw(WsMessage::Pong(payload))).await;
                 }
                 Ok(WsMessage::Pong(_)) => {}
-                Err(err) => {
-                    eprintln!("websocket error from {peer}: {err}");
+                Err(_err) => {
                     break;
                 }
             }
@@ -212,12 +268,34 @@ async fn ws_handler(
     })
 }
 
+fn register_core_functions(engine: &Arc<Engine>) {
+    engine.functions.insert(
+        "logger.info".to_string(),
+        Function {
+            handler: Box::new(
+                move |_invocation_id: Option<Uuid>, input: serde_json::Value| {
+                    Box::pin(async move {
+                        println!("logger.info {input:?}");
+                        Ok(None)
+                    })
+                },
+            ),
+            _function_path: "logger.info".to_string(),
+            _description: Some("Log an info message".to_string()),
+        },
+    );
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let engine = Arc::new(Engine::new());
-    let app = Router::new().route("/", get(ws_handler)).with_state(engine);
+    let app = Router::new()
+        .route("/", get(ws_handler))
+        .with_state(engine.clone());
+
+    register_core_functions(&engine);
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
