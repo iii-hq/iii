@@ -43,16 +43,6 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
-  react-iii:
-    dependencies:
-      iii:
-        specifier: workspace:*
-        version: link:../iii
-    devDependencies:
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-
 packages:
 
   '@esbuild/aix-ppc64@0.27.0':
