@@ -1,5 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
+mod schema;
+mod trigger;
+
 use axum::{
     Router,
     extract::{
@@ -17,9 +20,13 @@ use uuid::Uuid;
 mod protocol;
 use protocol::*;
 
+use crate::trigger::{Trigger, TriggerRegistry, TriggerType};
+
 #[derive(Clone)]
 struct Worker {
+    id: Uuid,
     channel: mpsc::Sender<Outbound>,
+    invocations: DashMap<Uuid, Invocation>,
 }
 
 #[derive(Debug)]
@@ -32,6 +39,7 @@ struct Function {
     handler: Box<
         dyn Fn(
                 Option<Uuid>,
+                Uuid,
                 serde_json::Value,
             ) -> std::pin::Pin<
                 Box<
@@ -45,23 +53,26 @@ struct Function {
     _description: Option<String>,
 }
 
+#[derive(Clone)]
 struct Invocation {
     _invocation_id: Uuid,
     _function_path: String,
-    worker: Worker,
+    source_worker_id: Uuid,
 }
 
 #[derive(Default)]
 struct Engine {
+    workers: DashMap<Uuid, Worker>,
     functions: Arc<DashMap<String, Function>>,
-    invocations: Arc<DashMap<Uuid, Invocation>>,
+    trigger_registry: Arc<TriggerRegistry>,
 }
 
 impl Engine {
     fn new() -> Self {
         Self {
+            workers: DashMap::new(),
             functions: Arc::new(DashMap::new()),
-            invocations: Arc::new(DashMap::new()),
+            trigger_registry: Arc::new(TriggerRegistry::new()),
         }
     }
 
@@ -71,6 +82,54 @@ impl Engine {
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
+            Message::RegisterTriggerType { id, description } => {
+                println!("RegisterTriggerType {id} {description}");
+
+                let on_register = Box::new(move |trigger: &Trigger| Ok(()));
+                let on_unregister = Box::new(move |trigger: &Trigger| Ok(()));
+
+                self.trigger_registry.register_trigger_type(TriggerType {
+                    id: id.clone(),
+                    description: description.clone(),
+                    on_register,
+                    on_unregister,
+                });
+                Ok(())
+            }
+            Message::RegisterTrigger {
+                id,
+                trigger_type,
+                function_path,
+                config,
+            } => {
+                println!("RegisterTrigger {id} {trigger_type} {function_path} {config:?}");
+
+                let _ = self.trigger_registry.register_trigger(Trigger {
+                    id: id.clone(),
+                    trigger_type: trigger_type.clone(),
+                    function_path: function_path.clone(),
+                    config: config.clone(),
+                });
+
+                Ok(())
+            }
+            Message::UnregisterTrigger {
+                id,
+                trigger_type,
+                function_path,
+            } => {
+                println!("UnregisterTrigger {id} {trigger_type} {function_path}");
+
+                let _ = self.trigger_registry.unregister_trigger(Trigger {
+                    id: id.clone(),
+                    trigger_type: trigger_type.clone(),
+                    function_path: function_path.clone(),
+                    config: serde_json::Value::Null,
+                });
+
+                Ok(())
+            }
+
             Message::InvokeFunction {
                 invocation_id,
                 function_path,
@@ -80,7 +139,7 @@ impl Engine {
 
                 if let Some(function) = self.functions.get(function_path) {
                     if let Ok(result) =
-                        (function.handler)(invocation_id.clone(), data.clone()).await
+                        (function.handler)(invocation_id.clone(), worker.id, data.clone()).await
                     {
                         if let Some(invocation_id) = invocation_id
                             && result.is_some()
@@ -122,17 +181,18 @@ impl Engine {
             } => {
                 println!("InvocationResult {function_path} {invocation_id} {result:?} {error:?}");
 
-                if let Some(invocation) = self.invocations.get(invocation_id) {
-                    invocation
-                        .worker
-                        .channel
-                        .send(Outbound::Protocol(Message::InvocationResult {
-                            invocation_id: *invocation_id,
-                            function_path: function_path.clone(),
-                            result: result.clone(),
-                            error: error.clone(),
-                        }))
-                        .await?;
+                if let Some(invocation) = worker.invocations.get(invocation_id) {
+                    if let Some(source_worker) = self.workers.get(&invocation.source_worker_id) {
+                        source_worker
+                            .channel
+                            .send(Outbound::Protocol(Message::InvocationResult {
+                                invocation_id: *invocation_id,
+                                function_path: function_path.clone(),
+                                result: result.clone(),
+                                error: error.clone(),
+                            }))
+                            .await?;
+                    }
                 }
                 Ok(())
             }
@@ -150,9 +210,11 @@ impl Engine {
 
                 let new_function = Function {
                     handler: Box::new(
-                        move |invocation_id: Option<Uuid>, input: serde_json::Value| {
-                            let worker = handler_worker.clone();
+                        move |invocation_id: Option<Uuid>,
+                              _source_worker_id: Uuid, // <------ we need to pass the source worker id to the handler worker
+                              input: serde_json::Value| {
                             let function_path = handler_function_path.clone();
+                            let worker = handler_worker.clone();
 
                             Box::pin(async move {
                                 worker
@@ -167,7 +229,6 @@ impl Engine {
                                         code: "channel_send_failed".into(),
                                         message: err.to_string(),
                                     })?;
-
                                 Ok(None)
                             })
                         },
@@ -215,8 +276,12 @@ impl Engine {
         });
 
         let worker = Worker {
+            id: Uuid::new_v4(),
             channel: tx.clone(),
+            invocations: DashMap::new(),
         };
+
+        self.workers.insert(worker.id, worker.clone());
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -273,7 +338,9 @@ fn register_core_functions(engine: &Arc<Engine>) {
         "logger.info".to_string(),
         Function {
             handler: Box::new(
-                move |_invocation_id: Option<Uuid>, input: serde_json::Value| {
+                move |_invocation_id: Option<Uuid>,
+                      _source_worker_id: Uuid,
+                      input: serde_json::Value| {
                     Box::pin(async move {
                         println!("logger.info {input:?}");
                         Ok(None)
