@@ -5,6 +5,21 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
+    RegisterTriggerType {
+        id: String,
+        description: String,
+    },
+    RegisterTrigger {
+        id: String,
+        trigger_type: String,
+        function_path: String,
+        config: Value,
+    },
+    UnregisterTrigger {
+        id: String,
+        trigger_type: String,
+        function_path: String,
+    },
     RegisterFunction {
         #[serde(rename = "functionPath")]
         function_path: String,
