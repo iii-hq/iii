@@ -1,279 +1,310 @@
-use bytes::{Bytes, BytesMut};
+use std::{net::SocketAddr, sync::Arc};
+
+use axum::{
+    Router,
+    extract::{
+        ConnectInfo, State,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
+    response::IntoResponse,
+    routing::get,
+};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use jsonschema::JSONSchema;
-use std::{net::SocketAddr, sync::Arc};
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot},
-};
-use tokio_util::codec::{Decoder, LengthDelimitedCodec};
+use tokio::{net::TcpListener, sync::mpsc};
 use uuid::Uuid;
 
 mod protocol;
 use protocol::*;
 
-#[derive(Clone, PartialEq)]
-enum ClientStatus {
-    Pending,
-    Registered,
+#[derive(Clone)]
+struct Worker {
+    channel: mpsc::Sender<Outbound>,
 }
 
-#[derive(Clone)]
-struct CompiledMethod {
-    name: String,
-    params_schema: Arc<JSONSchema>,
-    result_schema: Arc<JSONSchema>,
+#[derive(Debug)]
+enum Outbound {
+    Protocol(Message),
+    Raw(WsMessage),
 }
 
-#[derive(Clone)]
-struct ClientHandle {
-    name: String,
-    description: String,
-    tx: mpsc::Sender<Message>,
-    methods: Arc<Vec<CompiledMethod>>,
-    status: ClientStatus,
+struct Function {
+    handler: Box<
+        dyn Fn(
+                Option<Uuid>,
+                serde_json::Value,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<Option<serde_json::Value>, ErrorBody>>
+                        + Send,
+                >,
+            > + Send
+            + Sync,
+    >,
+    _function_path: String,
+    _description: Option<String>,
+}
+
+struct Invocation {
+    _invocation_id: Uuid,
+    _function_path: String,
+    worker: Worker,
 }
 
 #[derive(Default)]
 struct Engine {
-    id: Uuid,
-    clients: Arc<DashMap<ClientAddr, ClientHandle>>,
-    routing: Arc<DashMap<String, Uuid>>,
-    pending: Arc<DashMap<ClientAddr, oneshot::Sender<Message>>>,
+    functions: Arc<DashMap<String, Function>>,
+    invocations: Arc<DashMap<Uuid, Invocation>>,
 }
 
 impl Engine {
     fn new() -> Self {
         Self {
-            id: Uuid::new_v4(),
-            clients: Arc::new(DashMap::new()),
-            routing: Arc::new(DashMap::new()),
-            pending: Arc::new(DashMap::new()),
+            functions: Arc::new(DashMap::new()),
+            invocations: Arc::new(DashMap::new()),
         }
     }
 
-    fn add_client(
-        &self,
-        client_address: ClientAddr,
-        tx: tokio::sync::mpsc::Sender<Message>,
-        methods: Vec<CompiledMethod>,
-        name: String,
-        description: String,
-        status: ClientStatus,
-    ) -> ClientAddr {
-        let handle = ClientHandle {
-            tx,
-            methods: Arc::new(methods),
-            status,
-            name,
-            description,
-        };
-        println!(">> new client connected: {}", client_address);
-        self.clients.insert(client_address.clone(), handle);
-        client_address
+    async fn send_msg(&self, worker: &Worker, msg: Message) -> bool {
+        worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
-    pub async fn listen(self: Arc<Self>, addr: &str) -> anyhow::Result<()> {
-        let listener = TcpListener::bind(addr).await?;
-        println!("Engine {} listening on {}", self.id, addr);
-
-        loop {
-            let (socket, peer) = listener.accept().await?;
-            let this = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = this.handle_client(socket, peer).await {
-                    eprintln!("client error: {e:?}");
-                }
-            });
-        }
-    }
-
-    async fn send_msg(&self, client_address: &ClientAddr, msg: Message) -> bool {
-        if let Some(client) = self.clients.get(client_address) {
-            client.tx.send(msg).await.is_ok()
-        } else {
-            false
-        }
-    }
-
-    async fn router_msg(&self, str_peer_addr: &ClientAddr, msg: &Message) -> anyhow::Result<()> {
+    async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
-            Message::InvokeFunctionMessage { to: Some(to), .. }
-            | Message::Notify { to: Some(to), .. } => {
-                if !self.send_msg(to, msg.clone()).await {
-                    eprintln!("no such client to route message to: {to}");
-                }
-            }
-            Message::Register {
-                name: worker_name,
-                description: worker_description,
-                methods: method_defs,
+            Message::InvokeFunction {
+                invocation_id,
+                function_path,
+                data,
             } => {
-                let mut client = self
-                    .clients
-                    .get_mut(str_peer_addr)
-                    .expect("No client found for REGISTER message");
+                println!("InvokeFunction {function_path} {invocation_id:?} {data:?}");
 
-                // Compile method schemas
-                let mut compiled_methods = Vec::with_capacity(method_defs.len());
-                for md in method_defs {
-                    let params_schema = match JSONSchema::compile(&md.params_schema) {
-                        Ok(schema) => Arc::new(schema),
-                        Err(err) => {
-                            let _ = self
-                                .send_msg(
-                                    str_peer_addr,
-                                    Message::Error {
-                                        id: Uuid::new_v4(),
-                                        code: "invalid_params_schema".into(),
-                                        message: format!(
-                                            "method {} params schema invalid: {err}",
-                                            md.name
-                                        ),
-                                    },
-                                )
-                                .await;
-                            return Ok(());
+                if let Some(function) = self.functions.get(function_path) {
+                    if let Ok(result) =
+                        (function.handler)(invocation_id.clone(), data.clone()).await
+                    {
+                        if let Some(invocation_id) = invocation_id
+                            && result.is_some()
+                        {
+                            self.send_msg(
+                                worker,
+                                Message::InvocationResult {
+                                    invocation_id: invocation_id.clone(),
+                                    function_path: function_path.clone(),
+                                    result: result.clone(),
+                                    error: None,
+                                },
+                            )
+                            .await;
                         }
-                    };
-
-                    let result_schema = match JSONSchema::compile(&md.result_schema) {
-                        Ok(schema) => Arc::new(schema),
-                        Err(err) => {
-                            let _ = self
-                                .send_msg(
-                                    str_peer_addr,
-                                    Message::Error {
-                                        id: Uuid::new_v4(),
-                                        code: "invalid_result_schema".into(),
-                                        message: format!(
-                                            "method {} result schema invalid: {err}",
-                                            md.name
-                                        ),
-                                    },
-                                )
-                                .await;
-                            return Ok(());
-                        }
-                    };
-
-                    compiled_methods.push(CompiledMethod {
-                        name: md.name.clone(),
-                        params_schema,
-                        result_schema,
-                    });
+                    }
+                } else if let Some(invocation_id) = invocation_id {
+                    self.send_msg(
+                        worker,
+                        Message::InvocationResult {
+                            invocation_id: invocation_id.clone(),
+                            function_path: function_path.clone(),
+                            result: None,
+                            error: Some(ErrorBody {
+                                code: "function_not_found".into(),
+                                message: "Function not found".to_string(),
+                            }),
+                        },
+                    )
+                    .await;
                 }
+                Ok(())
+            }
+            Message::InvocationResult {
+                invocation_id,
+                function_path,
+                result,
+                error,
+            } => {
+                println!("InvocationResult {function_path} {invocation_id} {result:?} {error:?}");
 
-                // Update client handle with methods and status
-                // (In a real implementation, we would identify the client properly)
-                client.methods = Arc::new(compiled_methods.clone());
-                client.status = ClientStatus::Registered;
-                client.name = worker_name.clone();
-                client.description = worker_description.clone();
-
-                // (In a real implementation, we would identify the client properly)
-                // Here we just print the registered methods for demonstration
+                if let Some(invocation) = self.invocations.get(invocation_id) {
+                    invocation
+                        .worker
+                        .channel
+                        .send(Outbound::Protocol(Message::InvocationResult {
+                            invocation_id: *invocation_id,
+                            function_path: function_path.clone(),
+                            result: result.clone(),
+                            error: error.clone(),
+                        }))
+                        .await?;
+                }
+                Ok(())
+            }
+            Message::RegisterFunction {
+                function_path,
+                description,
+            } => {
                 println!(
-                    "Registered methods: {:?}",
-                    compiled_methods
-                        .iter()
-                        .map(|m| &m.name)
-                        .collect::<Vec<&String>>()
+                    "RegisterFunction {function_path} {}",
+                    description.as_ref().unwrap_or(&"".to_string())
                 );
+
+                let handler_worker = worker.clone();
+                let handler_function_path = function_path.clone();
+
+                let new_function = Function {
+                    handler: Box::new(
+                        move |invocation_id: Option<Uuid>, input: serde_json::Value| {
+                            let worker = handler_worker.clone();
+                            let function_path = handler_function_path.clone();
+
+                            Box::pin(async move {
+                                worker
+                                    .channel
+                                    .send(Outbound::Protocol(Message::InvokeFunction {
+                                        invocation_id,
+                                        function_path,
+                                        data: input,
+                                    }))
+                                    .await
+                                    .map_err(|err| ErrorBody {
+                                        code: "channel_send_failed".into(),
+                                        message: err.to_string(),
+                                    })?;
+
+                                Ok(None)
+                            })
+                        },
+                    ),
+                    _function_path: function_path.clone(),
+                    _description: description.clone(),
+                };
+                self.functions.insert(function_path.clone(), new_function);
+                Ok(())
             }
-            _ => {
-                eprintln!("cannot route message without 'to' field");
+            Message::Ping => {
+                self.send_msg(worker, Message::Pong).await;
+                Ok(())
             }
+            Message::Pong => Ok(()),
         }
-        Ok(())
     }
 
-    fn register_new_client(
-        &self,
-        client_address: ClientAddr,
-        tx: tokio::sync::mpsc::Sender<Message>,
-    ) -> anyhow::Result<()> {
-        // Start with no method metadata; a REGISTER message will update this later
-        let methods: Vec<CompiledMethod> = Vec::new();
-        let name = String::from("unnamed");
-        let description = String::from("no description");
-        self.add_client(
-            client_address,
-            tx,
-            methods,
-            name,
-            description,
-            ClientStatus::Pending,
-        );
-        Ok(())
-    }
-
-    fn remove_client_by_addr(&self, client_address: &ClientAddr) {
-        println!(">> removing client: {}", client_address);
-        if let Some(client) = self.clients.get(client_address) {
-            let client_id = client_address.clone();
-            for method in client.methods.iter() {
-                let route_key = format!("{}:{}", method.name, client_id);
-                println!(">> removing route: {}", route_key);
-                self.routing.remove(&route_key);
-            }
-        }
-        self.clients.remove(client_address);
-    }
-
-    async fn handle_client(
+    async fn handle_worker(
         self: Arc<Self>,
-        socket: TcpStream,
+        socket: WebSocket,
         peer: SocketAddr,
     ) -> anyhow::Result<()> {
-        let str_peer_addr = peer.to_string();
-        let codec = LengthDelimitedCodec::builder()
-            .max_frame_length(64 * 1024 * 1024) // 64 MiB, just for testing
-            .new_codec();
-        let framed = codec.framed(socket);
-        let (mut wr, mut rd) = framed.split::<Bytes>();
+        println!(">> Worker {peer} connected via WebSocket");
+        let (mut ws_tx, mut ws_rx) = socket.split();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(64);
 
-        // Channel used to push outbound messages to this client
-        let (tx, mut rx) = mpsc::channel::<Message>(64);
-
-        // Writer task
         let writer = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                let bytes = serde_json::to_vec(&msg).unwrap();
-                if let Err(e) = wr.send(Bytes::from(bytes)).await {
-                    eprintln!("send error: {e:?}");
+            while let Some(outbound) = rx.recv().await {
+                let send_result = match outbound {
+                    Outbound::Protocol(msg) => match serde_json::to_string(&msg) {
+                        Ok(payload) => ws_tx.send(WsMessage::Text(payload)).await,
+                        Err(err) => {
+                            eprintln!("serialize error: {err:?}");
+                            continue;
+                        }
+                    },
+                    Outbound::Raw(frame) => ws_tx.send(frame).await,
+                };
+
+                if send_result.is_err() {
                     break;
                 }
             }
         });
 
-        self.register_new_client(str_peer_addr.clone(), tx.clone())?;
-        // Reader loop
-        while let Some(frame) = rd.next().await {
-            let bytes: BytesMut = frame?;
-            let msg: Message = serde_json::from_slice(&bytes)?;
-            println!("Received message from client {}: {:?}", str_peer_addr, msg);
-            self.router_msg(&str_peer_addr, &msg).await?;
+        let worker = Worker {
+            channel: tx.clone(),
+        };
+
+        while let Some(frame) = ws_rx.next().await {
+            match frame {
+                Ok(WsMessage::Text(text)) => {
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<Message>(&text) {
+                        Ok(msg) => self.router_msg(&worker, &msg).await?,
+                        Err(err) => eprintln!("json decode error from {peer}: {err}"),
+                    }
+                }
+                Ok(WsMessage::Binary(bytes)) => match serde_json::from_slice::<Message>(&bytes) {
+                    Ok(msg) => self.router_msg(&worker, &msg).await?,
+                    Err(err) => eprintln!("binary decode error from {peer}: {err}"),
+                },
+                Ok(WsMessage::Close(_)) => {
+                    println!("Worker {peer} disconnected");
+                    break;
+                }
+                Ok(WsMessage::Ping(payload)) => {
+                    let _ = tx.send(Outbound::Raw(WsMessage::Pong(payload))).await;
+                }
+                Ok(WsMessage::Pong(_)) => {}
+                Err(_err) => {
+                    break;
+                }
+            }
         }
 
         writer.abort();
-        println!(">> Client {} disconnected", str_peer_addr);
-        self.remove_client_by_addr(&str_peer_addr);
+        println!(">> Worker {peer} disconnected");
         Ok(())
     }
 }
 
+async fn ws_handler(
+    State(engine): State<Arc<Engine>>,
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| {
+        let engine = engine.clone();
+        async move {
+            if let Err(err) = engine.handle_worker(socket, addr).await {
+                eprintln!("worker error: {err:?}");
+            }
+        }
+    })
+}
+
+fn register_core_functions(engine: &Arc<Engine>) {
+    engine.functions.insert(
+        "logger.info".to_string(),
+        Function {
+            handler: Box::new(
+                move |_invocation_id: Option<Uuid>, input: serde_json::Value| {
+                    Box::pin(async move {
+                        println!("logger.info {input:?}");
+                        Ok(None)
+                    })
+                },
+            ),
+            _function_path: "logger.info".to_string(),
+            _description: Some("Log an info message".to_string()),
+        },
+    );
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let engine = Arc::new(Engine::new());
-    let eng = engine.clone();
+    let app = Router::new()
+        .route("/", get(ws_handler))
+        .with_state(engine.clone());
 
-    tokio::spawn(async move {
-        eng.listen("127.0.0.1:8080").await.unwrap();
-    });
+    register_core_functions(&engine);
 
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-    }
+    let addr = "127.0.0.1:49134";
+    let listener = TcpListener::bind(addr).await?;
+    println!("Engine listening on ws://{addr}/");
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
+    Ok(())
 }

@@ -1,0 +1,17 @@
+{
+  "name": "@iii/example",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "III",
+  "scripts": {
+    "dev": "nodemon --config nodemon.json"
+  },
+  "dependencies": {
+    "iii": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0",
+    "nodemon": "^3.1.10",
+    "typescript": "^5.9.3"
+  }
+}
