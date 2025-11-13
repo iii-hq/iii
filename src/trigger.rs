@@ -1,4 +1,3 @@
-use crate::schema::Schema;
 use dashmap::DashMap;
 use serde_json::Value;
 

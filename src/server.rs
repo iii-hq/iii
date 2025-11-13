@@ -109,11 +109,10 @@ impl Engine {
 
     fn remove_invocation(&self, invocation_id: &Uuid) {
         println!("Removing invocation {}", invocation_id);
-        if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id) {
-            if let Some(worker_ref) = self.workers.get(&worker_id) {
+        if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id)
+            && let Some(worker_ref) = self.workers.get(&worker_id) {
                 worker_ref.invocations.remove(invocation_id);
             }
-        }
     }
 
     fn take_invocation_sender(
@@ -132,8 +131,8 @@ impl Engine {
             Message::RegisterTriggerType { id, description } => {
                 println!("RegisterTriggerType {id} {description}");
 
-                let on_register = Box::new(move |trigger: &Trigger| Ok(()));
-                let on_unregister = Box::new(move |trigger: &Trigger| Ok(()));
+                let on_register = Box::new(move |_trigger: &Trigger| Ok(()));
+                let on_unregister = Box::new(move |_trigger: &Trigger| Ok(()));
 
                 self.trigger_registry.register_trigger_type(TriggerType {
                     id: id.clone(),
@@ -184,17 +183,16 @@ impl Engine {
             } => {
                 println!("InvokeFunction {function_path} {invocation_id:?} {data:?}");
 
-                if let Some(id) = invocation_id.clone() {
+                if let Some(id) = *invocation_id {
                     self.remember_invocation(worker, id, function_path);
                 }
 
                 if let Some(function) = self.functions.get(function_path) {
                     println!("Found function handler for {}", function_path);
                     if let Ok(result) =
-                        (function.handler)(invocation_id.clone(), worker.id, data.clone()).await
-                    {
-                        if let Some(result) = result
-                            && let Some(invocation_id) = invocation_id.clone()
+                        (function.handler)(*invocation_id, worker.id, data.clone()).await
+                        && let Some(result) = result
+                            && let Some(invocation_id) = *invocation_id
                         {
                             println!(
                                 "Sending InvocationResult for {} with result {:?}",
@@ -203,7 +201,7 @@ impl Engine {
                             self.send_msg(
                                 worker,
                                 Message::InvocationResult {
-                                    invocation_id: invocation_id.clone(),
+                                    invocation_id: invocation_id,
                                     function_path: function_path.clone(),
                                     result: Some(result),
                                     error: None,
@@ -212,12 +210,11 @@ impl Engine {
                             .await;
                             self.remove_invocation(&invocation_id);
                         }
-                    }
                 } else if let Some(invocation_id) = invocation_id {
                     self.send_msg(
                         worker,
                         Message::InvocationResult {
-                            invocation_id: invocation_id.clone(),
+                            invocation_id: *invocation_id,
                             function_path: function_path.clone(),
                             result: None,
                             error: Some(ErrorBody {
