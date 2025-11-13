@@ -30,8 +30,6 @@ pub enum Message {
         id: String,
         #[serde(rename = "triggerType")]
         trigger_type: String,
-        #[serde(rename = "functionPath")]
-        function_path: String,
     },
     RegisterFunction {
         #[serde(rename = "functionPath")]

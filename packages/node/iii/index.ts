@@ -9,7 +9,14 @@ import {
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
 } from './bridge-types'
-import { BridgeClient, Invocation, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData } from './types'
+import {
+  BridgeClient,
+  Invocation,
+  RemoteFunctionData,
+  RemoteFunctionHandler,
+  RemoteTriggerTypeData,
+  Trigger,
+} from './types'
 import { TriggerHandler } from './triggers'
 
 export class Bridge implements BridgeClient {
@@ -41,9 +48,17 @@ export class Bridge implements BridgeClient {
     this.triggerTypes.delete(triggerType.id)
   }
 
-  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type'>) {
+  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type' | 'id'>): Trigger {
+    const id = crypto.randomUUID()
     this.sendMessage(MessageType.RegisterTrigger, trigger, true)
-    this.triggers.set(trigger.id, { ...trigger, type: MessageType.RegisterTrigger })
+    this.triggers.set(id, { ...trigger, id, type: MessageType.RegisterTrigger })
+
+    return {
+      unregister: () => {
+        this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
+        this.triggers.delete(id)
+      },
+    }
   }
 
   registerFunction(message: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler) {

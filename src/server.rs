@@ -146,21 +146,12 @@ impl Engine {
 
                 Ok(())
             }
-            Message::UnregisterTrigger {
-                id,
-                trigger_type,
-                function_path,
-            } => {
-                println!("UnregisterTrigger {id} {trigger_type} {function_path}");
+            Message::UnregisterTrigger { id, trigger_type } => {
+                println!("UnregisterTrigger {id} {trigger_type}");
 
                 let _ = self
                     .trigger_registry
-                    .unregister_trigger(Trigger {
-                        id: id.clone(),
-                        trigger_type: trigger_type.clone(),
-                        function_path: function_path.clone(),
-                        config: serde_json::Value::Null,
-                    })
+                    .unregister_trigger(id.clone(), trigger_type.clone())
                     .await;
 
                 Ok(())

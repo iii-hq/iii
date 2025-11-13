@@ -27,7 +27,7 @@ export type RemoteTriggerTypeData = {
 export type RegisterServiceInput = Omit<RegisterServiceMessage, 'functions'>
 
 export interface BridgeClient {
-  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type'>): void
+  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type' | 'id'>): Trigger
   registerService(service: Omit<RegisterServiceMessage, 'type'>): void
   registerFunction(func: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler): void
   invokeFunction<TInput, TOutput>(functionId: string, data: TInput): Promise<TOutput>
@@ -43,5 +43,8 @@ export interface BridgeClient {
   // so we can clean up the resources when the client is no longer needed
   // unregisterFunction(func: RegisterFunctionMessage): void
   // unregisterService(service: RegisterServiceInput): void
-  // unregisterTrigger(trigger: RegisterTriggerMessage): void
+}
+
+export type Trigger = {
+  unregister(): void
 }

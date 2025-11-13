@@ -63,12 +63,12 @@ setInterval(async () => {
   console.log('Handlers executed (', handlersSize, ' handlers)')
 }, 10000)
 
-bridge.registerTriggerType<{ name: string }>(
+bridge.registerTriggerType<{ name: string; args: any }>(
   { id: 'every-10-seconds', description: 'Every 10 seconds trigger' },
   {
     registerTrigger: async ({ id, functionPath, config }) => {
       handlers[id] = async () => {
-        await bridge.invokeFunction(functionPath, {})
+        await bridge.invokeFunction(functionPath, config.args ?? {})
         console.log(`Result of ${config.name} function in ${functionPath}`)
       }
     },
@@ -79,8 +79,7 @@ bridge.registerTriggerType<{ name: string }>(
 )
 
 bridge.registerTrigger({
-  id: crypto.randomUUID(),
   triggerType: 'every-10-seconds',
   functionPath: 'engine.echo',
-  config: { name: 'EngineEcho' },
+  config: { name: 'EngineEcho', args: { text: 'Hello, Engine!', from: 'typescript-example' } },
 })
