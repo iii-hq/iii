@@ -134,12 +134,15 @@ impl Engine {
             } => {
                 println!("RegisterTrigger {id} {trigger_type} {function_path} {config:?}");
 
-                let _ = self.trigger_registry.register_trigger(Trigger {
-                    id: id.clone(),
-                    trigger_type: trigger_type.clone(),
-                    function_path: function_path.clone(),
-                    config: config.clone(),
-                });
+                let _ = self
+                    .trigger_registry
+                    .register_trigger(Trigger {
+                        id: id.clone(),
+                        trigger_type: trigger_type.clone(),
+                        function_path: function_path.clone(),
+                        config: config.clone(),
+                    })
+                    .await;
 
                 Ok(())
             }
@@ -150,12 +153,15 @@ impl Engine {
             } => {
                 println!("UnregisterTrigger {id} {trigger_type} {function_path}");
 
-                let _ = self.trigger_registry.unregister_trigger(Trigger {
-                    id: id.clone(),
-                    trigger_type: trigger_type.clone(),
-                    function_path: function_path.clone(),
-                    config: serde_json::Value::Null,
-                });
+                let _ = self
+                    .trigger_registry
+                    .unregister_trigger(Trigger {
+                        id: id.clone(),
+                        trigger_type: trigger_type.clone(),
+                        function_path: function_path.clone(),
+                        config: serde_json::Value::Null,
+                    })
+                    .await;
 
                 Ok(())
             }
