@@ -256,16 +256,10 @@ impl Engine {
 
                 let handler_worker = worker.clone();
                 let handler_function_path = function_path.clone();
-                let service_name = handler_function_path
-                    .split('.')
-                    .next()
-                    .unwrap_or("default_service")
-                    .to_string();
-
                 self.service_registry
                     .write()
                     .await
-                    .insert_function_to_service(&service_name, function_path.clone());
+                    .register_service_from_func_path(&function_path);
 
                 let new_function = Function {
                     handler: Box::new(

@@ -13,6 +13,22 @@ impl ServicesRegistry {
         }
     }
 
+    pub fn register_service_from_func_path(&mut self, func_path: &String) {
+        let parts: Vec<&str> = func_path.split(".").collect();
+        if parts.len() < 2 {
+            return;
+        }
+        let service_name = parts[0].to_string();
+        let function_name = parts[1..].join(".");
+
+        if !self.services.contains_key(&service_name) {
+            let service = Service::new(service_name.clone(), "".to_string());
+            self.insert_service(service);
+        }
+
+        self.insert_function_to_service(&service_name, function_name);
+    }
+
     pub fn insert_service(&mut self, service: Service) {
         if self.services.contains_key(&service.name) {
             println!("Service {} already exists", service.name);
