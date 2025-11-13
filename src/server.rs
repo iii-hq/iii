@@ -201,37 +201,29 @@ impl Engine {
                     "RegisterTrigger"
                 );
 
-                self.trigger_registry
+                let _ = self
+                    .trigger_registry
                     .register_trigger(Trigger {
                         id: id.clone(),
                         trigger_type: trigger_type.clone(),
                         function_path: function_path.clone(),
                         config: config.clone(),
                     })
-                    .await?;
+                    .await;
 
                 Ok(())
             }
-            Message::UnregisterTrigger {
-                id,
-                trigger_type,
-                function_path,
-            } => {
+            Message::UnregisterTrigger { id, trigger_type } => {
                 tracing::info!(
                     trigger_id = %id,
                     trigger_type = %trigger_type,
-                    function_path = %function_path,
                     "UnregisterTrigger"
                 );
 
-                self.trigger_registry
-                    .unregister_trigger(Trigger {
-                        id: id.clone(),
-                        trigger_type: trigger_type.clone(),
-                        function_path: function_path.clone(),
-                        config: serde_json::Value::Null,
-                    })
-                    .await?;
+                let _ = self
+                    .trigger_registry
+                    .unregister_trigger(id.clone(), trigger_type.clone())
+                    .await;
 
                 Ok(())
             }

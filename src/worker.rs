@@ -49,7 +49,6 @@ impl TriggerRegistrator for Worker {
                 .send(Outbound::Protocol(Message::UnregisterTrigger {
                     id: trigger.id,
                     trigger_type: trigger.trigger_type,
-                    function_path: trigger.function_path,
                 }))
                 .await
                 .map_err(|err| {
