@@ -3,6 +3,7 @@ use std::{net::SocketAddr, sync::Arc};
 mod schema;
 mod services;
 mod trigger;
+mod workers;
 
 use axum::{
     Router,
@@ -27,14 +28,8 @@ use protocol::*;
 use crate::{
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistry, TriggerType},
+    workers::Worker,
 };
-
-#[derive(Clone)]
-struct Worker {
-    id: Uuid,
-    channel: mpsc::Sender<Outbound>,
-    invocations: Arc<DashMap<Uuid, Invocation>>,
-}
 
 #[derive(Debug)]
 enum Outbound {
@@ -69,7 +64,7 @@ struct Invocation {
 
 #[derive(Default)]
 struct Engine {
-    workers: DashMap<Uuid, Worker>,
+    worker_registry: DashMap<Uuid, Worker>,
     functions: Arc<DashMap<String, Function>>,
     trigger_registry: Arc<TriggerRegistry>,
     service_registry: Arc<RwLock<ServicesRegistry>>,
@@ -79,7 +74,7 @@ struct Engine {
 impl Engine {
     fn new() -> Self {
         Self {
-            workers: DashMap::new(),
+            worker_registry: DashMap::new(),
             functions: Arc::new(DashMap::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             pending_invocations: DashMap::new(),
@@ -110,9 +105,10 @@ impl Engine {
     fn remove_invocation(&self, invocation_id: &Uuid) {
         println!("Removing invocation {}", invocation_id);
         if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id)
-            && let Some(worker_ref) = self.workers.get(&worker_id) {
-                worker_ref.invocations.remove(invocation_id);
-            }
+            && let Some(worker_ref) = self.worker_registry.get(&worker_id)
+        {
+            worker_ref.invocations.remove(invocation_id);
+        }
     }
 
     fn take_invocation_sender(
@@ -120,7 +116,7 @@ impl Engine {
         invocation_id: &Uuid,
     ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
         let (_, worker_id) = self.pending_invocations.remove(invocation_id)?;
-        let worker_ref = self.workers.get(&worker_id)?;
+        let worker_ref = self.worker_registry.get(&worker_id)?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref.invocations.remove(invocation_id)?.1;
         Some((sender, invocation))
@@ -192,24 +188,24 @@ impl Engine {
                     if let Ok(result) =
                         (function.handler)(*invocation_id, worker.id, data.clone()).await
                         && let Some(result) = result
-                            && let Some(invocation_id) = *invocation_id
-                        {
-                            println!(
-                                "Sending InvocationResult for {} with result {:?}",
-                                function_path, result
-                            );
-                            self.send_msg(
-                                worker,
-                                Message::InvocationResult {
-                                    invocation_id: invocation_id,
-                                    function_path: function_path.clone(),
-                                    result: Some(result),
-                                    error: None,
-                                },
-                            )
-                            .await;
-                            self.remove_invocation(&invocation_id);
-                        }
+                        && let Some(invocation_id) = *invocation_id
+                    {
+                        println!(
+                            "Sending InvocationResult for {} with result {:?}",
+                            function_path, result
+                        );
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: invocation_id,
+                                function_path: function_path.clone(),
+                                result: Some(result),
+                                error: None,
+                            },
+                        )
+                        .await;
+                        self.remove_invocation(&invocation_id);
+                    }
                 } else if let Some(invocation_id) = invocation_id {
                     self.send_msg(
                         worker,
@@ -260,6 +256,16 @@ impl Engine {
 
                 let handler_worker = worker.clone();
                 let handler_function_path = function_path.clone();
+                let service_name = handler_function_path
+                    .split('.')
+                    .next()
+                    .unwrap_or("default_service")
+                    .to_string();
+
+                self.service_registry
+                    .write()
+                    .await
+                    .insert_function_to_service(&service_name, function_path.clone());
 
                 let new_function = Function {
                     handler: Box::new(
@@ -353,7 +359,7 @@ impl Engine {
         };
 
         println!("Assigned Worker ID: {}", worker.id);
-        self.workers.insert(worker.id, worker.clone());
+        self.worker_registry.insert(worker.id, worker.clone());
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
