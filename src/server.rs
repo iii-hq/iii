@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
 mod logging;
 mod schema;
@@ -52,7 +52,7 @@ struct Function {
             > + Send
             + Sync,
     >,
-    _function_path: String,
+    function_path: String,
     _description: Option<String>,
 }
 
@@ -83,7 +83,7 @@ impl Function {
                     })
                 },
             ),
-            _function_path: function_path,
+            function_path,
             _description: description,
         }
     }
@@ -118,6 +118,11 @@ impl Engine {
 
     async fn send_msg(&self, worker: &Worker, msg: Message) -> bool {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
+    }
+
+    fn remove_function(&self, function_path: &str) {
+        tracing::info!(function_path = %function_path, "Removing function");
+        self.functions.remove(function_path);
     }
 
     fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
@@ -333,6 +338,7 @@ impl Engine {
                 let new_function =
                     Function::new(function_path.clone(), description.clone(), handler_worker);
                 self.functions.insert(function_path.clone(), new_function);
+                worker.include_function_path(function_path).await;
                 Ok(())
             }
             Message::RegisterService {
@@ -394,11 +400,7 @@ impl Engine {
             }
         });
 
-        let worker = Worker {
-            id: Uuid::new_v4(),
-            channel: tx.clone(),
-            invocations: Arc::new(DashMap::new()),
-        };
+        let worker = Worker::new(tx.clone());
 
         tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
@@ -433,6 +435,16 @@ impl Engine {
         }
 
         writer.abort();
+        for function_path in worker
+            .function_paths
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect::<HashSet<String>>()
+        {
+            self.remove_function(&function_path);
+        }
         tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
         Ok(())
     }
@@ -467,7 +479,7 @@ fn register_core_functions(engine: &Arc<Engine>) {
                     })
                 },
             ),
-            _function_path: "logger.info".to_string(),
+            function_path: "logger.info".to_string(),
             _description: Some("Log an info message".to_string()),
         },
     );

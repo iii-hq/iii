@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
 use crate::{Invocation, Outbound};
@@ -23,6 +23,16 @@ impl WorkerRegistry {
     pub fn register_worker(&self, worker: Worker) {
         self.workers.insert(worker.id, worker);
     }
+
+    pub async fn register_function_path(&self, worker_id: &Uuid, function_path: &String) {
+        if let Some(mut worker) = self.workers.get_mut(worker_id) {
+            worker
+                .function_paths
+                .write()
+                .await
+                .insert(function_path.clone());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -30,4 +40,23 @@ pub struct Worker {
     pub id: Uuid,
     pub channel: mpsc::Sender<Outbound>,
     pub invocations: Arc<DashMap<Uuid, Invocation>>,
+    pub function_paths: Arc<RwLock<HashSet<String>>>,
+}
+
+impl Worker {
+    pub fn new(channel: mpsc::Sender<Outbound>) -> Self {
+        let id = Uuid::new_v4();
+        Self {
+            id,
+            channel,
+            invocations: Arc::new(DashMap::new()),
+            function_paths: Arc::new(RwLock::new(HashSet::new())),
+        }
+    }
+    pub async fn include_function_path(&self, function_path: &String) {
+        self.function_paths
+            .write()
+            .await
+            .insert(function_path.clone());
+    }
 }
