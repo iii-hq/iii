@@ -3,7 +3,38 @@ export enum MessageType {
   RegisterService = 'registerservice',
   InvokeFunction = 'invokefunction',
   InvocationResult = 'invocationresult',
+  RegisterTriggerType = 'registertriggertype',
   RegisterTrigger = 'registertrigger',
+  UnregisterTrigger = 'unregistertrigger',
+  UnregisterTriggerType = 'unregistertriggertype',
+  TriggerRegistrationResult = 'triggerregistrationresult',
+}
+
+export type RegisterTriggerTypeMessage = {
+  type: MessageType.RegisterTriggerType
+  id: string
+  description: string
+}
+
+export type UnregisterTriggerTypeMessage = {
+  type: MessageType.UnregisterTriggerType
+  id: string
+}
+
+export type UnregisterTriggerMessage = {
+  type: MessageType.UnregisterTrigger
+  id: string
+  triggerType: string
+  functionPath: string
+}
+
+export type TriggerRegistrationResultMessage = {
+  type: MessageType.TriggerRegistrationResult
+  id: string
+  triggerType: string
+  functionPath: string
+  result?: any
+  error?: any
 }
 
 export type RegisterTriggerMessage = {
@@ -68,3 +99,7 @@ export type BridgeMessage =
   | InvocationResultMessage
   | RegisterServiceMessage
   | RegisterTriggerMessage
+  | RegisterTriggerTypeMessage
+  | UnregisterTriggerMessage
+  | UnregisterTriggerTypeMessage
+  | TriggerRegistrationResultMessage

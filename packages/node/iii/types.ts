@@ -1,4 +1,10 @@
-import { RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerMessage } from './bridge-types'
+import {
+  RegisterFunctionMessage,
+  RegisterServiceMessage,
+  RegisterTriggerMessage,
+  RegisterTriggerTypeMessage,
+} from './bridge-types'
+import { TriggerHandler } from './triggers'
 
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (data: TInput) => Promise<TOutput>
 export type Invocation<TOutput = any> = { resolve: (data: TOutput) => void; reject: (error: any) => void }
@@ -13,6 +19,11 @@ export type RemoteServiceFunctionData = {
   handler: RemoteFunctionHandler
 }
 
+export type RemoteTriggerTypeData = {
+  message: RegisterTriggerTypeMessage
+  handler: TriggerHandler<any>
+}
+
 export type RegisterServiceInput = Omit<RegisterServiceMessage, 'functions'>
 
 export interface BridgeClient {
@@ -21,6 +32,12 @@ export interface BridgeClient {
   registerFunction(func: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler): void
   invokeFunction<TInput, TOutput>(functionId: string, data: TInput): Promise<TOutput>
   invokeFunctionAsync<TInput>(functionId: string, data: TInput): void
+
+  registerTriggerType<TConfig>(
+    triggerType: Omit<RegisterTriggerTypeMessage, 'type'>,
+    handler: TriggerHandler<TConfig>,
+  ): void
+  unregisterTriggerType(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>): void
 
   // in the future we're going to have unregister functions, services, and triggers
   // so we can clean up the resources when the client is no longer needed
