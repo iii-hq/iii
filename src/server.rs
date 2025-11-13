@@ -454,6 +454,12 @@ impl Engine {
         }
 
         writer.abort();
+        self.cleanup_worker(&worker).await;
+        tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
+        Ok(())
+    }
+
+    async fn cleanup_worker(&self, worker: &Worker) {
         for function_path in worker
             .function_paths
             .read()
@@ -465,8 +471,22 @@ impl Engine {
             self.remove_function(&function_path);
         }
         self.worker_registry.unregister_worker(&worker.id);
-        tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
-        Ok(())
+        // remove pending invocations from this worker
+        let pending_invocation_ids: Vec<Uuid> = worker
+            .invocations
+            .iter()
+            .map(|entry| entry.key().clone())
+            .filter(|invocation_id| {
+                if let Some(worker_id) = self.pending_invocations.get(invocation_id) {
+                    *worker_id == worker.id
+                } else {
+                    false
+                }
+            })
+            .collect();
+        for invocation_id in pending_invocation_ids {
+            self.remove_invocation(&invocation_id);
+        }
     }
 }
 

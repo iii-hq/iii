@@ -27,6 +27,7 @@ impl WorkerRegistry {
     }
 
     pub fn unregister_worker(&self, worker_id: &Uuid) {
+        tracing::info!("Unregistering worker: {}", worker_id);
         self.workers.remove(worker_id);
     }
 
