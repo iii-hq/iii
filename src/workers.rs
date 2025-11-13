@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
-use crate::{Invocation, Outbound};
+use crate::{invocation::Invocation, Outbound};
 
 #[derive(Default)]
 pub struct WorkerRegistry {

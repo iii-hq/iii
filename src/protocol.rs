@@ -11,13 +11,26 @@ pub enum Message {
     },
     RegisterTrigger {
         id: String,
+        #[serde(rename = "triggerType")]
         trigger_type: String,
+        #[serde(rename = "functionPath")]
         function_path: String,
         config: Value,
     },
+    TriggerRegistrationResult {
+        id: String,
+        #[serde(rename = "triggerType")]
+        trigger_type: String,
+        #[serde(rename = "functionPath")]
+        function_path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorBody>,
+    },
     UnregisterTrigger {
         id: String,
+        #[serde(rename = "triggerType")]
         trigger_type: String,
+        #[serde(rename = "functionPath")]
         function_path: String,
     },
     RegisterFunction {

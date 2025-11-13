@@ -7,8 +7,10 @@ import {
   RegisterFunctionMessage,
   RegisterServiceMessage,
   RegisterTriggerMessage,
+  RegisterTriggerTypeMessage,
 } from './bridge-types'
-import { BridgeClient, Invocation, RegisterServiceInput, RemoteFunctionData, RemoteFunctionHandler } from './types'
+import { BridgeClient, Invocation, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData } from './types'
+import { TriggerHandler } from './triggers'
 
 export class Bridge implements BridgeClient {
   private ws: WebSocket
@@ -16,10 +18,27 @@ export class Bridge implements BridgeClient {
   private services = new Map<string, Omit<RegisterServiceMessage, 'functions'>>()
   private invocations = new Map<string, Invocation>()
   private triggers = new Map<string, RegisterTriggerMessage>()
+  private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
 
   constructor(private readonly address: string) {
     this.connect()
+  }
+
+  registerTriggerType<TConfig>(
+    triggerType: Omit<RegisterTriggerTypeMessage, 'type'>,
+    handler: TriggerHandler<TConfig>,
+  ) {
+    this.sendMessage(MessageType.RegisterTriggerType, triggerType, true)
+    this.triggerTypes.set(triggerType.id, {
+      message: { ...triggerType, type: MessageType.RegisterTriggerType },
+      handler,
+    })
+  }
+
+  unregisterTriggerType(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>) {
+    this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
+    this.triggerTypes.delete(triggerType.id)
   }
 
   registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type'>) {
@@ -60,6 +79,7 @@ export class Bridge implements BridgeClient {
   private onSocketOpen() {
     this.ws.on('message', this.onMessage.bind(this))
 
+    this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
     this.services.forEach((service) => this.sendMessage(MessageType.RegisterService, service, true))
     this.functions.forEach(({ message }) => this.sendMessage(MessageType.RegisterFunction, message, true))
     this.triggers.forEach((trigger) => this.sendMessage(MessageType.RegisterTrigger, trigger, true))
@@ -73,7 +93,6 @@ export class Bridge implements BridgeClient {
   }
 
   private sendMessage(type: MessageType, message: Omit<BridgeMessage, 'type'>, skipIfClosed = false) {
-    console.log('sendMessage', type, message)
     if (this.isOpen()) {
       this.ws.send(JSON.stringify({ ...message, type }))
     } else if (!skipIfClosed) {
@@ -110,6 +129,25 @@ export class Bridge implements BridgeClient {
     }
   }
 
+  private async onRegisterTrigger(message: RegisterTriggerMessage) {
+    const triggerTypeData = this.triggerTypes.get(message.triggerType)
+    const { id, triggerType, functionPath, config } = message
+
+    if (triggerTypeData) {
+      try {
+        await triggerTypeData.handler.registerTrigger({ id, functionPath, config })
+        this.sendMessage(MessageType.TriggerRegistrationResult, { id, triggerType, functionPath })
+      } catch (error) {
+        this.sendMessage(MessageType.TriggerRegistrationResult, {
+          id,
+          triggerType,
+          functionPath,
+          error: { code: 'trigger_registration_failed', message: error.message },
+        })
+      }
+    }
+  }
+
   private onMessage(socketMessage: WebSocket.Data) {
     const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
 
@@ -119,6 +157,8 @@ export class Bridge implements BridgeClient {
     } else if (type === MessageType.InvokeFunction) {
       const { invocationId, functionPath, data } = message as InvokeFunctionMessage
       this.onInvokeFunction(invocationId, functionPath, data)
+    } else if (type === MessageType.RegisterTrigger) {
+      this.onRegisterTrigger(message as RegisterTriggerMessage)
     }
   }
 }
