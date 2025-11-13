@@ -28,7 +28,7 @@ use protocol::*;
 use crate::{
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistry, TriggerType},
-    workers::Worker,
+    workers::{Worker, WorkerRegistry},
 };
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ struct Invocation {
 
 #[derive(Default)]
 struct Engine {
-    worker_registry: DashMap<Uuid, Worker>,
+    worker_registry: WorkerRegistry,
     functions: Arc<DashMap<String, Function>>,
     trigger_registry: Arc<TriggerRegistry>,
     service_registry: Arc<RwLock<ServicesRegistry>>,
@@ -74,7 +74,7 @@ struct Engine {
 impl Engine {
     fn new() -> Self {
         Self {
-            worker_registry: DashMap::new(),
+            worker_registry: WorkerRegistry::new(),
             functions: Arc::new(DashMap::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             pending_invocations: DashMap::new(),
@@ -105,7 +105,7 @@ impl Engine {
     fn remove_invocation(&self, invocation_id: &Uuid) {
         println!("Removing invocation {}", invocation_id);
         if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id)
-            && let Some(worker_ref) = self.worker_registry.get(&worker_id)
+            && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id)
         {
             worker_ref.invocations.remove(invocation_id);
         }
@@ -116,7 +116,7 @@ impl Engine {
         invocation_id: &Uuid,
     ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
         let (_, worker_id) = self.pending_invocations.remove(invocation_id)?;
-        let worker_ref = self.worker_registry.get(&worker_id)?;
+        let worker_ref = self.worker_registry.get_worker(&worker_id)?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref.invocations.remove(invocation_id)?.1;
         Some((sender, invocation))
@@ -359,7 +359,7 @@ impl Engine {
         };
 
         println!("Assigned Worker ID: {}", worker.id);
-        self.worker_registry.insert(worker.id, worker.clone());
+        self.worker_registry.insert_worker(worker.clone());
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
