@@ -1,8 +1,12 @@
 use std::{net::SocketAddr, sync::Arc};
 
+mod function;
+mod invocation;
 mod schema;
 mod trigger;
+mod worker;
 
+use crate::function::FunctionHandler;
 use axum::{
     Router,
     extract::{
@@ -20,20 +24,9 @@ use uuid::Uuid;
 mod protocol;
 use protocol::*;
 
+use crate::invocation::{Invocation, InvocationHandler};
 use crate::trigger::{Trigger, TriggerRegistry, TriggerType};
-
-#[derive(Clone)]
-struct Worker {
-    id: Uuid,
-    channel: mpsc::Sender<Outbound>,
-    invocations: Arc<DashMap<Uuid, Invocation>>,
-}
-
-#[derive(Debug)]
-enum Outbound {
-    Protocol(Message),
-    Raw(WsMessage),
-}
+use crate::worker::{Outbound, Worker};
 
 struct Function {
     handler: Box<
@@ -51,13 +44,6 @@ struct Function {
     >,
     _function_path: String,
     _description: Option<String>,
-}
-
-#[derive(Clone)]
-struct Invocation {
-    _invocation_id: Uuid,
-    _function_path: String,
-    source_worker_id: Uuid,
 }
 
 #[derive(Default)]
@@ -90,9 +76,8 @@ impl Engine {
         worker.invocations.insert(
             invocation_id,
             Invocation {
-                _invocation_id: invocation_id,
-                _function_path: function_path.to_string(),
-                source_worker_id: worker.id,
+                invocation_id: invocation_id,
+                function_path: function_path.to_string(),
             },
         );
         self.pending_invocations.insert(invocation_id, worker.id);
@@ -120,18 +105,25 @@ impl Engine {
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
+            Message::TriggerRegistrationResult {
+                id,
+                trigger_type,
+                function_path,
+                error,
+            } => {
+                println!("TriggerRegistrationResult {id} {trigger_type} {function_path} {error:?}");
+                Ok(())
+            }
             Message::RegisterTriggerType { id, description } => {
                 println!("RegisterTriggerType {id} {description}");
 
-                let on_register = Box::new(move |trigger: &Trigger| Ok(()));
-                let on_unregister = Box::new(move |trigger: &Trigger| Ok(()));
-
-                self.trigger_registry.register_trigger_type(TriggerType {
-                    id: id.clone(),
-                    description: description.clone(),
-                    on_register,
-                    on_unregister,
-                });
+                self.trigger_registry
+                    .register_trigger_type(TriggerType {
+                        id: id.clone(),
+                        description: description.clone(),
+                        registrator: Box::new(worker.clone()),
+                    })
+                    .await?;
                 Ok(())
             }
             Message::RegisterTrigger {
@@ -191,33 +183,34 @@ impl Engine {
                                 "Sending InvocationResult for {} with result {:?}",
                                 function_path, result
                             );
-                            self.send_msg(
-                                worker,
-                                Message::InvocationResult {
-                                    invocation_id: invocation_id.clone(),
-                                    function_path: function_path.clone(),
-                                    result: Some(result),
-                                    error: None,
-                                },
-                            )
-                            .await;
+
+                            let _ = worker
+                                .handle_invocation_result(
+                                    Invocation {
+                                        invocation_id: invocation_id.clone(),
+                                        function_path: function_path.clone(),
+                                    },
+                                    Some(result),
+                                    None,
+                                )
+                                .await;
                             self.remove_invocation(&invocation_id);
                         }
                     }
                 } else if let Some(invocation_id) = invocation_id {
-                    self.send_msg(
-                        worker,
-                        Message::InvocationResult {
-                            invocation_id: invocation_id.clone(),
-                            function_path: function_path.clone(),
-                            result: None,
-                            error: Some(ErrorBody {
+                    let _ = worker
+                        .handle_invocation_result(
+                            Invocation {
+                                invocation_id: invocation_id.clone(),
+                                function_path: function_path.clone(),
+                            },
+                            None,
+                            Some(ErrorBody {
                                 code: "function_not_found".into(),
                                 message: "Function not found".to_string(),
                             }),
-                        },
-                    )
-                    .await;
+                        )
+                        .await;
                     self.remove_invocation(invocation_id);
                 }
                 Ok(())
@@ -264,18 +257,9 @@ impl Engine {
                             let worker = handler_worker.clone();
 
                             Box::pin(async move {
-                                worker
-                                    .channel
-                                    .send(Outbound::Protocol(Message::InvokeFunction {
-                                        invocation_id,
-                                        function_path,
-                                        data: input,
-                                    }))
-                                    .await
-                                    .map_err(|err| ErrorBody {
-                                        code: "channel_send_failed".into(),
-                                        message: err.to_string(),
-                                    })?;
+                                let _ = worker
+                                    .handle_function(invocation_id, function_path, input)
+                                    .await;
                                 Ok(None)
                             })
                         },
