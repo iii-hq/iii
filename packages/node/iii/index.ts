@@ -81,11 +81,11 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  private onInvocationResult(invocationId: string, data: any, error: any) {
+  private onInvocationResult(invocationId: string, result: any, error: any) {
     const invocation = this.invocations.get(invocationId)
 
     if (invocation) {
-      error ? invocation.reject(error) : invocation.resolve(data)
+      error ? invocation.reject(error) : invocation.resolve(result)
     }
 
     this.invocations.delete(invocationId)
@@ -100,8 +100,8 @@ export class Bridge implements BridgeClient {
       }
 
       try {
-        const data = await fn.handler(input)
-        this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, data })
+        const result = await fn.handler(input)
+        this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, result })
       } catch (error) {
         this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, error })
       }
@@ -114,8 +114,8 @@ export class Bridge implements BridgeClient {
     const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
 
     if (type === MessageType.InvocationResult) {
-      const { invocationId, data, error } = message as InvocationResultMessage
-      this.onInvocationResult(invocationId, data, error)
+      const { invocationId, result, error } = message as InvocationResultMessage
+      this.onInvocationResult(invocationId, result, error)
     } else if (type === MessageType.InvokeFunction) {
       const { invocationId, functionPath, data } = message as InvokeFunctionMessage
       this.onInvokeFunction(invocationId, functionPath, data)

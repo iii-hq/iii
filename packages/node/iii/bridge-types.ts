@@ -58,7 +58,7 @@ export type InvocationResultMessage = {
   type: MessageType.InvocationResult
   invocationId: string
   functionPath: string
-  data?: any
+  result?: any
   error?: any
 }
 

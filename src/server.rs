@@ -26,7 +26,7 @@ use crate::trigger::{Trigger, TriggerRegistry, TriggerType};
 struct Worker {
     id: Uuid,
     channel: mpsc::Sender<Outbound>,
-    invocations: DashMap<Uuid, Invocation>,
+    invocations: Arc<DashMap<Uuid, Invocation>>,
 }
 
 #[derive(Debug)]
@@ -65,6 +65,7 @@ struct Engine {
     workers: DashMap<Uuid, Worker>,
     functions: Arc<DashMap<String, Function>>,
     trigger_registry: Arc<TriggerRegistry>,
+    pending_invocations: DashMap<Uuid, Uuid>,
 }
 
 impl Engine {
@@ -73,11 +74,48 @@ impl Engine {
             workers: DashMap::new(),
             functions: Arc::new(DashMap::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
+            pending_invocations: DashMap::new(),
         }
     }
 
     async fn send_msg(&self, worker: &Worker, msg: Message) -> bool {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
+    }
+
+    fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
+        println!(
+            "Remembering invocation {} for function {} from worker {}",
+            invocation_id, function_path, worker.id
+        );
+        worker.invocations.insert(
+            invocation_id,
+            Invocation {
+                _invocation_id: invocation_id,
+                _function_path: function_path.to_string(),
+                source_worker_id: worker.id,
+            },
+        );
+        self.pending_invocations.insert(invocation_id, worker.id);
+    }
+
+    fn remove_invocation(&self, invocation_id: &Uuid) {
+        println!("Removing invocation {}", invocation_id);
+        if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id) {
+            if let Some(worker_ref) = self.workers.get(&worker_id) {
+                worker_ref.invocations.remove(invocation_id);
+            }
+        }
+    }
+
+    fn take_invocation_sender(
+        &self,
+        invocation_id: &Uuid,
+    ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
+        let (_, worker_id) = self.pending_invocations.remove(invocation_id)?;
+        let worker_ref = self.workers.get(&worker_id)?;
+        let sender = worker_ref.channel.clone();
+        let invocation = worker_ref.invocations.remove(invocation_id)?.1;
+        Some((sender, invocation))
     }
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
@@ -137,32 +175,43 @@ impl Engine {
             } => {
                 println!("InvokeFunction {function_path} {invocation_id:?} {data:?}");
 
+                if let Some(id) = invocation_id.clone() {
+                    self.remember_invocation(worker, id, function_path);
+                }
+
                 if let Some(function) = self.functions.get(function_path) {
+                    println!("Found function handler for {}", function_path);
                     if let Ok(result) =
                         (function.handler)(invocation_id.clone(), worker.id, data.clone()).await
                     {
-                        if let Some(invocation_id) = invocation_id
-                            && result.is_some()
+                        if let Some(result) = result
+                            && let Some(invocation_id) = invocation_id.clone()
                         {
+                            println!(
+                                "Sending InvocationResult for {} with result {:?}",
+                                function_path, result
+                            );
                             self.send_msg(
                                 worker,
                                 Message::InvocationResult {
                                     invocation_id: invocation_id.clone(),
                                     function_path: function_path.clone(),
-                                    result: result.clone(),
+                                    result: Some(result),
                                     error: None,
                                 },
                             )
                             .await;
+                            self.remove_invocation(&invocation_id);
                         }
                     }
                 } else if let Some(invocation_id) = invocation_id {
+                    let sample_result: serde_json::Value = "result from the rust side".into();
                     self.send_msg(
                         worker,
                         Message::InvocationResult {
                             invocation_id: invocation_id.clone(),
                             function_path: function_path.clone(),
-                            result: None,
+                            result: Some(sample_result),
                             error: Some(ErrorBody {
                                 code: "function_not_found".into(),
                                 message: "Function not found".to_string(),
@@ -170,6 +219,7 @@ impl Engine {
                         },
                     )
                     .await;
+                    self.remove_invocation(invocation_id);
                 }
                 Ok(())
             }
@@ -180,19 +230,17 @@ impl Engine {
                 error,
             } => {
                 println!("InvocationResult {function_path} {invocation_id} {result:?} {error:?}");
-
-                if let Some(invocation) = worker.invocations.get(invocation_id) {
-                    if let Some(source_worker) = self.workers.get(&invocation.source_worker_id) {
-                        source_worker
-                            .channel
-                            .send(Outbound::Protocol(Message::InvocationResult {
-                                invocation_id: *invocation_id,
-                                function_path: function_path.clone(),
-                                result: result.clone(),
-                                error: error.clone(),
-                            }))
-                            .await?;
-                    }
+                if let Some((caller, _invocation)) = self.take_invocation_sender(invocation_id) {
+                    caller
+                        .send(Outbound::Protocol(Message::InvocationResult {
+                            invocation_id: *invocation_id,
+                            function_path: function_path.clone(),
+                            result: result.clone(),
+                            error: error.clone(),
+                        }))
+                        .await?;
+                } else {
+                    eprintln!("Did not find caller for invocation {}", invocation_id);
                 }
                 Ok(())
             }
@@ -278,9 +326,10 @@ impl Engine {
         let worker = Worker {
             id: Uuid::new_v4(),
             channel: tx.clone(),
-            invocations: DashMap::new(),
+            invocations: Arc::new(DashMap::new()),
         };
 
+        println!("Assigned Worker ID: {}", worker.id);
         self.workers.insert(worker.id, worker.clone());
 
         while let Some(frame) = ws_rx.next().await {
