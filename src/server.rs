@@ -205,13 +205,12 @@ impl Engine {
                         }
                     }
                 } else if let Some(invocation_id) = invocation_id {
-                    let sample_result: serde_json::Value = "result from the rust side".into();
                     self.send_msg(
                         worker,
                         Message::InvocationResult {
                             invocation_id: invocation_id.clone(),
                             function_path: function_path.clone(),
-                            result: Some(sample_result),
+                            result: None,
                             error: Some(ErrorBody {
                                 code: "function_not_found".into(),
                                 message: "Function not found".to_string(),
