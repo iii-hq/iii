@@ -75,8 +75,10 @@ impl TriggerRegistry {
 
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
         let Some(trigger_type) = self.trigger_types.get(&trigger.trigger_type.clone()) else {
+            println!("Trigger type not found");
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
+
         let result = trigger_type
             .registrator
             .register_trigger(trigger.clone())
