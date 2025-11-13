@@ -12,6 +12,7 @@ use tokio::{
 use tokio_util::codec::{Decoder, LengthDelimitedCodec};
 use uuid::Uuid;
 
+mod logging;
 mod protocol;
 use protocol::*;
 
@@ -96,29 +97,31 @@ fn parse_secs(value: &str, flag: &str) -> Result<f64> {
 }
 
 fn print_usage() {
-    eprintln!(
+    tracing::info!(
         "Usage: cargo run --bin client -- [--addr HOST:PORT] [--heartbeat SECONDS] [--run-for SECONDS]"
     );
-    eprintln!("Environment overrides: ENGINE_ADDR, ENGINE_HEARTBEAT, ENGINE_RUN_FOR");
+    tracing::info!("Environment overrides: ENGINE_ADDR, ENGINE_HEARTBEAT, ENGINE_RUN_FOR");
 }
 
 #[tokio::main]
 async fn main() {
+    logging::init_tracing();
+
     let config = match Config::from_env_and_args() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("client config error: {err:?}");
+            tracing::error!(error = ?err, "client config error");
             return;
         }
     };
 
     if let Err(err) = run_client(config).await {
-        eprintln!("client error: {err:?}");
+        tracing::error!(error = ?err, "client runtime error");
     }
 }
 
 async fn run_client(config: Config) -> Result<()> {
-    println!("Client connecting to {}", config.addr);
+    tracing::info!(address = %config.addr, "Client connecting");
     let stream = TcpStream::connect(&config.addr).await?;
     let codec = LengthDelimitedCodec::builder()
         .max_frame_length(64 * 1024 * 1024)
@@ -134,12 +137,12 @@ async fn run_client(config: Config) -> Result<()> {
             match serde_json::to_vec(&msg) {
                 Ok(raw) => {
                     if let Err(e) = wr.send(Bytes::from(raw)).await {
-                        eprintln!("send error: {e:?}");
+                        tracing::error!(error = ?e, "send error");
                         break;
                     }
                 }
                 Err(e) => {
-                    eprintln!("serialize error: {e:?}");
+                    tracing::error!(error = ?e, "serialize error");
                 }
             }
         }
@@ -179,15 +182,15 @@ async fn run_client(config: Config) -> Result<()> {
                     match frame {
                         Some(Ok(bytes)) => {
                             if let Err(err) = handle_message(bytes, &reader_tx) {
-                                eprintln!("message error: {err:?}");
+                                tracing::error!(error = ?err, "message handling error");
                             }
                         }
                         Some(Err(e)) => {
-                            eprintln!("read error: {e:?}");
+                            tracing::error!(error = ?e, "read error");
                             break;
                         }
                         None => {
-                            println!("server closed connection");
+                            tracing::info!("server closed connection");
                             break;
                         }
                     }
@@ -228,9 +231,10 @@ async fn run_client(config: Config) -> Result<()> {
         let timer_shutdown = shutdown.clone();
         tokio::spawn(async move {
             time::sleep(limit).await;
-            println!(
-                "runtime limit of {:.2}s reached, shutting down client",
-                limit.as_secs_f64()
+            let limit_secs = limit.as_secs_f64();
+            tracing::info!(
+                runtime_limit_secs = limit_secs,
+                "runtime limit reached; shutting down client"
             );
             timer_shutdown.notify_waiters();
         });
@@ -255,7 +259,7 @@ fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Resul
             id, method, params, ..
         } => handle_call(method, params, id, tx),
         Message::Notify { method, params, .. } => {
-            println!("notify<{method}>: {params}");
+            tracing::info!(method = %method, params = ?params, "Notify received");
         }
         Message::Result {
             id,
@@ -264,26 +268,37 @@ fn handle_message(bytes: BytesMut, tx: &mpsc::UnboundedSender<Message>) -> Resul
             error,
             ..
         } => {
-            println!("result<{id}> ok={ok} result={result:?} error={error:?}");
+            tracing::info!(
+                message_id = %id,
+                ok,
+                result = ?result,
+                error = ?error,
+                "Result received"
+            );
         }
         Message::Error {
             id, code, message, ..
         } => {
-            eprintln!("engine error for {id}: {code} - {message}");
+            tracing::error!(message_id = %id, code = %code, message = %message, "Engine error received");
         }
         Message::Ping => {
-            println!("ping received; replying with pong");
+            tracing::info!("Ping received; replying with pong");
             send_message(tx, Message::Pong);
         }
         Message::Pong => {
-            println!("pong received");
+            tracing::info!("Pong received");
         }
         Message::Register {
             name,
             description,
             methods,
         } => {
-            println!("register {} ack: {} methods", name, methods.len());
+            tracing::info!(
+                %name,
+                description = ?description,
+                method_count = methods.len(),
+                "Register ack received"
+            );
         }
     }
     Ok(())
@@ -352,6 +367,6 @@ fn respond_with_error(
 
 fn send_message(tx: &mpsc::UnboundedSender<Message>, msg: Message) {
     if tx.send(msg).is_err() {
-        eprintln!("writer channel closed; dropping outbound message");
+        tracing::warn!("writer channel closed; dropping outbound message");
     }
 }

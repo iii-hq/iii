@@ -31,7 +31,7 @@ impl ServicesRegistry {
 
     pub fn insert_service(&mut self, service: Service) {
         if self.services.contains_key(&service.name) {
-            println!("Service {} already exists", service.name);
+            tracing::warn!(service_name = %service.name, "Service already exists");
         }
         self.services.insert(service.name.clone(), service);
     }
@@ -68,9 +68,10 @@ impl Service {
             return;
         }
         if self.functions.contains(&function) {
-            println!(
-                "Function {} already exists in service {}",
-                function, self.name
+            tracing::warn!(
+                function_name = %function,
+                service_name = %self.name,
+                "Function already exists in service"
             );
         }
         self.functions.insert(function);

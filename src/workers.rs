@@ -20,7 +20,7 @@ impl WorkerRegistry {
         self.workers.get(id).map(|w| w.value().clone())
     }
 
-    pub fn insert_worker(&self, worker: Worker) {
+    pub fn register_worker(&self, worker: Worker) {
         self.workers.insert(worker.id, worker);
     }
 }

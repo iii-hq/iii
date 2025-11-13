@@ -40,7 +40,7 @@ impl TriggerRegistry {
             if &trigger.trigger_type == trigger_type_id {
                 let result = on_register(trigger);
                 if let Err(err) = result {
-                    eprintln!("Error registering trigger: {}", err);
+                    tracing::error!(error = %err, "Error registering trigger");
                 }
             }
         }

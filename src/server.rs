@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
+mod logging;
 mod schema;
 mod services;
 mod trigger;
@@ -120,9 +121,11 @@ impl Engine {
     }
 
     fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
-        println!(
-            "Remembering invocation {} for function {} from worker {}",
-            invocation_id, function_path, worker.id
+        tracing::info!(
+            worker_id = %worker.id,
+            %invocation_id,
+            function_path = function_path,
+            "Remembering invocation for worker"
         );
         worker.invocations.insert(
             invocation_id,
@@ -136,7 +139,7 @@ impl Engine {
     }
 
     fn remove_invocation(&self, invocation_id: &Uuid) {
-        println!("Removing invocation {}", invocation_id);
+        tracing::info!(invocation_id = %invocation_id, "Removing invocation");
         if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id)
             && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id)
         {
@@ -158,7 +161,12 @@ impl Engine {
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::RegisterTriggerType { id, description } => {
-                println!("RegisterTriggerType {id} {description}");
+                tracing::info!(
+                    worker_id = %worker.id,
+                    trigger_type_id = %id,
+                    description = %description,
+                    "RegisterTriggerType"
+                );
 
                 let on_register = Box::new(move |_trigger: &Trigger| Ok(()));
                 let on_unregister = Box::new(move |_trigger: &Trigger| Ok(()));
@@ -177,7 +185,13 @@ impl Engine {
                 function_path,
                 config,
             } => {
-                println!("RegisterTrigger {id} {trigger_type} {function_path} {config:?}");
+                tracing::info!(
+                    trigger_id = %id,
+                    trigger_type = %trigger_type,
+                    function_path = %function_path,
+                    config = ?config,
+                    "RegisterTrigger"
+                );
 
                 let _ = self.trigger_registry.register_trigger(Trigger {
                     id: id.clone(),
@@ -193,7 +207,12 @@ impl Engine {
                 trigger_type,
                 function_path,
             } => {
-                println!("UnregisterTrigger {id} {trigger_type} {function_path}");
+                tracing::info!(
+                    trigger_id = %id,
+                    trigger_type = %trigger_type,
+                    function_path = %function_path,
+                    "UnregisterTrigger"
+                );
 
                 let _ = self.trigger_registry.unregister_trigger(Trigger {
                     id: id.clone(),
@@ -210,22 +229,29 @@ impl Engine {
                 function_path,
                 data,
             } => {
-                println!("InvokeFunction {function_path} {invocation_id:?} {data:?}");
+                tracing::info!(
+                    worker_id = %worker.id,
+                    invocation_id = ?invocation_id,
+                    function_path = %function_path,
+                    payload = ?data,
+                    "InvokeFunction"
+                );
 
                 if let Some(id) = *invocation_id {
                     self.remember_invocation(worker, id, function_path);
                 }
 
                 if let Some(function) = self.functions.get(function_path) {
-                    println!("Found function handler for {}", function_path);
+                    tracing::info!(function_path = %function_path, "Found function handler");
                     if let Ok(result) =
                         (function.handler)(*invocation_id, worker.id, data.clone()).await
                         && let Some(result) = result
                         && let Some(invocation_id) = *invocation_id
                     {
-                        println!(
-                            "Sending InvocationResult for {} with result {:?}",
-                            function_path, result
+                        tracing::info!(
+                            function_path = %function_path,
+                            result = ?result,
+                            "Sending InvocationResult"
                         );
                         self.send_msg(
                             worker,
@@ -263,7 +289,13 @@ impl Engine {
                 result,
                 error,
             } => {
-                println!("InvocationResult {function_path} {invocation_id} {result:?} {error:?}");
+                tracing::info!(
+                    function_path = %function_path,
+                    invocation_id = %invocation_id,
+                    result = ?result,
+                    error = ?error,
+                    "InvocationResult"
+                );
                 if let Some((caller, _invocation)) = self.take_invocation_sender(invocation_id) {
                     caller
                         .send(Outbound::Protocol(Message::InvocationResult {
@@ -274,7 +306,10 @@ impl Engine {
                         }))
                         .await?;
                 } else {
-                    eprintln!("Did not find caller for invocation {}", invocation_id);
+                    tracing::warn!(
+                        invocation_id = %invocation_id,
+                        "Did not find caller for invocation"
+                    );
                 }
                 Ok(())
             }
@@ -282,9 +317,11 @@ impl Engine {
                 function_path,
                 description,
             } => {
-                println!(
-                    "RegisterFunction {function_path} {}",
-                    description.as_ref().unwrap_or(&"".to_string())
+                tracing::info!(
+                    worker_id = %worker.id,
+                    function_path = %function_path,
+                    description = ?description,
+                    "RegisterFunction"
                 );
 
                 let handler_worker = worker.clone();
@@ -303,11 +340,16 @@ impl Engine {
                 name,
                 description,
             } => {
-                println!("RegisterService {id} {name} {description:?}");
-                println!(
-                    "Current services: {:?}",
-                    self.service_registry.read().await.services
+                tracing::info!(
+                    service_id = %id,
+                    service_name = %name,
+                    description = ?description,
+                    "RegisterService"
                 );
+                {
+                    let services_guard = self.service_registry.read().await;
+                    tracing::info!(services = ?services_guard.services, "Current services");
+                }
 
                 self.service_registry
                     .write()
@@ -329,7 +371,7 @@ impl Engine {
         socket: WebSocket,
         peer: SocketAddr,
     ) -> anyhow::Result<()> {
-        println!(">> Worker {peer} connected via WebSocket");
+        tracing::info!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
 
@@ -339,7 +381,7 @@ impl Engine {
                     Outbound::Protocol(msg) => match serde_json::to_string(&msg) {
                         Ok(payload) => ws_tx.send(WsMessage::Text(payload)).await,
                         Err(err) => {
-                            eprintln!("serialize error: {err:?}");
+                            tracing::error!(peer = %peer, error = ?err, "serialize error");
                             continue;
                         }
                     },
@@ -358,8 +400,8 @@ impl Engine {
             invocations: Arc::new(DashMap::new()),
         };
 
-        println!("Assigned Worker ID: {}", worker.id);
-        self.worker_registry.insert_worker(worker.clone());
+        tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
+        self.worker_registry.register_worker(worker.clone());
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -369,15 +411,15 @@ impl Engine {
                     }
                     match serde_json::from_str::<Message>(&text) {
                         Ok(msg) => self.router_msg(&worker, &msg).await?,
-                        Err(err) => eprintln!("json decode error from {peer}: {err}"),
+                        Err(err) => tracing::warn!(peer = %peer, error = ?err, "json decode error"),
                     }
                 }
                 Ok(WsMessage::Binary(bytes)) => match serde_json::from_slice::<Message>(&bytes) {
                     Ok(msg) => self.router_msg(&worker, &msg).await?,
-                    Err(err) => eprintln!("binary decode error from {peer}: {err}"),
+                    Err(err) => tracing::warn!(peer = %peer, error = ?err, "binary decode error"),
                 },
                 Ok(WsMessage::Close(_)) => {
-                    println!("Worker {peer} disconnected");
+                    tracing::info!(peer = %peer, "Worker disconnected");
                     break;
                 }
                 Ok(WsMessage::Ping(payload)) => {
@@ -391,7 +433,7 @@ impl Engine {
         }
 
         writer.abort();
-        println!(">> Worker {peer} disconnected");
+        tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
         Ok(())
     }
 }
@@ -405,7 +447,7 @@ async fn ws_handler(
         let engine = engine.clone();
         async move {
             if let Err(err) = engine.handle_worker(socket, addr).await {
-                eprintln!("worker error: {err:?}");
+                tracing::error!(addr = %addr, error = ?err, "worker error");
             }
         }
     })
@@ -420,7 +462,7 @@ fn register_core_functions(engine: &Arc<Engine>) {
                       _source_worker_id: Uuid,
                       input: serde_json::Value| {
                     Box::pin(async move {
-                        println!("logger.info {input:?}");
+                        tracing::info!(input = ?input, "logger.info invoked");
                         Ok(None)
                     })
                 },
@@ -433,7 +475,7 @@ fn register_core_functions(engine: &Arc<Engine>) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    logging::init_tracing();
 
     let engine = Arc::new(Engine::new());
     let app = Router::new()
@@ -444,7 +486,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
-    println!("Engine listening on ws://{addr}/");
+    tracing::info!(address = addr, "Engine listening");
 
     axum::serve(
         listener,
