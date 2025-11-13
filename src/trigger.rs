@@ -93,11 +93,15 @@ impl TriggerRegistry {
         Ok(())
     }
 
-    pub async fn unregister_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
-        let Some(trigger) = self.triggers.get(&trigger.id) else {
+    pub async fn unregister_trigger(
+        &self,
+        id: String,
+        trigger_type: String,
+    ) -> Result<(), anyhow::Error> {
+        let Some(trigger) = self.triggers.get(&id) else {
             return Err(anyhow::anyhow!("Trigger not found"));
         };
-        let trigger_type = self.trigger_types.get(&trigger.trigger_type.clone());
+        let trigger_type = self.trigger_types.get(&trigger_type.clone());
 
         if trigger_type.is_some() {
             let result = trigger_type

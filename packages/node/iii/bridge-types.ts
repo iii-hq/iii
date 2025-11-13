@@ -24,8 +24,6 @@ export type UnregisterTriggerTypeMessage = {
 export type UnregisterTriggerMessage = {
   type: MessageType.UnregisterTrigger
   id: string
-  triggerType: string
-  functionPath: string
 }
 
 export type TriggerRegistrationResultMessage = {
