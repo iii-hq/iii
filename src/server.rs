@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 mod schema;
+mod services;
 mod trigger;
 
 use axum::{
@@ -14,13 +15,19 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, mpsc},
+};
 use uuid::Uuid;
 
 mod protocol;
 use protocol::*;
 
-use crate::trigger::{Trigger, TriggerRegistry, TriggerType};
+use crate::{
+    services::ServicesRegistry,
+    trigger::{Trigger, TriggerRegistry, TriggerType},
+};
 
 #[derive(Clone)]
 struct Worker {
@@ -65,6 +72,7 @@ struct Engine {
     workers: DashMap<Uuid, Worker>,
     functions: Arc<DashMap<String, Function>>,
     trigger_registry: Arc<TriggerRegistry>,
+    service_registry: Arc<RwLock<ServicesRegistry>>,
     pending_invocations: DashMap<Uuid, Uuid>,
 }
 
@@ -75,6 +83,7 @@ impl Engine {
             functions: Arc::new(DashMap::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             pending_invocations: DashMap::new(),
+            service_registry: Arc::new(RwLock::new(ServicesRegistry::new())),
         }
     }
 
@@ -284,6 +293,24 @@ impl Engine {
                     _description: description.clone(),
                 };
                 self.functions.insert(function_path.clone(), new_function);
+                Ok(())
+            }
+            Message::RegisterService {
+                id,
+                name,
+                description,
+            } => {
+                println!("RegisterService {id} {name} {description:?}");
+                println!(
+                    "Current services: {:?}",
+                    self.service_registry.read().await.services
+                );
+
+                self.service_registry
+                    .write()
+                    .await
+                    .insert_service(services::Service::new(name.clone(), id.clone()));
+
                 Ok(())
             }
             Message::Ping => {
