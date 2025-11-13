@@ -55,6 +55,39 @@ struct Function {
     _description: Option<String>,
 }
 
+impl Function {
+    fn new(function_path: String, description: Option<String>, handler_worker: Worker) -> Self {
+        let handler_function_path = function_path.clone();
+        Self {
+            handler: Box::new(
+                move |invocation_id: Option<Uuid>,
+                      _source_worker_id: Uuid, // <------ we need to pass the source worker id to the handler worker
+                      input: serde_json::Value| {
+                    let function_path = handler_function_path.clone();
+                    let worker = handler_worker.clone();
+                    Box::pin(async move {
+                        worker
+                            .channel
+                            .send(Outbound::Protocol(Message::InvokeFunction {
+                                invocation_id,
+                                function_path,
+                                data: input,
+                            }))
+                            .await
+                            .map_err(|err| ErrorBody {
+                                code: "channel_send_failed".into(),
+                                message: err.to_string(),
+                            })?;
+                        Ok(None)
+                    })
+                },
+            ),
+            _function_path: function_path,
+            _description: description,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Invocation {
     _invocation_id: Uuid,
@@ -255,40 +288,13 @@ impl Engine {
                 );
 
                 let handler_worker = worker.clone();
-                let handler_function_path = function_path.clone();
                 self.service_registry
                     .write()
                     .await
                     .register_service_from_func_path(&function_path);
 
-                let new_function = Function {
-                    handler: Box::new(
-                        move |invocation_id: Option<Uuid>,
-                              _source_worker_id: Uuid, // <------ we need to pass the source worker id to the handler worker
-                              input: serde_json::Value| {
-                            let function_path = handler_function_path.clone();
-                            let worker = handler_worker.clone();
-
-                            Box::pin(async move {
-                                worker
-                                    .channel
-                                    .send(Outbound::Protocol(Message::InvokeFunction {
-                                        invocation_id,
-                                        function_path,
-                                        data: input,
-                                    }))
-                                    .await
-                                    .map_err(|err| ErrorBody {
-                                        code: "channel_send_failed".into(),
-                                        message: err.to_string(),
-                                    })?;
-                                Ok(None)
-                            })
-                        },
-                    ),
-                    _function_path: function_path.clone(),
-                    _description: description.clone(),
-                };
+                let new_function =
+                    Function::new(function_path.clone(), description.clone(), handler_worker);
                 self.functions.insert(function_path.clone(), new_function);
                 Ok(())
             }
