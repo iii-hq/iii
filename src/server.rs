@@ -6,10 +6,8 @@ mod logging;
 mod schema;
 mod services;
 mod trigger;
-mod worker;
 mod workers;
 
-use crate::function::FunctionHandler;
 use crate::invocation::{Invocation, InvocationHandler};
 use axum::{
     Router,
@@ -133,7 +131,7 @@ impl Engine {
         worker.invocations.insert(
             invocation_id,
             Invocation {
-                invocation_id: invocation_id,
+                invocation_id,
                 function_path: function_path.to_string(),
             },
         );
@@ -249,7 +247,7 @@ impl Engine {
                     tracing::info!(function_path = %function_path, "Found function handler");
                     match (function.handler)(*invocation_id, worker.id, data.clone()).await {
                         Ok(Some(result)) => {
-                            if let Some(invocation_id) = invocation_id.clone() {
+                            if let Some(invocation_id) = *invocation_id {
                                 let _ = worker
                                     .handle_invocation_result(
                                         Invocation {
@@ -270,7 +268,7 @@ impl Engine {
                         }
                         Ok(None) => {}
                         Err(error_body) => {
-                            if let Some(invocation_id) = invocation_id.clone() {
+                            if let Some(invocation_id) = *invocation_id {
                                 let _ = worker
                                     .handle_invocation_result(
                                         Invocation {
@@ -291,11 +289,11 @@ impl Engine {
                             }
                         }
                     }
-                } else if let Some(invocation_id) = invocation_id.clone() {
+                } else if let Some(invocation_id) = *invocation_id {
                     let _ = worker
                         .handle_invocation_result(
                             Invocation {
-                                invocation_id: invocation_id.clone(),
+                                invocation_id: invocation_id,
                                 function_path: function_path.clone(),
                             },
                             None,
@@ -354,12 +352,12 @@ impl Engine {
                 self.service_registry
                     .write()
                     .await
-                    .register_service_from_func_path(&function_path);
+                    .register_service_from_func_path(function_path);
 
                 let new_function =
                     Function::new(function_path.clone(), description.clone(), handler_worker);
                 self.functions.insert(function_path.clone(), new_function);
-                worker.include_function_path(&function_path).await;
+                worker.include_function_path(function_path).await;
                 Ok(())
             }
             Message::RegisterService {

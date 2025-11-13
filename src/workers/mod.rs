@@ -1,10 +1,13 @@
+pub mod traits;
+
+
 use std::{collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
-use crate::{invocation::Invocation, Outbound};
+use crate::{Outbound, invocation::Invocation};
 
 #[derive(Default)]
 pub struct WorkerRegistry {
@@ -25,7 +28,7 @@ impl WorkerRegistry {
     }
 
     pub async fn register_function_path(&self, worker_id: &Uuid, function_path: &String) {
-        if let Some(mut worker) = self.workers.get_mut(worker_id) {
+        if let Some(worker) = self.workers.get_mut(worker_id) {
             worker
                 .function_paths
                 .write()

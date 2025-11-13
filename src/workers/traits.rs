@@ -4,12 +4,12 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::Outbound;
 use crate::function::FunctionHandler;
 use crate::invocation::{Invocation, InvocationHandler};
 use crate::protocol::{ErrorBody, Message};
 use crate::trigger::{Trigger, TriggerRegistrator};
 use crate::workers::Worker;
-use crate::Outbound;
 
 impl TriggerRegistrator for Worker {
     fn register_trigger<'a>(
