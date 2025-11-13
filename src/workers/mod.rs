@@ -1,6 +1,5 @@
 pub mod traits;
 
-
 use std::{collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
@@ -25,6 +24,10 @@ impl WorkerRegistry {
 
     pub fn register_worker(&self, worker: Worker) {
         self.workers.insert(worker.id, worker);
+    }
+
+    pub fn unregister_worker(&self, worker_id: &Uuid) {
+        self.workers.remove(worker_id);
     }
 
     pub async fn register_function_path(&self, worker_id: &Uuid, function_path: &String) {

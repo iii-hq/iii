@@ -464,6 +464,7 @@ impl Engine {
         {
             self.remove_function(&function_path);
         }
+        self.worker_registry.unregister_worker(&worker.id);
         tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
         Ok(())
     }
