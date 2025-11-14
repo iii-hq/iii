@@ -1,4 +1,5 @@
 use crate::protocol::*;
+use futures::Future;
 use serde_json::Value;
 use std::pin::Pin;
 use uuid::Uuid;

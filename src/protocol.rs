@@ -54,13 +54,12 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
-    // RegisterService {
-    //     id: String,
-    //     #[serde(skip_serializing_if = "Option::is_none")]
-    //     description: Option<String>,
-    //     #[serde(skip_serializing_if = "Option::is_none", rename = "parentServiceId")]
-    //     parent_service_id: Option<String>,
-    // },
+    RegisterService {
+        id: String,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     Ping,
     Pong,
 }

@@ -58,7 +58,7 @@ impl TriggerRegistry {
                     .register_trigger(trigger.clone())
                     .await;
                 if let Err(err) = result {
-                    eprintln!("Error registering trigger: {}", err);
+                    tracing::error!(error = %err, "Error registering trigger");
                 }
             }
         }

@@ -1,29 +1,15 @@
-use crate::function::FunctionHandler;
-use crate::invocation::{Invocation, InvocationHandler};
-use crate::protocol::*;
-use crate::trigger::{Trigger, TriggerRegistrator};
+use std::pin::Pin;
 
-use axum::extract::ws::Message as WsMessage;
-use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use std::pin::Pin;
-use std::sync::Arc;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
-#[derive(Debug)]
-pub enum Outbound {
-    Protocol(Message),
-    Raw(WsMessage),
-}
-
-#[derive(Clone)]
-pub struct Worker {
-    pub id: Uuid,
-    pub channel: mpsc::Sender<Outbound>,
-    pub invocations: Arc<DashMap<Uuid, Invocation>>,
-}
+use crate::Outbound;
+use crate::function::FunctionHandler;
+use crate::invocation::{Invocation, InvocationHandler};
+use crate::protocol::{ErrorBody, Message};
+use crate::trigger::{Trigger, TriggerRegistrator};
+use crate::workers::Worker;
 
 impl TriggerRegistrator for Worker {
     fn register_trigger<'a>(
