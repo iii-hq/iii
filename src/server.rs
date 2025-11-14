@@ -148,7 +148,6 @@ impl Engine {
     }
 
     async fn generate_functions_hash(&self) -> String {
-        tracing::info!("Generating functions hash");
         let functions: HashSet<String> = self
             .functions
             .iter()
