@@ -122,6 +122,53 @@ impl Engine {
         }
     }
 
+    async fn notify_new_functions(&self, duration_secs: u64) {
+        let mut current_funcion_hash = self.generate_functions_hash().await;
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
+            tracing::info!("Checking for new functions");
+
+            let new_functions: HashSet<String> = self
+                .functions
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect();
+
+            let new_function_hash = self.generate_functions_hash().await;
+
+            if new_function_hash != current_funcion_hash {
+                tracing::info!("New functions detected, notifying workers");
+                let message = Message::FunctionsAvailable {
+                    functions: new_functions.into_iter().collect(),
+                };
+                self.broadcast_msg(message).await;
+                current_funcion_hash = new_function_hash;
+            }
+        }
+    }
+
+    async fn generate_functions_hash(&self) -> String {
+        let functions: HashSet<String> = self
+            .functions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let mut function_hash = functions.iter().cloned().collect::<Vec<String>>();
+        function_hash.sort();
+        format!("{:?}", function_hash)
+    }
+
+    async fn broadcast_msg(&self, msg: Message) {
+        for worker in self.worker_registry.workers.iter() {
+            let _ = worker
+                .value()
+                .channel
+                .send(Outbound::Protocol(msg.clone()))
+                .await;
+        }
+    }
+
     async fn take_invocation_sender(
         &self,
         invocation_id: &Uuid,
@@ -144,6 +191,10 @@ impl Engine {
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
+            Message::FunctionsAvailable { functions } => {
+                println!("FunctionsAvailable {:?}", functions);
+                Ok(())
+            }
             Message::TriggerRegistrationResult {
                 id,
                 trigger_type,
@@ -544,11 +595,15 @@ async fn main() -> anyhow::Result<()> {
     logging::init_tracing();
 
     let engine = Arc::new(Engine::new());
+    register_core_functions(&engine);
+    let engine_clone = engine.clone();
+    tokio::spawn(async move {
+        engine_clone.notify_new_functions(5).await;
+    });
+
     let app = Router::new()
         .route("/", get(ws_handler))
         .with_state(engine.clone());
-
-    register_core_functions(&engine);
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
