@@ -31,13 +31,13 @@ impl WorkerRegistry {
         self.workers.remove(worker_id);
     }
 
-    pub async fn register_function_path(&self, worker_id: &Uuid, function_path: &String) {
+    pub async fn register_function_path(&self, worker_id: &Uuid, function_path: &str) {
         if let Some(worker) = self.workers.get_mut(worker_id) {
             worker
                 .function_paths
                 .write()
                 .await
-                .insert(function_path.clone());
+                .insert(function_path.to_string());
         }
     }
 }
@@ -60,10 +60,10 @@ impl Worker {
             function_paths: Arc::new(RwLock::new(HashSet::new())),
         }
     }
-    pub async fn include_function_path(&self, function_path: &String) {
+    pub async fn include_function_path(&self, function_path: &str) {
         self.function_paths
             .write()
             .await
-            .insert(function_path.clone());
+            .insert(function_path.to_owned());
     }
 }

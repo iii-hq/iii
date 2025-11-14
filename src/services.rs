@@ -13,7 +13,7 @@ impl ServicesRegistry {
         }
     }
 
-    pub fn register_service_from_func_path(&mut self, func_path: &String) {
+    pub fn register_service_from_func_path(&mut self, func_path: &str) {
         let parts: Vec<&str> = func_path.split(".").collect();
         if parts.len() < 2 {
             return;
@@ -26,7 +26,7 @@ impl ServicesRegistry {
             self.insert_service(service);
         }
 
-        self.insert_function_to_service(&service_name, function_name);
+        self.insert_function_to_service(&service_name, &function_name);
     }
 
     pub fn insert_service(&mut self, service: Service) {
@@ -40,9 +40,9 @@ impl ServicesRegistry {
         self.services.remove(&service.name);
     }
 
-    pub fn insert_function_to_service(&mut self, service_name: &String, function: String) {
+    pub fn insert_function_to_service(&mut self, service_name: &String, function: &str) {
         if let Some(mut service) = self.services.get_mut(service_name) {
-            service.insert_function(function);
+            service.insert_function(function.to_string());
         }
     }
 }
@@ -77,7 +77,7 @@ impl Service {
         self.functions.insert(function);
     }
 
-    pub fn remove_function(&mut self, function: &String) {
+    pub fn remove_function(&mut self, function: &str) {
         self.functions.remove(function);
     }
 }
