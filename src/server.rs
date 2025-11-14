@@ -1,12 +1,14 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
 mod function;
 mod invocation;
+mod logging;
 mod schema;
+mod services;
 mod trigger;
-mod worker;
+mod workers;
 
-use crate::function::FunctionHandler;
+use crate::invocation::{Invocation, InvocationHandler};
 use axum::{
     Router,
     extract::{
@@ -18,15 +20,26 @@ use axum::{
 };
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, mpsc},
+};
 use uuid::Uuid;
 
 mod protocol;
 use protocol::*;
 
-use crate::invocation::{Invocation, InvocationHandler};
-use crate::trigger::{Trigger, TriggerRegistry, TriggerType};
-use crate::worker::{Outbound, Worker};
+use crate::{
+    services::ServicesRegistry,
+    trigger::{Trigger, TriggerRegistry, TriggerType},
+    workers::{Worker, WorkerRegistry},
+};
+
+#[derive(Debug)]
+pub enum Outbound {
+    Protocol(Message),
+    Raw(WsMessage),
+}
 
 struct Function {
     handler: Box<
@@ -42,25 +55,60 @@ struct Function {
             > + Send
             + Sync,
     >,
-    _function_path: String,
+    function_path: String,
     _description: Option<String>,
+}
+
+impl Function {
+    fn new(function_path: String, description: Option<String>, handler_worker: Worker) -> Self {
+        let handler_function_path = function_path.clone();
+        Self {
+            handler: Box::new(
+                move |invocation_id: Option<Uuid>,
+                      _source_worker_id: Uuid, // <------ we need to pass the source worker id to the handler worker
+                      input: serde_json::Value| {
+                    let function_path = handler_function_path.clone();
+                    let worker = handler_worker.clone();
+                    Box::pin(async move {
+                        worker
+                            .channel
+                            .send(Outbound::Protocol(Message::InvokeFunction {
+                                invocation_id,
+                                function_path,
+                                data: input,
+                            }))
+                            .await
+                            .map_err(|err| ErrorBody {
+                                code: "channel_send_failed".into(),
+                                message: err.to_string(),
+                            })?;
+                        Ok(None)
+                    })
+                },
+            ),
+            function_path,
+            _description: description,
+        }
+    }
 }
 
 #[derive(Default)]
 struct Engine {
-    workers: DashMap<Uuid, Worker>,
+    worker_registry: WorkerRegistry,
     functions: Arc<DashMap<String, Function>>,
     trigger_registry: Arc<TriggerRegistry>,
+    service_registry: Arc<RwLock<ServicesRegistry>>,
     pending_invocations: DashMap<Uuid, Uuid>,
 }
 
 impl Engine {
     fn new() -> Self {
         Self {
-            workers: DashMap::new(),
+            worker_registry: WorkerRegistry::new(),
             functions: Arc::new(DashMap::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             pending_invocations: DashMap::new(),
+            service_registry: Arc::new(RwLock::new(ServicesRegistry::new())),
         }
     }
 
@@ -68,15 +116,22 @@ impl Engine {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
+    fn remove_function(&self, function_path: &str) {
+        tracing::info!(function_path = %function_path, "Removing function");
+        self.functions.remove(function_path);
+    }
+
     fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
-        println!(
-            "Remembering invocation {} for function {} from worker {}",
-            invocation_id, function_path, worker.id
+        tracing::info!(
+            worker_id = %worker.id,
+            %invocation_id,
+            function_path = function_path,
+            "Remembering invocation for worker"
         );
         worker.invocations.insert(
             invocation_id,
             Invocation {
-                invocation_id: invocation_id,
+                invocation_id,
                 function_path: function_path.to_string(),
             },
         );
@@ -84,11 +139,11 @@ impl Engine {
     }
 
     fn remove_invocation(&self, invocation_id: &Uuid) {
-        println!("Removing invocation {}", invocation_id);
-        if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id) {
-            if let Some(worker_ref) = self.workers.get(&worker_id) {
-                worker_ref.invocations.remove(invocation_id);
-            }
+        tracing::info!(invocation_id = %invocation_id, "Removing invocation");
+        if let Some((_, worker_id)) = self.pending_invocations.remove(invocation_id)
+            && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id)
+        {
+            worker_ref.invocations.remove(invocation_id);
         }
     }
 
@@ -97,7 +152,7 @@ impl Engine {
         invocation_id: &Uuid,
     ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
         let (_, worker_id) = self.pending_invocations.remove(invocation_id)?;
-        let worker_ref = self.workers.get(&worker_id)?;
+        let worker_ref = self.worker_registry.get_worker(&worker_id)?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref.invocations.remove(invocation_id)?.1;
         Some((sender, invocation))
@@ -115,8 +170,12 @@ impl Engine {
                 Ok(())
             }
             Message::RegisterTriggerType { id, description } => {
-                println!("RegisterTriggerType {id} {description}");
-
+                tracing::info!(
+                    worker_id = %worker.id,
+                    trigger_type_id = %id,
+                    description = %description,
+                    "RegisterTriggerType"
+                );
                 self.trigger_registry
                     .register_trigger_type(TriggerType {
                         id: id.clone(),
@@ -132,7 +191,13 @@ impl Engine {
                 function_path,
                 config,
             } => {
-                println!("RegisterTrigger {id} {trigger_type} {function_path} {config:?}");
+                tracing::info!(
+                    trigger_id = %id,
+                    trigger_type = %trigger_type,
+                    function_path = %function_path,
+                    config = ?config,
+                    "RegisterTrigger"
+                );
 
                 let _ = self
                     .trigger_registry
@@ -147,7 +212,11 @@ impl Engine {
                 Ok(())
             }
             Message::UnregisterTrigger { id, trigger_type } => {
-                println!("UnregisterTrigger {id} {trigger_type}");
+                tracing::info!(
+                    trigger_id = %id,
+                    trigger_type = %trigger_type,
+                    "UnregisterTrigger"
+                );
 
                 let _ = self
                     .trigger_registry
@@ -162,43 +231,69 @@ impl Engine {
                 function_path,
                 data,
             } => {
-                println!("InvokeFunction {function_path} {invocation_id:?} {data:?}");
+                tracing::info!(
+                    worker_id = %worker.id,
+                    invocation_id = ?invocation_id,
+                    function_path = %function_path,
+                    payload = ?data,
+                    "InvokeFunction"
+                );
 
-                if let Some(id) = invocation_id.clone() {
+                if let Some(id) = *invocation_id {
                     self.remember_invocation(worker, id, function_path);
                 }
 
                 if let Some(function) = self.functions.get(function_path) {
-                    println!("Found function handler for {}", function_path);
-                    if let Ok(result) =
-                        (function.handler)(invocation_id.clone(), worker.id, data.clone()).await
-                    {
-                        if let Some(result) = result
-                            && let Some(invocation_id) = invocation_id.clone()
-                        {
-                            println!(
-                                "Sending InvocationResult for {} with result {:?}",
-                                function_path, result
-                            );
-
-                            let _ = worker
-                                .handle_invocation_result(
-                                    Invocation {
-                                        invocation_id: invocation_id.clone(),
-                                        function_path: function_path.clone(),
-                                    },
-                                    Some(result),
-                                    None,
-                                )
-                                .await;
-                            self.remove_invocation(&invocation_id);
+                    tracing::info!(function_path = %function_path, "Found function handler");
+                    match (function.handler)(*invocation_id, worker.id, data.clone()).await {
+                        Ok(Some(result)) => {
+                            if let Some(invocation_id) = *invocation_id {
+                                let _ = worker
+                                    .handle_invocation_result(
+                                        Invocation {
+                                            invocation_id,
+                                            function_path: function_path.clone(),
+                                        },
+                                        Some(result),
+                                        None,
+                                    )
+                                    .await;
+                                self.remove_invocation(&invocation_id);
+                            } else {
+                                tracing::warn!(
+                                    function_path = %function_path,
+                                    "Invocation returned result without id"
+                                );
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error_body) => {
+                            if let Some(invocation_id) = *invocation_id {
+                                let _ = worker
+                                    .handle_invocation_result(
+                                        Invocation {
+                                            invocation_id,
+                                            function_path: function_path.clone(),
+                                        },
+                                        None,
+                                        Some(error_body.clone()),
+                                    )
+                                    .await;
+                                self.remove_invocation(&invocation_id);
+                            } else {
+                                tracing::error!(
+                                    function_path = %function_path,
+                                    error = ?error_body,
+                                    "Invocation failed without id"
+                                );
+                            }
                         }
                     }
-                } else if let Some(invocation_id) = invocation_id {
+                } else if let Some(invocation_id) = *invocation_id {
                     let _ = worker
                         .handle_invocation_result(
                             Invocation {
-                                invocation_id: invocation_id.clone(),
+                                invocation_id: invocation_id,
                                 function_path: function_path.clone(),
                             },
                             None,
@@ -208,7 +303,7 @@ impl Engine {
                             }),
                         )
                         .await;
-                    self.remove_invocation(invocation_id);
+                    self.remove_invocation(&invocation_id);
                 }
                 Ok(())
             }
@@ -218,7 +313,13 @@ impl Engine {
                 result,
                 error,
             } => {
-                println!("InvocationResult {function_path} {invocation_id} {result:?} {error:?}");
+                tracing::info!(
+                    function_path = %function_path,
+                    invocation_id = %invocation_id,
+                    result = ?result,
+                    error = ?error,
+                    "InvocationResult"
+                );
                 if let Some((caller, _invocation)) = self.take_invocation_sender(invocation_id) {
                     caller
                         .send(Outbound::Protocol(Message::InvocationResult {
@@ -229,7 +330,10 @@ impl Engine {
                         }))
                         .await?;
                 } else {
-                    eprintln!("Did not find caller for invocation {}", invocation_id);
+                    tracing::warn!(
+                        invocation_id = %invocation_id,
+                        "Did not find caller for invocation"
+                    );
                 }
                 Ok(())
             }
@@ -237,34 +341,46 @@ impl Engine {
                 function_path,
                 description,
             } => {
-                println!(
-                    "RegisterFunction {function_path} {}",
-                    description.as_ref().unwrap_or(&"".to_string())
+                tracing::info!(
+                    worker_id = %worker.id,
+                    function_path = %function_path,
+                    description = ?description,
+                    "RegisterFunction"
                 );
 
                 let handler_worker = worker.clone();
-                let handler_function_path = function_path.clone();
+                self.service_registry
+                    .write()
+                    .await
+                    .register_service_from_func_path(function_path);
 
-                let new_function = Function {
-                    handler: Box::new(
-                        move |invocation_id: Option<Uuid>,
-                              _source_worker_id: Uuid, // <------ we need to pass the source worker id to the handler worker
-                              input: serde_json::Value| {
-                            let function_path = handler_function_path.clone();
-                            let worker = handler_worker.clone();
-
-                            Box::pin(async move {
-                                let _ = worker
-                                    .handle_function(invocation_id, function_path, input)
-                                    .await;
-                                Ok(None)
-                            })
-                        },
-                    ),
-                    _function_path: function_path.clone(),
-                    _description: description.clone(),
-                };
+                let new_function =
+                    Function::new(function_path.clone(), description.clone(), handler_worker);
                 self.functions.insert(function_path.clone(), new_function);
+                worker.include_function_path(function_path).await;
+                Ok(())
+            }
+            Message::RegisterService {
+                id,
+                name,
+                description,
+            } => {
+                tracing::info!(
+                    service_id = %id,
+                    service_name = %name,
+                    description = ?description,
+                    "RegisterService"
+                );
+                {
+                    let services_guard = self.service_registry.read().await;
+                    tracing::info!(services = ?services_guard.services, "Current services");
+                }
+
+                self.service_registry
+                    .write()
+                    .await
+                    .insert_service(services::Service::new(name.clone(), id.clone()));
+
                 Ok(())
             }
             Message::Ping => {
@@ -280,7 +396,7 @@ impl Engine {
         socket: WebSocket,
         peer: SocketAddr,
     ) -> anyhow::Result<()> {
-        println!(">> Worker {peer} connected via WebSocket");
+        tracing::info!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
 
@@ -290,7 +406,7 @@ impl Engine {
                     Outbound::Protocol(msg) => match serde_json::to_string(&msg) {
                         Ok(payload) => ws_tx.send(WsMessage::Text(payload)).await,
                         Err(err) => {
-                            eprintln!("serialize error: {err:?}");
+                            tracing::error!(peer = %peer, error = ?err, "serialize error");
                             continue;
                         }
                     },
@@ -303,14 +419,10 @@ impl Engine {
             }
         });
 
-        let worker = Worker {
-            id: Uuid::new_v4(),
-            channel: tx.clone(),
-            invocations: Arc::new(DashMap::new()),
-        };
+        let worker = Worker::new(tx.clone());
 
-        println!("Assigned Worker ID: {}", worker.id);
-        self.workers.insert(worker.id, worker.clone());
+        tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
+        self.worker_registry.register_worker(worker.clone());
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -320,15 +432,15 @@ impl Engine {
                     }
                     match serde_json::from_str::<Message>(&text) {
                         Ok(msg) => self.router_msg(&worker, &msg).await?,
-                        Err(err) => eprintln!("json decode error from {peer}: {err}"),
+                        Err(err) => tracing::warn!(peer = %peer, error = ?err, "json decode error"),
                     }
                 }
                 Ok(WsMessage::Binary(bytes)) => match serde_json::from_slice::<Message>(&bytes) {
                     Ok(msg) => self.router_msg(&worker, &msg).await?,
-                    Err(err) => eprintln!("binary decode error from {peer}: {err}"),
+                    Err(err) => tracing::warn!(peer = %peer, error = ?err, "binary decode error"),
                 },
                 Ok(WsMessage::Close(_)) => {
-                    println!("Worker {peer} disconnected");
+                    tracing::info!(peer = %peer, "Worker disconnected");
                     break;
                 }
                 Ok(WsMessage::Ping(payload)) => {
@@ -342,8 +454,39 @@ impl Engine {
         }
 
         writer.abort();
-        println!(">> Worker {peer} disconnected");
+        self.cleanup_worker(&worker).await;
+        tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
         Ok(())
+    }
+
+    async fn cleanup_worker(&self, worker: &Worker) {
+        for function_path in worker
+            .function_paths
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect::<HashSet<String>>()
+        {
+            self.remove_function(&function_path);
+        }
+        self.worker_registry.unregister_worker(&worker.id);
+        // remove pending invocations from this worker
+        let pending_invocation_ids: Vec<Uuid> = worker
+            .invocations
+            .iter()
+            .map(|entry| entry.key().clone())
+            .filter(|invocation_id| {
+                if let Some(worker_id) = self.pending_invocations.get(invocation_id) {
+                    *worker_id == worker.id
+                } else {
+                    false
+                }
+            })
+            .collect();
+        for invocation_id in pending_invocation_ids {
+            self.remove_invocation(&invocation_id);
+        }
     }
 }
 
@@ -356,7 +499,7 @@ async fn ws_handler(
         let engine = engine.clone();
         async move {
             if let Err(err) = engine.handle_worker(socket, addr).await {
-                eprintln!("worker error: {err:?}");
+                tracing::error!(addr = %addr, error = ?err, "worker error");
             }
         }
     })
@@ -371,12 +514,12 @@ fn register_core_functions(engine: &Arc<Engine>) {
                       _source_worker_id: Uuid,
                       input: serde_json::Value| {
                     Box::pin(async move {
-                        println!("logger.info {input:?}");
+                        tracing::info!(input = ?input, "logger.info invoked");
                         Ok(None)
                     })
                 },
             ),
-            _function_path: "logger.info".to_string(),
+            function_path: "logger.info".to_string(),
             _description: Some("Log an info message".to_string()),
         },
     );
@@ -384,7 +527,7 @@ fn register_core_functions(engine: &Arc<Engine>) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    logging::init_tracing();
 
     let engine = Arc::new(Engine::new());
     let app = Router::new()
@@ -395,7 +538,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
-    println!("Engine listening on ws://{addr}/");
+    tracing::info!(address = addr, "Engine listening");
 
     axum::serve(
         listener,
