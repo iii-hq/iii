@@ -95,6 +95,11 @@ impl InvocationHandler for Worker {
         error: Option<ErrorBody>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
         Box::pin(async move {
+            self.invocations
+                .write()
+                .await
+                .remove(&invocation.invocation_id);
+
             self.channel
                 .send(Outbound::Protocol(Message::InvocationResult {
                     invocation_id: invocation.invocation_id,

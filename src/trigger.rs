@@ -1,13 +1,16 @@
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use std::pin::Pin;
+use std::{pin::Pin, sync::Arc};
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 pub struct TriggerType {
     pub id: String,
-    pub description: String,
+    pub _description: String,
     // pub config_schema: Schema,
     pub registrator: Box<dyn TriggerRegistrator>,
+    pub worker_id: Option<Uuid>,
 }
 
 pub trait TriggerRegistrator: Send + Sync {
@@ -27,19 +30,60 @@ pub struct Trigger {
     pub trigger_type: String,
     pub function_path: String,
     pub config: Value,
+    pub worker_id: Option<Uuid>,
 }
 
 #[derive(Default)]
 pub struct TriggerRegistry {
-    trigger_types: DashMap<String, TriggerType>,
-    triggers: DashMap<String, Trigger>,
+    trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
+    triggers: Arc<RwLock<DashMap<String, Trigger>>>,
 }
 
 impl TriggerRegistry {
     pub fn new() -> Self {
         Self {
-            trigger_types: DashMap::new(),
-            triggers: DashMap::new(),
+            trigger_types: Arc::new(RwLock::new(DashMap::new())),
+            triggers: Arc::new(RwLock::new(DashMap::new())),
+        }
+    }
+
+    pub async fn unregister_worker(&self, worker_id: &Uuid) {
+        {
+            let worker_trigger_types = self
+                .trigger_types
+                .read()
+                .await
+                .iter()
+                .filter(|pair| pair.value().worker_id == Some(*worker_id))
+                .map(|pair| pair.key().clone())
+                .collect::<Vec<_>>();
+
+            if !worker_trigger_types.is_empty() {
+                let write_lock = self.trigger_types.write().await;
+                for trigger_type_id in worker_trigger_types {
+                    tracing::info!(trigger_type_id = %trigger_type_id, "Removing trigger type");
+                    write_lock.remove(&trigger_type_id.to_string());
+                    tracing::info!(trigger_type_id = %trigger_type_id, "Trigger type removed");
+                }
+            }
+        }
+
+        let worker_triggers = self
+            .triggers
+            .read()
+            .await
+            .iter()
+            .filter(|pair| pair.value().worker_id == Some(*worker_id))
+            .map(|pair| pair.key().clone())
+            .collect::<Vec<String>>();
+
+        if !worker_triggers.is_empty() {
+            let write_lock = self.triggers.write().await;
+            for trigger_id in worker_triggers {
+                tracing::info!(trigger_id = trigger_id, "Removing trigger");
+                write_lock.remove(&trigger_id);
+                tracing::info!(trigger_id = trigger_id, "Trigger removed");
+            }
         }
     }
 
@@ -49,7 +93,7 @@ impl TriggerRegistry {
     ) -> Result<(), anyhow::Error> {
         let trigger_type_id = &trigger_type.id;
 
-        for pair in self.triggers.iter() {
+        for pair in self.triggers.read().await.iter() {
             let trigger = pair.value();
 
             if &trigger.trigger_type == trigger_type_id {
@@ -64,17 +108,17 @@ impl TriggerRegistry {
         }
 
         self.trigger_types
+            .write()
+            .await
             .insert(trigger_type.id.clone(), trigger_type);
 
         Ok(())
     }
 
-    pub fn unregister_trigger_type(&self, id: String) {
-        self.trigger_types.remove(&id);
-    }
-
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
-        let Some(trigger_type) = self.trigger_types.get(&trigger.trigger_type.clone()) else {
+        let trigger_type_id = trigger.trigger_type.clone();
+        let lock = self.trigger_types.read().await;
+        let Some(trigger_type) = lock.get(&trigger_type_id) else {
             println!("Trigger type not found");
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
@@ -88,7 +132,10 @@ impl TriggerRegistry {
             return Err(result.err().unwrap());
         }
 
-        self.triggers.insert(trigger.id.clone(), trigger);
+        self.triggers
+            .write()
+            .await
+            .insert(trigger.id.clone(), trigger);
 
         Ok(())
     }
@@ -98,10 +145,12 @@ impl TriggerRegistry {
         id: String,
         trigger_type: String,
     ) -> Result<(), anyhow::Error> {
-        let Some(trigger) = self.triggers.get(&id) else {
+        let trigger_lock = self.triggers.read().await;
+        let Some(trigger) = trigger_lock.get(&id) else {
             return Err(anyhow::anyhow!("Trigger not found"));
         };
-        let trigger_type = self.trigger_types.get(&trigger_type.clone());
+        let trigger_type_lock = self.trigger_types.read().await;
+        let trigger_type = trigger_type_lock.get(&trigger_type.clone());
 
         if trigger_type.is_some() {
             let result = trigger_type
@@ -115,7 +164,7 @@ impl TriggerRegistry {
             }
         }
 
-        self.triggers.remove(&trigger.id);
+        self.triggers.write().await.remove(&trigger.id);
 
         Ok(())
     }
