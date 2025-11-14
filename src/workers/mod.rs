@@ -6,12 +6,17 @@ use dashmap::DashMap;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
-use crate::{Outbound, invocation::Invocation};
+use crate::{
+    Outbound,
+    invocation::Invocation,
+    protocol::{ErrorBody, Message},
+};
 
 #[derive(Default)]
 pub struct WorkerRegistry {
     pub workers: DashMap<Uuid, Worker>,
 }
+
 impl WorkerRegistry {
     pub fn new() -> Self {
         Self {
@@ -30,23 +35,13 @@ impl WorkerRegistry {
         tracing::info!("Unregistering worker: {}", worker_id);
         self.workers.remove(worker_id);
     }
-
-    pub async fn register_function_path(&self, worker_id: &Uuid, function_path: &str) {
-        if let Some(worker) = self.workers.get_mut(worker_id) {
-            worker
-                .function_paths
-                .write()
-                .await
-                .insert(function_path.to_string());
-        }
-    }
 }
 
 #[derive(Clone)]
 pub struct Worker {
     pub id: Uuid,
     pub channel: mpsc::Sender<Outbound>,
-    pub invocations: Arc<DashMap<Uuid, Invocation>>,
+    pub invocations: Arc<RwLock<DashMap<Uuid, Invocation>>>,
     pub function_paths: Arc<RwLock<HashSet<String>>>,
 }
 
@@ -56,7 +51,7 @@ impl Worker {
         Self {
             id,
             channel,
-            invocations: Arc::new(DashMap::new()),
+            invocations: Arc::new(RwLock::new(DashMap::new())),
             function_paths: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -65,5 +60,28 @@ impl Worker {
             .write()
             .await
             .insert(function_path.to_owned());
+    }
+
+    pub async fn add_invocation(&self, invocation: Invocation) {
+        self.invocations
+            .write()
+            .await
+            .insert(invocation.invocation_id, invocation);
+    }
+
+    pub async fn halt_invocation(&self, invocation_id: &Uuid) {
+        self.invocations.write().await.remove(invocation_id);
+        self.channel
+            .send(Outbound::Protocol(Message::InvocationResult {
+                invocation_id: invocation_id.clone(),
+                function_path: "".to_string(), // we don't need the function path here because the invocation is stopped
+                result: None,
+                error: Some(ErrorBody {
+                    code: "invocation_stopped".to_string(),
+                    message: "Invocation stopped".to_string(),
+                }),
+            }))
+            .await
+            .unwrap();
     }
 }

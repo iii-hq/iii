@@ -5,14 +5,15 @@ use std::collections::HashMap;
 #[serde(tag = "type")]
 pub enum Schema {
     Array {
-        items: Box<Schema>,
+        items: Vec<Schema>,
     },
     Boolean,
     Integer,
     Object {
         properties: HashMap<String, Schema>,
         required: Vec<String>,
-        additionalProperties: bool,
+        #[serde(rename = "additionalProperties")]
+        additional_properties: bool,
     },
     String {
         format: String,
