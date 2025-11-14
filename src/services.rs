@@ -36,7 +36,7 @@ impl ServicesRegistry {
         self.services.insert(service.name.clone(), service);
     }
 
-    pub fn remove_service(&mut self, service: &Service) {
+    pub fn _remove_service(&mut self, service: &Service) {
         self.services.remove(&service.name);
     }
 
@@ -49,7 +49,7 @@ impl ServicesRegistry {
 
 #[derive(Debug)]
 pub struct Service {
-    id: String,
+    _id: String,
     name: String,
     functions: HashSet<String>,
 }
@@ -57,7 +57,7 @@ pub struct Service {
 impl Service {
     pub fn new(name: String, id: String) -> Self {
         Service {
-            id,
+            _id: id,
             name,
             functions: HashSet::new(),
         }
@@ -77,7 +77,7 @@ impl Service {
         self.functions.insert(function);
     }
 
-    pub fn remove_function(&mut self, function: &str) {
+    pub fn _remove_function(&mut self, function: &str) {
         self.functions.remove(function);
     }
 }
