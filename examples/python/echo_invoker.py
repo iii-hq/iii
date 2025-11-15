@@ -83,7 +83,6 @@ async def registerservice(ws, timeout) -> dict | str | None:
     async def wait_for_result():
         async for raw in ws:
             message = json.loads(raw)
-            msg_type = message.get("type")
 
             if msg_type == "ping":
                 await ws.send(json.dumps({"type": "pong"}))

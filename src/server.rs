@@ -62,21 +62,21 @@ struct Function {
 
 #[derive(Default)]
 struct Engine {
-    worker_registry: Arc<RwLock<WorkerRegistry>>,
+    worker_registry: WorkerRegistry,
     functions: Arc<DashMap<String, Function>>,
-    trigger_registry: Arc<TriggerRegistry>,
-    service_registry: Arc<RwLock<ServicesRegistry>>,
+    trigger_registry: TriggerRegistry,
+    service_registry: ServicesRegistry,
     pending_invocations: Arc<RwLock<DashMap<Uuid, Uuid>>>,
 }
 
 impl Engine {
     fn new() -> Self {
         Self {
-            worker_registry: Arc::new(RwLock::new(WorkerRegistry::new())),
+            worker_registry: WorkerRegistry::new(),
             functions: Arc::new(DashMap::new()),
-            trigger_registry: Arc::new(TriggerRegistry::new()),
+            trigger_registry: TriggerRegistry::new(),
             pending_invocations: Arc::new(RwLock::new(DashMap::new())),
-            service_registry: Arc::new(RwLock::new(ServicesRegistry::new())),
+            service_registry: ServicesRegistry::new(),
         }
     }
 
@@ -116,7 +116,7 @@ impl Engine {
     async fn halt_invocation(&self, invocation_id: &Uuid) {
         tracing::info!(invocation_id = %invocation_id, "Halting invocation");
         if let Some((_, worker_id)) = self.pending_invocations.write().await.remove(invocation_id)
-            && let Some(worker_ref) = self.worker_registry.read().await.get_worker(&worker_id)
+            && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id).await
         {
             worker_ref.halt_invocation(invocation_id).await;
         }
@@ -160,8 +160,8 @@ impl Engine {
     }
 
     async fn broadcast_msg(&self, msg: Message) {
-        for worker in self.worker_registry.read().await.workers.iter() {
-            let _ = worker
+        for worker in self.worker_registry.workers.read().await.iter() {
+            worker
                 .value()
                 .channel
                 .send(Outbound::Protocol(msg.clone()))
@@ -178,7 +178,7 @@ impl Engine {
             .write()
             .await
             .remove(invocation_id)?;
-        let worker_ref = self.worker_registry.read().await.get_worker(&worker_id)?;
+        let worker_ref = self.worker_registry.get_worker(&worker_id).await?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref
             .invocations
@@ -389,9 +389,8 @@ impl Engine {
 
                 let handler_worker = worker.clone();
                 self.service_registry
-                    .write()
-                    .await
-                    .register_service_from_func_path(function_path);
+                    .register_service_from_func_path(function_path)
+                    .await;
 
                 let handler_function_path = function_path.clone();
                 let new_function = Function {
@@ -427,14 +426,13 @@ impl Engine {
                     "RegisterService"
                 );
                 {
-                    let services_guard = self.service_registry.read().await;
-                    tracing::info!(services = ?services_guard.services, "Current services");
+                    let services = self.service_registry.services.read().await;
+                    tracing::info!(services = ?services, "Current services");
                 }
 
                 self.service_registry
-                    .write()
-                    .await
-                    .insert_service(services::Service::new(name.clone(), id.clone()));
+                    .insert_service(services::Service::new(name.clone(), id.clone()))
+                    .await;
 
                 Ok(())
             }
@@ -477,10 +475,7 @@ impl Engine {
         let worker = Worker::new(tx.clone());
 
         tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
-        self.worker_registry
-            .write()
-            .await
-            .register_worker(worker.clone());
+        self.worker_registry.register_worker(worker.clone()).await;
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -530,10 +525,7 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
-        self.worker_registry
-            .write()
-            .await
-            .unregister_worker(&worker.id);
+        self.worker_registry.unregister_worker(&worker.id).await;
 
         let worker_invocations = worker.invocations.read().await;
 
