@@ -18,7 +18,7 @@ pub struct Function {
             > + Send
             + Sync,
     >,
-    pub function_path: String,
+    pub _function_path: String,
     pub _description: Option<String>,
 }
 

@@ -3,6 +3,7 @@ use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 mod function;
 mod invocation;
 mod logging;
+mod pending_invocations;
 mod services;
 mod trigger;
 mod workers;
@@ -20,12 +21,8 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-};
+use tokio::{net::TcpListener, sync::mpsc};
 use uuid::Uuid;
 
 mod protocol;
@@ -33,6 +30,7 @@ use protocol::*;
 
 use crate::{
     function::{Function, FunctionsRegistry},
+    pending_invocations::PendingInvocations,
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -50,7 +48,7 @@ struct Engine {
     functions: FunctionsRegistry,
     trigger_registry: TriggerRegistry,
     service_registry: ServicesRegistry,
-    pending_invocations: Arc<RwLock<DashMap<Uuid, Uuid>>>,
+    pending_invocations: PendingInvocations,
 }
 
 impl Engine {
@@ -59,7 +57,7 @@ impl Engine {
             worker_registry: WorkerRegistry::new(),
             functions: FunctionsRegistry::new(),
             trigger_registry: TriggerRegistry::new(),
-            pending_invocations: Arc::new(RwLock::new(DashMap::new())),
+            pending_invocations: PendingInvocations::new(),
             service_registry: ServicesRegistry::new(),
         }
     }
@@ -87,19 +85,18 @@ impl Engine {
             })
             .await;
         self.pending_invocations
-            .write()
-            .await
-            .insert(invocation_id, worker.id);
+            .insert(invocation_id, worker.id)
+            .await;
     }
 
     async fn remove_invocation(&self, invocation_id: &Uuid) {
         tracing::info!(invocation_id = %invocation_id, "Removing invocation");
-        self.pending_invocations.write().await.remove(invocation_id);
+        let _ = self.pending_invocations.remove(invocation_id).await;
     }
 
     async fn halt_invocation(&self, invocation_id: &Uuid) {
         tracing::info!(invocation_id = %invocation_id, "Halting invocation");
-        if let Some((_, worker_id)) = self.pending_invocations.write().await.remove(invocation_id)
+        if let Some(worker_id) = self.pending_invocations.remove(invocation_id).await
             && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id).await
         {
             worker_ref.halt_invocation(invocation_id).await;
@@ -157,11 +154,7 @@ impl Engine {
         &self,
         invocation_id: &Uuid,
     ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
-        let (_, worker_id) = self
-            .pending_invocations
-            .write()
-            .await
-            .remove(invocation_id)?;
+        let worker_id = self.pending_invocations.remove(invocation_id).await?;
         let worker_ref = self.worker_registry.get_worker(&worker_id).await?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref
@@ -391,7 +384,7 @@ impl Engine {
                             })
                         },
                     ),
-                    function_path: function_path.clone(),
+                    _function_path: function_path.clone(),
                     _description: description.clone(),
                 };
                 self.functions.insert(function_path.clone(), new_function);
@@ -519,18 +512,10 @@ impl Engine {
 
         tracing::info!(worker_id = %worker.id, "Worker triggers unregistered");
 
-        let lock = self.pending_invocations.read().await;
-        let invocations = lock
-            .iter()
-            .map(|entry| entry.key().clone())
-            .filter(|invocation_id| {
-                if let Some(worker_id) = lock.get(invocation_id) {
-                    *worker_id == worker.id
-                } else {
-                    false
-                }
-            })
-            .collect::<HashSet<Uuid>>();
+        let invocations = self
+            .pending_invocations
+            .invocations_for_worker(&worker.id)
+            .await;
 
         // remove pending invocations from this worker
         for invocation_id in invocations {
@@ -566,7 +551,7 @@ fn register_core_functions(engine: &Arc<Engine>) {
                     })
                 },
             ),
-            function_path: "logger.info".to_string(),
+            _function_path: "logger.info".to_string(),
             _description: Some("Log an info message".to_string()),
         },
     );
