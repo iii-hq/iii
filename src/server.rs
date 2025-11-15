@@ -32,6 +32,7 @@ mod protocol;
 use protocol::*;
 
 use crate::{
+    function::{Function, FunctionsRegistry},
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -43,27 +44,10 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
-struct Function {
-    handler: Box<
-        dyn Fn(
-                Option<Uuid>,
-                serde_json::Value,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Option<serde_json::Value>, ErrorBody>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    >,
-    _function_path: String,
-    _description: Option<String>,
-}
-
 #[derive(Default)]
 struct Engine {
     worker_registry: WorkerRegistry,
-    functions: Arc<DashMap<String, Function>>,
+    functions: FunctionsRegistry,
     trigger_registry: TriggerRegistry,
     service_registry: ServicesRegistry,
     pending_invocations: Arc<RwLock<DashMap<Uuid, Uuid>>>,
@@ -73,7 +57,7 @@ impl Engine {
     fn new() -> Self {
         Self {
             worker_registry: WorkerRegistry::new(),
-            functions: Arc::new(DashMap::new()),
+            functions: FunctionsRegistry::new(),
             trigger_registry: TriggerRegistry::new(),
             pending_invocations: Arc::new(RwLock::new(DashMap::new())),
             service_registry: ServicesRegistry::new(),
@@ -407,7 +391,7 @@ impl Engine {
                             })
                         },
                     ),
-                    _function_path: function_path.clone(),
+                    function_path: function_path.clone(),
                     _description: description.clone(),
                 };
                 self.functions.insert(function_path.clone(), new_function);
@@ -582,7 +566,7 @@ fn register_core_functions(engine: &Arc<Engine>) {
                     })
                 },
             ),
-            _function_path: "logger.info".to_string(),
+            function_path: "logger.info".to_string(),
             _description: Some("Log an info message".to_string()),
         },
     );
