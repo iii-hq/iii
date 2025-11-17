@@ -104,19 +104,11 @@ impl Engine {
     }
 
     async fn notify_new_functions(&self, duration_secs: u64) {
-        let mut current_funcion_hash = self.generate_functions_hash().await;
+        let mut current_funcion_hash = self.functions.functions_hash();
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
             tracing::info!("Checking for new functions");
-
-            let new_functions: HashSet<String> = self
-                .functions
-                .iter()
-                .map(|entry| entry.key().clone())
-                .collect();
-
-            let new_function_hash = self.generate_functions_hash().await;
-
+            let new_function_hash = self.functions.functions_hash();
             if new_function_hash != current_funcion_hash {
                 tracing::info!("New functions detected, notifying workers");
                 let message: Vec<FunctionMessage> = self
@@ -129,18 +121,6 @@ impl Engine {
                 current_funcion_hash = new_function_hash;
             }
         }
-    }
-
-    async fn generate_functions_hash(&self) -> String {
-        let functions: HashSet<String> = self
-            .functions
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-
-        let mut function_hash = functions.iter().cloned().collect::<Vec<String>>();
-        function_hash.sort();
-        format!("{:?}", function_hash)
     }
 
     async fn broadcast_msg(&self, msg: Message) {

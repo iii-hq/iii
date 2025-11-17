@@ -2,7 +2,7 @@ use crate::protocol::*;
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use std::{pin::Pin, sync::Arc};
+use std::{collections::HashSet, pin::Pin, sync::Arc};
 use uuid::Uuid;
 
 pub struct Function {
@@ -56,6 +56,17 @@ impl FunctionsRegistry {
         }
     }
 
+    pub fn functions_hash(&self) -> String {
+        let functions: HashSet<String> = self
+            .functions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let mut function_hash = functions.iter().cloned().collect::<Vec<String>>();
+        function_hash.sort();
+        format!("{:?}", function_hash)
+    }
     pub fn insert(&self, function_path: String, function: Function) {
         self.functions.insert(function_path, function);
     }
