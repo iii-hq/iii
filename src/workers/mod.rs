@@ -14,26 +14,26 @@ use crate::{
 
 #[derive(Default)]
 pub struct WorkerRegistry {
-    pub workers: DashMap<Uuid, Worker>,
+    pub workers: Arc<RwLock<DashMap<Uuid, Worker>>>,
 }
 
 impl WorkerRegistry {
     pub fn new() -> Self {
         Self {
-            workers: DashMap::new(),
+            workers: Arc::new(RwLock::new(DashMap::new())),
         }
     }
-    pub fn get_worker(&self, id: &Uuid) -> Option<Worker> {
-        self.workers.get(id).map(|w| w.value().clone())
+    pub async fn get_worker(&self, id: &Uuid) -> Option<Worker> {
+        self.workers.read().await.get(id).map(|w| w.value().clone())
     }
 
-    pub fn register_worker(&self, worker: Worker) {
-        self.workers.insert(worker.id, worker);
+    pub async fn register_worker(&self, worker: Worker) {
+        self.workers.write().await.insert(worker.id, worker);
     }
 
-    pub fn unregister_worker(&self, worker_id: &Uuid) {
+    pub async fn unregister_worker(&self, worker_id: &Uuid) {
         tracing::info!("Unregistering worker: {}", worker_id);
-        self.workers.remove(worker_id);
+        self.workers.write().await.remove(worker_id);
     }
 }
 
@@ -73,7 +73,7 @@ impl Worker {
         self.invocations.write().await.remove(invocation_id);
         self.channel
             .send(Outbound::Protocol(Message::InvocationResult {
-                invocation_id: invocation_id.clone(),
+                invocation_id: *invocation_id,
                 function_path: "".to_string(), // we don't need the function path here because the invocation is stopped
                 result: None,
                 error: Some(ErrorBody {

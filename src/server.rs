@@ -3,6 +3,7 @@ use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 mod function;
 mod invocation;
 mod logging;
+mod pending_invocations;
 mod services;
 mod trigger;
 mod workers;
@@ -20,18 +21,16 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use tokio::{
-    net::TcpListener,
-    sync::{RwLock, mpsc},
-};
+use tokio::{net::TcpListener, sync::mpsc};
 use uuid::Uuid;
 
 mod protocol;
 use protocol::*;
 
 use crate::{
+    function::{Function, FunctionsRegistry},
+    pending_invocations::PendingInvocations,
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -43,40 +42,23 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
-struct Function {
-    handler: Box<
-        dyn Fn(
-                Option<Uuid>,
-                serde_json::Value,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Option<serde_json::Value>, ErrorBody>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    >,
-    _function_path: String,
-    _description: Option<String>,
-}
-
 #[derive(Default)]
 struct Engine {
     worker_registry: WorkerRegistry,
-    functions: Arc<DashMap<String, Function>>,
-    trigger_registry: Arc<TriggerRegistry>,
-    service_registry: Arc<RwLock<ServicesRegistry>>,
-    pending_invocations: Arc<RwLock<DashMap<Uuid, Uuid>>>,
+    functions: FunctionsRegistry,
+    trigger_registry: TriggerRegistry,
+    service_registry: ServicesRegistry,
+    pending_invocations: PendingInvocations,
 }
 
 impl Engine {
     fn new() -> Self {
         Self {
             worker_registry: WorkerRegistry::new(),
-            functions: Arc::new(DashMap::new()),
-            trigger_registry: Arc::new(TriggerRegistry::new()),
-            pending_invocations: Arc::new(RwLock::new(DashMap::new())),
-            service_registry: Arc::new(RwLock::new(ServicesRegistry::new())),
+            functions: FunctionsRegistry::new(),
+            trigger_registry: TriggerRegistry::new(),
+            pending_invocations: PendingInvocations::new(),
+            service_registry: ServicesRegistry::new(),
         }
     }
 
@@ -103,22 +85,51 @@ impl Engine {
             })
             .await;
         self.pending_invocations
-            .write()
-            .await
-            .insert(invocation_id, worker.id);
+            .insert(invocation_id, worker.id)
+            .await;
     }
 
     async fn remove_invocation(&self, invocation_id: &Uuid) {
         tracing::info!(invocation_id = %invocation_id, "Removing invocation");
-        self.pending_invocations.write().await.remove(invocation_id);
+        let _ = self.pending_invocations.remove(invocation_id).await;
     }
 
     async fn halt_invocation(&self, invocation_id: &Uuid) {
         tracing::info!(invocation_id = %invocation_id, "Halting invocation");
-        if let Some((_, worker_id)) = self.pending_invocations.write().await.remove(invocation_id)
-            && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id)
+        if let Some(worker_id) = self.pending_invocations.remove(invocation_id).await
+            && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id).await
         {
             worker_ref.halt_invocation(invocation_id).await;
+        }
+    }
+
+    async fn notify_new_functions(&self, duration_secs: u64) {
+        let mut current_funcion_hash = self.functions.functions_hash();
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
+            tracing::info!("Checking for new functions");
+            let new_function_hash = self.functions.functions_hash();
+            if new_function_hash != current_funcion_hash {
+                tracing::info!("New functions detected, notifying workers");
+                let message: Vec<FunctionMessage> = self
+                    .functions
+                    .iter()
+                    .map(|entry| FunctionMessage::from(entry.value()))
+                    .collect();
+                let message = Message::FunctionsAvailable { functions: message };
+                self.broadcast_msg(message).await;
+                current_funcion_hash = new_function_hash;
+            }
+        }
+    }
+
+    async fn broadcast_msg(&self, msg: Message) {
+        for worker in self.worker_registry.workers.read().await.iter() {
+            let _ = worker
+                .value()
+                .channel
+                .send(Outbound::Protocol(msg.clone()))
+                .await;
         }
     }
 
@@ -126,12 +137,8 @@ impl Engine {
         &self,
         invocation_id: &Uuid,
     ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
-        let (_, worker_id) = self
-            .pending_invocations
-            .write()
-            .await
-            .remove(invocation_id)?;
-        let worker_ref = self.worker_registry.get_worker(&worker_id)?;
+        let worker_id = self.pending_invocations.remove(invocation_id).await?;
+        let worker_ref = self.worker_registry.get_worker(&worker_id).await?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref
             .invocations
@@ -144,6 +151,10 @@ impl Engine {
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
+            Message::FunctionsAvailable { functions } => {
+                println!("FunctionsAvailable {:?}", functions);
+                Ok(())
+            }
             Message::TriggerRegistrationResult {
                 id,
                 trigger_type,
@@ -279,7 +290,7 @@ impl Engine {
                     let _ = worker
                         .handle_invocation_result(
                             Invocation {
-                                invocation_id: invocation_id,
+                                invocation_id,
                                 function_path: function_path.clone(),
                             },
                             None,
@@ -328,6 +339,8 @@ impl Engine {
             Message::RegisterFunction {
                 function_path,
                 description,
+                request_format: req,
+                response_format: res,
             } => {
                 tracing::info!(
                     worker_id = %worker.id,
@@ -338,9 +351,8 @@ impl Engine {
 
                 let handler_worker = worker.clone();
                 self.service_registry
-                    .write()
-                    .await
-                    .register_service_from_func_path(function_path);
+                    .register_service_from_func_path(function_path)
+                    .await;
 
                 let handler_function_path = function_path.clone();
                 let new_function = Function {
@@ -359,6 +371,8 @@ impl Engine {
                     ),
                     _function_path: function_path.clone(),
                     _description: description.clone(),
+                    request_format: req.clone(),
+                    response_format: res.clone(),
                 };
                 self.functions.insert(function_path.clone(), new_function);
                 worker.include_function_path(function_path).await;
@@ -376,14 +390,13 @@ impl Engine {
                     "RegisterService"
                 );
                 {
-                    let services_guard = self.service_registry.read().await;
-                    tracing::info!(services = ?services_guard.services, "Current services");
+                    let services = self.service_registry.services.read().await;
+                    tracing::info!(services = ?services, "Current services");
                 }
 
                 self.service_registry
-                    .write()
-                    .await
-                    .insert_service(services::Service::new(name.clone(), id.clone()));
+                    .insert_service(services::Service::new(name.clone(), id.clone()))
+                    .await;
 
                 Ok(())
             }
@@ -426,7 +439,7 @@ impl Engine {
         let worker = Worker::new(tx.clone());
 
         tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
-        self.worker_registry.register_worker(worker.clone());
+        self.worker_registry.register_worker(worker.clone()).await;
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -476,28 +489,20 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
-        self.worker_registry.unregister_worker(&worker.id);
+        self.worker_registry.unregister_worker(&worker.id).await;
 
         let worker_invocations = worker.invocations.read().await;
 
         for entry in worker_invocations.iter() {
-            self.halt_invocation(&entry.key()).await;
+            self.halt_invocation(entry.key()).await;
         }
 
         tracing::info!(worker_id = %worker.id, "Worker triggers unregistered");
 
-        let lock = self.pending_invocations.read().await;
-        let invocations = lock
-            .iter()
-            .map(|entry| entry.key().clone())
-            .filter(|invocation_id| {
-                if let Some(worker_id) = lock.get(invocation_id) {
-                    *worker_id == worker.id
-                } else {
-                    false
-                }
-            })
-            .collect::<HashSet<Uuid>>();
+        let invocations = self
+            .pending_invocations
+            .invocations_for_worker(&worker.id)
+            .await;
 
         // remove pending invocations from this worker
         for invocation_id in invocations {
@@ -535,6 +540,14 @@ fn register_core_functions(engine: &Arc<Engine>) {
             ),
             _function_path: "logger.info".to_string(),
             _description: Some("Log an info message".to_string()),
+            request_format: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            })),
+            response_format: None,
         },
     );
 }
@@ -544,11 +557,15 @@ async fn main() -> anyhow::Result<()> {
     logging::init_tracing();
 
     let engine = Arc::new(Engine::new());
+    register_core_functions(&engine);
+    let engine_clone = engine.clone();
+    tokio::spawn(async move {
+        engine_clone.notify_new_functions(5).await;
+    });
+
     let app = Router::new()
         .route("/", get(ws_handler))
         .with_state(engine.clone());
-
-    register_core_functions(&engine);
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;

@@ -40,18 +40,109 @@ class Engine {
 
 const engine = new Engine()
 
+const noPayloadFormat = {
+  name: 'payload',
+  description: 'This function does not expect any input payload.',
+  type: 'null',
+  required: false,
+} as const
+
+const voidResponseFormat = {
+  name: 'response',
+  description: 'This function does not return a response payload.',
+  type: 'null',
+  required: false,
+} as const
+
+const echoRequestFormat = {
+  name: 'payload',
+  description: 'Payload forwarded to engine.echo.',
+  type: 'object',
+  body: [
+    {
+      name: 'text',
+      description: 'Message that will be echoed back.',
+      type: 'string',
+      required: true,
+    },
+    {
+      name: 'from',
+      description: 'Optional identifier for the caller.',
+      type: 'string',
+      required: false,
+    },
+  ],
+} as const
+
+const echoResponseFormat = {
+  name: 'response',
+  description: 'Metadata returned by engine.echo.',
+  type: 'object',
+  body: [
+    {
+      name: 'text',
+      description: 'The echoed text.',
+      type: 'string',
+      required: true,
+    },
+    {
+      name: 'from',
+      description: 'Identifier of the echo handler.',
+      type: 'string',
+      required: true,
+    },
+    {
+      name: 'receivedFrom',
+      description: 'Caller identifier embedded in the payload.',
+      type: 'string',
+      required: true,
+    },
+    {
+      name: 'at',
+      description: 'ISO-8601 timestamp when the request was processed.',
+      type: 'string',
+      required: true,
+    },
+  ],
+} as const
+
 // Not quite necessary to do it
 // bridge.registerService({ id: 'engine', description: 'Example of an engine service' })
 
-bridge.registerFunction({ functionPath: 'engine.enable', description: 'Enable the engine' }, async () =>
-  engine.enable(),
-)
-bridge.registerFunction({ functionPath: 'engine.disable', description: 'Disable the engine' }, async () =>
-  engine.disable(),
-)
-bridge.registerFunction({ functionPath: 'engine.work', description: 'Work the engine' }, async () => engine.work())
 bridge.registerFunction(
-  { functionPath: 'engine.echo', description: 'Echo message back to the caller' },
+  {
+    functionPath: 'engine.enable',
+    description: 'Enable the engine',
+    requestFormat: noPayloadFormat,
+    responseFormat: voidResponseFormat,
+  },
+  async () => engine.enable(),
+)
+bridge.registerFunction(
+  {
+    functionPath: 'engine.disable',
+    description: 'Disable the engine',
+    requestFormat: noPayloadFormat,
+    responseFormat: voidResponseFormat,
+  },
+  async () => engine.disable(),
+)
+bridge.registerFunction(
+  {
+    functionPath: 'engine.work',
+    description: 'Work the engine',
+    requestFormat: noPayloadFormat,
+    responseFormat: voidResponseFormat,
+  },
+  async () => engine.work(),
+)
+bridge.registerFunction(
+  {
+    functionPath: 'engine.echo',
+    description: 'Echo message back to the caller',
+    requestFormat: echoRequestFormat,
+    responseFormat: echoResponseFormat,
+  },
   async (payload) => engine.echo(payload),
 )
 
