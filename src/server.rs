@@ -119,9 +119,12 @@ impl Engine {
 
             if new_function_hash != current_funcion_hash {
                 tracing::info!("New functions detected, notifying workers");
-                let message = Message::FunctionsAvailable {
-                    functions: new_functions.into_iter().collect(),
-                };
+                let message: Vec<FunctionMessage> = self
+                    .functions
+                    .iter()
+                    .map(|entry| FunctionMessage::from(entry.value()))
+                    .collect();
+                let message = Message::FunctionsAvailable { functions: message };
                 self.broadcast_msg(message).await;
                 current_funcion_hash = new_function_hash;
             }
@@ -356,6 +359,8 @@ impl Engine {
             Message::RegisterFunction {
                 function_path,
                 description,
+                request_format: req,
+                response_format: res,
             } => {
                 tracing::info!(
                     worker_id = %worker.id,
@@ -386,6 +391,8 @@ impl Engine {
                     ),
                     _function_path: function_path.clone(),
                     _description: description.clone(),
+                    request_format: req.clone(),
+                    response_format: res.clone(),
                 };
                 self.functions.insert(function_path.clone(), new_function);
                 worker.include_function_path(function_path).await;
@@ -553,6 +560,14 @@ fn register_core_functions(engine: &Arc<Engine>) {
             ),
             _function_path: "logger.info".to_string(),
             _description: Some("Log an info message".to_string()),
+            request_format: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            })),
+            response_format: None,
         },
     );
 }

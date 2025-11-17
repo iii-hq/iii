@@ -20,6 +20,19 @@ pub struct Function {
     >,
     pub _function_path: String,
     pub _description: Option<String>,
+    pub request_format: Option<Value>,
+    pub response_format: Option<Value>,
+}
+
+impl From<&Function> for FunctionMessage {
+    fn from(func: &Function) -> Self {
+        FunctionMessage {
+            function_path: func._function_path.clone(),
+            description: func._description.clone(),
+            request_format: func.request_format.clone(),
+            response_format: func.response_format.clone(),
+        }
+    }
 }
 
 pub trait FunctionHandler {
