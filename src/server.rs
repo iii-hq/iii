@@ -290,7 +290,7 @@ impl Engine {
                     let _ = worker
                         .handle_invocation_result(
                             Invocation {
-                                invocation_id: invocation_id,
+                                invocation_id,
                                 function_path: function_path.clone(),
                             },
                             None,
@@ -494,7 +494,7 @@ impl Engine {
         let worker_invocations = worker.invocations.read().await;
 
         for entry in worker_invocations.iter() {
-            self.halt_invocation(&entry.key()).await;
+            self.halt_invocation(entry.key()).await;
         }
 
         tracing::info!(worker_id = %worker.id, "Worker triggers unregistered");

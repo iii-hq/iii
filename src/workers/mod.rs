@@ -73,7 +73,7 @@ impl Worker {
         self.invocations.write().await.remove(invocation_id);
         self.channel
             .send(Outbound::Protocol(Message::InvocationResult {
-                invocation_id: invocation_id.clone(),
+                invocation_id: *invocation_id,
                 function_path: "".to_string(), // we don't need the function path here because the invocation is stopped
                 result: None,
                 error: Some(ErrorBody {
