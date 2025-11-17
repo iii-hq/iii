@@ -125,7 +125,7 @@ impl Engine {
 
     async fn broadcast_msg(&self, msg: Message) {
         for worker in self.worker_registry.workers.read().await.iter() {
-            worker
+            let _ = worker
                 .value()
                 .channel
                 .send(Outbound::Protocol(msg.clone()))
