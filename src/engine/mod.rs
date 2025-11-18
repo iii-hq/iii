@@ -23,16 +23,19 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
-#[allow(dead_code)]
-pub trait EngineTrait {
+pub struct RegisterFunctionRequest {
+    pub function_path: String,
+    pub description: Option<String>,
+    pub request_format: Option<Value>,
+    pub response_format: Option<Value>,
+}
+
+pub trait EngineTrait: Send + Sync {
     fn register_function(
         &self,
-        function_path: &str,
-        function: Box<dyn FunctionHandler + Send + Sync>,
+        request: RegisterFunctionRequest,
+        handler: Box<dyn FunctionHandler + Send + Sync>,
     );
-
-    fn invoke_function(&self, function_path: &str, input: Value);
-    fn register_trigger_type(&self, trigger_type: TriggerType);
 }
 
 #[derive(Default)]
@@ -342,32 +345,20 @@ impl Engine {
                     "RegisterFunction"
                 );
 
-                let handler_worker = worker.clone();
                 self.service_registry
                     .register_service_from_func_path(function_path)
                     .await;
 
-                let handler_function_path = function_path.clone();
-                let new_function = Function {
-                    handler: Box::new(
-                        move |invocation_id: Option<Uuid>, input: serde_json::Value| {
-                            let function_path = handler_function_path.clone();
-                            let worker = handler_worker.clone();
+                self.register_function(
+                    RegisterFunctionRequest {
+                        function_path: function_path.clone(),
+                        description: description.clone(),
+                        request_format: req.clone(),
+                        response_format: res.clone(),
+                    },
+                    Box::new(worker.clone()),
+                );
 
-                            Box::pin(async move {
-                                let _ = worker
-                                    .handle_function(invocation_id, function_path, input)
-                                    .await;
-                                Ok(None)
-                            })
-                        },
-                    ),
-                    _function_path: function_path.clone(),
-                    _description: description.clone(),
-                    request_format: req.clone(),
-                    response_format: res.clone(),
-                };
-                self.functions.insert(function_path.clone(), new_function);
                 worker.include_function_path(function_path).await;
                 Ok(())
             }
@@ -501,5 +492,37 @@ impl Engine {
         for invocation_id in invocations {
             self.remove_invocation(&invocation_id).await;
         }
+    }
+}
+
+impl EngineTrait for Engine {
+    fn register_function(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: Box<dyn FunctionHandler + Send + Sync>,
+    ) {
+        let RegisterFunctionRequest {
+            function_path,
+            description,
+            request_format,
+            response_format,
+        } = request;
+
+        let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
+        let handler_function_path = function_path.clone();
+
+        let function = Function {
+            handler: Box::new(move |invocation_id, input| {
+                let handler = handler_arc.clone();
+                let path = handler_function_path.clone();
+                Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
+            }),
+            _function_path: function_path.clone(),
+            _description: description,
+            request_format,
+            response_format,
+        };
+
+        self.functions.insert(function_path, function);
     }
 }
