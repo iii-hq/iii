@@ -4,7 +4,7 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::Outbound;
+use crate::engine::Outbound;
 use crate::function::FunctionHandler;
 use crate::invocation::{Invocation, InvocationHandler};
 use crate::protocol::{ErrorBody, Message};
