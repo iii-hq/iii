@@ -35,8 +35,8 @@ pub struct Trigger {
 
 #[derive(Default)]
 pub struct TriggerRegistry {
-    trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
-    triggers: Arc<RwLock<DashMap<String, Trigger>>>,
+    pub trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
+    pub triggers: Arc<RwLock<DashMap<String, Trigger>>>,
 }
 
 impl TriggerRegistry {

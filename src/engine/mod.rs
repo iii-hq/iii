@@ -46,6 +46,8 @@ impl FunctionHandler for LocalFunctionHandler {
     }
 }
 pub trait EngineTrait: Send + Sync {
+    fn invoke_function(&self, function_path: &str, input: Value);
+    async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
         &self,
         request: RegisterFunctionRequest,
@@ -526,6 +528,27 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
+    fn invoke_function(&self, function_path: &str, input: Value) {
+        let function_opt = self.functions.get(function_path);
+        if let Some(function) = function_opt {
+            let _ = (function.handler)(None, input);
+        } else {
+            tracing::warn!(function_path = %function_path, "Function not found");
+        }
+    }
+
+    async fn register_trigger_type(&self, trigger_type: TriggerType) {
+        let trigger_type_id = &trigger_type.id;
+        let existing = self.trigger_registry.trigger_types.read().await;
+        if existing.contains_key(trigger_type_id) {
+            tracing::warn!(trigger_type_id = %trigger_type_id, "Trigger type already registered");
+            return;
+        }
+        drop(existing);
+        self.trigger_registry
+            .register_trigger_type(trigger_type)
+            .await;
+    }
     fn register_function(
         &self,
         request: RegisterFunctionRequest,
@@ -553,6 +576,6 @@ impl EngineTrait for Engine {
             response_format,
         };
 
-        self.functions.insert(function_path, function);
+        self.functions.register_function(function_path, function);
     }
 }
