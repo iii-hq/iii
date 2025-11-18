@@ -16,7 +16,6 @@ use crate::{
     workers::{Worker, WorkerRegistry},
 };
 
-
 #[derive(Debug)]
 pub enum Outbound {
     Protocol(Message),
@@ -30,12 +29,43 @@ pub struct RegisterFunctionRequest {
     pub response_format: Option<Value>,
 }
 
+struct LocalFunctionHandler {
+    function: Function,
+}
+
+impl FunctionHandler for LocalFunctionHandler {
+    fn handle_function<'a>(
+        &'a self,
+        invocation_id: Option<Uuid>,
+        _function_path: String,
+        input: Value,
+    ) -> std::pin::Pin<
+        Box<dyn futures::Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>,
+    > {
+        (self.function.handler)(invocation_id, input)
+    }
+}
 pub trait EngineTrait: Send + Sync {
     fn register_function(
         &self,
         request: RegisterFunctionRequest,
         handler: Box<dyn FunctionHandler + Send + Sync>,
     );
+
+    fn register_local_functions(&self, functions: Vec<Function>) {
+        for function in functions {
+            let function_path = function._function_path.clone();
+            self.register_function(
+                RegisterFunctionRequest {
+                    function_path,
+                    description: function._description.clone(),
+                    request_format: function.request_format.clone(),
+                    response_format: function.response_format.clone(),
+                },
+                Box::new(LocalFunctionHandler { function }),
+            );
+        }
+    }
 }
 
 #[derive(Default)]

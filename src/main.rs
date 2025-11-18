@@ -19,7 +19,7 @@ use axum::{
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
-use engine::Engine;
+use engine::{Engine, EngineTrait};
 
 use crate::function::Function;
 
@@ -38,30 +38,29 @@ async fn ws_handler(
     })
 }
 
-fn register_core_functions(engine: &Arc<Engine>) {
-    engine.functions.insert(
-        "logger.info".to_string(),
-        Function {
-            handler: Box::new(
-                move |_invocation_id: Option<Uuid>, input: serde_json::Value| {
-                    Box::pin(async move {
-                        tracing::info!(input = ?input, "logger.info invoked");
-                        Ok(None)
-                    })
-                },
-            ),
-            _function_path: "logger.info".to_string(),
-            _description: Some("Log an info message".to_string()),
-            request_format: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" }
-                },
-                "required": ["message"]
-            })),
-            response_format: None,
-        },
-    );
+fn register_local_functions(engine: &Arc<Engine>) {
+    let logging_function = Function {
+        handler: Box::new(
+            move |_invocation_id: Option<Uuid>, input: serde_json::Value| {
+                Box::pin(async move {
+                    tracing::info!(input = ?input, "logger.info invoked");
+                    Ok(None)
+                })
+            },
+        ),
+        _function_path: "logger.info".to_string(),
+        _description: Some("Log an info message".to_string()),
+        request_format: Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" }
+            },
+            "required": ["message"]
+        })),
+        response_format: None,
+    };
+
+    engine.register_local_functions(vec![logging_function]);
 }
 
 #[tokio::main]
@@ -69,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     logging::init_tracing();
 
     let engine = Arc::new(Engine::new());
-    register_core_functions(&engine);
+    register_local_functions(&engine);
     let engine_clone = engine.clone();
     tokio::spawn(async move {
         engine_clone.notify_new_functions(5).await;
