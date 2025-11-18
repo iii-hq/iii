@@ -45,9 +45,9 @@ impl FunctionHandler for LocalFunctionHandler {
         (self.function.handler)(invocation_id, input)
     }
 }
-pub trait EngineTrait: Send + Sync {
+pub trait EngineTrait<'a>: Send + Sync {
     fn invoke_function(&self, function_path: &str, input: Value);
-    async fn register_trigger_type(&self, trigger_type: TriggerType);
+    async fn register_trigger_type(&'a self, trigger_type: &'a TriggerType<'a>);
     fn register_function(
         &self,
         request: RegisterFunctionRequest,
@@ -71,15 +71,15 @@ pub trait EngineTrait: Send + Sync {
 }
 
 #[derive(Default)]
-pub struct Engine {
+pub struct Engine<'a> {
     pub worker_registry: WorkerRegistry,
     pub functions: FunctionsRegistry,
-    pub trigger_registry: TriggerRegistry,
+    pub trigger_registry: TriggerRegistry<'a>,
     pub service_registry: ServicesRegistry,
     pub pending_invocations: PendingInvocations,
 }
 
-impl Engine {
+impl<'a> Engine<'a> {
     pub fn new() -> Self {
         Self {
             worker_registry: WorkerRegistry::new(),
@@ -199,14 +199,24 @@ impl Engine {
                     description = %description,
                     "RegisterTriggerType"
                 );
-                self.trigger_registry
-                    .register_trigger_type(TriggerType {
-                        id: id.clone(),
-                        _description: description.clone(),
-                        registrator: Box::new(worker.clone()),
-                        worker_id: Some(worker.id),
-                    })
-                    .await?;
+                let trigger_type = Box::new(TriggerType {
+                    id: id.clone(),
+                    _description: description.clone(),
+                    registrator: Box::new(worker.clone()),
+                    worker_id: Some(worker.id),
+                });
+                let trigger_type_ref_static: &'static TriggerType<'static> =
+                    Box::leak(trigger_type);
+                // SAFETY: Since Engine<'a> with 'a='static, we can safely cast 'static to 'a
+                let trigger_type_ref: &'a TriggerType<'a> =
+                    unsafe { std::mem::transmute(trigger_type_ref_static) };
+                // Need &'a self for register_trigger_type, but we have &self
+                // SAFETY: When Engine<'a> with 'a='static, we can safely extend the lifetime
+                let self_ref: &'a Self = unsafe { std::mem::transmute(self) };
+                self_ref
+                    .trigger_registry
+                    .register_trigger_type(trigger_type_ref)
+                    .await;
                 Ok(())
             }
             Message::RegisterTrigger {
@@ -424,11 +434,7 @@ impl Engine {
         }
     }
 
-    pub async fn handle_worker(
-        self: Arc<Self>,
-        socket: WebSocket,
-        peer: SocketAddr,
-    ) -> anyhow::Result<()> {
+    pub async fn handle_worker(&self, socket: WebSocket, peer: SocketAddr) -> anyhow::Result<()> {
         tracing::info!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
@@ -527,7 +533,7 @@ impl Engine {
     }
 }
 
-impl EngineTrait for Engine {
+impl<'a> EngineTrait<'a> for Engine<'a> {
     fn invoke_function(&self, function_path: &str, input: Value) {
         let function_opt = self.functions.get(function_path);
         if let Some(function) = function_opt {
@@ -537,7 +543,7 @@ impl EngineTrait for Engine {
         }
     }
 
-    async fn register_trigger_type(&self, trigger_type: TriggerType) {
+    async fn register_trigger_type(&'a self, trigger_type: &'a TriggerType<'a>) {
         let trigger_type_id = &trigger_type.id;
         let existing = self.trigger_registry.trigger_types.read().await;
         if existing.contains_key(trigger_type_id) {

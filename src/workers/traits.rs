@@ -11,8 +11,8 @@ use crate::protocol::{ErrorBody, Message};
 use crate::trigger::{Trigger, TriggerRegistrator};
 use crate::workers::Worker;
 
-impl TriggerRegistrator for Worker {
-    fn register_trigger<'a>(
+impl<'a> TriggerRegistrator<'a> for Worker {
+    fn register_trigger(
         &'a self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
@@ -38,8 +38,8 @@ impl TriggerRegistrator for Worker {
         })
     }
 
-    fn unregister_trigger<'a>(
-        &'a self,
+    fn unregister_trigger(
+        &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
         let sender = self.channel.clone();

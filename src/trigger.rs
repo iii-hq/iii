@@ -5,20 +5,20 @@ use std::{pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-pub struct TriggerType {
+pub struct TriggerType<'a> {
     pub id: String,
     pub _description: String,
     // pub config_schema: Schema,
-    pub registrator: Box<dyn TriggerRegistrator>,
+    pub registrator: Box<dyn TriggerRegistrator<'a>>,
     pub worker_id: Option<Uuid>,
 }
 
-pub trait TriggerRegistrator: Send + Sync {
-    fn register_trigger<'a>(
+pub trait TriggerRegistrator<'a>: Send + Sync {
+    fn register_trigger(
         &'a self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
-    fn unregister_trigger<'a>(
+    fn unregister_trigger(
         &'a self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
@@ -34,12 +34,12 @@ pub struct Trigger {
 }
 
 #[derive(Default)]
-pub struct TriggerRegistry {
-    pub trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
+pub struct TriggerRegistry<'a> {
+    pub trigger_types: Arc<RwLock<DashMap<String, &'a TriggerType<'a>>>>,
     pub triggers: Arc<RwLock<DashMap<String, Trigger>>>,
 }
 
-impl TriggerRegistry {
+impl<'a> TriggerRegistry<'a> {
     pub fn new() -> Self {
         Self {
             trigger_types: Arc::new(RwLock::new(DashMap::new())),
@@ -88,8 +88,8 @@ impl TriggerRegistry {
     }
 
     pub async fn register_trigger_type(
-        &self,
-        trigger_type: TriggerType,
+        &'a self,
+        trigger_type: &'a TriggerType<'a>,
     ) -> Result<(), anyhow::Error> {
         let trigger_type_id = &trigger_type.id;
 
@@ -123,14 +123,10 @@ impl TriggerRegistry {
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
-        let result = trigger_type
+        let _: Result<(), anyhow::Error> = trigger_type
             .registrator
             .register_trigger(trigger.clone())
             .await;
-
-        if result.is_err() {
-            return Err(result.err().unwrap());
-        }
 
         self.triggers
             .write()
@@ -153,7 +149,7 @@ impl TriggerRegistry {
         let trigger_type = trigger_type_lock.get(&trigger_type.clone());
 
         if trigger_type.is_some() {
-            let result = trigger_type
+            let result: Result<(), anyhow::Error> = trigger_type
                 .unwrap()
                 .registrator
                 .unregister_trigger(trigger.clone())
