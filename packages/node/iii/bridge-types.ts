@@ -45,6 +45,10 @@ export type RegisterTriggerMessage = {
    * Example: software.engineering.code.rust
    * Where software, engineering, and code are the service ids
    */
+
+  // Optional HTTP method for HTTP triggers
+  httpMethod?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  apiPath?: string // Optional API path for HTTP triggers
   functionPath: string
   config: any
 }

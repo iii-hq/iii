@@ -16,6 +16,8 @@ pub enum Message {
         #[serde(rename = "functionPath")]
         function_path: String,
         config: Value,
+        #[serde(rename = "apiPath")]
+        api_path: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,

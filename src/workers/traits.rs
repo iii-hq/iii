@@ -25,6 +25,7 @@ impl TriggerRegistrator for Worker {
                     trigger_type: trigger.trigger_type,
                     function_path: trigger.function_path,
                     config: trigger.config,
+                    api_path: None, // todo: API path is not used in this context
                 }))
                 .await
                 .map_err(|err| {

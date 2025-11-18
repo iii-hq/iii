@@ -4,6 +4,7 @@ mod function;
 mod invocation;
 mod logging;
 mod pending_invocations;
+mod routers;
 mod services;
 mod trigger;
 mod workers;
@@ -11,6 +12,7 @@ mod workers;
 use crate::{
     function::FunctionHandler,
     invocation::{Invocation, InvocationHandler},
+    routers::{PathRouter, RouterRegistry},
 };
 use axum::{
     Router,
@@ -49,6 +51,7 @@ struct Engine {
     trigger_registry: TriggerRegistry,
     service_registry: ServicesRegistry,
     pending_invocations: PendingInvocations,
+    routers_registry: RouterRegistry,
 }
 
 impl Engine {
@@ -59,6 +62,7 @@ impl Engine {
             trigger_registry: TriggerRegistry::new(),
             pending_invocations: PendingInvocations::new(),
             service_registry: ServicesRegistry::new(),
+            routers_registry: RouterRegistry::new(),
         }
     }
 
@@ -186,6 +190,7 @@ impl Engine {
                 trigger_type,
                 function_path,
                 config,
+                api_path,
             } => {
                 tracing::info!(
                     trigger_id = %id,
@@ -194,6 +199,21 @@ impl Engine {
                     config = ?config,
                     "RegisterTrigger"
                 );
+
+                if trigger_type == "api" {
+                    tracing::info!("API triggers are registered automatically, skipping");
+                    if let Some(api_path) = api_path {
+                        let router = PathRouter::new(
+                            api_path.clone(),
+                            "POST".to_string(),
+                            function_path.clone(),
+                        );
+                        self.routers_registry.register_router(router).await;
+                    } else {
+                        tracing::warn!("API trigger registration missing api_path");
+                        return Err(anyhow::anyhow!("API trigger registration missing api_path"));
+                    }
+                }
 
                 let _ = self
                     .trigger_registry
