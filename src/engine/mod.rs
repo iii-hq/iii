@@ -1,39 +1,22 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
-mod function;
-mod invocation;
-mod logging;
-mod pending_invocations;
-mod routers;
-mod services;
-mod trigger;
-mod workers;
-
 use crate::{
     function::FunctionHandler,
     invocation::{Invocation, InvocationHandler},
     routers::{PathRouter, RouterRegistry},
 };
-use axum::{
-    Router,
-    extract::{
-        ConnectInfo, State,
-        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-    },
-    response::IntoResponse,
-    routing::get,
-};
-use futures_util::{SinkExt, StreamExt};
-use tokio::{net::TcpListener, sync::mpsc};
-use uuid::Uuid;
+use axum::extract::ws::{Message as WsMessage, WebSocket};
 
-mod protocol;
-use protocol::*;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
+use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionsRegistry},
     pending_invocations::PendingInvocations,
-    services::ServicesRegistry,
+    protocol::{ErrorBody, FunctionMessage, Message},
+    services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
 };
@@ -44,25 +27,42 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
+pub struct RegisterFunctionRequest {
+    pub function_path: String,
+    pub description: Option<String>,
+    pub request_format: Option<Value>,
+    pub response_format: Option<Value>,
+}
+
+pub trait EngineTrait: Send + Sync {
+    fn invoke_function(&self, function_path: &str, input: Value);
+    async fn register_trigger_type(&self, trigger_type: TriggerType);
+    fn register_function(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: Box<dyn FunctionHandler + Send + Sync>,
+    );
+}
+
 #[derive(Default)]
-struct Engine {
-    worker_registry: WorkerRegistry,
-    functions: FunctionsRegistry,
-    trigger_registry: TriggerRegistry,
-    service_registry: ServicesRegistry,
-    pending_invocations: PendingInvocations,
-    routers_registry: RouterRegistry,
+pub struct Engine {
+    pub worker_registry: Arc<WorkerRegistry>,
+    pub functions: Arc<FunctionsRegistry>,
+    pub trigger_registry: Arc<TriggerRegistry>,
+    pub service_registry: Arc<ServicesRegistry>,
+    pub pending_invocations: Arc<PendingInvocations>,
+    pub routers_registry: Arc<RouterRegistry>,
 }
 
 impl Engine {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            worker_registry: WorkerRegistry::new(),
-            functions: FunctionsRegistry::new(),
-            trigger_registry: TriggerRegistry::new(),
-            pending_invocations: PendingInvocations::new(),
-            service_registry: ServicesRegistry::new(),
-            routers_registry: RouterRegistry::new(),
+            worker_registry: Arc::new(WorkerRegistry::new()),
+            functions: Arc::new(FunctionsRegistry::new()),
+            trigger_registry: Arc::new(TriggerRegistry::new()),
+            pending_invocations: Arc::new(PendingInvocations::new()),
+            service_registry: Arc::new(ServicesRegistry::new()),
+            routers_registry: Arc::new(RouterRegistry::new()),
         }
     }
 
@@ -107,7 +107,7 @@ impl Engine {
         }
     }
 
-    async fn notify_new_functions(&self, duration_secs: u64) {
+    pub async fn notify_new_functions(&self, duration_secs: u64) {
         let mut current_funcion_hash = self.functions.functions_hash();
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
@@ -175,14 +175,18 @@ impl Engine {
                     description = %description,
                     "RegisterTriggerType"
                 );
-                self.trigger_registry
-                    .register_trigger_type(TriggerType {
-                        id: id.clone(),
-                        _description: description.clone(),
-                        registrator: Box::new(worker.clone()),
-                        worker_id: Some(worker.id),
-                    })
-                    .await?;
+                let trigger_type = TriggerType {
+                    id: id.clone(),
+                    _description: description.clone(),
+                    registrator: Box::new(worker.clone()),
+                    worker_id: Some(worker.id),
+                };
+
+                let _ = self
+                    .trigger_registry
+                    .register_trigger_type(trigger_type)
+                    .await;
+
                 Ok(())
             }
             Message::RegisterTrigger {
@@ -369,32 +373,20 @@ impl Engine {
                     "RegisterFunction"
                 );
 
-                let handler_worker = worker.clone();
                 self.service_registry
                     .register_service_from_func_path(function_path)
                     .await;
 
-                let handler_function_path = function_path.clone();
-                let new_function = Function {
-                    handler: Box::new(
-                        move |invocation_id: Option<Uuid>, input: serde_json::Value| {
-                            let function_path = handler_function_path.clone();
-                            let worker = handler_worker.clone();
+                self.register_function(
+                    RegisterFunctionRequest {
+                        function_path: function_path.clone(),
+                        description: description.clone(),
+                        request_format: req.clone(),
+                        response_format: res.clone(),
+                    },
+                    Box::new(worker.clone()),
+                );
 
-                            Box::pin(async move {
-                                let _ = worker
-                                    .handle_function(invocation_id, function_path, input)
-                                    .await;
-                                Ok(None)
-                            })
-                        },
-                    ),
-                    _function_path: function_path.clone(),
-                    _description: description.clone(),
-                    request_format: req.clone(),
-                    response_format: res.clone(),
-                };
-                self.functions.insert(function_path.clone(), new_function);
                 worker.include_function_path(function_path).await;
                 Ok(())
             }
@@ -415,7 +407,7 @@ impl Engine {
                 }
 
                 self.service_registry
-                    .insert_service(services::Service::new(name.clone(), id.clone()))
+                    .insert_service(Service::new(name.clone(), id.clone()))
                     .await;
 
                 Ok(())
@@ -428,11 +420,7 @@ impl Engine {
         }
     }
 
-    async fn handle_worker(
-        self: Arc<Self>,
-        socket: WebSocket,
-        peer: SocketAddr,
-    ) -> anyhow::Result<()> {
+    pub async fn handle_worker(&self, socket: WebSocket, peer: SocketAddr) -> anyhow::Result<()> {
         tracing::info!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
@@ -531,70 +519,58 @@ impl Engine {
     }
 }
 
-async fn ws_handler(
-    State(engine): State<Arc<Engine>>,
-    ws: WebSocketUpgrade,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        let engine = engine.clone();
-        async move {
-            if let Err(err) = engine.handle_worker(socket, addr).await {
-                tracing::error!(addr = %addr, error = ?err, "worker error");
-            }
+impl EngineTrait for Engine {
+    fn invoke_function(&self, function_path: &str, input: Value) {
+        let function_opt = self.functions.get(function_path);
+        if let Some(function) = function_opt {
+            let _ = (function.handler)(None, input);
+        } else {
+            tracing::warn!(function_path = %function_path, "Function not found");
         }
-    })
-}
+    }
 
-fn register_core_functions(engine: &Arc<Engine>) {
-    engine.functions.insert(
-        "logger.info".to_string(),
-        Function {
-            handler: Box::new(
-                move |_invocation_id: Option<Uuid>, input: serde_json::Value| {
-                    Box::pin(async move {
-                        tracing::info!(input = ?input, "logger.info invoked");
-                        Ok(None)
-                    })
-                },
-            ),
-            _function_path: "logger.info".to_string(),
-            _description: Some("Log an info message".to_string()),
-            request_format: Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" }
-                },
-                "required": ["message"]
-            })),
-            response_format: None,
-        },
-    );
-}
+    async fn register_trigger_type(&self, trigger_type: TriggerType) {
+        let trigger_type_id = &trigger_type.id;
+        let existing = self.trigger_registry.trigger_types.read().await;
+        if existing.contains_key(trigger_type_id) {
+            tracing::warn!(trigger_type_id = %trigger_type_id, "Trigger type already registered");
+            return;
+        }
+        drop(existing);
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    logging::init_tracing();
+        let _ = self
+            .trigger_registry
+            .register_trigger_type(trigger_type)
+            .await;
+    }
 
-    let engine = Arc::new(Engine::new());
-    register_core_functions(&engine);
-    let engine_clone = engine.clone();
-    tokio::spawn(async move {
-        engine_clone.notify_new_functions(5).await;
-    });
+    fn register_function(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: Box<dyn FunctionHandler + Send + Sync>,
+    ) {
+        let RegisterFunctionRequest {
+            function_path,
+            description,
+            request_format,
+            response_format,
+        } = request;
 
-    let app = Router::new()
-        .route("/", get(ws_handler))
-        .with_state(engine.clone());
+        let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
+        let handler_function_path = function_path.clone();
 
-    let addr = "127.0.0.1:49134";
-    let listener = TcpListener::bind(addr).await?;
-    tracing::info!(address = addr, "Engine listening");
+        let function = Function {
+            handler: Box::new(move |invocation_id, input| {
+                let handler = handler_arc.clone();
+                let path = handler_function_path.clone();
+                Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
+            }),
+            _function_path: function_path.clone(),
+            _description: description,
+            request_format,
+            response_format,
+        };
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
-    Ok(())
+        self.functions.register_function(function_path, function);
+    }
 }
