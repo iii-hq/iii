@@ -79,9 +79,9 @@ impl EventCoreModule {
             registrator: Box::new(self.clone()),
             worker_id: None,
         };
-        self.engine.register_trigger_type(trigger_type);
 
-        self.engine.register_function(
+        let _ = self.engine.register_trigger_type(trigger_type);
+        let _ = self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "emit".to_string(),
                 description: Some("Emit an event".to_string()),

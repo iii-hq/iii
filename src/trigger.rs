@@ -88,7 +88,7 @@ impl TriggerRegistry {
     }
 
     pub async fn register_trigger_type(
-        self,
+        &self,
         trigger_type: TriggerType,
     ) -> Result<(), anyhow::Error> {
         let trigger_type_id = &trigger_type.id;

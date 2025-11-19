@@ -24,6 +24,8 @@ use tokio::net::TcpListener;
 
 use engine::Engine;
 
+use crate::modules::redis_adapter::RedisAdapter;
+
 async fn ws_handler(
     State(engine): State<Arc<Engine>>,
     ws: WebSocketUpgrade,
@@ -56,8 +58,11 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(address = addr, "Engine listening");
 
-    modules::event::EventCoreModule::new(
-        Arc::new(modules::redis_adapter::RedisAdapter::new()),
+    let _ = modules::event::EventCoreModule::new(
+        Arc::new(RedisAdapter::new(
+            "redis://localhost:6379".to_string(),
+            engine.clone(),
+        )?),
         engine.clone(),
     );
 

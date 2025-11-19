@@ -1,141 +1,166 @@
-use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 
+use redis::{Client, Commands};
+use serde_json::Value;
+use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+
+use crate::engine::{Engine, EngineTrait};
 use crate::modules::event::EventAdapter;
 
-pub struct RedisAdapter {}
+pub struct RedisAdapter {
+    publisher: Arc<Client>,
+    subscriber: Arc<Client>,
+    subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
+    engine: Arc<Engine>,
+}
 
-impl EventAdapter for RedisAdapter {
-    fn emit(&self, topic: &str, event_data: Value) {
-        tracing::info!("Emitting event to topic: {}", topic);
-        tracing::info!("Event data: {:?}", event_data);
-    }
-    fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
-        tracing::info!("Subscribing to topic: {}", topic);
-        tracing::info!("ID: {}", id);
-        tracing::info!("Function path: {}", function_path);
-    }
-    fn unsubscribe(&self, topic: &str, id: &str) {
-        tracing::info!("Unsubscribing from topic: {}", topic);
-        tracing::info!("ID: {}", id);
-    }
+struct SubscriptionInfo {
+    id: String,
+    task_handle: JoinHandle<()>,
 }
 
 impl RedisAdapter {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(redis_url: String, engine: Arc<Engine>) -> anyhow::Result<Self> {
+        let publisher = Arc::new(Client::open(redis_url.as_str())?);
+        let subscriber = Arc::new(Client::open(redis_url.as_str())?);
+
+        Ok(Self {
+            publisher,
+            subscriber,
+            subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            engine,
+        })
     }
 }
 
-// use redis::Client as RedisClient;
-// use serde_json::Value;
-// use std::sync::Arc;
-// use tokio::sync::Mutex;
+impl EventAdapter for RedisAdapter {
+    fn emit(&self, topic: &str, event_data: Value) {
+        let publisher = Arc::clone(&self.publisher);
+        let topic = topic.to_string();
+        let event_json = match serde_json::to_string(&event_data) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, topic = %topic, "Failed to serialize event data");
+                return;
+            }
+        };
 
-// use crate::modules::event::EventAdapter;
+        tokio::spawn(async move {
+            let mut conn = match publisher.get_connection() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::error!(error = %e, topic = %topic, "Failed to get Redis connection for publishing");
+                    return;
+                }
+            };
 
-// pub struct RedisAdapter {
-//     client: Arc<Mutex<RedisClient>>,
-// }
+            if let Err(e) = conn.publish::<_, _, ()>(&topic, &event_json) {
+                tracing::error!(error = %e, topic = %topic, "Failed to publish event to Redis");
+            } else {
+                tracing::debug!(topic = %topic, "Event published to Redis");
+            }
+        });
+    }
 
-// impl EventAdapter for RedisAdapter {
-//     fn emit(&self, _topic: &str, _event_data: Value) {
-//         tracing::info!("Emitting event to Redis");
+    fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
+        let topic = topic.to_string();
+        let id = id.to_string();
+        let function_path = function_path.to_string();
+        let subscriber = Arc::clone(&self.subscriber);
+        let engine = Arc::clone(&self.engine);
+        let subscriptions = Arc::clone(&self.subscriptions);
 
-//         // let topic = topic.to_string();
-//         // let payload = event_data.to_string();
-//         // let client = self.client.clone();
-//         // // Fire and forget (spawned) for demo: for production, you may want to propagate errors/provide ack
-//         // tokio::spawn(async move {
-//         //     let mut conn = match client.lock().await.get_async_connection().await {
-//         //         Ok(conn) => conn,
-//         //         Err(err) => {
-//         //             tracing::error!("Redis emit connect error: {:?}", err);
-//         //             return;
-//         //         }
-//         //     };
-//         //     let publish_res: redis::RedisResult<i64> = conn.publish(topic.as_str(), &payload).await;
-//         //     match publish_res {
-//         //         Ok(_) => tracing::info!("Published event to topic: {}", topic),
-//         //         Err(e) => tracing::error!("Failed to publish event to topic '{}': {:?}", topic, e),
-//         //     }
-//         // });
-//     }
+        let rt = tokio::runtime::Handle::current();
+        let already_subscribed = rt.block_on(async {
+            let subs = subscriptions.read().await;
+            subs.contains_key(&topic)
+        });
 
-//     fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
-//         tracing::info!(
-//             topic = topic,
-//             id = id,
-//             function_path = function_path,
-//             "Subscribing to Redis"
-//         );
-//         // // Here, for every subscription, we'd typically spawn a listener task.
-//         // // For now, only log; a full implementation would hand the message to a function handler when redis PubSub receives a msg.
-//         // tracing::info!(
-//         //     "Request to subscribe to topic '{}' (id: {}, function: {})",
-//         //     topic,
-//         //     id,
-//         //     function_path
-//         // );
+        if already_subscribed {
+            tracing::warn!(topic = %topic, id = %id, "Already subscribed to topic");
+            return;
+        }
 
-//         // let topic = topic.to_string();
-//         // let function_path = function_path.to_string();
-//         // let client = self.client.clone();
+        let topic_for_task = topic.clone();
+        let id_for_task = id.clone();
+        let function_path_for_task = function_path.clone();
 
-//         // // For illustration; a real solution would need a subscription coordination (per process) and handler invocation with an engine reference.
-//         // tokio::spawn(async move {
-//         //     let mut pubsub_conn = match client.lock().await.get_async_connection().await {
-//         //         Ok(conn) => redis::aio::PubSub::new(conn),
-//         //         Err(err) => {
-//         //             tracing::error!("Redis subscribe connect error: {:?}", err);
-//         //             return;
-//         //         }
-//         //     };
-//         //     if let Err(e) = pubsub_conn.subscribe(topic.as_str()).await {
-//         //         tracing::error!("Failed to subscribe to '{}': {:?}", topic, e);
-//         //         return;
-//         //     }
-//         //     // Demo: just log messages (no invocation)
-//         //     loop {
-//         //         match pubsub_conn.on_message().await {
-//         //             Ok(msg) => {
-//         //                 let payload: redis::RedisResult<String> = msg.get_payload();
-//         //                 match payload {
-//         //                     Ok(p) => tracing::info!(
-//         //                         "Received on {}: payload = {} (function: {})",
-//         //                         topic,
-//         //                         p,
-//         //                         function_path
-//         //                     ),
-//         //                     Err(e) => tracing::error!("Error getting payload: {:?}", e),
-//         //                 }
-//         //             }
-//         //             Err(err) => {
-//         //                 tracing::error!("Error receiving pubsub msg: {:?}", err);
-//         //                 break;
-//         //             }
-//         //         }
-//         //     }
-//         // });
-//     }
+        let task_handle = tokio::spawn(async move {
+            let mut conn = match subscriber.get_connection() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    tracing::error!(error = %e, topic = %topic_for_task, "Failed to get Redis connection for subscription");
+                    return;
+                }
+            };
 
-//     fn unsubscribe(&self, topic: &str, id: &str) {
-//         // Unsubscribe is non-trivial, since you must track/abort background tasks
-//         // For now, log; actual unsub needs coordinated task handling.
-//         tracing::info!(
-//             "Request to unsubscribe from topic '{}' with id '{}'",
-//             topic,
-//             id
-//         );
-//     }
-// }
+            let mut pubsub = conn.as_pubsub();
 
-// impl RedisAdapter {
-//     pub fn new() -> Self {
-//         // Change the URL as needed; you can make this configurable if required.
-//         let client =
-//             RedisClient::open("redis://127.0.0.1/").expect("Failed to create Redis client");
-//         RedisAdapter {
-//             client: Arc::new(Mutex::new(client)),
-//         }
-//     }
-// }
+            if let Err(e) = pubsub.subscribe(&topic_for_task) {
+                tracing::error!(error = %e, topic = %topic_for_task, "Failed to subscribe to Redis channel");
+                return;
+            }
+
+            tracing::info!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribed to Redis channel");
+
+            loop {
+                let msg = match pubsub.get_message() {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        tracing::error!(error = %e, topic = %topic_for_task, "Error getting message from Redis");
+                        break;
+                    }
+                };
+
+                let payload: String = match msg.get_payload() {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        tracing::error!(error = %e, topic = %topic_for_task, "Failed to get message payload");
+                        continue;
+                    }
+                };
+
+                let event_data: Value = match serde_json::from_str(&payload) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::error!(error = %e, topic = %topic_for_task, payload = %payload, "Failed to parse message as JSON");
+                        continue;
+                    }
+                };
+
+                tracing::debug!(topic = %topic_for_task, function_path = %function_path_for_task, "Received event from Redis, invoking function");
+                engine.invoke_function(&function_path_for_task, event_data);
+            }
+
+            tracing::info!(topic = %topic_for_task, id = %id_for_task, "Subscription task ended");
+        });
+
+        rt.block_on(async {
+            let mut subs = subscriptions.write().await;
+            subs.insert(topic, SubscriptionInfo { id, task_handle });
+        });
+    }
+
+    fn unsubscribe(&self, topic: &str, id: &str) {
+        let topic = topic.to_string();
+        let subscriptions = Arc::clone(&self.subscriptions);
+        let rt = tokio::runtime::Handle::current();
+
+        rt.block_on(async {
+            let mut subs = subscriptions.write().await;
+            if let Some(sub_info) = subs.remove(&topic) {
+                if sub_info.id == id {
+                    tracing::info!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
+                    sub_info.task_handle.abort();
+                } else {
+                    tracing::warn!(topic = %topic, id = %id, "Subscription ID mismatch, not unsubscribing");
+                    subs.insert(topic, sub_info);
+                }
+            } else {
+                tracing::warn!(topic = %topic, id = %id, "No active subscription found for topic");
+            }
+        });
+    }
+}
