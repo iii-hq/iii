@@ -44,7 +44,7 @@ pub trait EngineTrait: Send + Sync {
     );
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerRegistry>,
     pub functions: Arc<FunctionsRegistry>,

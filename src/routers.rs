@@ -15,6 +15,16 @@ impl RouterRegistry {
         }
     }
 
+    pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
+        let key = format!("{}:{}", http_method, http_path);
+        let routers = self.routers.read().await;
+        let router = routers.get(&key);
+        match router {
+            Some(r) => Some(r.function_path.clone()),
+            None => None,
+        }
+    }
+
     pub async fn register_router(&self, router: PathRouter) {
         let key = format!("{}:{}", router.http_method, router.http_path);
         self.routers.write().await.insert(key, router);
@@ -23,9 +33,9 @@ impl RouterRegistry {
 
 #[derive(Debug)]
 pub struct PathRouter {
-    http_path: String,
-    http_method: String,
-    function_path: String,
+    pub http_path: String,
+    pub http_method: String,
+    pub function_path: String,
 }
 
 impl PathRouter {
