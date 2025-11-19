@@ -25,7 +25,7 @@ use tokio::net::TcpListener;
 use engine::Engine;
 
 async fn ws_handler(
-    State(engine): State<Arc<Engine<'static>>>,
+    State(engine): State<Arc<Engine>>,
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
@@ -42,7 +42,7 @@ async fn ws_handler(
 async fn main() -> anyhow::Result<()> {
     logging::init_tracing();
 
-    let engine: Arc<Engine<'static>> = Arc::new(Engine::new());
+    let engine: Arc<Engine> = Arc::new(Engine::new());
     let engine_clone = engine.clone();
     tokio::spawn(async move {
         engine_clone.notify_new_functions(5).await;
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     modules::event::EventCoreModule::new(
         Arc::new(modules::redis_adapter::RedisAdapter::new()),
-        &engine,
+        engine.clone(),
     );
 
     axum::serve(

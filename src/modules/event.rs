@@ -17,16 +17,16 @@ pub trait EventAdapter: Send + Sync + 'static {
 }
 
 #[derive(Clone)]
-pub struct EventCoreModule<'a> {
+pub struct EventCoreModule {
     adapter: Arc<dyn EventAdapter>,
-    engine: Arc<&'a Engine<'static>>,
+    engine: Arc<Engine>,
 }
 
-impl<'a> TriggerRegistrator<'a> for EventCoreModule<'a> {
+impl TriggerRegistrator for EventCoreModule {
     fn register_trigger(
-        &'a self,
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             self.adapter.subscribe(
                 &trigger
@@ -44,9 +44,9 @@ impl<'a> TriggerRegistrator<'a> for EventCoreModule<'a> {
     }
 
     fn unregister_trigger(
-        &'a self,
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             self.adapter.unsubscribe(
                 &trigger
@@ -63,27 +63,23 @@ impl<'a> TriggerRegistrator<'a> for EventCoreModule<'a> {
     }
 }
 
-impl<'a> EventCoreModule<'a> {
-    pub fn new(adapter: Arc<dyn EventAdapter>, engine: &'a Engine<'static>) -> Self {
-        let module = Self {
-            adapter,
-            engine: Arc::new(engine),
-        };
+impl EventCoreModule {
+    pub fn new(adapter: Arc<dyn EventAdapter>, engine: Arc<Engine>) -> Self {
+        let module = Self { adapter, engine };
 
         module.initialize();
 
         module
     }
 
-    fn initialize(&'a self) {
-        let trigger_type = Box::new(TriggerType {
+    fn initialize(&self) {
+        let trigger_type = TriggerType {
             id: "event".to_string(),
             _description: "Event core module".to_string(),
             registrator: Box::new(self.clone()),
             worker_id: None,
-        });
-        let trigger_type_ref = Box::leak(trigger_type);
-        self.engine.register_trigger_type(trigger_type_ref);
+        };
+        self.engine.register_trigger_type(trigger_type);
 
         self.engine.register_function(
             RegisterFunctionRequest {
@@ -100,13 +96,13 @@ impl<'a> EventCoreModule<'a> {
     }
 }
 
-impl<'a> FunctionHandler for EventCoreModule<'a> {
+impl FunctionHandler for EventCoreModule {
     fn handle_function(
         &self,
         _invocation_id: Option<Uuid>,
         _function_path: String,
         input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
         let adapter = Arc::clone(&self.adapter);
 
         Box::pin(async move {

@@ -5,23 +5,23 @@ use std::{pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-pub struct TriggerType<'a> {
+pub struct TriggerType {
     pub id: String,
     pub _description: String,
     // pub config_schema: Schema,
-    pub registrator: Box<dyn TriggerRegistrator<'a>>,
+    pub registrator: Box<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
 }
 
-pub trait TriggerRegistrator<'a>: Send + Sync {
+pub trait TriggerRegistrator: Send + Sync {
     fn register_trigger(
-        &'a self,
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
     fn unregister_trigger(
-        &'a self,
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
 }
 
 #[derive(Clone)]
@@ -34,12 +34,12 @@ pub struct Trigger {
 }
 
 #[derive(Default)]
-pub struct TriggerRegistry<'a> {
-    pub trigger_types: Arc<RwLock<DashMap<String, &'a TriggerType<'a>>>>,
+pub struct TriggerRegistry {
+    pub trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
     pub triggers: Arc<RwLock<DashMap<String, Trigger>>>,
 }
 
-impl<'a> TriggerRegistry<'a> {
+impl TriggerRegistry {
     pub fn new() -> Self {
         Self {
             trigger_types: Arc::new(RwLock::new(DashMap::new())),
@@ -88,8 +88,8 @@ impl<'a> TriggerRegistry<'a> {
     }
 
     pub async fn register_trigger_type(
-        &'a self,
-        trigger_type: &'a TriggerType<'a>,
+        self,
+        trigger_type: TriggerType,
     ) -> Result<(), anyhow::Error> {
         let trigger_type_id = &trigger_type.id;
 
