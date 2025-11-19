@@ -139,6 +139,14 @@ bridge.registerFunction(
 )
 
 // const handlers: Record<string, () => Promise<void>> = {}
+bridge.registerTrigger({
+  triggerType: 'api',
+  functionPath: 'engine.echo',
+  config: {
+    apiPath: 'echo',
+    httpMethod: 'POST',
+  },
+})
 
 // setInterval(async () => {
 //   const handlersSize = Object.keys(handlers).length

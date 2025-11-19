@@ -1,11 +1,13 @@
 use std::{net::SocketAddr, sync::Arc};
 
+mod api;
 mod engine;
 mod function;
 mod invocation;
 mod logging;
 mod pending_invocations;
 mod protocol;
+mod routers;
 mod services;
 mod trigger;
 mod workers;
@@ -50,9 +52,10 @@ async fn main() -> anyhow::Result<()> {
         engine_clone.notify_new_functions(5).await;
     });
 
-    let app = Router::new()
-        .route("/", get(ws_handler))
-        .with_state(engine.clone());
+    let app = Router::new().route("/", get(ws_handler));
+    // Merge API routes
+    let api_routes = api::api_endpoints();
+    let app = app.merge(api_routes).with_state(engine.clone());
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
