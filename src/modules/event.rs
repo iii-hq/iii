@@ -67,12 +67,10 @@ impl EventCoreModule {
     pub fn new(adapter: Arc<dyn EventAdapter>, engine: Arc<Engine>) -> Self {
         let module = Self { adapter, engine };
 
-        module.initialize();
-
         module
     }
 
-    fn initialize(&self) {
+    pub async fn initialize(&self) {
         let trigger_type = TriggerType {
             id: "event".to_string(),
             _description: "Event core module".to_string(),
@@ -80,7 +78,7 @@ impl EventCoreModule {
             worker_id: None,
         };
 
-        let _ = self.engine.register_trigger_type(trigger_type);
+        let _ = self.engine.register_trigger_type(trigger_type).await;
         let _ = self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "emit".to_string(),
@@ -105,6 +103,8 @@ impl FunctionHandler for EventCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
         let adapter = Arc::clone(&self.adapter);
 
+        tracing::info!(input = %input, "Handling event function");
+
         Box::pin(async move {
             let topic = input
                 .get("topic")
@@ -121,7 +121,7 @@ impl FunctionHandler for EventCoreModule {
 
             adapter.emit(topic, event_data);
 
-            Ok(None)
+            Ok(Some(Value::Null))
         })
     }
 }

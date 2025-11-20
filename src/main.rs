@@ -58,13 +58,15 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(address = addr, "Engine listening");
 
-    let _ = modules::event::EventCoreModule::new(
+    let event_module = modules::event::EventCoreModule::new(
         Arc::new(RedisAdapter::new(
             "redis://localhost:6379".to_string(),
             engine.clone(),
         )?),
         engine.clone(),
     );
+
+    event_module.initialize().await;
 
     axum::serve(
         listener,

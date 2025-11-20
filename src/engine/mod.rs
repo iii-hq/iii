@@ -102,9 +102,9 @@ impl Engine {
 
     pub async fn notify_new_functions(&self, duration_secs: u64) {
         let mut current_funcion_hash = self.functions.functions_hash();
+
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
-            tracing::info!("Checking for new functions");
             let new_function_hash = self.functions.functions_hash();
             if new_function_hash != current_funcion_hash {
                 tracing::info!("New functions detected, notifying workers");
@@ -500,13 +500,23 @@ impl EngineTrait for Engine {
     fn invoke_function(&self, function_path: &str, input: Value) {
         let function_opt = self.functions.get(function_path);
         if let Some(function) = function_opt {
-            let _ = (function.handler)(None, input);
+            let future = (function.handler)(None, input);
+            let function_path = function_path.to_string();
+
+            tokio::spawn(async move {
+                tracing::info!(function_path = %function_path, "Invoking function");
+
+                let result = future.await;
+                tracing::info!(result = ?result, "Function result");
+            });
         } else {
             tracing::warn!(function_path = %function_path, "Function not found");
         }
     }
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
+        tracing::info!(trigger_type = ?trigger_type.id, "Registering trigger type");
+
         let trigger_type_id = &trigger_type.id;
         let existing = self.trigger_registry.trigger_types.read().await;
         if existing.contains_key(trigger_type_id) {
