@@ -18,6 +18,8 @@ pub enum Message {
         config: Value,
         #[serde(rename = "apiPath")]
         api_path: Option<String>,
+        #[serde(rename = "httpMethod")]
+        http_method: Option<String>,
     },
     TriggerRegistrationResult {
         id: String,

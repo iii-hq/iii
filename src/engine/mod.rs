@@ -195,6 +195,7 @@ impl Engine {
                 function_path,
                 config,
                 api_path,
+                http_method,
             } => {
                 tracing::info!(
                     trigger_id = %id,
@@ -205,11 +206,11 @@ impl Engine {
                 );
 
                 if trigger_type == "api" {
-                    tracing::info!("API triggers are registered automatically, skipping");
+                    tracing::info!(api_path = ?api_path, http_method = ?http_method, "Registering API trigger router");
                     if let Some(api_path) = api_path {
                         let router = PathRouter::new(
                             api_path.clone(),
-                            "POST".to_string(),
+                            http_method.clone().unwrap_or_else(|| "GET".to_string()),
                             function_path.clone(),
                         );
                         self.routers_registry.register_router(router).await;
