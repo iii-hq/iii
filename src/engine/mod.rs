@@ -208,11 +208,12 @@ impl Engine {
                 if trigger_type == "api" {
                     tracing::info!(api_path = ?api_path, http_method = ?http_method, "Registering API trigger router");
                     if let Some(api_path) = api_path {
-                        let router = PathRouter::new(
-                            api_path.clone(),
-                            http_method.clone().unwrap_or_else(|| "GET".to_string()),
-                            function_path.clone(),
-                        );
+                        let method = http_method
+                            .clone()
+                            .unwrap_or_else(|| "GET".to_string())
+                            .to_uppercase();
+                        let router =
+                            PathRouter::new(api_path.clone(), method, function_path.clone());
                         self.routers_registry.register_router(router).await;
                     } else {
                         tracing::warn!("API trigger registration missing api_path");

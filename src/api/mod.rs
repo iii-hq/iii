@@ -18,8 +18,11 @@ async fn dynamic_handler(
     Path(path): Path<String>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    tracing::info!("Received dynamic request for path: {}, {}", path, method);
-    if let Some(function_path) = engine.routers_registry.get_router("POST", &path).await {
+    if let Some(function_path) = engine
+        .routers_registry
+        .get_router(method.as_str(), &path)
+        .await
+    {
         let invocation_id = Some(uuid::Uuid::new_v4());
         let function = engine.functions.get(function_path.as_str());
         if function.is_none() {

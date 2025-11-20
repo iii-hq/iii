@@ -16,7 +16,9 @@ impl RouterRegistry {
     }
 
     pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
-        let key = format!("{}:{}", http_method, http_path);
+        let method = http_method.to_uppercase();
+        let key = format!("{}:{}", method, http_path);
+        tracing::info!("Looking up router for key: {}", key);
         let routers = self.routers.read().await;
         let router = routers.get(&key);
         match router {
@@ -26,7 +28,9 @@ impl RouterRegistry {
     }
 
     pub async fn register_router(&self, router: PathRouter) {
-        let key = format!("{}:{}", router.http_method, router.http_path);
+        let method = router.http_method.to_uppercase();
+        let key = format!("{}:{}", method, router.http_path);
+        tracing::info!("Registering router: {}", key);
         self.routers.write().await.insert(key, router);
     }
 }

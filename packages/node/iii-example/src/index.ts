@@ -110,39 +110,6 @@ const echoResponseFormat = {
 // bridge.registerService({ id: 'engine', description: 'Example of an engine service' })
 
 
-const logRequestFormat = {
-  name: 'payload',
-  description: 'Payload to log',
-  type: 'object',
-  required: true,
-} as const
-const logResponseFormat = {
-  name: 'response',
-  description: 'Log result',
-  type: 'object',
-  required: true,
-} as const
-
-bridge.registerFunction(
-  {
-    functionPath: 'my.log',
-    description: 'Logs the input payload',
-    requestFormat: logRequestFormat,
-    responseFormat: logResponseFormat,
-  },
-  async (payload) => {
-    console.log('>>> LOG FUNCTION CALLED:', payload)
-    return { status: 'logged', received: payload }
-  },
-)
-
-bridge.registerTrigger({
-  triggerType: 'api', 
-  functionPath: 'my.log', 
-  apiPath: 'my/log', 
-  httpMethod: 'POST',
-  config: {}, 
-})
 
 
 bridge.registerFunction(
@@ -181,6 +148,14 @@ bridge.registerFunction(
   },
   async (payload) => engine.echo(payload),
 )
+
+bridge.registerTrigger({
+  triggerType: 'api', 
+  functionPath: 'engine.echo', 
+  apiPath: 'echo', 
+  httpMethod: 'POST',
+  config: {}, 
+})
 
 const handlers: Record<string, () => Promise<void>> = {}
 
