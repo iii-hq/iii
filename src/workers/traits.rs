@@ -4,7 +4,7 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::Outbound;
+use crate::engine::Outbound;
 use crate::function::FunctionHandler;
 use crate::invocation::{Invocation, InvocationHandler};
 use crate::protocol::{ErrorBody, Message};
@@ -12,10 +12,10 @@ use crate::trigger::{Trigger, TriggerRegistrator};
 use crate::workers::Worker;
 
 impl TriggerRegistrator for Worker {
-    fn register_trigger<'a>(
-        &'a self,
+    fn register_trigger(
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         let sender = self.channel.clone();
 
         Box::pin(async move {
@@ -38,10 +38,10 @@ impl TriggerRegistrator for Worker {
         })
     }
 
-    fn unregister_trigger<'a>(
-        &'a self,
+    fn unregister_trigger(
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         let sender = self.channel.clone();
 
         Box::pin(async move {

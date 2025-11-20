@@ -67,7 +67,7 @@ impl FunctionsRegistry {
         function_hash.sort();
         format!("{:?}", function_hash)
     }
-    pub fn insert(&self, function_path: String, function: Function) {
+    pub fn register_function(&self, function_path: String, function: Function) {
         self.functions.insert(function_path, function);
     }
 

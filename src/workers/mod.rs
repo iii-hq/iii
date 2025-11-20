@@ -7,7 +7,7 @@ use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    Outbound,
+    engine::Outbound,
     invocation::Invocation,
     protocol::{ErrorBody, Message},
 };

@@ -14,14 +14,14 @@ pub struct TriggerType {
 }
 
 pub trait TriggerRegistrator: Send + Sync {
-    fn register_trigger<'a>(
-        &'a self,
+    fn register_trigger(
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
-    fn unregister_trigger<'a>(
-        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
+    fn unregister_trigger(
+        &self,
         trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
 }
 
 #[derive(Clone)]
@@ -35,8 +35,8 @@ pub struct Trigger {
 
 #[derive(Default)]
 pub struct TriggerRegistry {
-    trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
-    triggers: Arc<RwLock<DashMap<String, Trigger>>>,
+    pub trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
+    pub triggers: Arc<RwLock<DashMap<String, Trigger>>>,
 }
 
 impl TriggerRegistry {
@@ -123,14 +123,10 @@ impl TriggerRegistry {
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
-        let result = trigger_type
+        let _: Result<(), anyhow::Error> = trigger_type
             .registrator
             .register_trigger(trigger.clone())
             .await;
-
-        if result.is_err() {
-            return Err(result.err().unwrap());
-        }
 
         self.triggers
             .write()
@@ -153,7 +149,7 @@ impl TriggerRegistry {
         let trigger_type = trigger_type_lock.get(&trigger_type.clone());
 
         if trigger_type.is_some() {
-            let result = trigger_type
+            let result: Result<(), anyhow::Error> = trigger_type
                 .unwrap()
                 .registrator
                 .unregister_trigger(trigger.clone())

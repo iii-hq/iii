@@ -1,6 +1,4 @@
 
-run_socket_server:
-	cargo run --bin server
-
-run_socket_client:
-	cargo run --bin client
+watch:
+	# cargo install cargo-watch
+	cargo watch -w src -s "cargo run"
