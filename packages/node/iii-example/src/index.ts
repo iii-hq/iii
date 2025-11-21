@@ -109,6 +109,76 @@ const engine = new Engine()
 // Not quite necessary to do it
 // bridge.registerService({ id: 'engine', description: 'Example of an engine service' })
 
+
+bridge.registerFunction(
+  {
+    functionPath: 'register.user',
+    description: 'simple user registration function',
+    requestFormat: {
+      name: 'payload',
+      description: 'Payload for regiser.user function',
+      type: 'object',
+      body: [
+        {
+          name: 'username',
+          description: 'Username for registration',
+          type: 'string',
+          required: true,
+        },
+        {
+          name: 'email',
+          description: 'Email for registration',
+          type: 'string',
+          required: true, 
+        },
+      ],
+    },
+    responseFormat: {
+      name: 'response',
+      description: 'Response from register.user function',
+      type: 'object',
+      body: [
+        {
+          name: 'userId',
+          description: 'Unique identifier for the registered user',
+          type: 'string',
+          required: true,
+        },
+        {
+          name: 'username',
+          description: 'Username of the registered user',
+          type: 'string',
+          required: true,
+        },
+        {
+          name: 'email',
+          description: 'Email of the registered user',
+          type: 'string',
+          required: true,
+        },
+      ],
+    },
+  },
+  async (payload: { topic: string; data: any }) => {
+    // In a real implementation, this would emit to the bridge/event system
+    logger.info(`User registered with username: ${payload.username} and email: ${payload.email}`);
+    return {
+      userId: 'user_' + Math.random().toString(36).substr(2, 9),
+      username: payload.username,
+      email: payload.email,
+    };
+  },
+)
+
+bridge.registerTrigger({
+  triggerType: 'api',
+  functionPath: 'register.user',
+  config: {
+    apiPath: 'register/user',
+    httpMethod: 'POST',
+  },
+})
+
 bridge.registerFunction(
   {
     functionPath: 'engine.enable',
