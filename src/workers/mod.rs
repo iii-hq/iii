@@ -8,27 +8,46 @@ use uuid::Uuid;
 
 use crate::{
     engine::Outbound,
-    invocation::Invocation,
+    function::FunctionHandler,
+    invocation::{Invocation, InvocationHandler},
     protocol::{ErrorBody, Message},
+    trigger::TriggerRegistrator,
 };
 
-#[derive(Default)]
-pub struct WorkerRegistry {
-    pub workers: Arc<RwLock<DashMap<Uuid, Worker>>>,
+pub trait WorkerTrait:
+    Clone + Send + Sync + TriggerRegistrator + InvocationHandler + FunctionHandler
+{
+    fn id(&self) -> &Uuid;
+    fn channel(&self) -> &mpsc::Sender<Outbound>;
+    fn invocations(&self) -> &Arc<RwLock<DashMap<Uuid, Invocation>>>;
+
+    async fn include_function_path(&self, function_path: &str);
+    async fn add_invocation(&self, invocation: Invocation);
+    async fn halt_invocation(&self, invocation_id: &Uuid);
 }
 
-impl WorkerRegistry {
+pub struct WorkerRegistry<W: WorkerTrait> {
+    pub workers: Arc<RwLock<DashMap<Uuid, W>>>,
+}
+
+impl<W: WorkerTrait> Default for WorkerRegistry<W> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<W: WorkerTrait> WorkerRegistry<W> {
     pub fn new() -> Self {
         Self {
             workers: Arc::new(RwLock::new(DashMap::new())),
         }
     }
-    pub async fn get_worker(&self, id: &Uuid) -> Option<Worker> {
+    pub async fn get_worker(&self, id: &Uuid) -> Option<W> {
         self.workers.read().await.get(id).map(|w| w.value().clone())
     }
 
-    pub async fn register_worker(&self, worker: Worker) {
-        self.workers.write().await.insert(worker.id, worker);
+    pub async fn register_worker(&self, worker: W) {
+        self.workers.write().await.insert(*worker.id(), worker);
     }
 
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
@@ -44,32 +63,42 @@ pub struct Worker {
     pub invocations: Arc<RwLock<DashMap<Uuid, Invocation>>>,
     pub function_paths: Arc<RwLock<HashSet<String>>>,
 }
-
 impl Worker {
     pub fn new(channel: mpsc::Sender<Outbound>) -> Self {
-        let id = Uuid::new_v4();
         Self {
-            id,
+            id: Uuid::new_v4(),
             channel,
             invocations: Arc::new(RwLock::new(DashMap::new())),
             function_paths: Arc::new(RwLock::new(HashSet::new())),
         }
     }
-    pub async fn include_function_path(&self, function_path: &str) {
+}
+
+impl WorkerTrait for Worker {
+    fn id(&self) -> &Uuid {
+        &self.id
+    }
+    fn channel(&self) -> &mpsc::Sender<Outbound> {
+        &self.channel
+    }
+    fn invocations(&self) -> &Arc<RwLock<DashMap<Uuid, Invocation>>> {
+        &self.invocations
+    }
+    async fn include_function_path(&self, function_path: &str) {
         self.function_paths
             .write()
             .await
             .insert(function_path.to_owned());
     }
 
-    pub async fn add_invocation(&self, invocation: Invocation) {
+    async fn add_invocation(&self, invocation: Invocation) {
         self.invocations
             .write()
             .await
             .insert(invocation.invocation_id, invocation);
     }
 
-    pub async fn halt_invocation(&self, invocation_id: &Uuid) {
+    async fn halt_invocation(&self, invocation_id: &Uuid) {
         self.invocations.write().await.remove(invocation_id);
         self.channel
             .send(Outbound::Protocol(Message::InvocationResult {

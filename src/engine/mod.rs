@@ -18,6 +18,8 @@ use crate::{
     workers::{Worker, WorkerRegistry},
 };
 
+use crate::workers::WorkerTrait;
+
 #[derive(Debug)]
 pub enum Outbound {
     Protocol(Message),
@@ -43,7 +45,7 @@ pub trait EngineTrait: Send + Sync {
 
 #[derive(Default, Clone)]
 pub struct Engine {
-    pub worker_registry: Arc<WorkerRegistry>,
+    pub worker_registry: Arc<WorkerRegistry<Worker>>,
     pub functions: Arc<FunctionsRegistry>,
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
@@ -76,7 +78,7 @@ impl Engine {
 
     async fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
         tracing::info!(
-            worker_id = %worker.id,
+            worker_id = %worker.id(),
             %invocation_id,
             function_path = function_path,
             "Remembering invocation for worker"
@@ -88,7 +90,7 @@ impl Engine {
             })
             .await;
         self.pending_invocations
-            .insert(invocation_id, worker.id)
+            .insert(invocation_id, worker.id().clone())
             .await;
     }
 
@@ -130,7 +132,7 @@ impl Engine {
         for worker in self.worker_registry.workers.read().await.iter() {
             let _ = worker
                 .value()
-                .channel
+                .channel()
                 .send(Outbound::Protocol(msg.clone()))
                 .await;
         }
@@ -144,7 +146,7 @@ impl Engine {
         let worker_ref = self.worker_registry.get_worker(&worker_id).await?;
         let sender = worker_ref.channel.clone();
         let invocation = worker_ref
-            .invocations
+            .invocations()
             .write()
             .await
             .remove(invocation_id)?
@@ -169,7 +171,7 @@ impl Engine {
             }
             Message::RegisterTriggerType { id, description } => {
                 tracing::info!(
-                    worker_id = %worker.id,
+                    worker_id = %worker.id(),
                     trigger_type_id = %id,
                     description = %description,
                     "RegisterTriggerType"
@@ -178,7 +180,7 @@ impl Engine {
                     id: id.clone(),
                     _description: description.clone(),
                     registrator: Box::new(worker.clone()),
-                    worker_id: Some(worker.id),
+                    worker_id: Some(worker.id().clone()),
                 };
 
                 let _ = self
@@ -228,7 +230,7 @@ impl Engine {
                         trigger_type: trigger_type.clone(),
                         function_path: function_path.clone(),
                         config: config.clone(),
-                        worker_id: Some(worker.id),
+                        worker_id: Some(worker.id().clone()),
                     })
                     .await;
 
@@ -255,7 +257,7 @@ impl Engine {
                 data,
             } => {
                 tracing::info!(
-                    worker_id = %worker.id,
+                    worker_id = %worker.id(),
                     invocation_id = ?invocation_id,
                     function_path = %function_path,
                     payload = ?data,
@@ -380,7 +382,7 @@ impl Engine {
                 response_format: res,
             } => {
                 tracing::info!(
-                    worker_id = %worker.id,
+                    worker_id = %worker.id(),
                     function_path = %function_path,
                     description = ?description,
                     "RegisterFunction"
@@ -459,7 +461,7 @@ impl Engine {
 
         let worker = Worker::new(tx.clone());
 
-        tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
+        tracing::info!(worker_id = %worker.id(), peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone()).await;
 
         while let Some(frame) = ws_rx.next().await {
@@ -509,8 +511,8 @@ impl Engine {
             self.remove_function(&function_path);
         }
 
-        self.trigger_registry.unregister_worker(&worker.id).await;
-        self.worker_registry.unregister_worker(&worker.id).await;
+        self.trigger_registry.unregister_worker(&worker.id()).await;
+        self.worker_registry.unregister_worker(&worker.id()).await;
 
         let worker_invocations = worker.invocations.read().await;
 
@@ -518,11 +520,11 @@ impl Engine {
             self.halt_invocation(entry.key()).await;
         }
 
-        tracing::info!(worker_id = %worker.id, "Worker triggers unregistered");
+        tracing::info!(worker_id = %worker.id(), "Worker triggers unregistered");
 
         let invocations = self
             .pending_invocations
-            .invocations_for_worker(&worker.id)
+            .invocations_for_worker(&worker.id())
             .await;
 
         // remove pending invocations from this worker
