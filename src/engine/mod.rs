@@ -1,12 +1,14 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::{
+    api::HttpInvocations,
     function::{Function, FunctionHandler, FunctionsRegistry},
     invocation::{Invocation, InvocationHandler},
     pending_invocations::PendingInvocations,
@@ -48,6 +50,7 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub pending_invocations: Arc<PendingInvocations>,
     pub routers_registry: Arc<RouterRegistry>,
+    pub http_invocations: Arc<HttpInvocations>,
 }
 
 impl Engine {
@@ -59,6 +62,7 @@ impl Engine {
             pending_invocations: Arc::new(PendingInvocations::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             routers_registry: Arc::new(RouterRegistry::new()),
+            http_invocations: Arc::new(HttpInvocations::new()),
         }
     }
 
@@ -340,6 +344,17 @@ impl Engine {
                     error = ?error,
                     "InvocationResult"
                 );
+
+                if let Some(sender) = self.http_invocations.remove(invocation_id) {
+                    let payload = if let Some(err) = error {
+                        Err(err.clone())
+                    } else {
+                        Ok(result.clone())
+                    };
+                    let _ = sender.send(payload);
+                    return Ok(());
+                }
+
                 if let Some((caller, _invocation)) =
                     self.take_invocation_sender(invocation_id).await
                 {
