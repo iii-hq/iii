@@ -5,19 +5,11 @@ use serde_json::Value;
 use std::{collections::HashSet, pin::Pin, sync::Arc};
 use uuid::Uuid;
 
+type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
+type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
+
 pub struct Function {
-    pub handler: Box<
-        dyn Fn(
-                Option<Uuid>,
-                serde_json::Value,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Option<serde_json::Value>, ErrorBody>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    >,
+    pub handler: Box<HandlerFn>,
     pub _function_path: String,
     pub _description: Option<String>,
     pub request_format: Option<Value>,
