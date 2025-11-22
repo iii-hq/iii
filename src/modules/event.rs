@@ -87,6 +87,8 @@ impl EventCoreModule {
                     "data": { "type": "object" }
                 })),
                 response_format: None,
+                function_kind: FunctionKind::Sync, // todo: define what is the kind of the core
+                                                   // functions
             },
             Box::new(self.clone()),
         );

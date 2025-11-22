@@ -48,3 +48,16 @@ export interface BridgeClient {
 export type Trigger = {
   unregister(): void
 }
+
+export interface ApiRequest<TBody = unknown> {
+  pathParams: Record<string, string>
+  queryParams: Record<string, string | string[]>
+  body: TBody
+  headers: Record<string, string | string[]>
+}
+
+export type ApiResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
+  status: TStatus
+  headers?: Record<string, string>
+  body: TBody
+}

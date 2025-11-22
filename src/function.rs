@@ -74,6 +74,7 @@ impl FunctionsRegistry {
         format!("{:?}", function_hash)
     }
     pub fn register_function(&self, function_path: String, function: Function) {
+        tracing::info!("Registring the function: {}", function_path);
         self.functions.insert(function_path, function);
     }
 
@@ -82,6 +83,7 @@ impl FunctionsRegistry {
     }
 
     pub fn get(&self, function_path: &str) -> Option<Function> {
+        tracing::info!("Searching for function path: {}", function_path);
         self.functions
             .get(function_path)
             .map(|entry| entry.value().clone())

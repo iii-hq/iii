@@ -10,7 +10,7 @@ use crate::{
     function::{Function, FunctionHandler, FunctionsRegistry},
     invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
     pending_invocations::PendingInvocations,
-    protocol::{ErrorBody, FunctionMessage, Message},
+    protocol::{ErrorBody, FunctionKind, FunctionMessage, Message},
     routers::{PathRouter, RouterRegistry},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
@@ -28,6 +28,7 @@ pub struct RegisterFunctionRequest {
     pub description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
+    pub function_kind: FunctionKind,
 }
 
 pub trait EngineTrait: Send + Sync {
@@ -377,6 +378,7 @@ impl Engine {
                 description,
                 request_format: req,
                 response_format: res,
+                function_kind,
             } => {
                 tracing::info!(
                     worker_id = %worker.id,
@@ -395,6 +397,7 @@ impl Engine {
                         description: description.clone(),
                         request_format: req.clone(),
                         response_format: res.clone(),
+                        function_kind: function_kind.clone(),
                     },
                     Box::new(worker.clone()),
                 );
@@ -576,6 +579,7 @@ impl EngineTrait for Engine {
             description,
             request_format,
             response_format,
+            function_kind,
         } = request;
 
         let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
@@ -591,6 +595,7 @@ impl EngineTrait for Engine {
             _description: description,
             request_format,
             response_format,
+            function_kind,
         };
 
         self.functions.register_function(function_path, function);

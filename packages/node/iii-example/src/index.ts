@@ -158,6 +158,8 @@ bridge.registerFunction(
         },
       ],
     },
+    functionKind: 'http'
+
   },
   async (payload: { email: string; username: string, data: any }) => {
     console.log(payload);
@@ -184,6 +186,7 @@ bridge.registerFunction(
   {
     functionPath: 'engine.enable',
     description: 'Enable the engine',
+    functionKind: "sync",
   },
   async () => engine.enable(),
 )
@@ -191,6 +194,7 @@ bridge.registerFunction(
   {
     functionPath: 'engine.disable',
     description: 'Disable the engine',
+    functionKind: "sync",
   },
   async () => engine.disable(),
 )
@@ -198,6 +202,7 @@ bridge.registerFunction(
   {
     functionPath: 'engine.work',
     description: 'Work the engine',
+    functionKind: "sync",
   },
   async () => engine.work(),
 )
@@ -205,6 +210,7 @@ bridge.registerFunction(
   {
     functionPath: 'engine.echo',
     description: 'Echo message back to the caller',
+    functionKind: "sync",
   },
   async (payload) => engine.echo(payload),
 )

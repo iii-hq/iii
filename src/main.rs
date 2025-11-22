@@ -22,9 +22,8 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use tokio::net::TcpListener;
-
 use engine::Engine;
+use tokio::net::TcpListener;
 
 use crate::modules::redis_adapter::RedisAdapter;
 
