@@ -17,7 +17,10 @@ impl PendingInvocations {
     }
 
     pub async fn insert(&self, invocation_id: Uuid, worker_id: Uuid) {
-        self.invocations.write().await.insert(invocation_id, worker_id);
+        self.invocations
+            .write()
+            .await
+            .insert(invocation_id, worker_id);
     }
 
     pub async fn remove(&self, invocation_id: &Uuid) -> Option<Uuid> {

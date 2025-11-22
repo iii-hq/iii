@@ -267,7 +267,7 @@ impl Engine {
 
                 if let Some(function) = self.functions.get(function_path) {
                     tracing::info!(function_path = %function_path, "Found function handler");
-                    match (function.handler)(*invocation_id, data.clone()).await {
+                    match function.call_handler(*invocation_id, data.clone()).await {
                         Ok(Some(result)) => {
                             if let Some(invocation_id) = *invocation_id {
                                 let _ = worker

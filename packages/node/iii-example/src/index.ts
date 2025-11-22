@@ -159,7 +159,8 @@ bridge.registerFunction(
       ],
     },
   },
-  async (payload: { topic: string; data: any }) => {
+  async (payload: { email: string; username: string, data: any }) => {
+    console.log(payload);
     // In a real implementation, this would emit to the bridge/event system
     logger.info(`User registered with username: ${payload.username} and email: ${payload.email}`);
     return {

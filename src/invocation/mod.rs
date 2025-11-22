@@ -1,9 +1,9 @@
 use std::{pin::Pin, sync::Arc};
-use tokio::sync::oneshot::{self, error::RecvError};
 
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
+use tokio::sync::oneshot::{self, error::RecvError};
 use uuid::Uuid;
 
 use crate::{function::Function, protocol::ErrorBody};
@@ -55,7 +55,9 @@ impl NonWorkerInvocations {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let invocation_id = uuid::Uuid::new_v4();
         self.invocations.insert(invocation_id, sender);
-        let _ = (function_handler.handler)(Some(invocation_id), body).await;
+        let _ = function_handler
+            .call_handler(Some(invocation_id), body)
+            .await;
         receiver.await
     }
 }

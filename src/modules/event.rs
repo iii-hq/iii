@@ -1,14 +1,15 @@
 use std::{pin::Pin, sync::Arc};
 
 use futures::Future;
-
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::engine::{Engine, EngineTrait, RegisterFunctionRequest};
-use crate::function::FunctionHandler;
-use crate::protocol::ErrorBody;
-use crate::trigger::{Trigger, TriggerRegistrator, TriggerType};
+use crate::{
+    engine::{Engine, EngineTrait, RegisterFunctionRequest},
+    function::FunctionHandler,
+    protocol::{ErrorBody, FunctionKind},
+    trigger::{Trigger, TriggerRegistrator, TriggerType},
+};
 
 pub trait EventAdapter: Send + Sync + 'static {
     fn emit(&self, topic: &str, event_data: Value);
@@ -65,8 +66,6 @@ impl TriggerRegistrator for EventCoreModule {
 
 impl EventCoreModule {
     pub fn new(adapter: Arc<dyn EventAdapter>, engine: Arc<Engine>) -> Self {
-        
-
         Self { adapter, engine }
     }
 

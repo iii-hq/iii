@@ -1,9 +1,11 @@
-use crate::protocol::*;
+use std::{collections::HashSet, pin::Pin, sync::Arc};
+
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use std::{collections::HashSet, pin::Pin, sync::Arc};
 use uuid::Uuid;
+
+use crate::protocol::*;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
 pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
@@ -15,6 +17,17 @@ pub struct Function {
     pub _description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
+    pub function_kind: FunctionKind,
+}
+
+impl Function {
+    pub async fn call_handler(
+        self,
+        invocation_id: Option<Uuid>,
+        data: Value,
+    ) -> Result<Option<Value>, ErrorBody> {
+        (self.handler)(invocation_id, data.clone()).await
+    }
 }
 
 impl From<&Function> for FunctionMessage {
