@@ -83,10 +83,14 @@ command = [
     "cargo", "run",
     # put launch parameters for your program behind a `--` separator
 ]
-watch = ["src", "Cargo.toml"]
 need_stdout = true
 allow_warnings = true
-background = true
+
+# programa longo: mostrar saída imediatamente
+background = false
+
+# 💡 isso é o que faz ele reiniciar quando você muda o código
+on_change_strategy = "kill_then_restart"
 
 # Run your long-running application (eg server) and have the result displayed in bacon.
 # For programs that never stop (eg a server), `background` is set to false

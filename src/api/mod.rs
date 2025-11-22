@@ -7,40 +7,9 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
-use dashmap::DashMap;
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
-use uuid::Uuid;
 
-use crate::{engine::Engine, protocol::ErrorBody};
-
-#[derive(Default)]
-pub struct HttpInvocations {
-    invocations: Arc<DashMap<Uuid, oneshot::Sender<Result<Option<Value>, ErrorBody>>>>,
-}
-impl HttpInvocations {
-    pub fn new() -> Self {
-        Self {
-            invocations: Arc::new(DashMap::new()),
-        }
-    }
-    pub fn insert(
-        &self,
-        invocation_id: Uuid,
-        sender: oneshot::Sender<Result<Option<Value>, ErrorBody>>,
-    ) {
-        self.invocations.insert(invocation_id, sender);
-    }
-
-    pub fn remove(
-        &self,
-        invocation_id: &Uuid,
-    ) -> Option<oneshot::Sender<Result<Option<Value>, ErrorBody>>> {
-        self.invocations
-            .remove(invocation_id)
-            .map(|(_, sender)| sender)
-    }
-}
+use crate::engine::Engine;
 
 #[axum::debug_handler]
 async fn dynamic_handler(
@@ -54,21 +23,17 @@ async fn dynamic_handler(
         .get_router(method.as_str(), &path)
         .await
     {
-        let invocation_id = Some(uuid::Uuid::new_v4());
         let function = engine.functions.get(function_path.as_str());
         if function.is_none() {
             return (StatusCode::NOT_FOUND, "Function Not Found").into_response();
         }
-        let function = function.expect("function existence checked");
+        let function_handler = function.expect("function existence checked");
 
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let invocation_id = invocation_id.unwrap(); // We know it is Some
-        engine.http_invocations.insert(invocation_id, sender);
-
-        let _ = (function.handler)(Some(invocation_id), body).await;
-
-        // Wait for the result
-        match receiver.await {
+        let func_result = engine
+            .non_worker_invocations
+            .handle_invocation(body, function_handler)
+            .await;
+        return match func_result {
             Ok(Ok(result)) => (StatusCode::OK, Json(json!({"result": result}))).into_response(),
             Ok(Err(err)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -80,10 +45,9 @@ async fn dynamic_handler(
                 Json(json!({"error": "Invocation timed out or channel closed"})),
             )
                 .into_response(),
-        }
-    } else {
-        (StatusCode::NOT_FOUND, "Not Found").into_response()
+        };
     }
+    (StatusCode::NOT_FOUND, "Not Found").into_response()
 }
 
 pub fn api_endpoints() -> Router<Arc<Engine>> {

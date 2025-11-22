@@ -6,10 +6,11 @@ use std::{collections::HashSet, pin::Pin, sync::Arc};
 use uuid::Uuid;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
-type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
+pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
 
+#[derive(Clone)]
 pub struct Function {
-    pub handler: Box<HandlerFn>,
+    pub handler: Arc<HandlerFn>,
     pub _function_path: String,
     pub _description: Option<String>,
     pub request_format: Option<Value>,
@@ -67,11 +68,10 @@ impl FunctionsRegistry {
         self.functions.remove(function_path);
     }
 
-    pub fn get(
-        &self,
-        function_path: &str,
-    ) -> Option<dashmap::mapref::one::Ref<'_, String, Function>> {
-        self.functions.get(function_path)
+    pub fn get(&self, function_path: &str) -> Option<Function> {
+        self.functions
+            .get(function_path)
+            .map(|entry| entry.value().clone())
     }
 
     pub fn iter(&self) -> dashmap::iter::Iter<'_, String, Function> {

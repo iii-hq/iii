@@ -7,9 +7,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    api::HttpInvocations,
     function::{Function, FunctionHandler, FunctionsRegistry},
-    invocation::{Invocation, InvocationHandler},
+    invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
     pending_invocations::PendingInvocations,
     protocol::{ErrorBody, FunctionMessage, Message},
     routers::{PathRouter, RouterRegistry},
@@ -49,7 +48,7 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub pending_invocations: Arc<PendingInvocations>,
     pub routers_registry: Arc<RouterRegistry>,
-    pub http_invocations: Arc<HttpInvocations>,
+    pub non_worker_invocations: Arc<NonWorkerInvocations>,
 }
 
 impl Engine {
@@ -61,7 +60,7 @@ impl Engine {
             pending_invocations: Arc::new(PendingInvocations::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             routers_registry: Arc::new(RouterRegistry::new()),
-            http_invocations: Arc::new(HttpInvocations::new()),
+            non_worker_invocations: Arc::new(NonWorkerInvocations::new()),
         }
     }
 
@@ -344,7 +343,7 @@ impl Engine {
                     "InvocationResult"
                 );
 
-                if let Some(sender) = self.http_invocations.remove(invocation_id) {
+                if let Some(sender) = self.non_worker_invocations.remove(invocation_id) {
                     let payload = if let Some(err) = error {
                         Err(err.clone())
                     } else {
@@ -583,7 +582,7 @@ impl EngineTrait for Engine {
         let handler_function_path = function_path.clone();
 
         let function = Function {
-            handler: Box::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input| {
                 let handler = handler_arc.clone();
                 let path = handler_function_path.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })

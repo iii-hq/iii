@@ -29,7 +29,7 @@ impl TriggerRegistrator for EventCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             self.adapter.subscribe(
-                &trigger
+                trigger
                     .config
                     .get("topic")
                     .unwrap_or_default()
@@ -49,7 +49,7 @@ impl TriggerRegistrator for EventCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             self.adapter.unsubscribe(
-                &trigger
+                trigger
                     .config
                     .get("topic")
                     .unwrap_or_default()
@@ -65,9 +65,9 @@ impl TriggerRegistrator for EventCoreModule {
 
 impl EventCoreModule {
     pub fn new(adapter: Arc<dyn EventAdapter>, engine: Arc<Engine>) -> Self {
-        let module = Self { adapter, engine };
+        
 
-        module
+        Self { adapter, engine }
     }
 
     pub async fn initialize(&self) {
@@ -79,7 +79,7 @@ impl EventCoreModule {
         };
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
-        let _ = self.engine.register_function(
+        self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "emit".to_string(),
                 description: Some("Emit an event".to_string()),
