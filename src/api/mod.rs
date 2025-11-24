@@ -84,7 +84,6 @@ async fn dynamic_handler(
     Query(params): Query<HashMap<String, String>>,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
-    dbg!(&method, &path, &params, &body, &headers);
     if let Some(function_path) = engine
         .routers_registry
         .get_router(method.as_str(), &path)
