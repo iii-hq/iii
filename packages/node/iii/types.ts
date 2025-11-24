@@ -58,7 +58,7 @@ export type ApiRequest<TBody = unknown> {
 }
 
 export type ApiResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
-  status: TStatus
+  status_code: TStatus
   headers?: Record<string, string>
   body: TBody
 }

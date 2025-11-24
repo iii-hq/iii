@@ -128,7 +128,7 @@ bridge.registerFunction(
       email: payload.email,
     };
     return {
-      status: 201,
+      status_code: 201,
       headers: { 'Content-Type': 'application/json' },
       body: body,
     };
