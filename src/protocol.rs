@@ -3,22 +3,6 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIrequest {
-    pub path_params: Vec<String>,
-    pub query_params: Vec<String>,
-    pub headers: Vec<String>,
-    pub path: String,
-    pub method: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIresponse {
-    pub status_code: u16,
-    pub headers: Vec<String>,
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
     RegisterTriggerType {
