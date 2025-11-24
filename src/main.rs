@@ -60,15 +60,14 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(address = addr, "Engine listening");
 
-    let event_module = modules::event::EventCoreModule::new(
-        Arc::new(RedisAdapter::new(
-            "redis://localhost:6379".to_string(),
-            engine.clone(),
-        )?),
-        engine.clone(),
-    );
+    let redis_adapter =
+        RedisAdapter::new("redis://localhost:6379".to_string(), engine.clone()).await?;
+    let event_module =
+        modules::event::EventCoreModule::new(Arc::new(redis_adapter), engine.clone());
 
-    event_module.initialize().await;
+    tokio::spawn(async move {
+        event_module.initialize().await;
+    });
 
     axum::serve(
         listener,

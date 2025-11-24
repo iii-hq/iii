@@ -1,5 +1,6 @@
 use std::{pin::Pin, sync::Arc};
 
+use async_trait::async_trait;
 use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
@@ -11,10 +12,11 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
+#[async_trait]
 pub trait EventAdapter: Send + Sync + 'static {
-    fn emit(&self, topic: &str, event_data: Value);
-    fn subscribe(&self, topic: &str, id: &str, function_path: &str);
-    fn unsubscribe(&self, topic: &str, id: &str);
+    async fn emit(&self, topic: &str, event_data: Value);
+    async fn subscribe(&self, topic: &str, id: &str, function_path: &str);
+    async fn unsubscribe(&self, topic: &str, id: &str);
 }
 
 #[derive(Clone)]
@@ -29,17 +31,18 @@ impl TriggerRegistrator for EventCoreModule {
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
-            self.adapter.subscribe(
-                trigger
-                    .config
-                    .get("topic")
-                    .unwrap_or_default()
-                    .as_str()
-                    .unwrap_or(""), // TODO throw error if topic is not set
-                &trigger.id,
-                &trigger.function_path,
-            );
-
+            self.adapter
+                .subscribe(
+                    &trigger
+                        .config
+                        .get("topic")
+                        .unwrap_or_default()
+                        .as_str()
+                        .unwrap_or(""), // TODO throw error if topic is not set
+                    &trigger.id,
+                    &trigger.function_path,
+                )
+                .await;
             Ok(())
         })
     }
@@ -49,16 +52,19 @@ impl TriggerRegistrator for EventCoreModule {
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
-            self.adapter.unsubscribe(
-                trigger
-                    .config
-                    .get("topic")
-                    .unwrap_or_default()
-                    .as_str()
-                    .unwrap_or(""), // TODO throw error if topic is not set
-                &trigger.id,
-            );
+            tracing::info!(trigger = %trigger.id, "Unregistering trigger");
 
+            self.adapter
+                .unsubscribe(
+                    &trigger
+                        .config
+                        .get("topic")
+                        .unwrap_or_default()
+                        .as_str()
+                        .unwrap_or(""), // TODO throw error if topic is not set
+                    &trigger.id,
+                )
+                .await;
             Ok(())
         })
     }
@@ -119,7 +125,8 @@ impl FunctionHandler for EventCoreModule {
                 });
             }
 
-            adapter.emit(topic, event_data);
+            tracing::info!(topic = %topic, event_data = %event_data, "Emitting event");
+            let _ = adapter.emit(topic, event_data).await;
 
             Ok(Some(Value::Null))
         })

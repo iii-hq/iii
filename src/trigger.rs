@@ -74,15 +74,30 @@ impl TriggerRegistry {
             .await
             .iter()
             .filter(|pair| pair.value().worker_id == Some(*worker_id))
-            .map(|pair| pair.key().clone())
-            .collect::<Vec<String>>();
+            .map(|pair| pair.value().clone())
+            .collect::<Vec<Trigger>>();
 
         if !worker_triggers.is_empty() {
             let write_lock = self.triggers.write().await;
-            for trigger_id in worker_triggers {
-                tracing::info!(trigger_id = trigger_id, "Removing trigger");
-                write_lock.remove(&trigger_id);
-                tracing::info!(trigger_id = trigger_id, "Trigger removed");
+            for trigger in worker_triggers {
+                tracing::info!(trigger_id = trigger.id, "Removing trigger");
+                write_lock.remove(&trigger.id);
+
+                if let Some(trigger_type) =
+                    self.trigger_types.read().await.get(&trigger.trigger_type)
+                {
+                    tracing::info!(trigger_type_id = trigger_type.id, "Unregistering trigger");
+
+                    let result: Result<(), anyhow::Error> = trigger_type
+                        .registrator
+                        .unregister_trigger(trigger.clone())
+                        .await;
+                    if result.is_err() {
+                        tracing::error!(error = %result.err().unwrap(), "Error unregistering trigger");
+                    }
+                }
+
+                tracing::info!(trigger_id = trigger.id, "Trigger removed");
             }
         }
     }
@@ -127,6 +142,8 @@ impl TriggerRegistry {
             .registrator
             .register_trigger(trigger.clone())
             .await;
+
+        tracing::info!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
 
         self.triggers
             .write()
