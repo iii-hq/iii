@@ -24,4 +24,5 @@ serde_json = "1"
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
-redis = "0.32.7"
+redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"] }
+async-trait = "0.1.89"
