@@ -73,9 +73,7 @@ impl TriggerRegistrator for EventCoreModule {
 
 impl EventCoreModule {
     pub fn new(adapter: Arc<dyn EventAdapter>, engine: Arc<Engine>) -> Self {
-        let module = Self { adapter, engine };
-
-        module
+        Self { adapter, engine }
     }
 
     pub async fn initialize(&self) {

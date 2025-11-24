@@ -3,7 +3,7 @@ import { logger } from './logger'
 
 bridge.registerFunction({ functionPath: 'service.echo' }, async (payload) => {
   console.log('Echoing message', payload)
-  return payload
+  return { ...payload, from: 'service.echo' }
 })
 
 bridge.registerFunction({ functionPath: 'test' }, async (payload) => {
@@ -49,9 +49,16 @@ bridge.registerTrigger({
   config: { topic: 'echo' },
 })
 
+bridge.registerTrigger({
+  triggerType: 'event',
+  functionPath: 'test',
+  config: { topic: 'test' },
+})
+
 process.stdin.on('data', async (data) => {
-  console.log('Emitting event', data.toString().trim())
-  await bridge.invokeFunction('emit', { topic: 'echo', data: { text: data.toString().trim() } })
+  const topic = data.toString().trim()
+  console.log('Emitting event', topic)
+  await bridge.invokeFunction('emit', { topic, data: { text: topic } })
   // bridge.invokeFunctionAsync('engine.echo', { text: data.toString().trim() })
   console.log('Event emitted')
 })

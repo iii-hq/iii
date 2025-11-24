@@ -143,7 +143,7 @@ impl TriggerRegistry {
             .register_trigger(trigger.clone())
             .await;
 
-        tracing::info!(trigger = %trigger.id, worker_id = %trigger.worker_id.clone().unwrap_or_default(), "Registering trigger");
+        tracing::info!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
 
         self.triggers
             .write()
