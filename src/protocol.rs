@@ -18,14 +18,6 @@ pub struct APIresponse {
     pub body: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum FunctionKind {
-    Http,
-    Sync,
-    Streaming,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
@@ -62,8 +54,6 @@ pub enum Message {
         description: Option<String>,
         request_format: Option<Value>,
         response_format: Option<Value>,
-        #[serde(rename = "functionKind")]
-        function_kind: FunctionKind,
     },
     InvokeFunction {
         #[serde(rename = "invocationId")]

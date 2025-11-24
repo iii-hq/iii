@@ -17,7 +17,6 @@ pub struct Function {
     pub _description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
-    pub function_kind: FunctionKind,
 }
 
 impl Function {
