@@ -118,8 +118,8 @@ bridge.registerFunction(
 
   },
   async (request: ApiRequest<{ email: string; username: string, data: any }>): Promise<ApiResponse> => {
-    const payload = request.body;
-    console.log(payload);
+    const { body: payload, pathParams, queryParams, headers, method } = request;
+    console.log({ payload, pathParams, queryParams, headers, method });
     // In a real implementation, this would emit to the bridge/event system
     logger.info(`User registered with username: ${payload.username} and email: ${payload.email}`);
     const body = {

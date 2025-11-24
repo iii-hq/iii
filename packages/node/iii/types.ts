@@ -54,6 +54,7 @@ export type ApiRequest<TBody = unknown> {
   queryParams: Record<string, string | string[]>
   body: TBody
   headers: Record<string, string | string[]>
+  method: string
 }
 
 export type ApiResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
