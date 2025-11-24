@@ -71,7 +71,6 @@ export type RegisterFunctionMessage = {
   description?: string
   requestFormat?: RegisterFunctionFormat
   responseFormat?: RegisterFunctionFormat
-  functionKind: 'http'| 'sync' | 'streaming'
 }
 
 export type InvokeFunctionMessage = {

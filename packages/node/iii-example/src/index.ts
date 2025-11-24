@@ -114,61 +114,21 @@ bridge.registerFunction(
   {
     functionPath: 'register.user',
     description: 'simple user registration function',
-    requestFormat: {
-      name: 'payload',
-      description: 'Payload for regiser.user function',
-      type: 'object',
-      body: [
-        {
-          name: 'username',
-          description: 'Username for registration',
-          type: 'string',
-          required: true,
-        },
-        {
-          name: 'email',
-          description: 'Email for registration',
-          type: 'string',
-          required: true, 
-        },
-      ],
-    },
-    responseFormat: {
-      name: 'response',
-      description: 'Response from register.user function',
-      type: 'object',
-      body: [
-        {
-          name: 'userId',
-          description: 'Unique identifier for the registered user',
-          type: 'string',
-          required: true,
-        },
-        {
-          name: 'username',
-          description: 'Username of the registered user',
-          type: 'string',
-          required: true,
-        },
-        {
-          name: 'email',
-          description: 'Email of the registered user',
-          type: 'string',
-          required: true,
-        },
-      ],
-    },
-    functionKind: 'http'
 
   },
   async (payload: { email: string; username: string, data: any }) => {
     console.log(payload);
     // In a real implementation, this would emit to the bridge/event system
     logger.info(`User registered with username: ${payload.username} and email: ${payload.email}`);
-    return {
+    const body = {
       userId: 'user_' + Math.random().toString(36).substr(2, 9),
       username: payload.username,
       email: payload.email,
+    };
+    return {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     };
   },
 )
@@ -186,7 +146,6 @@ bridge.registerFunction(
   {
     functionPath: 'engine.enable',
     description: 'Enable the engine',
-    functionKind: "sync",
   },
   async () => engine.enable(),
 )
@@ -194,7 +153,6 @@ bridge.registerFunction(
   {
     functionPath: 'engine.disable',
     description: 'Disable the engine',
-    functionKind: "sync",
   },
   async () => engine.disable(),
 )
@@ -202,7 +160,6 @@ bridge.registerFunction(
   {
     functionPath: 'engine.work',
     description: 'Work the engine',
-    functionKind: "sync",
   },
   async () => engine.work(),
 )
@@ -210,7 +167,6 @@ bridge.registerFunction(
   {
     functionPath: 'engine.echo',
     description: 'Echo message back to the caller',
-    functionKind: "sync",
   },
   async (payload) => engine.echo(payload),
 )
