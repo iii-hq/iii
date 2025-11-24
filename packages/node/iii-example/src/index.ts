@@ -1,5 +1,6 @@
 import { bridge } from './bridge'
 import { logger } from './logger'
+import { ApiResponse, ApiRequest } from 'iii'
 
 class Engine {
   enabled: boolean
@@ -116,7 +117,8 @@ bridge.registerFunction(
     description: 'simple user registration function',
 
   },
-  async (payload: { email: string; username: string, data: any }) => {
+  async (request: ApiRequest<{ email: string; username: string, data: any }>): Promise<ApiResponse> => {
+    const payload = request.body;
     console.log(payload);
     // In a real implementation, this would emit to the bridge/event system
     logger.info(`User registered with username: ${payload.username} and email: ${payload.email}`);
@@ -128,7 +130,7 @@ bridge.registerFunction(
     return {
       status: 201,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: body,
     };
   },
 )

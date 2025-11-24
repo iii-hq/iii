@@ -4,6 +4,8 @@ import {
   InvocationResultMessage,
   InvokeFunctionMessage,
   MessageType,
+  ApiResponse,
+  ApiRequest,
   RegisterFunctionMessage,
   RegisterServiceMessage,
   RegisterTriggerMessage,
