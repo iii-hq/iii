@@ -16,8 +16,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     engine::{Engine, EngineTrait},
-    invocation::{Invocation, InvocationHandler},
-    protocol::ErrorBody,
+    invocation::InvocationHandler,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -208,23 +207,6 @@ impl TriggerRegistrator for ApiAdapter {
 
             adapter.unregister_router(http_method, api_path).await;
             Ok(())
-        })
-    }
-}
-
-impl InvocationHandler for ApiAdapter {
-    fn handle_invocation_result<'a>(
-        &'a self,
-        _invocation: Invocation,
-        result: Option<Value>,
-        error: Option<ErrorBody>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
-        Box::pin(async move {
-            if let Some(err) = error {
-                Err(err)
-            } else {
-                Ok(result)
-            }
         })
     }
 }
