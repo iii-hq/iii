@@ -6,7 +6,6 @@ mod invocation;
 mod logging;
 mod pending_invocations;
 mod protocol;
-mod routers;
 mod services;
 mod trigger;
 mod workers;

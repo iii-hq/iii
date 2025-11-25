@@ -8,17 +8,35 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
+use dashmap::DashMap;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::RwLock;
 
 use crate::{
     engine::{Engine, EngineTrait},
     invocation::{Invocation, InvocationHandler},
     protocol::ErrorBody,
-    routers::{PathRouter, RouterRegistry},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
+
+#[derive(Debug)]
+pub struct PathRouter {
+    pub http_path: String,
+    pub http_method: String,
+    pub function_path: String,
+}
+
+impl PathRouter {
+    pub fn new(http_path: String, http_method: String, function_path: String) -> Self {
+        Self {
+            http_path,
+            http_method,
+            function_path,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct APIrequest {
@@ -85,14 +103,13 @@ impl APIresponse {
 
 #[derive(Clone)]
 pub struct ApiAdapter {
-    pub routers_registry: Arc<RouterRegistry>,
+    pub routers_registry: Arc<RwLock<DashMap<String, PathRouter>>>,
 }
 
 impl ApiAdapter {
     pub fn new() -> Self {
-        let api_router_registry = Arc::new(RouterRegistry::new());
         Self {
-            routers_registry: api_router_registry,
+            routers_registry: Arc::new(RwLock::new(DashMap::new())),
         }
     }
 
@@ -112,6 +129,31 @@ impl ApiAdapter {
             .route("/dynamic/*path", any(dynamic_handler))
             .layer(Extension(self))
     }
+
+    pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
+        let method = http_method.to_uppercase();
+        let key = format!("{}:{}", method, http_path);
+        tracing::info!("Looking up router for key: {}", key);
+        let routers = self.routers_registry.read().await;
+        let router = routers.get(&key);
+        match router {
+            Some(r) => Some(r.function_path.clone()),
+            None => None,
+        }
+    }
+
+    pub async fn register_router(&self, router: PathRouter) {
+        let method = router.http_method.to_uppercase();
+        let key = format!("{}:{}", method, router.http_path);
+        tracing::info!("Registering router: {}", key);
+        self.routers_registry.write().await.insert(key, router);
+    }
+
+    pub async fn unregister_router(&self, http_method: &str, http_path: &str) -> bool {
+        let key = format!("{}:{}", http_method.to_uppercase(), http_path);
+        tracing::info!("Unregistering router: {}", key);
+        self.routers_registry.write().await.remove(&key).is_some()
+    }
 }
 
 impl TriggerRegistrator for ApiAdapter {
@@ -119,7 +161,7 @@ impl TriggerRegistrator for ApiAdapter {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        let routers_registry = self.routers_registry.clone();
+        let adapter = self.clone();
 
         Box::pin(async move {
             let api_path = trigger
@@ -140,7 +182,7 @@ impl TriggerRegistrator for ApiAdapter {
                 trigger.function_path.clone(),
             );
 
-            routers_registry.register_router(router).await;
+            adapter.register_router(router).await;
             Ok(())
         })
     }
@@ -149,7 +191,7 @@ impl TriggerRegistrator for ApiAdapter {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        let routers_registry = self.routers_registry.clone();
+        let adapter = self.clone();
 
         Box::pin(async move {
             let api_path = trigger
@@ -164,9 +206,7 @@ impl TriggerRegistrator for ApiAdapter {
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 
-            routers_registry
-                .unregister_router(http_method, api_path)
-                .await;
+            adapter.unregister_router(http_method, api_path).await;
             Ok(())
         })
     }
@@ -199,11 +239,7 @@ async fn dynamic_handler(
     Query(params): Query<HashMap<String, String>>,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
-    if let Some(function_path) = api_handler
-        .routers_registry
-        .get_router(method.as_str(), &path)
-        .await
-    {
+    if let Some(function_path) = api_handler.get_router(method.as_str(), &path).await {
         let function = engine.functions.get(function_path.as_str());
         if function.is_none() {
             return (StatusCode::NOT_FOUND, "Function Not Found").into_response();
