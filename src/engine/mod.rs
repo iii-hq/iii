@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionHandler, FunctionsRegistry},
-    invocation::{Invocation, InvocationHandler},
+    invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
     pending_invocations::PendingInvocations,
     protocol::{ErrorBody, FunctionMessage, Message},
     routers::{PathRouter, RouterRegistry},
@@ -48,6 +48,7 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub pending_invocations: Arc<PendingInvocations>,
     pub routers_registry: Arc<RouterRegistry>,
+    pub non_worker_invocations: Arc<NonWorkerInvocations>,
 }
 
 impl Engine {
@@ -59,6 +60,7 @@ impl Engine {
             pending_invocations: Arc::new(PendingInvocations::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             routers_registry: Arc::new(RouterRegistry::new()),
+            non_worker_invocations: Arc::new(NonWorkerInvocations::new()),
         }
     }
 
@@ -265,7 +267,7 @@ impl Engine {
 
                 if let Some(function) = self.functions.get(function_path) {
                     tracing::info!(function_path = %function_path, "Found function handler");
-                    match (function.handler)(*invocation_id, data.clone()).await {
+                    match function.call_handler(*invocation_id, data.clone()).await {
                         Ok(Some(result)) => {
                             if let Some(invocation_id) = *invocation_id {
                                 let _ = worker
@@ -340,6 +342,17 @@ impl Engine {
                     error = ?error,
                     "InvocationResult"
                 );
+
+                if let Some(sender) = self.non_worker_invocations.remove(invocation_id) {
+                    let payload = if let Some(err) = error {
+                        Err(err.clone())
+                    } else {
+                        Ok(result.clone())
+                    };
+                    let _ = sender.send(payload);
+                    return Ok(());
+                }
+
                 if let Some((caller, _invocation)) =
                     self.take_invocation_sender(invocation_id).await
                 {
@@ -569,7 +582,7 @@ impl EngineTrait for Engine {
         let handler_function_path = function_path.clone();
 
         let function = Function {
-            handler: Box::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input| {
                 let handler = handler_arc.clone();
                 let path = handler_function_path.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })

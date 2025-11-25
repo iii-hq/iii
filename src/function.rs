@@ -1,27 +1,32 @@
-use crate::protocol::*;
+use std::{collections::HashSet, pin::Pin, sync::Arc};
+
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use std::{collections::HashSet, pin::Pin, sync::Arc};
 use uuid::Uuid;
 
+use crate::protocol::*;
+
+type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
+pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
+
+#[derive(Clone)]
 pub struct Function {
-    pub handler: Box<
-        dyn Fn(
-                Option<Uuid>,
-                serde_json::Value,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<Option<serde_json::Value>, ErrorBody>>
-                        + Send,
-                >,
-            > + Send
-            + Sync,
-    >,
+    pub handler: Arc<HandlerFn>,
     pub _function_path: String,
     pub _description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
+}
+
+impl Function {
+    pub async fn call_handler(
+        self,
+        invocation_id: Option<Uuid>,
+        data: Value,
+    ) -> Result<Option<Value>, ErrorBody> {
+        (self.handler)(invocation_id, data.clone()).await
+    }
 }
 
 impl From<&Function> for FunctionMessage {
@@ -68,6 +73,7 @@ impl FunctionsRegistry {
         format!("{:?}", function_hash)
     }
     pub fn register_function(&self, function_path: String, function: Function) {
+        tracing::info!("Registring the function: {}", function_path);
         self.functions.insert(function_path, function);
     }
 
@@ -75,11 +81,11 @@ impl FunctionsRegistry {
         self.functions.remove(function_path);
     }
 
-    pub fn get(
-        &self,
-        function_path: &str,
-    ) -> Option<dashmap::mapref::one::Ref<'_, String, Function>> {
-        self.functions.get(function_path)
+    pub fn get(&self, function_path: &str) -> Option<Function> {
+        tracing::info!("Searching for function path: {}", function_path);
+        self.functions
+            .get(function_path)
+            .map(|entry| entry.value().clone())
     }
 
     pub fn iter(&self) -> dashmap::iter::Iter<'_, String, Function> {

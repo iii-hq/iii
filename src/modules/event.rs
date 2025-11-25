@@ -2,14 +2,15 @@ use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::Future;
-
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::engine::{Engine, EngineTrait, RegisterFunctionRequest};
-use crate::function::FunctionHandler;
-use crate::protocol::ErrorBody;
-use crate::trigger::{Trigger, TriggerRegistrator, TriggerType};
+use crate::{
+    engine::{Engine, EngineTrait, RegisterFunctionRequest},
+    function::FunctionHandler,
+    protocol::ErrorBody,
+    trigger::{Trigger, TriggerRegistrator, TriggerType},
+};
 
 #[async_trait]
 pub trait EventAdapter: Send + Sync + 'static {
@@ -42,7 +43,6 @@ impl TriggerRegistrator for EventCoreModule {
                     &trigger.function_path,
                 )
                 .await;
-
             Ok(())
         })
     }
@@ -65,7 +65,6 @@ impl TriggerRegistrator for EventCoreModule {
                     &trigger.id,
                 )
                 .await;
-
             Ok(())
         })
     }
@@ -85,7 +84,7 @@ impl EventCoreModule {
         };
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
-        let _ = self.engine.register_function(
+        self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "emit".to_string(),
                 description: Some("Emit an event".to_string()),
@@ -94,6 +93,7 @@ impl EventCoreModule {
                     "data": { "type": "object" }
                 })),
                 response_format: None,
+                // functions
             },
             Box::new(self.clone()),
         );
