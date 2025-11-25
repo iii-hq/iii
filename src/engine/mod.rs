@@ -11,7 +11,6 @@ use crate::{
     invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
     pending_invocations::PendingInvocations,
     protocol::{ErrorBody, FunctionMessage, Message},
-    routers::{PathRouter, RouterRegistry},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -47,7 +46,6 @@ pub struct Engine {
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
     pub pending_invocations: Arc<PendingInvocations>,
-    pub routers_registry: Arc<RouterRegistry>,
     pub non_worker_invocations: Arc<NonWorkerInvocations>,
 }
 
@@ -59,7 +57,6 @@ impl Engine {
             trigger_registry: Arc::new(TriggerRegistry::new()),
             pending_invocations: Arc::new(PendingInvocations::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
-            routers_registry: Arc::new(RouterRegistry::new()),
             non_worker_invocations: Arc::new(NonWorkerInvocations::new()),
         }
     }
@@ -200,25 +197,6 @@ impl Engine {
                     config = ?config,
                     "RegisterTrigger"
                 );
-
-                let api_path = config
-                    .get("apiPath")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let http_method = config
-                    .get("httpMethod")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-
-                if trigger_type == "api" {
-                    tracing::info!(api_path = ?api_path, http_method = ?http_method, "Registering API trigger router");
-                    let router = PathRouter::new(
-                        api_path.to_string(),
-                        http_method.to_string(),
-                        function_path.clone(),
-                    );
-                    self.routers_registry.register_router(router).await;
-                }
 
                 let _ = self
                     .trigger_registry
