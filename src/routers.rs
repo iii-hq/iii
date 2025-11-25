@@ -33,6 +33,12 @@ impl RouterRegistry {
         tracing::info!("Registering router: {}", key);
         self.routers.write().await.insert(key, router);
     }
+
+    pub async fn unregister_router(&self, http_method: &str, http_path: &str) -> bool {
+        let key = format!("{}:{}", http_method.to_uppercase(), http_path);
+        tracing::info!("Unregistering router: {}", key);
+        self.routers.write().await.remove(&key).is_some()
+    }
 }
 
 #[derive(Debug)]

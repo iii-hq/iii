@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
 
-mod api;
 mod engine;
 mod function;
 mod invocation;
@@ -12,6 +11,7 @@ mod services;
 mod trigger;
 mod workers;
 mod modules {
+    pub mod api;
     pub mod event;
     pub mod redis_adapter;
 }
@@ -25,7 +25,7 @@ use axum::{
 use engine::Engine;
 use tokio::net::TcpListener;
 
-use crate::modules::redis_adapter::RedisAdapter;
+use crate::modules::{api::ApiAdapter, redis_adapter::RedisAdapter};
 
 async fn ws_handler(
     State(engine): State<Arc<Engine>>,
@@ -46,6 +46,10 @@ async fn main() -> anyhow::Result<()> {
     logging::init_tracing();
 
     let engine: Arc<Engine> = Arc::new(Engine::new());
+
+    let api_handler = Arc::new(ApiAdapter::new());
+    api_handler.initialize(&engine).await;
+
     let engine_clone = engine.clone();
     tokio::spawn(async move {
         engine_clone.notify_new_functions(5).await;
@@ -53,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new().route("/", get(ws_handler));
     // Merge API routes
-    let api_routes = api::api_endpoints();
+    let api_routes = api_handler.api_endpoints();
     let app = app.merge(api_routes).with_state(engine.clone());
 
     let addr = "127.0.0.1:49134";
