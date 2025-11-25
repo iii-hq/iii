@@ -1,16 +1,18 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use redis::aio::ConnectionManager;
-use redis::{AsyncCommands, Client};
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json::Value;
-use tokio::sync::{Mutex, RwLock};
-use tokio::task::JoinHandle;
+use tokio::{
+    sync::{Mutex, RwLock},
+    task::JoinHandle,
+};
 
-use crate::engine::{Engine, EngineTrait};
-use crate::modules::event::EventAdapter;
+use crate::{
+    engine::{Engine, EngineTrait},
+    modules::event::EventAdapter,
+};
 
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
@@ -47,7 +49,7 @@ impl EventAdapter for RedisAdapter {
         let event_data = event_data.clone();
         let publisher = Arc::clone(&self.publisher);
 
-        tracing::info!(topic = %topic, event_data = %event_data, "Emitting event to Redis");
+        tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event to Redis");
 
         let event_json = match serde_json::to_string(&event_data) {
             Ok(json) => json,
@@ -90,7 +92,7 @@ impl EventAdapter for RedisAdapter {
         let id_for_task = id.clone();
         let function_path_for_task = function_path.clone();
 
-        tracing::info!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribing to Redis channel");
+        tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribing to Redis channel");
 
         let task_handle = tokio::spawn(async move {
             // let mut conn = subscriber.get_connection();
@@ -107,7 +109,7 @@ impl EventAdapter for RedisAdapter {
                 return;
             }
 
-            tracing::info!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribed to Redis channel");
+            tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribed to Redis channel");
 
             let mut msg = pubsub.into_on_message();
 
@@ -120,7 +122,7 @@ impl EventAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::info!(payload = %payload, "Received message from Redis");
+                tracing::debug!(payload = %payload, "Received message from Redis");
 
                 let event_data: Value = match serde_json::from_str(&payload) {
                     Ok(data) => data,
@@ -130,14 +132,14 @@ impl EventAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::info!(topic = %topic_for_task, function_path = %function_path_for_task, "Received event from Redis, invoking function");
+                tracing::debug!(topic = %topic_for_task, function_path = %function_path_for_task, "Received event from Redis, invoking function");
                 engine.invoke_function(&function_path_for_task, event_data);
             }
 
-            tracing::info!(topic = %topic_for_task, id = %id_for_task, "Subscription task ended");
+            tracing::debug!(topic = %topic_for_task, id = %id_for_task, "Subscription task ended");
         });
 
-        tracing::info!("Subscription task spawned");
+        tracing::debug!("Subscription task spawned");
 
         // Store the subscription
         let mut subs = subscriptions.write().await;
@@ -145,7 +147,7 @@ impl EventAdapter for RedisAdapter {
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
-        tracing::info!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
+        tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
 
         let topic = topic.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
@@ -155,7 +157,7 @@ impl EventAdapter for RedisAdapter {
 
         if let Some(sub_info) = subs.remove(&topic) {
             if sub_info.id == id {
-                tracing::info!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
+                tracing::debug!(topic = %topic, id = %id, "Unsubscribing from Redis channel");
                 sub_info.task_handle.abort();
             } else {
                 tracing::warn!(topic = %topic, id = %id, "Subscription ID mismatch, not unsubscribing");

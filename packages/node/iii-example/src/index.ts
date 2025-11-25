@@ -1,29 +1,25 @@
 import { bridge } from './bridge'
-import { logger } from './logger'
-import { ApiResponse, ApiRequest } from 'iii'
-
+import { type ApiResponse, type ApiRequest, getContext } from 'iii'
 
 bridge.registerFunction(
   {
     functionPath: 'register.user',
     description: 'simple user registration function',
-
   },
-  async (request: ApiRequest<{ email: string; username: string, data: any }>): Promise<ApiResponse> => {
-    const { body: payload, pathParams, queryParams, headers, method } = request;
-    console.log({ payload, pathParams, queryParams, headers, method });
-    // In a real implementation, this would emit to the bridge/event system
-    logger.info(`User registered with username: ${payload.username} and email: ${payload.email}`);
-    const body = {
-      userId: 'user_' + Math.random().toString(36).substr(2, 9),
-      username: payload.username,
-      email: payload.email,
-    };
+  async (request: ApiRequest<{ email: string; username: string; data: any }>): Promise<ApiResponse> => {
+    const context = getContext()
+    const { body, pathParams, queryParams, headers, method } = request
+    const userId = 'user_' + Math.random().toString(36).substring(2, 9)
+    const responseBody = { userId, username: body.username, email: body.email }
+
+    context.logger.info('Request', { body, pathParams, queryParams, headers, method })
+    context.logger.info('User registered', { username: body.username, email: body.email })
+
     return {
       status_code: 201,
       headers: { 'Content-Type': 'application/json' },
-      body: body,
-    };
+      body: responseBody,
+    }
   },
 )
 
@@ -35,14 +31,18 @@ bridge.registerTrigger({
     httpMethod: 'POST',
   },
 })
+
 bridge.registerFunction({ functionPath: 'service.echo' }, async (payload) => {
-  console.log('Echoing message', payload)
+  const context = getContext()
+  context.logger.info('Echoing message', payload)
   return { ...payload, from: 'service.echo' }
 })
 
 bridge.registerFunction({ functionPath: 'test' }, async (payload) => {
   const response = await bridge.invokeFunction('service.echo', payload)
-  console.log('Response from service.echo', response)
+  const context = getContext()
+
+  context.logger.info('Response from service.echo', { response: { response } })
   return response
 })
 
@@ -91,10 +91,12 @@ bridge.registerTrigger({
 
 process.stdin.on('data', async (data) => {
   const topic = data.toString().trim()
-  console.log('Emitting event', topic)
+  const context = getContext()
+
+  context.logger.info('Emitting event', topic)
   await bridge.invokeFunction('emit', { topic, data: { text: topic } })
   // bridge.invokeFunctionAsync('engine.echo', { text: data.toString().trim() })
-  console.log('Event emitted')
+  context.logger.info('Event emitted')
 })
 
 // bridge.registerTrigger({

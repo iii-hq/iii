@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionsRegistry},
     invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
+    modules::logger::{LogLevel, log},
     pending_invocations::PendingInvocations,
     protocol::{ErrorBody, FunctionMessage, Message},
     services::{Service, ServicesRegistry},
@@ -66,12 +67,12 @@ impl Engine {
     }
 
     fn remove_function(&self, function_path: &str) {
-        tracing::info!(function_path = %function_path, "Removing function");
+        tracing::debug!(function_path = %function_path, "Removing function");
         self.functions.remove(function_path);
     }
 
     async fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
-        tracing::info!(
+        tracing::debug!(
             worker_id = %worker.id,
             %invocation_id,
             function_path = function_path,
@@ -89,12 +90,12 @@ impl Engine {
     }
 
     async fn remove_invocation(&self, invocation_id: &Uuid) {
-        tracing::info!(invocation_id = %invocation_id, "Removing invocation");
+        tracing::debug!(invocation_id = %invocation_id, "Removing invocation");
         let _ = self.pending_invocations.remove(invocation_id).await;
     }
 
     async fn halt_invocation(&self, invocation_id: &Uuid) {
-        tracing::info!(invocation_id = %invocation_id, "Halting invocation");
+        tracing::debug!(invocation_id = %invocation_id, "Halting invocation");
         if let Some(worker_id) = self.pending_invocations.remove(invocation_id).await
             && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id).await
         {
@@ -109,7 +110,13 @@ impl Engine {
             tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
             let new_function_hash = self.functions.functions_hash();
             if new_function_hash != current_funcion_hash {
-                tracing::info!("New functions detected, notifying workers");
+                log(
+                    LogLevel::Info,
+                    "core::Engine",
+                    "New functions detected, notifying workers",
+                    None,
+                    None,
+                );
                 let message: Vec<FunctionMessage> = self
                     .functions
                     .iter()
@@ -164,7 +171,7 @@ impl Engine {
                 Ok(())
             }
             Message::RegisterTriggerType { id, description } => {
-                tracing::info!(
+                tracing::debug!(
                     worker_id = %worker.id,
                     trigger_type_id = %id,
                     description = %description,
@@ -190,7 +197,7 @@ impl Engine {
                 function_path,
                 config,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     trigger_id = %id,
                     trigger_type = %trigger_type,
                     function_path = %function_path,
@@ -212,7 +219,7 @@ impl Engine {
                 Ok(())
             }
             Message::UnregisterTrigger { id, trigger_type } => {
-                tracing::info!(
+                tracing::debug!(
                     trigger_id = %id,
                     trigger_type = %trigger_type,
                     "UnregisterTrigger"
@@ -231,7 +238,7 @@ impl Engine {
                 function_path,
                 data,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     worker_id = %worker.id,
                     invocation_id = ?invocation_id,
                     function_path = %function_path,
@@ -244,7 +251,8 @@ impl Engine {
                 }
 
                 if let Some(function) = self.functions.get(function_path) {
-                    tracing::info!(function_path = %function_path, "Found function handler");
+                    tracing::debug!(function_path = %function_path, "Found function handler");
+
                     match function.call_handler(*invocation_id, data.clone()).await {
                         Ok(Some(result)) => {
                             if let Some(invocation_id) = *invocation_id {
@@ -313,7 +321,7 @@ impl Engine {
                 result,
                 error,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     function_path = %function_path,
                     invocation_id = %invocation_id,
                     result = ?result,
@@ -356,7 +364,7 @@ impl Engine {
                 request_format: req,
                 response_format: res,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     worker_id = %worker.id,
                     function_path = %function_path,
                     description = ?description,
@@ -385,7 +393,7 @@ impl Engine {
                 name,
                 description,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     service_id = %id,
                     service_name = %name,
                     description = ?description,
@@ -393,7 +401,7 @@ impl Engine {
                 );
                 {
                     let services = self.service_registry.services.read().await;
-                    tracing::info!(services = ?services, "Current services");
+                    tracing::debug!(services = ?services, "Current services");
                 }
 
                 self.service_registry
@@ -411,7 +419,7 @@ impl Engine {
     }
 
     pub async fn handle_worker(&self, socket: WebSocket, peer: SocketAddr) -> anyhow::Result<()> {
-        tracing::info!(peer = %peer, "Worker connected via WebSocket");
+        tracing::debug!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
 
@@ -436,7 +444,7 @@ impl Engine {
 
         let worker = Worker::new(tx.clone());
 
-        tracing::info!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
+        tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone()).await;
 
         while let Some(frame) = ws_rx.next().await {
@@ -455,7 +463,7 @@ impl Engine {
                     Err(err) => tracing::warn!(peer = %peer, error = ?err, "binary decode error"),
                 },
                 Ok(WsMessage::Close(_)) => {
-                    tracing::info!(peer = %peer, "Worker disconnected");
+                    tracing::debug!(peer = %peer, "Worker disconnected");
                     break;
                 }
                 Ok(WsMessage::Ping(payload)) => {
@@ -495,7 +503,7 @@ impl Engine {
             self.halt_invocation(entry.key()).await;
         }
 
-        tracing::info!(worker_id = %worker.id, "Worker triggers unregistered");
+        tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
 
         let invocations = self
             .pending_invocations
@@ -517,10 +525,10 @@ impl EngineTrait for Engine {
             let function_path = function_path.to_string();
 
             tokio::spawn(async move {
-                tracing::info!(function_path = %function_path, "Invoking function");
+                tracing::debug!(function_path = %function_path, "Invoking function");
 
                 let result = future.await;
-                tracing::info!(result = ?result, "Function result");
+                tracing::debug!(result = ?result, "Function result");
             });
         } else {
             tracing::warn!(function_path = %function_path, "Function not found");
@@ -528,8 +536,6 @@ impl EngineTrait for Engine {
     }
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
-        tracing::info!(trigger_type = ?trigger_type.id, "Registering trigger type");
-
         let trigger_type_id = &trigger_type.id;
         let existing = self.trigger_registry.trigger_types.read().await;
         if existing.contains_key(trigger_type_id) {

@@ -1,6 +1,7 @@
 use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
+use colored::Colorize;
 use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
@@ -8,6 +9,7 @@ use uuid::Uuid;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
+    modules::logger::{LogLevel, log},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -30,19 +32,45 @@ impl TriggerRegistrator for EventCoreModule {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let topic = trigger
+            .clone()
+            .config
+            .get("topic")
+            .unwrap_or_default()
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        log(
+            LogLevel::Info,
+            "core::EventCoreModule",
+            &format!(
+                "New subscription to topic {} → {}",
+                topic.purple(),
+                trigger.function_path.cyan()
+            ),
+            None,
+            None,
+        );
+
         Box::pin(async move {
-            self.adapter
-                .subscribe(
-                    &trigger
-                        .config
-                        .get("topic")
-                        .unwrap_or_default()
-                        .as_str()
-                        .unwrap_or(""), // TODO throw error if topic is not set
-                    &trigger.id,
-                    &trigger.function_path,
-                )
-                .await;
+            if !topic.is_empty() {
+                self.adapter
+                    .subscribe(&topic, &trigger.id, &trigger.function_path)
+                    .await;
+            } else {
+                log(
+                    LogLevel::Warn,
+                    "core::EventCoreModule",
+                    &format!(
+                        "Topic is not set for trigger {}",
+                        trigger.function_path.purple()
+                    ),
+                    None,
+                    None,
+                );
+            }
+
             Ok(())
         })
     }

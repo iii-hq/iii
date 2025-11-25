@@ -32,7 +32,7 @@ impl WorkerRegistry {
     }
 
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
-        tracing::info!("Unregistering worker: {}", worker_id);
+        tracing::debug!("Unregistering worker: {}", worker_id);
         self.workers.write().await.remove(worker_id);
     }
 }

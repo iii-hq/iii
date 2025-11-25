@@ -1,11 +1,15 @@
 use std::{collections::HashSet, pin::Pin, sync::Arc};
 
+use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::protocol::*;
+use crate::{
+    modules::logger::{LogLevel, log},
+    protocol::*,
+};
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
 pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
@@ -73,7 +77,13 @@ impl FunctionsRegistry {
         format!("{:?}", function_hash)
     }
     pub fn register_function(&self, function_path: String, function: Function) {
-        tracing::info!("Registring the function: {}", function_path);
+        log(
+            LogLevel::Info,
+            "core::FunctionsRegistry",
+            &format!("Registering function {}", function_path.purple(),),
+            None,
+            None,
+        );
         self.functions.insert(function_path, function);
     }
 
@@ -82,7 +92,7 @@ impl FunctionsRegistry {
     }
 
     pub fn get(&self, function_path: &str) -> Option<Function> {
-        tracing::info!("Searching for function path: {}", function_path);
+        tracing::debug!("Searching for function path: {}", function_path);
         self.functions
             .get(function_path)
             .map(|entry| entry.value().clone())
