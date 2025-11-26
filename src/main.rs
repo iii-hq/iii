@@ -75,6 +75,9 @@ async fn main() -> anyhow::Result<()> {
     event_module.initialize().await.unwrap();
     logger_module.initialize().await.unwrap();
 
+    event_module.initialize().await;
+    logger_module.initialize();
+
     tracing::info!("Engine listening on address: {}", addr.purple());
 
     axum::serve(
