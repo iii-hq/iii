@@ -1,11 +1,13 @@
 use std::{pin::Pin, sync::Arc};
 
+use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
+    modules::{core_module::CoreModule, logger::Logger},
     protocol::ErrorBody,
 };
 
@@ -80,12 +82,9 @@ impl FunctionHandler for LoggerCoreModule {
     }
 }
 
-impl LoggerCoreModule {
-    pub fn new(engine: Arc<Engine>, logger: Arc<dyn LoggerAdapter>) -> Self {
-        Self { engine, logger }
-    }
-
-    pub fn initialize(&self) {
+#[async_trait]
+impl CoreModule for LoggerCoreModule {
+    async fn initialize(&self) -> Result<(), anyhow::Error> {
         let _ = self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "logger.info".to_string(),
@@ -113,5 +112,15 @@ impl LoggerCoreModule {
             },
             Box::new(self.clone()),
         );
+
+        Ok(())
+    }
+}
+
+impl LoggerCoreModule {
+    pub fn new(engine: Arc<Engine>) -> Self {
+        let logger = Arc::new(Logger {});
+
+        Self { engine, logger }
     }
 }

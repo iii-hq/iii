@@ -4,11 +4,13 @@ use async_trait::async_trait;
 use colored::Colorize;
 use futures::Future;
 use serde_json::Value;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
+    modules::{core_module::CoreModule, event::adapters::RedisAdapter},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -22,7 +24,7 @@ pub trait EventAdapter: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct EventCoreModule {
-    adapter: Arc<dyn EventAdapter>,
+    adapter: Arc<OnceCell<Arc<dyn EventAdapter>>>,
     engine: Arc<Engine>,
 }
 
@@ -50,6 +52,8 @@ impl TriggerRegistrator for EventCoreModule {
         Box::pin(async move {
             if !topic.is_empty() {
                 self.adapter
+                    .get()
+                    .unwrap()
                     .subscribe(&topic, &trigger.id, &trigger.function_path)
                     .await;
             } else {
@@ -71,6 +75,8 @@ impl TriggerRegistrator for EventCoreModule {
             tracing::debug!(trigger = %trigger.id, "Unregistering trigger");
 
             self.adapter
+                .get()
+                .unwrap()
                 .unsubscribe(
                     &trigger
                         .config
@@ -86,12 +92,24 @@ impl TriggerRegistrator for EventCoreModule {
     }
 }
 
-impl EventCoreModule {
-    pub fn new(adapter: Arc<dyn EventAdapter>, engine: Arc<Engine>) -> Self {
-        Self { adapter, engine }
-    }
+#[async_trait]
+impl CoreModule for EventCoreModule {
+    async fn initialize(&self) -> Result<(), anyhow::Error> {
+        let adapter = match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            RedisAdapter::new("redis://localhost:6379".to_string(), self.engine.clone()),
+        )
+        .await
+        {
+            Ok(Ok(adapter)) => Arc::new(adapter),
+            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to connect to Redis: {}", e)),
+            Err(_) => return Err(anyhow::anyhow!("Timed out while connecting to Redis")),
+        };
 
-    pub async fn initialize(&self) {
+        self.adapter
+            .set(adapter)
+            .map_err(|_| anyhow::anyhow!("Failed to set EventAdapter; adapter already set?"))?;
+
         let trigger_type = TriggerType {
             id: "event".to_string(),
             _description: "Event core module".to_string(),
@@ -113,6 +131,16 @@ impl EventCoreModule {
             },
             Box::new(self.clone()),
         );
+
+        Ok(())
+    }
+}
+
+impl EventCoreModule {
+    pub fn new(engine: Arc<Engine>) -> Self {
+        let adapter = Arc::new(OnceCell::new());
+
+        Self { adapter, engine }
     }
 }
 
@@ -142,7 +170,7 @@ impl FunctionHandler for EventCoreModule {
             }
 
             tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-            let _ = adapter.emit(topic, event_data).await;
+            let _ = adapter.get().unwrap().emit(topic, event_data).await;
 
             Ok(Some(Value::Null))
         })
