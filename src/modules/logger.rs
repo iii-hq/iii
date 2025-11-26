@@ -5,6 +5,9 @@ use crate::modules::observability::LoggerAdapter;
 /// Logger implementation that uses tracing for output.
 /// This maintains compatibility with the LoggerAdapter trait while
 /// leveraging the centralized tracing formatter for consistent output.
+///
+/// The `function_name` parameter is passed as the `function` field to tracing,
+/// which the formatter will use as the display name instead of the module path.
 #[derive(Clone)]
 pub struct Logger;
 
@@ -28,22 +31,20 @@ impl LoggerAdapter for Logger {
         message: &str,
         args: &[(&str, &Value)],
     ) {
-        if args.is_empty() {
-            if let Some(tid) = trace_id {
-                tracing::info!(trace_id = %tid, function = %function_name, "{}", message);
-            } else {
-                tracing::info!(function = %function_name, "{}", message);
+        let data = format_args_as_json(args);
+
+        match (trace_id, data.as_deref()) {
+            (Some(tid), Some(d)) => {
+                tracing::info!(function = %function_name, trace_id = %tid, data = %d, "{}", message);
             }
-        } else {
-            let args_json = serde_json::to_string(&args.iter()
-                .map(|(k, v)| (*k, *v))
-                .collect::<std::collections::HashMap<_, _>>())
-                .unwrap_or_default();
-            
-            if let Some(tid) = trace_id {
-                tracing::info!(trace_id = %tid, function = %function_name, data = %args_json, "{}", message);
-            } else {
-                tracing::info!(function = %function_name, data = %args_json, "{}", message);
+            (Some(tid), None) => {
+                tracing::info!(function = %function_name, trace_id = %tid, "{}", message);
+            }
+            (None, Some(d)) => {
+                tracing::info!(function = %function_name, data = %d, "{}", message);
+            }
+            (None, None) => {
+                tracing::info!(function = %function_name, "{}", message);
             }
         }
     }
@@ -55,22 +56,20 @@ impl LoggerAdapter for Logger {
         message: &str,
         args: &[(&str, &Value)],
     ) {
-        if args.is_empty() {
-            if let Some(tid) = trace_id {
-                tracing::warn!(trace_id = %tid, function = %function_name, "{}", message);
-            } else {
-                tracing::warn!(function = %function_name, "{}", message);
+        let data = format_args_as_json(args);
+
+        match (trace_id, data.as_deref()) {
+            (Some(tid), Some(d)) => {
+                tracing::warn!(function = %function_name, trace_id = %tid, data = %d, "{}", message);
             }
-        } else {
-            let args_json = serde_json::to_string(&args.iter()
-                .map(|(k, v)| (*k, *v))
-                .collect::<std::collections::HashMap<_, _>>())
-                .unwrap_or_default();
-            
-            if let Some(tid) = trace_id {
-                tracing::warn!(trace_id = %tid, function = %function_name, data = %args_json, "{}", message);
-            } else {
-                tracing::warn!(function = %function_name, data = %args_json, "{}", message);
+            (Some(tid), None) => {
+                tracing::warn!(function = %function_name, trace_id = %tid, "{}", message);
+            }
+            (None, Some(d)) => {
+                tracing::warn!(function = %function_name, data = %d, "{}", message);
+            }
+            (None, None) => {
+                tracing::warn!(function = %function_name, "{}", message);
             }
         }
     }
@@ -82,23 +81,36 @@ impl LoggerAdapter for Logger {
         message: &str,
         args: &[(&str, &Value)],
     ) {
-        if args.is_empty() {
-            if let Some(tid) = trace_id {
-                tracing::error!(trace_id = %tid, function = %function_name, "{}", message);
-            } else {
-                tracing::error!(function = %function_name, "{}", message);
+        let data = format_args_as_json(args);
+
+        match (trace_id, data.as_deref()) {
+            (Some(tid), Some(d)) => {
+                tracing::error!(function = %function_name, trace_id = %tid, data = %d, "{}", message);
             }
-        } else {
-            let args_json = serde_json::to_string(&args.iter()
-                .map(|(k, v)| (*k, *v))
-                .collect::<std::collections::HashMap<_, _>>())
-                .unwrap_or_default();
-            
-            if let Some(tid) = trace_id {
-                tracing::error!(trace_id = %tid, function = %function_name, data = %args_json, "{}", message);
-            } else {
-                tracing::error!(function = %function_name, data = %args_json, "{}", message);
+            (Some(tid), None) => {
+                tracing::error!(function = %function_name, trace_id = %tid, "{}", message);
+            }
+            (None, Some(d)) => {
+                tracing::error!(function = %function_name, data = %d, "{}", message);
+            }
+            (None, None) => {
+                tracing::error!(function = %function_name, "{}", message);
             }
         }
     }
+}
+
+/// Convert args to JSON string if not empty
+fn format_args_as_json(args: &[(&str, &Value)]) -> Option<String> {
+    if args.is_empty() {
+        return None;
+    }
+
+    serde_json::to_string(
+        &args
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect::<std::collections::HashMap<_, _>>(),
+    )
+    .ok()
 }

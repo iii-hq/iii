@@ -1,5 +1,6 @@
 use std::{fmt, sync::OnceLock};
 
+use chrono::Local;
 use colored::Colorize;
 use tracing::{Event, Level, Subscriber, field::{Field, Visit}};
 use tracing_subscriber::{
@@ -23,6 +24,7 @@ enum FieldValue {
 struct FieldCollector {
     fields: Vec<(String, FieldValue)>,
     message: Option<String>,
+    function: Option<String>,
 }
 
 impl FieldCollector {
@@ -30,16 +32,31 @@ impl FieldCollector {
         Self {
             fields: Vec::new(),
             message: None,
+            function: None,
         }
+    }
+
+    /// Extract the function field value if it exists
+    fn get_function(&self) -> Option<&str> {
+        self.function.as_deref()
+    }
+
+    /// Get fields excluding the "function" field (since it's shown in the header)
+    fn get_display_fields(&self) -> Vec<(&String, &FieldValue)> {
+        self.fields
+            .iter()
+            .filter(|(name, _)| name != "function")
+            .map(|(name, value)| (name, value))
+            .collect()
     }
 }
 
 impl Visit for FieldCollector {
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = Some(value.to_string());
-        } else {
-            self.fields.push((field.name().to_string(), FieldValue::String(value.to_string())));
+        match field.name() {
+            "message" => self.message = Some(value.to_string()),
+            "function" => self.function = Some(value.to_string()),
+            _ => self.fields.push((field.name().to_string(), FieldValue::String(value.to_string()))),
         }
     }
 
@@ -60,10 +77,10 @@ impl Visit for FieldCollector {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        if field.name() == "message" {
-            self.message = Some(format!("{:?}", value));
-        } else {
-            self.fields.push((field.name().to_string(), FieldValue::Debug(format!("{:?}", value))));
+        match field.name() {
+            "message" => self.message = Some(format!("{:?}", value)),
+            "function" => self.function = Some(format!("{:?}", value).trim_matches('"').to_string()),
+            _ => self.fields.push((field.name().to_string(), FieldValue::Debug(format!("{:?}", value)))),
         }
     }
 }
@@ -136,7 +153,7 @@ fn render_json_value(value: &serde_json::Value, indent: usize) -> String {
 }
 
 /// Renders collected fields in a tree-like format
-fn render_fields_tree(fields: &[(String, FieldValue)]) -> String {
+fn render_fields_tree(fields: &[(&String, &FieldValue)]) -> String {
     if fields.is_empty() {
         return String::new();
     }
@@ -160,6 +177,12 @@ fn render_fields_tree(fields: &[(String, FieldValue)]) -> String {
     result
 }
 
+/// Format timestamp as [HH:MM:SS.mmm AM/PM]
+fn format_timestamp() -> String {
+    let now = Local::now();
+    now.format("[%I:%M:%S%.3f %p]").to_string()
+}
+
 struct IIILogFormatter;
 
 impl<S, N> FormatEvent<S, N> for IIILogFormatter
@@ -175,10 +198,14 @@ where
     ) -> fmt::Result {
         let meta = event.metadata();
 
-        // timestamp
-        write!(writer, "{} ", chrono::Utc::now().to_rfc3339().dimmed())?;
+        // Collect fields first to check for "function" field
+        let mut collector = FieldCollector::new();
+        event.record(&mut collector);
 
-        // level with colors matching the original log function
+        // timestamp in format [09:19:23.241 AM]
+        write!(writer, "{} ", format_timestamp().dimmed())?;
+
+        // level with colors
         let level = meta.level();
         let level_str = match *level {
             Level::TRACE => "TRACE".purple(),
@@ -189,20 +216,20 @@ where
         };
         write!(writer, "[{}] ", level_str)?;
 
-        // target (module path) in cyan bold - matching function_name.cyan().bold()
-        write!(writer, "{} ", meta.target().cyan().bold())?;
+        // Use "function" field if present, otherwise use target (module path)
+        let display_name = collector
+            .get_function()
+            .unwrap_or(meta.target());
+        write!(writer, "{} ", display_name.cyan().bold())?;
 
-        // Collect fields using our visitor
-        let mut collector = FieldCollector::new();
-        event.record(&mut collector);
-
-        // Write message if present (in white like the original)
+        // Write message if present
         if let Some(msg) = &collector.message {
             write!(writer, "{}", msg.white())?;
         }
 
-        // Render fields as tree
-        let tree = render_fields_tree(&collector.fields);
+        // Render fields as tree (excluding "function" since it's in the header)
+        let display_fields = collector.get_display_fields();
+        let tree = render_fields_tree(&display_fields);
         write!(writer, "{}", tree)?;
 
         writeln!(writer)
