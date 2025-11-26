@@ -9,7 +9,6 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionsRegistry},
     invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
-    modules::logger::{LogLevel, log},
     pending_invocations::PendingInvocations,
     protocol::{ErrorBody, FunctionMessage, Message},
     services::{Service, ServicesRegistry},
@@ -110,13 +109,7 @@ impl Engine {
             tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
             let new_function_hash = self.functions.functions_hash();
             if new_function_hash != current_funcion_hash {
-                log(
-                    LogLevel::Info,
-                    "core::Engine",
-                    "New functions detected, notifying workers",
-                    None,
-                    None,
-                );
+                tracing::info!("New functions detected, notifying workers");
                 let message: Vec<FunctionMessage> = self
                     .functions
                     .iter()
@@ -158,7 +151,7 @@ impl Engine {
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::FunctionsAvailable { functions } => {
-                println!("FunctionsAvailable {:?}", functions);
+                tracing::debug!(?functions, "FunctionsAvailable");
                 Ok(())
             }
             Message::TriggerRegistrationResult {
@@ -167,7 +160,7 @@ impl Engine {
                 function_path,
                 error,
             } => {
-                println!("TriggerRegistrationResult {id} {trigger_type} {function_path} {error:?}");
+                tracing::debug!(id = %id, trigger_type = %trigger_type, function_path = %function_path, error = ?error, "TriggerRegistrationResult");
                 Ok(())
             }
             Message::RegisterTriggerType { id, description } => {

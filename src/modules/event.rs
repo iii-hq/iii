@@ -9,7 +9,6 @@ use uuid::Uuid;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::logger::{LogLevel, log},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -41,17 +40,11 @@ impl TriggerRegistrator for EventCoreModule {
             .unwrap_or("")
             .to_string();
 
-        log(
-            LogLevel::Info,
-            "core::EventCoreModule",
-            &format!(
-                "{} Subscription {} → {}",
-                "[REGISTERED]".green(),
-                topic.purple(),
-                trigger.function_path.cyan()
-            ),
-            None,
-            None,
+        tracing::info!(
+            "{} Subscription {} → {}",
+            "[REGISTERED]".green(),
+            topic.purple(),
+            trigger.function_path.cyan()
         );
 
         Box::pin(async move {
@@ -60,15 +53,9 @@ impl TriggerRegistrator for EventCoreModule {
                     .subscribe(&topic, &trigger.id, &trigger.function_path)
                     .await;
             } else {
-                log(
-                    LogLevel::Warn,
-                    "core::EventCoreModule",
-                    &format!(
-                        "Topic is not set for trigger {}",
-                        trigger.function_path.purple()
-                    ),
-                    None,
-                    None,
+                tracing::warn!(
+                    function_path = %trigger.function_path.purple(),
+                    "Topic is not set for trigger"
                 );
             }
 

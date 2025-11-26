@@ -7,8 +7,6 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::modules::logger::{LogLevel, log};
-
 pub struct TriggerType {
     pub id: String,
     pub _description: String,
@@ -96,8 +94,8 @@ impl TriggerRegistry {
                         .registrator
                         .unregister_trigger(trigger.clone())
                         .await;
-                    if result.is_err() {
-                        tracing::error!(error = %result.err().unwrap(), "Error unregistering trigger");
+                    if let Err(err) = result {
+                        tracing::error!(error = %err, "Error unregistering trigger");
                     }
                 }
 
@@ -112,16 +110,10 @@ impl TriggerRegistry {
     ) -> Result<(), anyhow::Error> {
         let trigger_type_id = &trigger_type.id;
 
-        log(
-            LogLevel::Info,
-            "core::TriggerRegistry",
-            &format!(
-                "{} Trigger Type {}",
-                "[REGISTERED]".green(),
-                trigger_type_id.purple()
-            ),
-            None,
-            None,
+        tracing::info!(
+            "{} Trigger Type {}",
+            "[REGISTERED]".green(),
+            trigger_type_id.purple()
         );
 
         for pair in self.triggers.read().await.iter() {
@@ -151,12 +143,9 @@ impl TriggerRegistry {
         let lock = self.trigger_types.read().await;
 
         let Some(trigger_type) = lock.get(&trigger_type_id) else {
-            log(
-                LogLevel::Error,
-                "core::TriggerRegistry",
-                &format!("Trigger type not found: {}", trigger_type_id.purple()),
-                None,
-                None,
+            tracing::error!(
+                trigger_type_id = %trigger_type_id.purple(),
+                "Trigger type not found"
             );
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
@@ -181,16 +170,10 @@ impl TriggerRegistry {
         id: String,
         trigger_type: String,
     ) -> Result<(), anyhow::Error> {
-        log(
-            LogLevel::Info,
-            "core::TriggerRegistry",
-            &format!(
-                "Unregistering trigger: {} of type: {}",
-                id.purple(),
-                trigger_type.purple()
-            ),
-            None,
-            None,
+        tracing::info!(
+            "Unregistering trigger: {} of type: {}",
+            id.purple(),
+            trigger_type.purple()
         );
 
         let trigger_lock = self.triggers.read().await;
@@ -200,15 +183,14 @@ impl TriggerRegistry {
         let trigger_type_lock = self.trigger_types.read().await;
         let trigger_type = trigger_type_lock.get(&trigger_type.clone());
 
-        if trigger_type.is_some() {
-            let result: Result<(), anyhow::Error> = trigger_type
-                .unwrap()
+        if let Some(tt) = trigger_type {
+            let result: Result<(), anyhow::Error> = tt
                 .registrator
                 .unregister_trigger(trigger.clone())
                 .await;
 
-            if result.is_err() {
-                return Err(result.err().unwrap());
+            if let Err(err) = result {
+                return Err(err);
             }
         }
 
