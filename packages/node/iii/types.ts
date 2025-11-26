@@ -49,7 +49,7 @@ export type Trigger = {
   unregister(): void
 }
 
-export type ApiRequest<TBody = unknown> {
+export type ApiRequest<TBody = unknown> = {
   pathParams: Record<string, string>
   queryParams: Record<string, string | string[]>
   body: TBody

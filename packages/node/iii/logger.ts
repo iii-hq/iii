@@ -1,0 +1,45 @@
+export type LoggerParams = {
+  message: string
+  trace_id?: string
+  function_name?: string
+  data?: any
+}
+export type LoggerInvoker = (functionPath: string, params: LoggerParams) => Promise<void> | void
+
+export class Logger {
+  constructor(
+    private readonly invoker?: LoggerInvoker,
+    private readonly traceId?: string,
+    private readonly functionName?: string,
+  ) {}
+
+  info(message: string, data?: any) {
+    this.invoker?.('logger.info', {
+      message,
+      data,
+      trace_id: this.traceId,
+      function_name: this.functionName,
+    })
+    console.log(`[INFO] ${message}`, data)
+  }
+
+  warn(message: string, data?: any) {
+    this.invoker?.('logger.warn', {
+      message,
+      data,
+      trace_id: this.traceId ?? '',
+      function_name: this.functionName ?? '',
+    })
+    console.warn(`[WARN] ${message}`, data)
+  }
+
+  error(message: string, data?: any) {
+    this.invoker?.('logger.error', {
+      message,
+      data,
+      trace_id: this.traceId,
+      function_name: this.functionName,
+    })
+    console.error(`[ERROR] ${message}`, data)
+  }
+}

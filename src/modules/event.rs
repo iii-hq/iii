@@ -1,6 +1,7 @@
 use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
+use colored::Colorize;
 use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
@@ -8,6 +9,7 @@ use uuid::Uuid;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
+    modules::logger::{LogLevel, log},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -30,19 +32,46 @@ impl TriggerRegistrator for EventCoreModule {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let topic = trigger
+            .clone()
+            .config
+            .get("topic")
+            .unwrap_or_default()
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        log(
+            LogLevel::Info,
+            "core::EventCoreModule",
+            &format!(
+                "{} Subscription {} → {}",
+                "[REGISTERED]".green(),
+                topic.purple(),
+                trigger.function_path.cyan()
+            ),
+            None,
+            None,
+        );
+
         Box::pin(async move {
-            self.adapter
-                .subscribe(
-                    &trigger
-                        .config
-                        .get("topic")
-                        .unwrap_or_default()
-                        .as_str()
-                        .unwrap_or(""), // TODO throw error if topic is not set
-                    &trigger.id,
-                    &trigger.function_path,
-                )
-                .await;
+            if !topic.is_empty() {
+                self.adapter
+                    .subscribe(&topic, &trigger.id, &trigger.function_path)
+                    .await;
+            } else {
+                log(
+                    LogLevel::Warn,
+                    "core::EventCoreModule",
+                    &format!(
+                        "Topic is not set for trigger {}",
+                        trigger.function_path.purple()
+                    ),
+                    None,
+                    None,
+                );
+            }
+
             Ok(())
         })
     }
@@ -52,7 +81,7 @@ impl TriggerRegistrator for EventCoreModule {
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
-            tracing::info!(trigger = %trigger.id, "Unregistering trigger");
+            tracing::debug!(trigger = %trigger.id, "Unregistering trigger");
 
             self.adapter
                 .unsubscribe(
@@ -109,7 +138,7 @@ impl FunctionHandler for EventCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
         let adapter = Arc::clone(&self.adapter);
 
-        tracing::info!(input = %input, "Handling event function");
+        tracing::debug!(input = %input, "Handling event function");
 
         Box::pin(async move {
             let topic = input
@@ -125,7 +154,7 @@ impl FunctionHandler for EventCoreModule {
                 });
             }
 
-            tracing::info!(topic = %topic, event_data = %event_data, "Emitting event");
+            tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
             let _ = adapter.emit(topic, event_data).await;
 
             Ok(Some(Value::Null))

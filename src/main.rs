@@ -4,6 +4,7 @@ mod engine;
 mod function;
 mod invocation;
 mod logging;
+
 mod pending_invocations;
 mod protocol;
 mod services;
@@ -12,6 +13,8 @@ mod workers;
 mod modules {
     pub mod api;
     pub mod event;
+    pub mod logger;
+    pub mod observability;
     pub mod redis_adapter;
 }
 
@@ -21,10 +24,16 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use colored::Colorize;
 use engine::Engine;
 use tokio::net::TcpListener;
 
-use crate::modules::{api::ApiAdapter, redis_adapter::RedisAdapter};
+use crate::modules::{
+    api::ApiAdapter,
+    logger::{LogLevel, Logger, log},
+    observability::LoggerCoreModule,
+    redis_adapter::RedisAdapter,
+};
 
 async fn ws_handler(
     State(engine): State<Arc<Engine>>,
@@ -61,21 +70,30 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!(address = addr, "Engine listening");
 
     let redis_adapter =
         RedisAdapter::new("redis://localhost:6379".to_string(), engine.clone()).await?;
     let event_module =
         modules::event::EventCoreModule::new(Arc::new(redis_adapter), engine.clone());
 
-    tokio::spawn(async move {
-        event_module.initialize().await;
-    });
+    let logger_module = LoggerCoreModule::new(engine.clone(), Arc::new(Logger {}));
+
+    event_module.initialize().await;
+    logger_module.initialize();
+
+    log(
+        LogLevel::Info,
+        "core::Engine",
+        &format!("Engine listening on address: {}", addr.purple()),
+        None,
+        None,
+    );
 
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
+
     Ok(())
 }

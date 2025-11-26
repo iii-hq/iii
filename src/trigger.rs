@@ -1,9 +1,13 @@
+use std::{pin::Pin, sync::Arc};
+
+use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use std::{pin::Pin, sync::Arc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+use crate::modules::logger::{LogLevel, log};
 
 pub struct TriggerType {
     pub id: String,
@@ -61,9 +65,9 @@ impl TriggerRegistry {
             if !worker_trigger_types.is_empty() {
                 let write_lock = self.trigger_types.write().await;
                 for trigger_type_id in worker_trigger_types {
-                    tracing::info!(trigger_type_id = %trigger_type_id, "Removing trigger type");
+                    tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
                     write_lock.remove(&trigger_type_id.to_string());
-                    tracing::info!(trigger_type_id = %trigger_type_id, "Trigger type removed");
+                    tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
                 }
             }
         }
@@ -80,13 +84,13 @@ impl TriggerRegistry {
         if !worker_triggers.is_empty() {
             let write_lock = self.triggers.write().await;
             for trigger in worker_triggers {
-                tracing::info!(trigger_id = trigger.id, "Removing trigger");
+                tracing::debug!(trigger_id = trigger.id, "Removing trigger");
                 write_lock.remove(&trigger.id);
 
                 if let Some(trigger_type) =
                     self.trigger_types.read().await.get(&trigger.trigger_type)
                 {
-                    tracing::info!(trigger_type_id = trigger_type.id, "Unregistering trigger");
+                    tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
 
                     let result: Result<(), anyhow::Error> = trigger_type
                         .registrator
@@ -97,7 +101,7 @@ impl TriggerRegistry {
                     }
                 }
 
-                tracing::info!(trigger_id = trigger.id, "Trigger removed");
+                tracing::debug!(trigger_id = trigger.id, "Trigger removed");
             }
         }
     }
@@ -107,6 +111,18 @@ impl TriggerRegistry {
         trigger_type: TriggerType,
     ) -> Result<(), anyhow::Error> {
         let trigger_type_id = &trigger_type.id;
+
+        log(
+            LogLevel::Info,
+            "core::TriggerRegistry",
+            &format!(
+                "{} Trigger Type {}",
+                "[REGISTERED]".green(),
+                trigger_type_id.purple()
+            ),
+            None,
+            None,
+        );
 
         for pair in self.triggers.read().await.iter() {
             let trigger = pair.value();
@@ -133,8 +149,15 @@ impl TriggerRegistry {
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
         let trigger_type_id = trigger.trigger_type.clone();
         let lock = self.trigger_types.read().await;
+
         let Some(trigger_type) = lock.get(&trigger_type_id) else {
-            println!("Trigger type not found");
+            log(
+                LogLevel::Error,
+                "core::TriggerRegistry",
+                &format!("Trigger type not found: {}", trigger_type_id.purple()),
+                None,
+                None,
+            );
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
@@ -143,7 +166,7 @@ impl TriggerRegistry {
             .register_trigger(trigger.clone())
             .await;
 
-        tracing::info!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
+        tracing::debug!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
 
         self.triggers
             .write()
@@ -158,6 +181,18 @@ impl TriggerRegistry {
         id: String,
         trigger_type: String,
     ) -> Result<(), anyhow::Error> {
+        log(
+            LogLevel::Info,
+            "core::TriggerRegistry",
+            &format!(
+                "Unregistering trigger: {} of type: {}",
+                id.purple(),
+                trigger_type.purple()
+            ),
+            None,
+            None,
+        );
+
         let trigger_lock = self.triggers.read().await;
         let Some(trigger) = trigger_lock.get(&id) else {
             return Err(anyhow::anyhow!("Trigger not found"));
