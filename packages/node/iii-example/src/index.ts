@@ -27,8 +27,8 @@ bridge.registerTrigger({
   triggerType: 'api',
   functionPath: 'register.user',
   config: {
-    apiPath: 'register/user',
-    httpMethod: 'POST',
+    api_path: 'register/user',
+    http_method: 'POST',
   },
 })
 
@@ -51,8 +51,8 @@ bridge.registerTrigger({
   triggerType: 'api',
   functionPath: 'engine.echo',
   config: {
-    apiPath: 'echo',
-    httpMethod: 'POST',
+    api_path: 'echo',
+    http_method: 'POST',
   },
 })
 
