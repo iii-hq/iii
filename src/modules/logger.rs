@@ -31,7 +31,7 @@ pub fn log(
         LogLevel::Error => "[ERROR]".red(),
     };
     let function_display = function_name.cyan().bold();
-    let message_display = message.white();
+    let message_display = message;
     // header line
     println!(
         "{} {}{} {} {}",

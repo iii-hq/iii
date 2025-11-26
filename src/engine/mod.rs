@@ -478,7 +478,7 @@ impl Engine {
 
         writer.abort();
         self.cleanup_worker(&worker).await;
-        tracing::info!(peer = %peer, "Worker disconnected (writer aborted)");
+        tracing::debug!(peer = %peer, "Worker disconnected (writer aborted)");
         Ok(())
     }
 

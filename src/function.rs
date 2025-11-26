@@ -80,7 +80,11 @@ impl FunctionsRegistry {
         log(
             LogLevel::Info,
             "core::FunctionsRegistry",
-            &format!("Registering function {}", function_path.purple(),),
+            &format!(
+                "{} Function {}",
+                "[REGISTERED]".green(),
+                function_path.purple(),
+            ),
             None,
             None,
         );

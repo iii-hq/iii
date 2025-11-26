@@ -8,6 +8,7 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
+use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     engine::{Engine, EngineTrait},
-    invocation::InvocationHandler,
+    modules::logger::{LogLevel, log},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -132,7 +133,7 @@ impl ApiAdapter {
     pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
         let method = http_method.to_uppercase();
         let key = format!("{}:{}", method, http_path);
-        tracing::info!("Looking up router for key: {}", key);
+        tracing::debug!("Looking up router for key: {}", key);
         let routers = self.routers_registry.read().await;
         let router = routers.get(&key);
         match router {
@@ -142,15 +143,30 @@ impl ApiAdapter {
     }
 
     pub async fn register_router(&self, router: PathRouter) {
+        let function_path = router.function_path.clone();
+        let http_path = router.http_path.clone();
         let method = router.http_method.to_uppercase();
         let key = format!("{}:{}", method, router.http_path);
-        tracing::info!("Registering router: {}", key);
+        tracing::debug!("Registering router: {}", key);
         self.routers_registry.write().await.insert(key, router);
+
+        log(
+            LogLevel::Info,
+            "core::ApiCoreModule",
+            &format!(
+                "{} ENDPOINT {} → {}",
+                "[REGISTERED]".green(),
+                &format!("{} /{}", method, http_path).bright_yellow().bold(),
+                function_path.purple()
+            ),
+            None,
+            None,
+        );
     }
 
     pub async fn unregister_router(&self, http_method: &str, http_path: &str) -> bool {
         let key = format!("{}:{}", http_method.to_uppercase(), http_path);
-        tracing::info!("Unregistering router: {}", key);
+        tracing::debug!("Unregistering router: {}", key);
         self.routers_registry.write().await.remove(&key).is_some()
     }
 }

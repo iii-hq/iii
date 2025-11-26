@@ -45,7 +45,8 @@ impl TriggerRegistrator for EventCoreModule {
             LogLevel::Info,
             "core::EventCoreModule",
             &format!(
-                "New subscription to topic {} → {}",
+                "{} Subscription {} → {}",
+                "[REGISTERED]".green(),
                 topic.purple(),
                 trigger.function_path.cyan()
             ),
@@ -80,7 +81,7 @@ impl TriggerRegistrator for EventCoreModule {
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
-            tracing::info!(trigger = %trigger.id, "Unregistering trigger");
+            tracing::debug!(trigger = %trigger.id, "Unregistering trigger");
 
             self.adapter
                 .unsubscribe(
@@ -137,7 +138,7 @@ impl FunctionHandler for EventCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
         let adapter = Arc::clone(&self.adapter);
 
-        tracing::info!(input = %input, "Handling event function");
+        tracing::debug!(input = %input, "Handling event function");
 
         Box::pin(async move {
             let topic = input
@@ -153,7 +154,7 @@ impl FunctionHandler for EventCoreModule {
                 });
             }
 
-            tracing::info!(topic = %topic, event_data = %event_data, "Emitting event");
+            tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
             let _ = adapter.emit(topic, event_data).await;
 
             Ok(Some(Value::Null))

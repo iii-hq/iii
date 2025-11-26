@@ -70,13 +70,6 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
-    log(
-        LogLevel::Info,
-        "core::main",
-        &format!("Engine listening on address: {}", addr.purple()),
-        None,
-        None,
-    );
 
     let redis_adapter =
         RedisAdapter::new("redis://localhost:6379".to_string(), engine.clone()).await?;
@@ -85,16 +78,22 @@ async fn main() -> anyhow::Result<()> {
 
     let logger_module = LoggerCoreModule::new(engine.clone(), Arc::new(Logger {}));
 
-    tokio::spawn(async move {
-        event_module.initialize().await;
-    });
-
+    event_module.initialize().await;
     logger_module.initialize();
+
+    log(
+        LogLevel::Info,
+        "core::Engine",
+        &format!("Engine listening on address: {}", addr.purple()),
+        None,
+        None,
+    );
 
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
+
     Ok(())
 }

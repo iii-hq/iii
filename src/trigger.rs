@@ -115,7 +115,11 @@ impl TriggerRegistry {
         log(
             LogLevel::Info,
             "core::TriggerRegistry",
-            &format!("Registering trigger type: {}", trigger_type_id.purple()),
+            &format!(
+                "{} Trigger Type {}",
+                "[REGISTERED]".green(),
+                trigger_type_id.purple()
+            ),
             None,
             None,
         );
