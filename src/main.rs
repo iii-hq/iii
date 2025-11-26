@@ -30,7 +30,7 @@ use tokio::net::TcpListener;
 
 use crate::modules::{
     api::ApiAdapter,
-    logger::{LogLevel, Logger, log},
+    logger::Logger,
     observability::LoggerCoreModule,
     redis_adapter::RedisAdapter,
 };
@@ -81,12 +81,9 @@ async fn main() -> anyhow::Result<()> {
     event_module.initialize().await;
     logger_module.initialize();
 
-    log(
-        LogLevel::Info,
-        "core::Engine",
-        &format!("Engine listening on address: {}", addr.purple()),
-        None,
-        None,
+    tracing::info!(
+        "Engine listening on address: {}",
+        addr.purple()
     );
 
     axum::serve(

@@ -6,10 +6,7 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{
-    modules::logger::{LogLevel, log},
-    protocol::*,
-};
+use crate::protocol::*;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
 pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
@@ -76,17 +73,12 @@ impl FunctionsRegistry {
         function_hash.sort();
         format!("{:?}", function_hash)
     }
+
     pub fn register_function(&self, function_path: String, function: Function) {
-        log(
-            LogLevel::Info,
-            "core::FunctionsRegistry",
-            &format!(
-                "{} Function {}",
-                "[REGISTERED]".green(),
-                function_path.purple(),
-            ),
-            None,
-            None,
+        tracing::info!(
+            "{} Function {}",
+            "[REGISTERED]".green(),
+            function_path.purple()
         );
         self.functions.insert(function_path, function);
     }

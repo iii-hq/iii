@@ -17,7 +17,6 @@ use tokio::sync::RwLock;
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::logger::{LogLevel, log},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -136,10 +135,7 @@ impl ApiAdapter {
         tracing::debug!("Looking up router for key: {}", key);
         let routers = self.routers_registry.read().await;
         let router = routers.get(&key);
-        match router {
-            Some(r) => Some(r.function_path.clone()),
-            None => None,
-        }
+        router.map(|r| r.function_path.clone())
     }
 
     pub async fn register_router(&self, router: PathRouter) {
@@ -150,17 +146,11 @@ impl ApiAdapter {
         tracing::debug!("Registering router: {}", key);
         self.routers_registry.write().await.insert(key, router);
 
-        log(
-            LogLevel::Info,
-            "core::ApiCoreModule",
-            &format!(
-                "{} Endpoint {} → {}",
-                "[REGISTERED]".green(),
-                &format!("{} /{}", method, http_path).bright_yellow().bold(),
-                function_path.purple()
-            ),
-            None,
-            None,
+        tracing::info!(
+            "{} Endpoint {} → {}",
+            "[REGISTERED]".green(),
+            format!("{} /{}", method, http_path).bright_yellow().bold(),
+            function_path.purple()
         );
     }
 
