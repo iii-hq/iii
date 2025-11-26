@@ -154,7 +154,7 @@ impl ApiAdapter {
             LogLevel::Info,
             "core::ApiCoreModule",
             &format!(
-                "{} ENDPOINT {} → {}",
+                "{} Endpoint {} → {}",
                 "[REGISTERED]".green(),
                 &format!("{} /{}", method, http_path).bright_yellow().bold(),
                 function_path.purple()
