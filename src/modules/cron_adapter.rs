@@ -13,6 +13,7 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
+    modules::core_module::CoreModule,
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -332,8 +333,11 @@ impl CronCoreModule {
         let adapter = Arc::new(CronAdapter::new(Arc::new(cron_lock), engine.clone()));
         Self { adapter, engine }
     }
+}
 
-    pub async fn initialize(&self) {
+#[async_trait::async_trait]
+impl CoreModule for CronCoreModule {
+    async fn initialize(&self) -> Result<(), anyhow::Error> {
         use crate::trigger::TriggerType;
 
         let trigger_type = TriggerType {
@@ -343,9 +347,10 @@ impl CronCoreModule {
             worker_id: None,
         };
 
-        let _ = self.engine.register_trigger_type(trigger_type).await;
+        self.engine.register_trigger_type(trigger_type).await;
 
         tracing::info!("{} Cron trigger type initialized", "[READY]".green());
+        Ok(())
     }
 }
 
