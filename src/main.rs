@@ -76,11 +76,10 @@ async fn main() -> anyhow::Result<()> {
 
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
-
     let cron_module = CronCoreModule::new(engine.clone()).await;
 
     event_module.initialize().await;
-    logger_module.initialize();
+    logger_module.initialize().await;
     cron_module.initialize().await;
 
     tracing::info!("Engine listening on address: {}", addr.purple());
