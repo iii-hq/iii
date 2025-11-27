@@ -30,7 +30,7 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
-    api::ApiAdapter,
+    api::RestApiCoreModule,
     core_module::CoreModule,
     cron_adapter::{CronAdapter, CronCoreModule, RedisCronLock},
     event::EventCoreModule,
@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
 
-    let api_handler = ApiAdapter::new(engine.clone());
+    let api_handler = RestApiCoreModule::new(engine.clone());
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
     let cron_module = CronCoreModule::new(engine.clone()).await;
