@@ -13,10 +13,11 @@ use dashmap::DashMap;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use tokio::{net::TcpListener, sync::RwLock};
 
 use crate::{
     engine::{Engine, EngineTrait},
+    modules::core_module::CoreModule,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -102,18 +103,17 @@ impl APIresponse {
 
 #[derive(Clone)]
 pub struct ApiAdapter {
+    engine: Arc<Engine>,
     pub routers_registry: Arc<RwLock<DashMap<String, PathRouter>>>,
 }
 
-impl ApiAdapter {
-    pub fn new() -> Self {
-        Self {
-            routers_registry: Arc::new(RwLock::new(DashMap::new())),
-        }
-    }
+#[async_trait::async_trait]
+impl CoreModule for ApiAdapter {
+    async fn initialize(&self) -> Result<(), anyhow::Error> {
+        tracing::info!("Initializing API adapter");
 
-    pub async fn initialize(&self, engine: &Arc<Engine>) {
-        engine
+        self.engine
+            .clone()
             .register_trigger_type(TriggerType {
                 id: "api".to_string(),
                 _description: "HTTP API trigger".to_string(),
@@ -121,12 +121,32 @@ impl ApiAdapter {
                 worker_id: None,
             })
             .await;
-    }
 
-    pub fn api_endpoints(self: Arc<Self>) -> Router<Arc<Engine>> {
-        Router::new()
-            .route("/dynamic/*path", any(dynamic_handler))
-            .layer(Extension(self))
+        let addr = "127.0.0.1:3111";
+        let listener = TcpListener::bind(addr).await.unwrap();
+        let app = Router::new()
+            .route("/*path", any(dynamic_handler))
+            .layer(Extension(Arc::new(self.clone())))
+            .layer(Extension(self.engine.clone()))
+            .with_state(self.engine.clone());
+
+        tokio::spawn(async move {
+            tracing::info!("API listening on address: {}", addr.purple());
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        Ok(())
+    }
+}
+
+impl ApiAdapter {
+    pub fn new(engine: Arc<Engine>) -> Self {
+        Self {
+            engine,
+            routers_registry: Arc::new(RwLock::new(DashMap::new())),
+        }
     }
 
     pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {

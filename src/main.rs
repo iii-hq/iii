@@ -57,30 +57,27 @@ async fn main() -> anyhow::Result<()> {
     logging::init_tracing();
 
     let engine: Arc<Engine> = Arc::new(Engine::new());
-
-    let api_handler = Arc::new(ApiAdapter::new());
-    api_handler.initialize(&engine).await;
-
     let engine_clone = engine.clone();
+
     tokio::spawn(async move {
         engine_clone.notify_new_functions(5).await;
     });
 
-    let app = Router::new().route("/", get(ws_handler));
-    // Merge API routes
-    let api_routes = api_handler.api_endpoints();
-    let app = app.merge(api_routes).with_state(engine.clone());
-
+    let app = Router::new()
+        .route("/", get(ws_handler))
+        .with_state(engine.clone());
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
 
+    let api_handler = ApiAdapter::new(engine.clone());
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
     let cron_module = CronCoreModule::new(engine.clone()).await;
 
-    event_module.initialize().await;
-    logger_module.initialize().await;
-    cron_module.initialize().await;
+    event_module.initialize().await.unwrap();
+    logger_module.initialize().await.unwrap();
+    cron_module.initialize().await.unwrap();
+    api_handler.initialize().await.unwrap();
 
     tracing::info!("Engine listening on address: {}", addr.purple());
 
