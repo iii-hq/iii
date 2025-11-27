@@ -171,13 +171,13 @@ impl TriggerRegistrator for ApiAdapter {
         Box::pin(async move {
             let api_path = trigger
                 .config
-                .get("apiPath")
+                .get("api_path")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("apiPath is required for api triggers"))?;
+                .ok_or_else(|| anyhow!("api_path is required for api triggers"))?;
 
             let http_method = trigger
                 .config
-                .get("httpMethod")
+                .get("http_method")
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 
@@ -201,13 +201,13 @@ impl TriggerRegistrator for ApiAdapter {
         Box::pin(async move {
             let api_path = trigger
                 .config
-                .get("apiPath")
+                .get("api_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
 
             let http_method = trigger
                 .config
-                .get("httpMethod")
+                .get("http_method")
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 

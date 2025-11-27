@@ -13,6 +13,7 @@ mod workers;
 mod modules {
     pub mod api;
     pub mod core_module;
+    pub mod cron_adapter;
     pub mod event;
     pub mod logger;
     pub mod observability;
@@ -29,7 +30,11 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
-    api::ApiAdapter, core_module::CoreModule, event::EventCoreModule,
+    api::ApiAdapter,
+    core_module::CoreModule,
+    cron_adapter::{CronAdapter, CronCoreModule, RedisCronLock},
+    event::EventCoreModule,
+    logger::Logger,
     observability::LoggerCoreModule,
 };
 
@@ -71,9 +76,11 @@ async fn main() -> anyhow::Result<()> {
 
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
+    let cron_module = CronCoreModule::new(engine.clone()).await;
 
-    event_module.initialize().await.unwrap();
-    logger_module.initialize().await.unwrap();
+    event_module.initialize().await;
+    logger_module.initialize().await;
+    cron_module.initialize().await;
 
     tracing::info!("Engine listening on address: {}", addr.purple());
 
