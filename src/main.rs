@@ -11,12 +11,12 @@ mod services;
 mod trigger;
 mod workers;
 mod modules {
-    pub mod api;
     pub mod core_module;
     pub mod cron_adapter;
     pub mod event;
     pub mod logger;
     pub mod observability;
+    pub mod rest_api;
 }
 
 use axum::{
@@ -30,12 +30,8 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
-    api::ApiAdapter,
-    core_module::CoreModule,
-    cron_adapter::{CronAdapter, CronCoreModule, RedisCronLock},
-    event::EventCoreModule,
-    logger::Logger,
-    observability::LoggerCoreModule,
+    core_module::CoreModule, cron_adapter::CronCoreModule, event::EventCoreModule,
+    observability::LoggerCoreModule, rest_api::RestApiCoreModule,
 };
 
 async fn ws_handler(
@@ -69,10 +65,10 @@ async fn main() -> anyhow::Result<()> {
     let addr = "127.0.0.1:49134";
     let listener = TcpListener::bind(addr).await?;
 
-    let api_handler = ApiAdapter::new(engine.clone());
+    let api_handler = RestApiCoreModule::new(engine.clone());
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
-    let cron_module = CronCoreModule::new(engine.clone()).await;
+    let cron_module = CronCoreModule::new(engine.clone());
 
     event_module.initialize().await.unwrap();
     logger_module.initialize().await.unwrap();

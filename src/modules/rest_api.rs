@@ -102,13 +102,13 @@ impl APIresponse {
 }
 
 #[derive(Clone)]
-pub struct ApiAdapter {
+pub struct RestApiCoreModule {
     engine: Arc<Engine>,
     pub routers_registry: Arc<RwLock<DashMap<String, PathRouter>>>,
 }
 
 #[async_trait::async_trait]
-impl CoreModule for ApiAdapter {
+impl CoreModule for RestApiCoreModule {
     async fn initialize(&self) -> Result<(), anyhow::Error> {
         tracing::info!("Initializing API adapter");
 
@@ -141,7 +141,7 @@ impl CoreModule for ApiAdapter {
     }
 }
 
-impl ApiAdapter {
+impl RestApiCoreModule {
     pub fn new(engine: Arc<Engine>) -> Self {
         Self {
             engine,
@@ -181,7 +181,7 @@ impl ApiAdapter {
     }
 }
 
-impl TriggerRegistrator for ApiAdapter {
+impl TriggerRegistrator for RestApiCoreModule {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -242,7 +242,7 @@ async fn dynamic_handler(
     method: axum::http::Method,
     headers: HeaderMap,
     State(engine): State<Arc<Engine>>,
-    Extension(api_handler): Extension<Arc<ApiAdapter>>,
+    Extension(api_handler): Extension<Arc<RestApiCoreModule>>,
     Path(path): Path<String>,
     Query(params): Query<HashMap<String, String>>,
     body: Option<Json<Value>>,

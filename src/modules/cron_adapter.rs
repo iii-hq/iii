@@ -6,7 +6,7 @@ use cron::Schedule;
 use futures::Future;
 use redis::{Client, aio::ConnectionManager};
 use tokio::{
-    sync::RwLock,
+    sync::{OnceCell, RwLock},
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -312,12 +312,20 @@ impl CronAdapter {
 /// Core module for cron triggers that integrates with the engine's trigger system
 #[derive(Clone)]
 pub struct CronCoreModule {
-    adapter: Arc<CronAdapter>,
+    adapter: Arc<OnceCell<Arc<CronAdapter>>>,
     engine: Arc<Engine>,
 }
 
 impl CronCoreModule {
-    pub async fn new(engine: Arc<Engine>) -> Self {
+    pub fn new(engine: Arc<Engine>) -> Self {
+        let adapter = Arc::new(OnceCell::new());
+        Self { adapter, engine }
+    }
+}
+
+#[async_trait]
+impl CoreModule for CronCoreModule {
+    async fn initialize(&self) -> Result<(), anyhow::Error> {
         let cron_lock = match RedisCronLock::new("redis://localhost:6379").await {
             Ok(lock) => lock,
             Err(e) => {
@@ -330,14 +338,10 @@ impl CronCoreModule {
                 panic!("Cannot proceed without a working Redis connection for cron locks");
             }
         };
-        let adapter = Arc::new(CronAdapter::new(Arc::new(cron_lock), engine.clone()));
-        Self { adapter, engine }
-    }
-}
-
-#[async_trait::async_trait]
-impl CoreModule for CronCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
+        let adapter = CronAdapter::new(Arc::new(cron_lock), self.engine.clone());
+        self.adapter
+            .set(Arc::new(adapter))
+            .map_err(|_| anyhow::anyhow!("Failed to set CronAdapter"))?;
         use crate::trigger::TriggerType;
 
         let trigger_type = TriggerType {
@@ -376,6 +380,8 @@ impl TriggerRegistrator for CronCoreModule {
             }
 
             self.adapter
+                .get()
+                .expect("CronAdapter not initialized")
                 .register(&trigger.id, &cron_expression, &trigger.function_path)
                 .await
         })
@@ -387,7 +393,11 @@ impl TriggerRegistrator for CronCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             tracing::debug!(trigger_id = %trigger.id, "Unregistering cron trigger");
-            self.adapter.unregister(&trigger.id).await
+            self.adapter
+                .get()
+                .expect("CronAdapter not initialized")
+                .unregister(&trigger.id)
+                .await
         })
     }
 }
