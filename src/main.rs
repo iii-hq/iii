@@ -11,12 +11,12 @@ mod services;
 mod trigger;
 mod workers;
 mod modules {
-    pub mod api;
     pub mod core_module;
     pub mod cron_adapter;
     pub mod event;
     pub mod logger;
     pub mod observability;
+    pub mod rest_api;
 }
 
 use axum::{
@@ -30,11 +30,8 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
-    api::RestApiCoreModule,
-    core_module::CoreModule,
-    cron_adapter::CronCoreModule,
-    event::EventCoreModule,
-    observability::LoggerCoreModule,
+    core_module::CoreModule, cron_adapter::CronCoreModule, event::EventCoreModule,
+    observability::LoggerCoreModule, rest_api::RestApiCoreModule,
 };
 
 async fn ws_handler(
