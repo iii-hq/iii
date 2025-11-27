@@ -189,9 +189,7 @@ impl TriggerRegistry {
                 .unregister_trigger(trigger.clone())
                 .await;
 
-            if let Err(err) = result {
-                return Err(err);
-            }
+            result?
         }
 
         self.triggers.write().await.remove(&trigger.id);

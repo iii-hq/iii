@@ -78,7 +78,7 @@ impl TriggerRegistrator for EventCoreModule {
                 .get()
                 .unwrap()
                 .unsubscribe(
-                    &trigger
+                    trigger
                         .config
                         .get("topic")
                         .unwrap_or_default()

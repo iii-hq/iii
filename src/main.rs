@@ -32,9 +32,8 @@ use tokio::net::TcpListener;
 use crate::modules::{
     api::RestApiCoreModule,
     core_module::CoreModule,
-    cron_adapter::{CronAdapter, CronCoreModule, RedisCronLock},
+    cron_adapter::CronCoreModule,
     event::EventCoreModule,
-    logger::Logger,
     observability::LoggerCoreModule,
 };
 
