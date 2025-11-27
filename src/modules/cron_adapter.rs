@@ -180,7 +180,10 @@ impl CronAdapter {
             loop {
                 // Calculate time until next execution
                 let now = chrono::Utc::now();
-                let next: chrono::DateTime<chrono::Utc> = match schedule.upcoming(chrono::Utc).next() {
+                let next: chrono::DateTime<chrono::Utc> = match schedule
+                    .upcoming(chrono::Utc)
+                    .next()
+                {
                     Some(next) => next,
                     None => {
                         tracing::warn!(job_id = %job_id, "No upcoming schedule found for cron job");
@@ -235,7 +238,12 @@ impl CronAdapter {
     }
 
     /// Register a new cron trigger
-    pub async fn register(&self, id: &str, cron_expression: &str, function_path: &str) -> anyhow::Result<()> {
+    pub async fn register(
+        &self,
+        id: &str,
+        cron_expression: &str,
+        function_path: &str,
+    ) -> anyhow::Result<()> {
         // Check if already registered
         {
             let jobs = self.jobs.read().await;
@@ -308,7 +316,20 @@ pub struct CronCoreModule {
 }
 
 impl CronCoreModule {
-    pub fn new(adapter: Arc<CronAdapter>, engine: Arc<Engine>) -> Self {
+    pub async fn new(engine: Arc<Engine>) -> Self {
+        let cron_lock = match RedisCronLock::new("redis://localhost:6379").await {
+            Ok(lock) => lock,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "{}: {}",
+                    "Failed to initialize Cron lock adapter".red(),
+                    e.to_string().yellow()
+                );
+                panic!("Cannot proceed without a working Redis connection for cron locks");
+            }
+        };
+        let adapter = Arc::new(CronAdapter::new(Arc::new(cron_lock), engine.clone()));
         Self { adapter, engine }
     }
 
@@ -324,10 +345,7 @@ impl CronCoreModule {
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 
-        tracing::info!(
-            "{} Cron trigger type initialized",
-            "[READY]".green()
-        );
+        tracing::info!("{} Cron trigger type initialized", "[READY]".green());
     }
 }
 

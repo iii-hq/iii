@@ -77,21 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
 
-    // Initialize cron module with Redis-based distributed locking
-    let cron_lock = match RedisCronLock::new("redis://localhost:6379").await {
-        Ok(lock) => lock,
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "{}: {}",
-                "Failed to initialize Cron lock adapter".red(),
-                e.to_string().yellow()
-            );
-            return Err(e);
-        }
-    };
-    let cron_adapter = Arc::new(CronAdapter::new(Arc::new(cron_lock), engine.clone()));
-    let cron_module = CronCoreModule::new(cron_adapter, engine.clone());
+    let cron_module = CronCoreModule::new(engine.clone()).await;
 
     event_module.initialize().await;
     logger_module.initialize();
