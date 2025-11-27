@@ -13,6 +13,7 @@ mod workers;
 mod modules {
     pub mod api;
     pub mod core_module;
+    pub mod cron_adapter;
     pub mod event;
     pub mod logger;
     pub mod observability;
@@ -29,7 +30,11 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
-    api::ApiAdapter, core_module::CoreModule, event::EventCoreModule,
+    api::ApiAdapter,
+    core_module::CoreModule,
+    cron_adapter::{CronAdapter, CronCoreModule, RedisCronLock},
+    event::EventCoreModule,
+    logger::Logger,
     observability::LoggerCoreModule,
 };
 
@@ -72,11 +77,25 @@ async fn main() -> anyhow::Result<()> {
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
 
-    event_module.initialize().await.unwrap();
-    logger_module.initialize().await.unwrap();
+    // Initialize cron module with Redis-based distributed locking
+    let cron_lock = match RedisCronLock::new("redis://localhost:6379").await {
+        Ok(lock) => lock,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "{}: {}",
+                "Failed to initialize Cron lock adapter".red(),
+                e.to_string().yellow()
+            );
+            return Err(e);
+        }
+    };
+    let cron_adapter = Arc::new(CronAdapter::new(Arc::new(cron_lock), engine.clone()));
+    let cron_module = CronCoreModule::new(cron_adapter, engine.clone());
 
     event_module.initialize().await;
     logger_module.initialize();
+    cron_module.initialize().await;
 
     tracing::info!("Engine listening on address: {}", addr.purple());
 

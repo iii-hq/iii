@@ -27,3 +27,4 @@ dashmap = "6"
 redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
+cron = "0.15"

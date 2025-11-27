@@ -89,6 +89,34 @@ bridge.registerTrigger({
   config: { topic: 'test' },
 })
 
+// Background cleanup function triggered by cron
+bridge.registerFunction({ functionPath: 'background.cleanup' }, async (payload) => {
+  const context = getContext()
+  const timestamp = new Date().toISOString()
+
+  context.logger.info('Running background cleanup', {
+    timestamp,
+    trigger: payload.trigger,
+    job_id: payload.job_id,
+    scheduled_time: payload.scheduled_time,
+  })
+
+  // Simulate cleanup work
+  const cleanedItems = Math.floor(Math.random() * 100)
+  context.logger.info('Cleanup completed', { cleanedItems, timestamp })
+
+  return { success: true, cleanedItems, timestamp }
+})
+
+// Register cron trigger to run cleanup every 10 seconds
+bridge.registerTrigger({
+  triggerType: 'cron',
+  functionPath: 'background.cleanup',
+  config: {
+    expression: '*/10 * * * * *', // Every 10 seconds
+  },
+})
+
 process.stdin.on('data', async (data) => {
   const topic = data.toString().trim()
   const context = getContext()
