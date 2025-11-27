@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     let api_handler = RestApiCoreModule::new(engine.clone());
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
-    let cron_module = CronCoreModule::new(engine.clone()).await;
+    let cron_module = CronCoreModule::new(engine.clone());
 
     event_module.initialize().await.unwrap();
     logger_module.initialize().await.unwrap();
