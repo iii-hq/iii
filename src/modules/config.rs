@@ -1,7 +1,15 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
+use axum::{
+    Router,
+    extract::{ConnectInfo, State, ws::WebSocketUpgrade},
+    response::IntoResponse,
+    routing::get,
+};
+use colored::Colorize;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::net::TcpListener;
 
 use crate::engine::Engine;
 
@@ -15,10 +23,10 @@ use super::{
 };
 
 // =============================================================================
-// Engine Config (root of YAML)
+// Constants
 // =============================================================================
 
-/// Default modules to load when no config.yaml is present
+/// Default modules to load when no config is provided
 const DEFAULT_MODULES: &[&str] = &[
     "modules::api::RestApiModule",
     "modules::event::EventModule",
@@ -26,73 +34,17 @@ const DEFAULT_MODULES: &[&str] = &[
     "modules::cron::CronModule",
 ];
 
+/// Default address for the engine server
+const DEFAULT_ADDRESS: &str = "127.0.0.1:49134";
+
+// =============================================================================
+// EngineConfig (YAML structure)
+// =============================================================================
+
 #[derive(Debug, Deserialize)]
 pub struct EngineConfig {
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
-}
-
-impl EngineConfig {
-    /// Creates an EngineConfig with default modules
-    pub fn default_modules() -> Self {
-        let modules = DEFAULT_MODULES
-            .iter()
-            .map(|class| ModuleEntry {
-                class: class.to_string(),
-                config: None,
-            })
-            .collect();
-
-        Self { modules }
-    }
-
-    /// Loads config from YAML string
-    pub fn from_yaml(yaml_content: &str) -> anyhow::Result<Self> {
-        let config = serde_yaml::from_str(yaml_content)?;
-        Ok(config)
-    }
-
-    /// Loads config from file, or returns default if file doesn't exist
-    pub fn from_file_or_default(path: &str) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(yaml_content) => {
-                tracing::info!("Loading modules from {}", path);
-                Self::from_yaml(&yaml_content)
-            }
-            Err(_) => {
-                tracing::info!("No {} found, using default modules", path);
-                Ok(Self::default_modules())
-            }
-        }
-    }
-
-    /// Creates all modules from the configuration
-    pub fn create_modules(&self, engine: Arc<Engine>) -> anyhow::Result<Vec<Box<dyn CoreModule>>> {
-        let mut modules = Vec::new();
-
-        for entry in &self.modules {
-            tracing::debug!("Creating module: {}", entry.class);
-            let module = entry.create_module(engine.clone())?;
-            modules.push(module);
-        }
-
-        Ok(modules)
-    }
-
-    /// Creates and initializes all modules from the configuration
-    pub async fn load_modules(&self, engine: Arc<Engine>) -> anyhow::Result<Vec<Box<dyn CoreModule>>> {
-        tracing::info!("Loading {} modules from config", self.modules.len());
-
-        let modules = self.create_modules(engine)?;
-
-        for module in &modules {
-            module.initialize().await?;
-        }
-
-        tracing::info!("All {} modules initialized successfully", modules.len());
-
-        Ok(modules)
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,4 +81,211 @@ impl ModuleEntry {
             unknown => Err(anyhow::anyhow!("Unknown module class: {}", unknown)),
         }
     }
+}
+
+// =============================================================================
+// EngineBuilder
+// =============================================================================
+
+/// Builder pattern for configuring and starting the Engine.
+///
+/// # Examples
+///
+/// Load from file or use defaults:
+/// ```ignore
+/// EngineBuilder::new()
+///     .config_file_or_default("config.yaml")?
+///     .address("0.0.0.0:3000")
+///     .build().await?
+///     .serve().await?;
+/// ```
+///
+/// Only default modules:
+/// ```ignore
+/// EngineBuilder::new()
+///     .default_modules()
+///     .build().await?
+///     .serve().await?;
+/// ```
+///
+/// Custom modules:
+/// ```ignore
+/// EngineBuilder::new()
+///     .add_module("modules::api::RestApiModule", Some(json!({"port": 8080})))
+///     .add_module("modules::observability::LoggingModule", None)
+///     .build().await?
+///     .serve().await?;
+/// ```
+///
+/// From specific file:
+/// ```ignore
+/// EngineBuilder::new()
+///     .config_file("production.yaml")?
+///     .build().await?
+///     .serve().await?;
+/// ```
+pub struct EngineBuilder {
+    config: Option<EngineConfig>,
+    address: String,
+    engine: Arc<Engine>,
+    modules: Vec<Box<dyn CoreModule>>,
+}
+
+impl EngineBuilder {
+    /// Creates a new EngineBuilder
+    pub fn new() -> Self {
+        Self {
+            config: None,
+            address: DEFAULT_ADDRESS.to_string(),
+            engine: Arc::new(Engine::new()),
+            modules: Vec::new(),
+        }
+    }
+
+    /// Sets the server address
+    pub fn address(mut self, addr: &str) -> Self {
+        self.address = addr.to_string();
+        self
+    }
+
+    /// Loads configuration from a YAML file
+    pub fn config_file(mut self, path: &str) -> anyhow::Result<Self> {
+        let yaml_content = std::fs::read_to_string(path)?;
+        let config: EngineConfig = serde_yaml::from_str(&yaml_content)?;
+        tracing::info!("Loaded config from {}", path);
+        self.config = Some(config);
+        Ok(self)
+    }
+
+    /// Uses default modules configuration
+    pub fn default_modules(mut self) -> Self {
+        let modules = DEFAULT_MODULES
+            .iter()
+            .map(|class| ModuleEntry {
+                class: class.to_string(),
+                config: None,
+            })
+            .collect();
+
+        self.config = Some(EngineConfig { modules });
+        self
+    }
+
+    /// Loads config from file if exists, otherwise uses defaults
+    pub fn config_file_or_default(mut self, path: &str) -> anyhow::Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(yaml_content) => {
+                let config: EngineConfig = serde_yaml::from_str(&yaml_content)?;
+                tracing::info!("Loaded config from {}", path);
+                self.config = Some(config);
+                Ok(self)
+            }
+            Err(_) => {
+                tracing::info!("No {} found, using default modules", path);
+                Ok(self.default_modules())
+            }
+        }
+    }
+
+    /// Adds a custom module entry
+    pub fn add_module(mut self, class: &str, config: Option<Value>) -> Self {
+        if self.config.is_none() {
+            self.config = Some(EngineConfig { modules: Vec::new() });
+        }
+
+        if let Some(ref mut cfg) = self.config {
+            cfg.modules.push(ModuleEntry {
+                class: class.to_string(),
+                config,
+            });
+        }
+
+        self
+    }
+
+    /// Builds and initializes all modules
+    pub async fn build(mut self) -> anyhow::Result<Self> {
+        let config = self.config.take().unwrap_or_else(|| {
+            tracing::info!("No config provided, using default modules");
+            EngineConfig {
+                modules: DEFAULT_MODULES
+                    .iter()
+                    .map(|class| ModuleEntry {
+                        class: class.to_string(),
+                        config: None,
+                    })
+                    .collect(),
+            }
+        });
+
+        tracing::info!("Building engine with {} modules", config.modules.len());
+
+        // Create modules
+        for entry in &config.modules {
+            tracing::debug!("Creating module: {}", entry.class);
+            let module = entry.create_module(self.engine.clone())?;
+            self.modules.push(module);
+        }
+
+        // Initialize modules
+        for module in &self.modules {
+            module.initialize().await?;
+        }
+
+        tracing::info!("All {} modules initialized successfully", self.modules.len());
+
+        Ok(self)
+    }
+
+    /// Starts the engine server
+    pub async fn serve(self) -> anyhow::Result<()> {
+        let engine = self.engine.clone();
+
+        // Start function notification task
+        let engine_clone = engine.clone();
+        tokio::spawn(async move {
+            engine_clone.notify_new_functions(5).await;
+        });
+
+        // Setup router
+        let app = Router::new()
+            .route("/", get(ws_handler))
+            .with_state(engine);
+
+        // Bind and serve
+        let listener = TcpListener::bind(&self.address).await?;
+        tracing::info!("Engine listening on address: {}", self.address.purple());
+
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await?;
+
+        Ok(())
+    }
+}
+
+impl Default for EngineBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// =============================================================================
+// WebSocket Handler
+// =============================================================================
+
+async fn ws_handler(
+    State(engine): State<Arc<Engine>>,
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    let engine = engine.clone();
+
+    ws.on_upgrade(move |socket| async move {
+        if let Err(err) = engine.handle_worker(socket, addr).await {
+            tracing::error!(addr = %addr, error = ?err, "worker error");
+        }
+    })
 }
