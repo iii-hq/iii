@@ -130,7 +130,7 @@ process.stdin.on('data', async (data) => {
       stream_name,
       group_id,
       item_id,
-      data: JSON.stringify({ value }),
+      data: JSON.parse(value),
     })
 
     return

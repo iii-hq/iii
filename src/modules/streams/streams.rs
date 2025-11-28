@@ -166,6 +166,10 @@ impl CoreModule for StreamCoreModule {
             );
         }
 
+        self.adapter
+            .set(adapter.clone())
+            .map_err(|_| anyhow::anyhow!("Failed to set StreamAdapter"))?;
+
         let socket_manager = Arc::new(StreamSocketManager::new(adapter.clone()));
         let addr = "127.0.0.1:31112";
         let listener = TcpListener::bind(addr).await.unwrap();

@@ -15,50 +15,50 @@ pub struct Subscription {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StreamIncomingMessage {
-    Subscribe {
-        #[serde(rename = "subscriptionId")]
-        subscription_id: String,
-        #[serde(rename = "streamName")]
-        stream_name: String,
-        #[serde(rename = "groupId")]
-        group_id: String,
-        id: Option<String>,
-    },
-    Unsubscribe {
-        #[serde(rename = "subscriptionId")]
-        subscription_id: String,
-    },
+pub struct JoinData {
+    #[serde(rename = "subscriptionId")]
+    pub subscription_id: String,
+    #[serde(rename = "streamName")]
+    pub stream_name: String,
+    #[serde(rename = "groupId")]
+    pub group_id: String,
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum StreamIncomingMessage {
+    Join { data: JoinData },
+    Leave { data: JoinData },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventData {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamOutboundMessage {
-    Sync {
-        data: Value,
-    },
-    Create {
-        data: Value,
-    },
-    Update {
-        data: Value,
-    },
-    Delete {
-        data: Value,
-    },
-    Event {
-        #[serde(rename = "type")]
-        event_type: String,
-        data: Value,
-    },
+    Sync { data: Value },
+    Create { data: Value },
+    Update { data: Value },
+    Delete { data: Value },
+    Event { data: EventData },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamWrapperMessage {
     pub timestamp: i64,
+    #[serde(rename = "streamName")]
     pub stream_name: String,
+    #[serde(rename = "groupId")]
     pub group_id: String,
+    #[serde(rename = "itemId")]
     pub item_id: Option<String>,
-    pub message: StreamOutboundMessage,
+    pub event: StreamOutboundMessage,
 }
 
 #[derive(Debug)]

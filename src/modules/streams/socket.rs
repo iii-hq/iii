@@ -115,14 +115,14 @@ impl SocketStreamConnection {
 
     pub async fn handle_socket_message(&self, msg: &StreamIncomingMessage) -> anyhow::Result<()> {
         match msg {
-            StreamIncomingMessage::Subscribe {
-                subscription_id,
-                stream_name,
-                group_id,
-                id,
-            } => {
+            StreamIncomingMessage::Join { data } => {
+                let stream_name = data.stream_name.clone();
+                let group_id = data.group_id.clone();
+                let id = data.id.clone();
+                let subscription_id = data.subscription_id.clone();
+
                 self.subscriptions.write().await.insert(
-                    subscription_id.clone(),
+                    subscription_id,
                     Subscription {
                         stream_name: stream_name.clone(),
                         group_id: group_id.clone(),
@@ -133,7 +133,7 @@ impl SocketStreamConnection {
                 let timestamp = chrono::Utc::now().timestamp_millis();
 
                 if let Some(id) = id {
-                    let data = self.adapter.get(stream_name, group_id, id).await;
+                    let data = self.adapter.get(&stream_name, &group_id, &id).await;
 
                     self.sender
                         .send(StreamOutbound::Stream(StreamWrapperMessage {
@@ -141,20 +141,20 @@ impl SocketStreamConnection {
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
                             item_id: Some(id.clone()),
-                            message: StreamOutboundMessage::Sync {
+                            event: StreamOutboundMessage::Sync {
                                 data: data.unwrap_or(Value::Null),
                             },
                         }))
                         .await?;
                 } else {
-                    let data = self.adapter.get_group(stream_name, group_id).await;
+                    let data = self.adapter.get_group(&stream_name, &group_id).await;
                     self.sender
                         .send(StreamOutbound::Stream(StreamWrapperMessage {
                             timestamp,
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
                             item_id: None,
-                            message: StreamOutboundMessage::Sync {
+                            event: StreamOutboundMessage::Sync {
                                 data: serde_json::to_value(data).unwrap_or(Value::Null),
                             },
                         }))
@@ -163,8 +163,11 @@ impl SocketStreamConnection {
 
                 Ok(())
             }
-            StreamIncomingMessage::Unsubscribe { subscription_id } => {
-                self.subscriptions.write().await.remove(subscription_id);
+            StreamIncomingMessage::Leave { data } => {
+                self.subscriptions
+                    .write()
+                    .await
+                    .remove(&data.subscription_id);
                 Ok(())
             }
         }
@@ -184,6 +187,7 @@ impl Drop for SocketStreamConnection {
 impl StreamConnection for SocketStreamConnection {
     async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
         let subscriptions = self.subscriptions.read().await;
+        tracing::debug!(msg = ?msg, "Sending stream message");
 
         for subscription in subscriptions.iter() {
             let subscription = subscription.value();

@@ -127,7 +127,7 @@ impl StreamAdapter for RedisAdapter {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
             item_id: Some(item_id.to_string()),
-            message: match event_type {
+            event: match event_type {
                 "update" => StreamOutboundMessage::Update { data },
                 "create" => StreamOutboundMessage::Create { data },
                 _ => StreamOutboundMessage::Create { data },
@@ -157,11 +157,11 @@ impl StreamAdapter for RedisAdapter {
         let group_id = group_id.to_string();
         let item_id = item_id.to_string();
 
-        let key = format!("stream:{}:{}:{}", stream_name, group_id, item_id);
+        let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        if let Err(e) = conn.del::<_, ()>(&key).await {
+        if let Err(e) = conn.hdel::<String, String, ()>(key, item_id.clone()).await {
             tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Failed to delete value from Redis");
         }
 
@@ -170,7 +170,7 @@ impl StreamAdapter for RedisAdapter {
             stream_name: stream_name.to_string(),
             group_id: group_id.to_string(),
             item_id: Some(item_id.to_string()),
-            message: StreamOutboundMessage::Delete {
+            event: StreamOutboundMessage::Delete {
                 data: serde_json::json!({ "id": item_id }),
             },
         })
@@ -181,13 +181,10 @@ impl StreamAdapter for RedisAdapter {
         let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
-        match conn
-            .xrange::<_, _, String, Vec<String>>(key, String::from("-"), String::from("+"))
-            .await
-        {
+        match conn.hgetall::<String, HashMap<String, String>>(key).await {
             Ok(values) => values
                 .into_iter()
-                .map(|v| serde_json::from_str(&v).unwrap())
+                .map(|(_, v)| serde_json::from_str(&v).unwrap())
                 .collect(),
             Err(e) => {
                 tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
