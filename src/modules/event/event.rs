@@ -10,10 +10,12 @@ use uuid::Uuid;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{core_module::CoreModule, event::adapters::RedisAdapter},
+    modules::{configurable::Configurable, core_module::CoreModule},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
+
+use super::{adapters::RedisAdapter, config::{EventModuleConfig, RedisAdapterConfig}};
 
 #[async_trait]
 pub trait EventAdapter: Send + Sync + 'static {
@@ -26,6 +28,19 @@ pub trait EventAdapter: Send + Sync + 'static {
 pub struct EventCoreModule {
     adapter: Arc<OnceCell<Arc<dyn EventAdapter>>>,
     engine: Arc<Engine>,
+    config: EventModuleConfig,
+}
+
+impl Configurable for EventCoreModule {
+    type Config = EventModuleConfig;
+
+    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
+        Self {
+            adapter: Arc::new(OnceCell::new()),
+            engine,
+            config,
+        }
+    }
 }
 
 impl TriggerRegistrator for EventCoreModule {
@@ -95,9 +110,21 @@ impl TriggerRegistrator for EventCoreModule {
 #[async_trait]
 impl CoreModule for EventCoreModule {
     async fn initialize(&self) -> Result<(), anyhow::Error> {
+        // Determine Redis URL from adapter config
+        let redis_url = self
+            .config
+            .adapter
+            .as_ref()
+            .and_then(|a| a.config.clone())
+            .and_then(|v| serde_json::from_value::<RedisAdapterConfig>(v).ok())
+            .map(|c| c.redis_url)
+            .unwrap_or_else(|| "redis://localhost:6379".to_string());
+
+        tracing::info!("Initializing EventModule with Redis at {}", redis_url);
+
         let adapter = match tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            RedisAdapter::new("redis://localhost:6379".to_string(), self.engine.clone()),
+            RedisAdapter::new(redis_url, self.engine.clone()),
         )
         .await
         {
@@ -127,7 +154,6 @@ impl CoreModule for EventCoreModule {
                     "data": { "type": "object" }
                 })),
                 response_format: None,
-                // functions
             },
             Box::new(self.clone()),
         );
@@ -136,13 +162,6 @@ impl CoreModule for EventCoreModule {
     }
 }
 
-impl EventCoreModule {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        let adapter = Arc::new(OnceCell::new());
-
-        Self { adapter, engine }
-    }
-}
 
 impl FunctionHandler for EventCoreModule {
     fn handle_function(

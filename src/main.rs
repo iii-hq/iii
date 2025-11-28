@@ -11,10 +11,12 @@ mod services;
 mod trigger;
 mod workers;
 mod modules {
+    pub mod config;
+    pub mod configurable;
     pub mod core_module;
-    pub mod cron_adapter;
+    pub mod cron;
     pub mod event;
-    pub mod logger;
+    pub mod loader;
     pub mod observability;
     pub mod rest_api;
     pub mod streams;
@@ -31,8 +33,13 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
-    core_module::CoreModule, cron_adapter::CronCoreModule, event::EventCoreModule,
-    observability::LoggerCoreModule, rest_api::RestApiCoreModule, streams::StreamCoreModule,
+    core_module::CoreModule,
+    cron::CronCoreModule,
+    event::EventCoreModule,
+    loader::{load_and_initialize, load_default_modules},
+    observability::LoggerCoreModule,
+    rest_api::RestApiCoreModule,
+    streams::StreamCoreModule,
 };
 
 async fn ws_handler(
@@ -60,6 +67,18 @@ async fn main() -> anyhow::Result<()> {
         engine_clone.notify_new_functions(5).await;
     });
 
+    // Try to load config from file, otherwise use defaults
+    let _modules = match std::fs::read_to_string("config.yaml") {
+        Ok(yaml_content) => {
+            tracing::info!("Loading modules from config.yaml");
+            load_and_initialize(engine.clone(), &yaml_content).await?
+        }
+        Err(_) => {
+            tracing::info!("No config.yaml found, loading default modules");
+            load_default_modules(engine.clone()).await?
+        }
+    };
+
     let app = Router::new()
         .route("/", get(ws_handler))
         .with_state(engine.clone());
@@ -72,11 +91,11 @@ async fn main() -> anyhow::Result<()> {
     let cron_module = CronCoreModule::new(engine.clone());
     let streams_module = StreamCoreModule::new(engine.clone());
 
-    event_module.initialize().await.unwrap();
-    logger_module.initialize().await.unwrap();
-    cron_module.initialize().await.unwrap();
-    api_handler.initialize().await.unwrap();
-    streams_module.initialize().await.unwrap();
+    let _ = event_module.initialize().await.unwrap();
+    let _ = logger_module.initialize().await.unwrap();
+    let _ = cron_module.initialize().await.unwrap();
+    let _ = api_handler.initialize().await.unwrap();
+    let _ = streams_module.initialize().await.unwrap();
 
     tracing::info!("Engine listening on address: {}", addr.purple());
 

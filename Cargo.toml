@@ -7,6 +7,7 @@ edition = "2024"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tower = "0.4"
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 # check if we need both futures and futures-core
@@ -20,6 +21,7 @@ chrono = { version = "0.4", features = ["serde"] }
 axum = { version = "0.7", features = ["ws", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }

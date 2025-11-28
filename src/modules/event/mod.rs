@@ -1,4 +1,5 @@
 pub mod adapters;
-pub mod event;
+mod config;
+mod event;
 
 pub use self::event::{EventAdapter, EventCoreModule};

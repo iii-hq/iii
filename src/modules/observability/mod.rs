@@ -1,13 +1,20 @@
+mod config;
+mod logger;
+
+pub use config::LoggerModuleConfig;
+pub use logger::Logger;
+
 use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
+use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{core_module::CoreModule, logger::Logger},
+    modules::{configurable::Configurable, core_module::CoreModule},
     protocol::ErrorBody,
 };
 
@@ -39,6 +46,20 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 pub struct LoggerCoreModule {
     engine: Arc<Engine>,
     logger: Arc<dyn LoggerAdapter>,
+    #[allow(dead_code)]
+    config: LoggerModuleConfig,
+}
+
+impl Configurable for LoggerCoreModule {
+    type Config = LoggerModuleConfig;
+
+    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
+        Self {
+            engine,
+            logger: Arc::new(Logger {}),
+            config,
+        }
+    }
 }
 
 impl FunctionHandler for LoggerCoreModule {
@@ -114,13 +135,5 @@ impl CoreModule for LoggerCoreModule {
         );
 
         Ok(())
-    }
-}
-
-impl LoggerCoreModule {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        let logger = Arc::new(Logger {});
-
-        Self { engine, logger }
     }
 }

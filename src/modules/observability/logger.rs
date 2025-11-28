@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::modules::observability::LoggerAdapter;
+use super::LoggerAdapter;
 
 /// Logger implementation that uses tracing for output.
 /// This maintains compatibility with the LoggerAdapter trait while
