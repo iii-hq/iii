@@ -3,6 +3,10 @@ name = "engine"
 version = "0.1.0"
 edition = "2024"
 
+[[example]]
+name = "custom_event_adapter"
+path = "examples/custom_event_adapter.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
