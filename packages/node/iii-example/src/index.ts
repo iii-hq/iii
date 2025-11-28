@@ -109,16 +109,43 @@ bridge.registerFunction({ functionPath: 'background.cleanup' }, async (payload) 
 })
 
 // Register cron trigger to run cleanup every 10 seconds
-bridge.registerTrigger({
-  triggerType: 'cron',
-  functionPath: 'background.cleanup',
-  config: {
-    expression: '*/10 * * * * *', // Every 10 seconds
-  },
-})
+// bridge.registerTrigger({
+//   triggerType: 'cron',
+//   functionPath: 'background.cleanup',
+//   config: {
+//     expression: '*/10 * * * * *', // Every 10 seconds
+//   },
+// })
 
 process.stdin.on('data', async (data) => {
   const topic = data.toString().trim()
+
+  if (topic.startsWith('set')) {
+    const [_command, stream_name, group_id, item_id, value] = topic.split(' ')
+    const context = getContext()
+
+    context.logger.info('Setting value', { stream_name, group_id, item_id, value })
+
+    await bridge.invokeFunction('streams.set', {
+      stream_name,
+      group_id,
+      item_id,
+      data: JSON.stringify({ value }),
+    })
+
+    return
+  } else if (topic.startsWith('get')) {
+    const [_command, stream_name, group_id, item_id] = topic.split(' ')
+    const response = await bridge.invokeFunction('streams.get', {
+      stream_name,
+      group_id,
+      item_id,
+    })
+    console.log(response)
+
+    return
+  }
+
   const context = getContext()
 
   context.logger.info('Emitting event', topic)

@@ -50,7 +50,7 @@ impl FunctionHandler for LoggerCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
         Box::pin(async move {
             let logger = self.logger.clone();
-            let function_path = function_path;
+            let function_path = function_path.clone();
             let input = input;
 
             let trace_id = input.get("trace_id").and_then(|v| v.as_str());
