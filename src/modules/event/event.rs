@@ -7,15 +7,14 @@ use serde_json::Value;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
+use super::config::EventModuleConfig;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{configurable::Configurable, core_module::CoreModule},
+    modules::{adapter_registry::AdapterRegistry, configurable::Configurable, core_module::CoreModule},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
-
-use super::{adapters::RedisAdapter, config::{EventModuleConfig, RedisAdapterConfig}};
 
 #[async_trait]
 pub trait EventAdapter: Send + Sync + 'static {
@@ -29,6 +28,7 @@ pub struct EventCoreModule {
     adapter: Arc<OnceCell<Arc<dyn EventAdapter>>>,
     engine: Arc<Engine>,
     config: EventModuleConfig,
+    adapter_registry: Option<Arc<AdapterRegistry>>,
 }
 
 impl Configurable for EventCoreModule {
@@ -39,7 +39,15 @@ impl Configurable for EventCoreModule {
             adapter: Arc::new(OnceCell::new()),
             engine,
             config,
+            adapter_registry: None,
         }
+    }
+}
+
+impl EventCoreModule {
+    /// Sets the adapter registry for dynamic adapter creation
+    pub fn set_adapter_registry(&mut self, registry: Arc<AdapterRegistry>) {
+        self.adapter_registry = Some(registry);
     }
 }
 
@@ -110,27 +118,29 @@ impl TriggerRegistrator for EventCoreModule {
 #[async_trait]
 impl CoreModule for EventCoreModule {
     async fn initialize(&self) -> Result<(), anyhow::Error> {
-        // Determine Redis URL from adapter config
-        let redis_url = self
+        tracing::info!("Initializing EventModule");
+
+        // Get adapter class from config or use default
+        let adapter_class = self
             .config
             .adapter
             .as_ref()
-            .and_then(|a| a.config.clone())
-            .and_then(|v| serde_json::from_value::<RedisAdapterConfig>(v).ok())
-            .map(|c| c.redis_url)
-            .unwrap_or_else(|| "redis://localhost:6379".to_string());
+            .map(|a| a.class.as_str())
+            .unwrap_or("modules::event::RedisAdapter");
 
-        tracing::info!("Initializing EventModule with Redis at {}", redis_url);
+        let adapter_config = self.config.adapter.as_ref().and_then(|a| a.config.clone());
 
-        let adapter = match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            RedisAdapter::new(redis_url, self.engine.clone()),
-        )
-        .await
-        {
-            Ok(Ok(adapter)) => Arc::new(adapter),
-            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to connect to Redis: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!("Timed out while connecting to Redis")),
+        // Create adapter using registry
+        let adapter = match &self.adapter_registry {
+            Some(registry) => {
+                registry
+                    .create_event_adapter(adapter_class, adapter_config, self.engine.clone())
+                    .await?
+            }
+            None => {
+                // Fallback to config-based creation if no registry
+                self.config.create_adapter(self.engine.clone()).await?
+            }
         };
 
         self.adapter
@@ -161,7 +171,6 @@ impl CoreModule for EventCoreModule {
         Ok(())
     }
 }
-
 
 impl FunctionHandler for EventCoreModule {
     fn handle_function(

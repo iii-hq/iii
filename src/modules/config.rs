@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{future::Future, net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
@@ -11,16 +11,16 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-use crate::engine::Engine;
-
 use super::{
+    adapter_registry::AdapterRegistry,
     configurable::Configurable,
     core_module::CoreModule,
-    cron::CronCoreModule,
-    event::EventCoreModule,
+    cron::{CronCoreModule, CronScheduler},
+    event::{EventAdapter, EventCoreModule},
     observability::LoggerCoreModule,
     rest_api::RestApiCoreModule,
 };
+use crate::engine::Engine;
 
 // =============================================================================
 // Constants
@@ -56,7 +56,11 @@ pub struct ModuleEntry {
 
 impl ModuleEntry {
     /// Creates a module instance from this entry
-    pub fn create_module(&self, engine: Arc<Engine>) -> anyhow::Result<Box<dyn CoreModule>> {
+    pub fn create_module(
+        &self,
+        engine: Arc<Engine>,
+        registry: Arc<AdapterRegistry>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
         match self.class.as_str() {
             "modules::api::RestApiModule" => {
                 let module = RestApiCoreModule::from_value(engine, self.config.clone());
@@ -64,12 +68,14 @@ impl ModuleEntry {
             }
 
             "modules::event::EventModule" => {
-                let module = EventCoreModule::from_value(engine, self.config.clone());
+                let mut module = EventCoreModule::from_value(engine, self.config.clone());
+                module.set_adapter_registry(registry);
                 Ok(Box::new(module))
             }
 
             "modules::cron::CronModule" => {
-                let module = CronCoreModule::from_value(engine, self.config.clone());
+                let mut module = CronCoreModule::from_value(engine, self.config.clone());
+                module.set_adapter_registry(registry);
                 Ok(Box::new(module))
             }
 
@@ -108,6 +114,22 @@ impl ModuleEntry {
 ///     .serve().await?;
 /// ```
 ///
+/// Register custom adapters:
+/// ```ignore
+/// EngineBuilder::new()
+///     .register_event_adapter("my::CustomEventAdapter", |config, engine| async move {
+///         let adapter = MyCustomAdapter::new(config, engine).await?;
+///         Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
+///     })
+///     .register_cron_scheduler("my::CustomCronScheduler", |config| async move {
+///         let scheduler = MyCustomScheduler::new(config).await?;
+///         Ok(Arc::new(scheduler) as Arc<dyn CronScheduler>)
+///     })
+///     .config_file_or_default("config.yaml")?
+///     .build().await?
+///     .serve().await?;
+/// ```
+///
 /// Custom modules:
 /// ```ignore
 /// EngineBuilder::new()
@@ -116,35 +138,67 @@ impl ModuleEntry {
 ///     .build().await?
 ///     .serve().await?;
 /// ```
-///
-/// From specific file:
-/// ```ignore
-/// EngineBuilder::new()
-///     .config_file("production.yaml")?
-///     .build().await?
-///     .serve().await?;
-/// ```
 pub struct EngineBuilder {
     config: Option<EngineConfig>,
     address: String,
     engine: Arc<Engine>,
     modules: Vec<Box<dyn CoreModule>>,
+    adapter_registry: Arc<AdapterRegistry>,
 }
 
 impl EngineBuilder {
-    /// Creates a new EngineBuilder
+    /// Creates a new EngineBuilder with default adapter registry
     pub fn new() -> Self {
         Self {
             config: None,
             address: DEFAULT_ADDRESS.to_string(),
             engine: Arc::new(Engine::new()),
             modules: Vec::new(),
+            adapter_registry: Arc::new(AdapterRegistry::with_defaults()),
         }
     }
 
     /// Sets the server address
     pub fn address(mut self, addr: &str) -> Self {
         self.address = addr.to_string();
+        self
+    }
+
+    /// Registers a custom event adapter factory
+    ///
+    /// # Example
+    /// ```ignore
+    /// builder.register_event_adapter("my::CustomAdapter", |config, engine| async move {
+    ///     let adapter = MyAdapter::new(config, engine).await?;
+    ///     Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
+    /// })
+    /// ```
+    pub fn register_event_adapter<F, Fut>(self, class: &str, factory: F) -> Self
+    where
+        F: Fn(Option<Value>, Arc<Engine>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<Arc<dyn EventAdapter>>> + Send + 'static,
+    {
+        tracing::info!("Registering event adapter: {}", class);
+        self.adapter_registry.register_event_adapter(class, factory);
+        self
+    }
+
+    /// Registers a custom cron scheduler factory
+    ///
+    /// # Example
+    /// ```ignore
+    /// builder.register_cron_scheduler("my::CustomScheduler", |config| async move {
+    ///     let scheduler = MyScheduler::new(config).await?;
+    ///     Ok(Arc::new(scheduler) as Arc<dyn CronScheduler>)
+    /// })
+    /// ```
+    pub fn register_cron_scheduler<F, Fut>(self, class: &str, factory: F) -> Self
+    where
+        F: Fn(Option<Value>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<Arc<dyn CronScheduler>>> + Send + 'static,
+    {
+        self.adapter_registry
+            .register_cron_scheduler(class, factory);
         self
     }
 
@@ -190,7 +244,9 @@ impl EngineBuilder {
     /// Adds a custom module entry
     pub fn add_module(mut self, class: &str, config: Option<Value>) -> Self {
         if self.config.is_none() {
-            self.config = Some(EngineConfig { modules: Vec::new() });
+            self.config = Some(EngineConfig {
+                modules: Vec::new(),
+            });
         }
 
         if let Some(ref mut cfg) = self.config {
@@ -223,7 +279,7 @@ impl EngineBuilder {
         // Create modules
         for entry in &config.modules {
             tracing::debug!("Creating module: {}", entry.class);
-            let module = entry.create_module(self.engine.clone())?;
+            let module = entry.create_module(self.engine.clone(), self.adapter_registry.clone())?;
             self.modules.push(module);
         }
 
@@ -232,7 +288,10 @@ impl EngineBuilder {
             module.initialize().await?;
         }
 
-        tracing::info!("All {} modules initialized successfully", self.modules.len());
+        tracing::info!(
+            "All {} modules initialized successfully",
+            self.modules.len()
+        );
 
         Ok(self)
     }
@@ -248,9 +307,7 @@ impl EngineBuilder {
         });
 
         // Setup router
-        let app = Router::new()
-            .route("/", get(ws_handler))
-            .with_state(engine);
+        let app = Router::new().route("/", get(ws_handler)).with_state(engine);
 
         // Bind and serve
         let listener = TcpListener::bind(&self.address).await?;

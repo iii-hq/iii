@@ -17,11 +17,9 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::{configurable::Configurable, core_module::CoreModule},
+    modules::{adapter_registry::AdapterRegistry, configurable::Configurable, core_module::CoreModule},
     trigger::{Trigger, TriggerRegistrator},
 };
-
-use config::RedisAdapterConfig;
 
 /// Default timeout for Redis connection attempts
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -319,6 +317,7 @@ pub struct CronCoreModule {
     adapter: Arc<OnceCell<Arc<CronAdapter>>>,
     engine: Arc<Engine>,
     config: CronModuleConfig,
+    adapter_registry: Option<Arc<AdapterRegistry>>,
 }
 
 impl Configurable for CronCoreModule {
@@ -329,42 +328,47 @@ impl Configurable for CronCoreModule {
             adapter: Arc::new(OnceCell::new()),
             engine,
             config,
+            adapter_registry: None,
         }
+    }
+}
+
+impl CronCoreModule {
+    /// Sets the adapter registry for dynamic scheduler creation
+    pub fn set_adapter_registry(&mut self, registry: Arc<AdapterRegistry>) {
+        self.adapter_registry = Some(registry);
     }
 }
 
 #[async_trait]
 impl CoreModule for CronCoreModule {
     async fn initialize(&self) -> Result<(), anyhow::Error> {
-        // Determine Redis URL from adapter config
-        let redis_url = self
+        tracing::info!("Initializing CronModule");
+
+        // Get scheduler class from config or use default
+        let scheduler_class = self
             .config
             .adapter
             .as_ref()
-            .and_then(|a| a.config.clone())
-            .and_then(|v| serde_json::from_value::<RedisAdapterConfig>(v).ok())
-            .map(|c| c.redis_url)
-            .unwrap_or_else(|| "redis://localhost:6379".to_string());
+            .map(|a| a.class.as_str())
+            .unwrap_or("modules::cron::RedisCronAdapter");
 
-        tracing::info!("Initializing CronModule with Redis at {}", redis_url);
+        let scheduler_config = self.config.adapter.as_ref().and_then(|a| a.config.clone());
 
-        let cron_lock = match RedisCronLock::new(&redis_url).await {
-            Ok(lock) => lock,
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "{}: {}",
-                    "Failed to initialize Cron lock adapter".red(),
-                    e.to_string().yellow()
-                );
-                return Err(anyhow::anyhow!(
-                    "Cannot proceed without a working Redis connection for cron locks: {}",
-                    e
-                ));
+        // Create scheduler using registry
+        let scheduler = match &self.adapter_registry {
+            Some(registry) => {
+                registry
+                    .create_cron_scheduler(scheduler_class, scheduler_config)
+                    .await?
+            }
+            None => {
+                // Fallback to config-based creation if no registry
+                self.config.create_scheduler().await?
             }
         };
 
-        let adapter = CronAdapter::new(Arc::new(cron_lock), self.engine.clone());
+        let adapter = CronAdapter::new(scheduler, self.engine.clone());
         self.adapter
             .set(Arc::new(adapter))
             .map_err(|_| anyhow::anyhow!("Failed to set CronAdapter"))?;

@@ -29,6 +29,7 @@ pub struct RegisterFunctionRequest {
     pub response_format: Option<Value>,
 }
 
+#[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
     fn invoke_function(&self, function_path: &str, input: Value);
     async fn register_trigger_type(&self, trigger_type: TriggerType);

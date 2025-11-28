@@ -9,6 +9,7 @@ mod services;
 mod trigger;
 mod workers;
 mod modules {
+    pub mod adapter_registry;
     pub mod config;
     pub mod configurable;
     pub mod core_module;
@@ -19,25 +20,7 @@ mod modules {
     pub mod streams;
 }
 
-use axum::{
-    Router,
-    extract::{ConnectInfo, State, ws::WebSocketUpgrade},
-    response::IntoResponse,
-    routing::get,
-};
-use colored::Colorize;
-use engine::Engine;
-use tokio::net::TcpListener;
-
-use crate::modules::{
-    config::{EngineBuilder, EngineConfig},
-    core_module::CoreModule,
-    cron::CronCoreModule,
-    event::EventCoreModule,
-    observability::LoggerCoreModule,
-    rest_api::RestApiCoreModule,
-    streams::StreamCoreModule,
-};
+use crate::modules::config::EngineBuilder;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
