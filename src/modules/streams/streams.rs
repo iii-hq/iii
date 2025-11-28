@@ -37,11 +37,7 @@ async fn ws_handler(
 ) -> impl IntoResponse {
     let module = module.clone();
 
-    tracing::info!("WebSocket handler called");
-
     ws.on_upgrade(move |socket: WebSocket| async move {
-        tracing::info!("WebSocket upgraded");
-
         if let Err(err) = module.socket_handler(socket, addr).await {
             tracing::error!(addr = %addr, error = ?err, "stream socket error");
         }
@@ -179,10 +175,13 @@ impl CoreModule for StreamCoreModule {
 
         tokio::spawn(async move {
             tracing::info!("Stream API listening on address: {}", addr.purple());
-            axum::serve(listener, app.into_make_service())
-                .await
-                .unwrap();
-            tracing::info!("Stream API stopped");
+
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
 
         tokio::spawn(async move {
