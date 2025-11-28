@@ -33,6 +33,7 @@ use engine::Engine;
 use tokio::net::TcpListener;
 
 use crate::modules::{
+    config::EngineConfig,
     core_module::CoreModule,
     cron::CronCoreModule,
     event::EventCoreModule,
@@ -67,17 +68,9 @@ async fn main() -> anyhow::Result<()> {
         engine_clone.notify_new_functions(5).await;
     });
 
-    // Try to load config from file, otherwise use defaults
-    let _modules = match std::fs::read_to_string("config.yaml") {
-        Ok(yaml_content) => {
-            tracing::info!("Loading modules from config.yaml");
-            load_and_initialize(engine.clone(), &yaml_content).await?
-        }
-        Err(_) => {
-            tracing::info!("No config.yaml found, loading default modules");
-            load_default_modules(engine.clone()).await?
-        }
-    };
+    // Load modules from config file or use defaults
+    let config = EngineConfig::from_file_or_default("config.yaml")?;
+    let _modules = config.load_modules(engine.clone()).await?;
 
     let app = Router::new()
         .route("/", get(ws_handler))
