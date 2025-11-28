@@ -49,19 +49,67 @@ impl AdapterRegistry {
         let mut event_adapters = HashMap::new();
         event_adapters.insert(
             "modules::event::RedisAdapter".to_string(),
-            create_redis_event_adapter_factory(),
+            Self::redis_event_adapter_factory(),
         );
 
         let mut cron_schedulers = HashMap::new();
         cron_schedulers.insert(
             "modules::cron::RedisCronAdapter".to_string(),
-            create_redis_cron_scheduler_factory(),
+            Self::redis_cron_scheduler_factory(),
         );
 
         Self {
             event_adapters: RwLock::new(event_adapters),
             cron_schedulers: RwLock::new(cron_schedulers),
         }
+    }
+
+    fn redis_event_adapter_factory() -> EventAdapterFactory {
+        use super::event::adapters::RedisAdapter;
+
+        Arc::new(|config, engine| {
+            Box::pin(async move {
+                let redis_config: RedisAdapterConfig = config
+                    .map(|v| serde_json::from_value(v).unwrap_or_default())
+                    .unwrap_or_default();
+
+                tracing::info!(
+                    "Creating RedisAdapter for EventModule at {}",
+                    redis_config.redis_url
+                );
+
+                let adapter = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    RedisAdapter::new(redis_config.redis_url, engine),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("Timed out while connecting to Redis"))?
+                .map_err(|e| anyhow::anyhow!("Failed to connect to Redis: {}", e))?;
+
+                Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
+            })
+        })
+    }
+
+    fn redis_cron_scheduler_factory() -> CronSchedulerFactory {
+        use super::cron::RedisCronLock;
+
+        Arc::new(|config| {
+            Box::pin(async move {
+                let redis_config: RedisAdapterConfig = config
+                    .map(|v| serde_json::from_value(v).unwrap_or_default())
+                    .unwrap_or_default();
+
+                tracing::info!(
+                    "Creating RedisCronLock for CronModule at {}",
+                    redis_config.redis_url
+                );
+
+                let scheduler = RedisCronLock::new(&redis_config.redis_url).await?;
+
+                Ok(Arc::new(scheduler) as Arc<dyn CronScheduler>)
+            })
+        })
     }
 
     // =========================================================================
@@ -160,58 +208,6 @@ impl Default for AdapterRegistry {
     fn default() -> Self {
         Self::with_defaults()
     }
-}
-
-// =============================================================================
-// Default Adapter Factories
-// =============================================================================
-
-fn create_redis_event_adapter_factory() -> EventAdapterFactory {
-    use super::event::adapters::RedisAdapter;
-
-    Arc::new(|config, engine| {
-        Box::pin(async move {
-            let redis_config: RedisAdapterConfig = config
-                .map(|v| serde_json::from_value(v).unwrap_or_default())
-                .unwrap_or_default();
-
-            tracing::info!(
-                "Creating RedisAdapter for EventModule at {}",
-                redis_config.redis_url
-            );
-
-            let adapter = tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                RedisAdapter::new(redis_config.redis_url, engine),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("Timed out while connecting to Redis"))?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Redis: {}", e))?;
-
-            Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-        })
-    })
-}
-
-fn create_redis_cron_scheduler_factory() -> CronSchedulerFactory {
-    use super::cron::RedisCronLock;
-
-    Arc::new(|config| {
-        Box::pin(async move {
-            let redis_config: RedisAdapterConfig = config
-                .map(|v| serde_json::from_value(v).unwrap_or_default())
-                .unwrap_or_default();
-
-            tracing::info!(
-                "Creating RedisCronLock for CronModule at {}",
-                redis_config.redis_url
-            );
-
-            let scheduler = RedisCronLock::new(&redis_config.redis_url).await?;
-
-            Ok(Arc::new(scheduler) as Arc<dyn CronScheduler>)
-        })
-    })
 }
 
 // =============================================================================
