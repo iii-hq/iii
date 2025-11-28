@@ -1,5 +1,6 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::{Arc, RwLock}};
 
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
@@ -11,14 +12,14 @@ use super::{cron::CronScheduler, event::EventAdapter};
 // =============================================================================
 
 /// Factory function type for creating EventAdapters
-pub type EventAdapterFactory = Box<
+pub type EventAdapterFactory = Arc<
     dyn Fn(Option<Value>, Arc<Engine>) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn EventAdapter>>> + Send>>
         + Send
         + Sync,
 >;
 
 /// Factory function type for creating CronSchedulers
-pub type CronSchedulerFactory = Box<
+pub type CronSchedulerFactory = Arc<
     dyn Fn(Option<Value>) -> Pin<Box<dyn Future<Output = anyhow::Result<Arc<dyn CronScheduler>>> + Send>>
         + Send
         + Sync,
@@ -29,24 +30,6 @@ pub type CronSchedulerFactory = Box<
 // =============================================================================
 
 /// Registry for dynamically registering adapter factories.
-///
-/// This allows users to register their own adapter implementations
-/// that can be referenced by class name in the configuration.
-///
-/// # Example
-///
-/// ```ignore
-/// let registry = AdapterRegistry::new();
-///
-/// // Register a custom event adapter
-/// registry.register_event_adapter(
-///     "my::CustomEventAdapter",
-///     |config, engine| Box::pin(async move {
-///         let adapter = MyCustomAdapter::new(config, engine).await?;
-///         Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-///     })
-/// );
-/// ```
 pub struct AdapterRegistry {
     event_adapters: RwLock<HashMap<String, EventAdapterFactory>>,
     cron_schedulers: RwLock<HashMap<String, CronSchedulerFactory>>,
@@ -91,13 +74,12 @@ impl AdapterRegistry {
         F: Fn(Option<Value>, Arc<Engine>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = anyhow::Result<Arc<dyn EventAdapter>>> + Send + 'static,
     {
-        let boxed_factory: EventAdapterFactory =
-            Box::new(move |config, engine| Box::pin(factory(config, engine)));
+        let factory: EventAdapterFactory = Arc::new(move |config, engine| Box::pin(factory(config, engine)));
 
         self.event_adapters
             .write()
             .expect("RwLock poisoned")
-            .insert(class.to_string(), boxed_factory);
+            .insert(class.to_string(), factory);
     }
 
     /// Creates an event adapter by class name
@@ -107,16 +89,14 @@ impl AdapterRegistry {
         config: Option<Value>,
         engine: Arc<Engine>,
     ) -> anyhow::Result<Arc<dyn EventAdapter>> {
-        let factory = {
-            let adapters = self.event_adapters.read().expect("RwLock poisoned");
-            adapters
-                .get(class)
-                .ok_or_else(|| anyhow::anyhow!("Unknown event adapter class: {}", class))?
-                as *const EventAdapterFactory
-        };
+        let factory = self
+            .event_adapters
+            .read()
+            .expect("RwLock poisoned")
+            .get(class)
+            .ok_or_else(|| anyhow::anyhow!("Unknown event adapter class: {}", class))?
+            .clone();
 
-        // Safety: We hold Arc<AdapterRegistry> so the factory won't be dropped
-        let factory = unsafe { &*factory };
         factory(config, engine).await
     }
 
@@ -140,12 +120,12 @@ impl AdapterRegistry {
         F: Fn(Option<Value>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = anyhow::Result<Arc<dyn CronScheduler>>> + Send + 'static,
     {
-        let boxed_factory: CronSchedulerFactory = Box::new(move |config| Box::pin(factory(config)));
+        let factory: CronSchedulerFactory = Arc::new(move |config| Box::pin(factory(config)));
 
         self.cron_schedulers
             .write()
             .expect("RwLock poisoned")
-            .insert(class.to_string(), boxed_factory);
+            .insert(class.to_string(), factory);
     }
 
     /// Creates a cron scheduler by class name
@@ -154,16 +134,14 @@ impl AdapterRegistry {
         class: &str,
         config: Option<Value>,
     ) -> anyhow::Result<Arc<dyn CronScheduler>> {
-        let factory = {
-            let schedulers = self.cron_schedulers.read().expect("RwLock poisoned");
-            schedulers
-                .get(class)
-                .ok_or_else(|| anyhow::anyhow!("Unknown cron scheduler class: {}", class))?
-                as *const CronSchedulerFactory
-        };
+        let factory = self
+            .cron_schedulers
+            .read()
+            .expect("RwLock poisoned")
+            .get(class)
+            .ok_or_else(|| anyhow::anyhow!("Unknown cron scheduler class: {}", class))?
+            .clone();
 
-        // Safety: We hold Arc<AdapterRegistry> so the factory won't be dropped
-        let factory = unsafe { &*factory };
         factory(config).await
     }
 
@@ -191,7 +169,7 @@ impl Default for AdapterRegistry {
 fn create_redis_event_adapter_factory() -> EventAdapterFactory {
     use super::event::adapters::RedisAdapter;
 
-    Box::new(|config, engine| {
+    Arc::new(|config, engine| {
         Box::pin(async move {
             let redis_config: RedisAdapterConfig = config
                 .map(|v| serde_json::from_value(v).unwrap_or_default())
@@ -218,7 +196,7 @@ fn create_redis_event_adapter_factory() -> EventAdapterFactory {
 fn create_redis_cron_scheduler_factory() -> CronSchedulerFactory {
     use super::cron::RedisCronLock;
 
-    Box::new(|config| {
+    Arc::new(|config| {
         Box::pin(async move {
             let redis_config: RedisAdapterConfig = config
                 .map(|v| serde_json::from_value(v).unwrap_or_default())
@@ -239,8 +217,6 @@ fn create_redis_cron_scheduler_factory() -> CronSchedulerFactory {
 // =============================================================================
 // Shared Config Types
 // =============================================================================
-
-use serde::Deserialize;
 
 fn default_redis_url() -> String {
     "redis://localhost:6379".to_string()
