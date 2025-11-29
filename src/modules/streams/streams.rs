@@ -63,9 +63,8 @@ impl FunctionHandler for StreamCoreModule {
                     let data = input.get("data").cloned().unwrap_or(Value::Null);
 
                     let adapter = Arc::clone(&self.adapter);
+                    let adapter = adapter.get().unwrap();
                     let _ = adapter
-                        .get()
-                        .unwrap()
                         .set(stream_name, group_id, item_id, data.clone())
                         .await;
 
@@ -81,11 +80,8 @@ impl FunctionHandler for StreamCoreModule {
                     let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
 
                     let adapter = Arc::clone(&self.adapter);
-                    let value = adapter
-                        .get()
-                        .unwrap()
-                        .get(stream_name, group_id, item_id)
-                        .await;
+                    let adapter = adapter.get().unwrap();
+                    let value = adapter.get(stream_name, group_id, item_id).await;
 
                     Ok(value)
                 }
@@ -99,13 +95,10 @@ impl FunctionHandler for StreamCoreModule {
                     let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
 
                     let adapter = Arc::clone(&self.adapter);
-                    let _ = adapter
-                        .get()
-                        .unwrap()
-                        .delete(stream_name, group_id, item_id)
-                        .await;
+                    let adapter = adapter.get().unwrap();
+                    let _ = adapter.delete(stream_name, group_id, item_id).await;
 
-                    Ok(None)
+                    Ok(Some(Value::Null))
                 }
 
                 "streams.get_group" => {
@@ -116,11 +109,8 @@ impl FunctionHandler for StreamCoreModule {
                     let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
 
                     let adapter = Arc::clone(&self.adapter);
-                    let values = adapter
-                        .get()
-                        .unwrap()
-                        .get_group(stream_name, group_id)
-                        .await;
+                    let adapter = adapter.get().unwrap();
+                    let values = adapter.get_group(stream_name, group_id).await;
 
                     Ok(Some(serde_json::to_value(values).unwrap()))
                 }

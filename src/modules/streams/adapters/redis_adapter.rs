@@ -11,12 +11,14 @@ use tokio::{
 
 use crate::modules::streams::{
     StreamOutboundMessage, StreamWrapperMessage,
-    adapters::{StreamAdapter, StreamConnection},
+    adapters::{
+        StreamAdapter, StreamConnection,
+        emit::{STREAM_TOPIC, emit_event},
+    },
 };
 
 /// Default timeout for Redis connection attempts
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
-const STREAM_TOPIC: &str = "stream::events";
 
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
@@ -50,6 +52,8 @@ impl RedisAdapter {
     }
 
     pub async fn watch_events(&self) {
+        tracing::debug!("Watching events");
+
         let mut pubsub = match self.subscriber.get_async_pubsub().await {
             Ok(pubsub) => pubsub,
             Err(e) => {
@@ -122,17 +126,20 @@ impl StreamAdapter for RedisAdapter {
         let event_type = if existed { "update" } else { "create" };
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        self.emit(StreamWrapperMessage {
-            timestamp,
-            stream_name: stream_name.to_string(),
-            group_id: group_id.to_string(),
-            item_id: Some(item_id.to_string()),
-            event: match event_type {
-                "update" => StreamOutboundMessage::Update { data },
-                "create" => StreamOutboundMessage::Create { data },
-                _ => StreamOutboundMessage::Create { data },
+        emit_event(
+            conn,
+            StreamWrapperMessage {
+                timestamp,
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: Some(item_id.to_string()),
+                event: match event_type {
+                    "update" => StreamOutboundMessage::Update { data },
+                    "create" => StreamOutboundMessage::Create { data },
+                    _ => StreamOutboundMessage::Create { data },
+                },
             },
-        })
+        )
         .await;
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Value set in Redis");
@@ -165,15 +172,18 @@ impl StreamAdapter for RedisAdapter {
             tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Failed to delete value from Redis");
         }
 
-        self.emit(StreamWrapperMessage {
-            timestamp,
-            stream_name: stream_name.to_string(),
-            group_id: group_id.to_string(),
-            item_id: Some(item_id.to_string()),
-            event: StreamOutboundMessage::Delete {
-                data: serde_json::json!({ "id": item_id }),
+        emit_event(
+            conn,
+            StreamWrapperMessage {
+                timestamp,
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: Some(item_id.to_string()),
+                event: StreamOutboundMessage::Delete {
+                    data: serde_json::json!({ "id": item_id }),
+                },
             },
-        })
+        )
         .await;
     }
 
@@ -190,26 +200,6 @@ impl StreamAdapter for RedisAdapter {
                 tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
                 Vec::new()
             }
-        }
-    }
-
-    async fn emit(&self, message: StreamWrapperMessage) {
-        let publisher = Arc::clone(&self.publisher);
-        let event_json = match serde_json::to_string(&message) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize event data");
-                return;
-            }
-        };
-
-        let mut conn = publisher.lock().await;
-
-        if let Err(e) = conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json).await {
-            tracing::error!(error = %e, "Failed to publish event to Redis");
-            return;
-        } else {
-            tracing::debug!("Event published to Redis");
         }
     }
 

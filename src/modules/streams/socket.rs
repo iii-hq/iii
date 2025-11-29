@@ -199,7 +199,7 @@ impl StreamConnection for SocketStreamConnection {
                 match self.sender.send(StreamOutbound::Stream(msg.clone())).await {
                     Ok(_) => {}
                     Err(e) => {
-                        tracing::error!(error = ?e, "Failed to send stream message");
+                        tracing::error!(error = ?e.to_string(), "Failed to send stream message");
                     }
                 }
             }

@@ -1,3 +1,4 @@
+pub mod emit;
 pub mod redis_adapter;
 
 use std::sync::Arc;
@@ -10,7 +11,6 @@ use crate::modules::streams::StreamWrapperMessage;
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
-    async fn emit(&self, message: StreamWrapperMessage);
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value);
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value>;
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str);
