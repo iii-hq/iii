@@ -48,11 +48,11 @@ impl StreamSocketManager {
             }
         });
 
-        let connection_id = connection.id.clone();
+        let connection_id = connection.id.to_string();
         let connection = Arc::new(connection);
 
         self.adapter
-            .subscribe(connection_id, connection.clone())
+            .subscribe(connection_id.clone(), connection.clone())
             .await;
 
         while let Some(frame) = ws_rx.next().await {
@@ -92,6 +92,7 @@ impl StreamSocketManager {
         }
 
         writer.abort();
+        self.adapter.unsubscribe(connection_id).await;
 
         Ok(())
     }
@@ -172,15 +173,6 @@ impl SocketStreamConnection {
                 Ok(())
             }
         }
-    }
-}
-
-impl Drop for SocketStreamConnection {
-    fn drop(&mut self) {
-        let adapter = Arc::clone(&self.adapter);
-        let id = self.id.clone();
-
-        tokio::spawn(async move { adapter.unsubscribe(id).await });
     }
 }
 
