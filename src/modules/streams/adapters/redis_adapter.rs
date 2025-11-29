@@ -104,8 +104,6 @@ impl RedisAdapter {
 impl StreamAdapter for RedisAdapter {
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
         let key: String = format!("stream:{}:{}", stream_name, group_id);
-        let data = data.clone();
-
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
 

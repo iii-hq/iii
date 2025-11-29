@@ -42,6 +42,7 @@ impl StreamSocketManager {
                 };
 
                 if send_result.is_err() {
+                    tracing::error!(error = ?send_result.err(), "Failed to send stream message");
                     break;
                 }
             }
