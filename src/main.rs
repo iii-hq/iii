@@ -17,6 +17,7 @@ mod modules {
     pub mod logger;
     pub mod observability;
     pub mod rest_api;
+    pub mod streams;
 }
 
 use axum::{
@@ -31,7 +32,7 @@ use tokio::net::TcpListener;
 
 use crate::modules::{
     core_module::CoreModule, cron_adapter::CronCoreModule, event::EventCoreModule,
-    observability::LoggerCoreModule, rest_api::RestApiCoreModule,
+    observability::LoggerCoreModule, rest_api::RestApiCoreModule, streams::StreamCoreModule,
 };
 
 async fn ws_handler(
@@ -69,11 +70,13 @@ async fn main() -> anyhow::Result<()> {
     let event_module = EventCoreModule::new(engine.clone());
     let logger_module = LoggerCoreModule::new(engine.clone());
     let cron_module = CronCoreModule::new(engine.clone());
+    let streams_module = StreamCoreModule::new(engine.clone());
 
     event_module.initialize().await.unwrap();
     logger_module.initialize().await.unwrap();
     cron_module.initialize().await.unwrap();
     api_handler.initialize().await.unwrap();
+    streams_module.initialize().await.unwrap();
 
     tracing::info!("Engine listening on address: {}", addr.purple());
 

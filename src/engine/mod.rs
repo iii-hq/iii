@@ -260,11 +260,6 @@ impl Engine {
                                     )
                                     .await;
                                 self.remove_invocation(&invocation_id).await;
-                            } else {
-                                tracing::warn!(
-                                    function_path = %function_path,
-                                    "Invocation returned result without id"
-                                );
                             }
                         }
                         Ok(None) => {}
