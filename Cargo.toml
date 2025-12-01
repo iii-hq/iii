@@ -3,6 +3,15 @@ name = "engine"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "engine"
+path = "src/main.rs"
+
+
 [[example]]
 name = "custom_event_adapter"
 path = "examples/custom_event_adapter.rs"
