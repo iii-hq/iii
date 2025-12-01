@@ -64,8 +64,8 @@ impl ModuleEntry {
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         match self.class.as_str() {
             "modules::streams::StreamModule" => {
-                let streams_module = StreamCoreModule::new(engine.clone());
-                // dumb adapter initialization for example purposes
+                let streams_module =
+                    StreamCoreModule::from_value(engine.clone(), self.config.clone());
                 Ok(Box::new(streams_module))
             }
 

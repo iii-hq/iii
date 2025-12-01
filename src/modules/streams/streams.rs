@@ -15,10 +15,12 @@ use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
     modules::{
+        configurable::Configurable,
         core_module::CoreModule,
         streams::{
             StreamSocketManager,
             adapters::{RedisAdapter, StreamAdapter},
+            config::WebSocketConfig,
         },
     },
     protocol::ErrorBody,
@@ -27,6 +29,7 @@ use crate::{
 #[derive(Clone)]
 pub struct StreamCoreModule {
     engine: Arc<Engine>,
+    config: WebSocketConfig,
     adapter: Arc<OnceCell<Arc<dyn StreamAdapter>>>,
 }
 
@@ -161,14 +164,20 @@ impl CoreModule for StreamCoreModule {
             .map_err(|_| anyhow::anyhow!("Failed to set StreamAdapter"))?;
 
         let socket_manager = Arc::new(StreamSocketManager::new(adapter.clone()));
-        let addr = "127.0.0.1:31112";
+
+        let addr = format!("127.0.0.1:{}", self.config.port)
+            .parse::<SocketAddr>()
+            .unwrap();
         let listener = TcpListener::bind(addr).await.unwrap();
         let app = Router::new()
             .route("/", get(ws_handler))
             .with_state(socket_manager);
 
         tokio::spawn(async move {
-            tracing::info!("Stream API listening on address: {}", addr.purple());
+            tracing::info!(
+                "Stream API listening on address: {}",
+                addr.to_string().purple()
+            );
 
             axum::serve(
                 listener,
@@ -190,6 +199,24 @@ impl StreamCoreModule {
     pub fn new(engine: Arc<Engine>) -> Self {
         let adapter = Arc::new(OnceCell::new());
 
-        Self { adapter, engine }
+        let config = WebSocketConfig::default();
+
+        Self {
+            adapter,
+            engine,
+            config,
+        }
+    }
+}
+
+impl Configurable for StreamCoreModule {
+    type Config = WebSocketConfig;
+
+    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
+        Self {
+            config,
+            engine,
+            adapter: Arc::new(OnceCell::new()),
+        }
     }
 }
