@@ -20,7 +20,7 @@ use super::{
     observability::LoggerCoreModule,
     rest_api::RestApiCoreModule,
 };
-use crate::engine::Engine;
+use crate::{engine::Engine, modules::streams::StreamCoreModule};
 
 // =============================================================================
 // Constants
@@ -32,6 +32,7 @@ const DEFAULT_MODULES: &[&str] = &[
     "modules::event::EventModule",
     "modules::observability::LoggingModule",
     "modules::cron::CronModule",
+    "modules::streams::StreamModule",
 ];
 
 /// Default address for the engine server
@@ -62,6 +63,12 @@ impl ModuleEntry {
         registry: Arc<AdapterRegistry>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         match self.class.as_str() {
+            "modules::streams::StreamModule" => {
+                let streams_module = StreamCoreModule::new(engine.clone());
+                // dumb adapter initialization for example purposes
+                Ok(Box::new(streams_module))
+            }
+
             "modules::api::RestApiModule" => {
                 let module = RestApiCoreModule::from_value(engine, self.config.clone());
                 Ok(Box::new(module))

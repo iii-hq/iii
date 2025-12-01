@@ -1,3 +1,5 @@
+use ::engine::EngineBuilder;
+
 mod engine;
 mod function;
 mod invocation;
@@ -8,19 +10,6 @@ mod protocol;
 mod services;
 mod trigger;
 mod workers;
-mod modules {
-    pub mod adapter_registry;
-    pub mod config;
-    pub mod configurable;
-    pub mod core_module;
-    pub mod cron;
-    pub mod event;
-    pub mod observability;
-    pub mod rest_api;
-    pub mod streams;
-}
-
-use crate::modules::config::EngineBuilder;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

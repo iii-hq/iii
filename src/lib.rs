@@ -17,6 +17,7 @@ pub mod modules {
     pub mod event;
     pub mod observability;
     pub mod rest_api;
+    pub mod streams;
 }
 
 // Re-export commonly used types
