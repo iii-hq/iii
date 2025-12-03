@@ -1,4 +1,9 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -19,7 +24,7 @@ pub trait CoreModule: Send + Sync {
     async fn initialize(&self) -> anyhow::Result<()>;
 }
 
-pub type AdapterFactory<A> = Box<
+pub type AdapterFactory<A> = Arc<
     dyn Fn(
             Arc<Engine>,
             Option<Value>,
@@ -33,11 +38,24 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
     type Config: DeserializeOwned + Default + Send;
     type Adapter: Send + Sync + 'static + ?Sized;
 
+    const DEFAULT_ADAPTER_CLASS: &'static str;
+    async fn register_adapter(
+        name: impl Into<String> + Send,
+        factory: AdapterFactory<Self::Adapter>,
+    ) {
+        let registry = Self::registry().await;
+        let mut reg = registry.write().unwrap();
+        reg.insert(name.into(), factory);
+    }
+
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>>;
     /// Build the module from parsed config and adapter
     fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self;
 
     /// Default adapter class name
-    fn default_adapter_class() -> &'static str;
+    fn default_adapter_class() -> &'static str {
+        Self::DEFAULT_ADAPTER_CLASS
+    }
 
     /// Extract adapter class from config (optional override)
     fn adapter_class_from_config(_config: &Self::Config) -> Option<String> {
@@ -49,11 +67,15 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
         None
     }
 
+    async fn get_adapter(name: &str) -> Option<AdapterFactory<Self::Adapter>> {
+        let registry = Self::registry().await;
+        let map = registry.read().unwrap();
+        map.get(name).cloned()
+    }
     /// Create with typed adapters
     async fn create_with_adapters(
         engine: Arc<Engine>,
         config: Option<Value>,
-        adapters: HashMap<String, AdapterFactory<Self::Adapter>>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         // 1. Parse config
         let parsed_config: Self::Config = config
@@ -66,13 +88,18 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
             .unwrap_or_else(|| Self::default_adapter_class().to_string());
 
         // 3. Get the factory
-        let factory = adapters.get(&adapter_class).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Adapter factory '{}' not found. Available: {:?}",
-                adapter_class,
-                adapters.keys().collect::<Vec<_>>()
-            )
-        })?;
+        let factory = match Self::get_adapter(&adapter_class).await {
+            Some(factory) => factory,
+            None => {
+                let registry = Self::registry().await;
+                let available: Vec<String> = registry.read().unwrap().keys().cloned().collect();
+                return Err(anyhow::anyhow!(
+                    "Adapter factory '{}' not found. Available: {:?}",
+                    adapter_class,
+                    available
+                ));
+            }
+        };
 
         // 4. Create adapter
         let adapter_config = Self::adapter_config_from_config(&parsed_config);

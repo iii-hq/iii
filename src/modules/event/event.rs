@@ -1,8 +1,13 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
 use async_trait::async_trait;
 use colored::Colorize;
 use futures::Future;
+use once_cell::sync::Lazy;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -11,7 +16,7 @@ use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
     modules::{
-        core_module::{ConfigurableModule, CoreModule},
+        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         event::adapters::RedisAdapter,
     },
     protocol::ErrorBody,
@@ -103,27 +108,7 @@ impl CoreModule for EventCoreModule {
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        use crate::modules::core_module::AdapterFactory;
-        let mut adapter_factories: HashMap<String, AdapterFactory<dyn EventAdapter>> =
-            HashMap::new();
-
-        adapter_factories.insert(
-            "modules::event::RedisAdapter".to_string(),
-            Box::new(|engine: Arc<Engine>, config: Option<Value>| {
-                Box::pin(async move {
-                    let redis_url = config
-                        .as_ref()
-                        .and_then(|v| v.get("redis_url").and_then(|u| u.as_str()))
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "redis://localhost:6379".to_string());
-
-                    let adapter = RedisAdapter::new(redis_url, engine).await?;
-                    Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-                })
-            }),
-        );
-
-        Self::create_with_adapters(engine, config, adapter_factories).await
+        Self::create_with_adapters(engine, config).await
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -158,17 +143,44 @@ impl CoreModule for EventCoreModule {
 impl ConfigurableModule for EventCoreModule {
     type Config = EventModuleConfig;
     type Adapter = dyn EventAdapter;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::event::RedisAdapter";
 
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn EventAdapter>>>> =
+            Lazy::new(|| {
+                let mut m = HashMap::new();
+                m.insert(
+                    "modules::event::RedisAdapter".to_string(),
+                    Arc::new(|engine: Arc<Engine>, config: Option<Value>| {
+                        Box::pin(async move {
+                            let redis_url = config
+                                .as_ref()
+                                .and_then(|v| v.get("redis_url").and_then(|u| u.as_str()))
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "redis://localhost:6379".to_string());
+
+                            let adapter = RedisAdapter::new(redis_url, engine).await?;
+                            Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
+                        })
+                            as Pin<
+                                Box<
+                                    dyn Future<Output = anyhow::Result<Arc<dyn EventAdapter>>>
+                                        + Send,
+                                >,
+                            >
+                    }) as AdapterFactory<dyn EventAdapter>,
+                );
+                RwLock::new(m)
+            });
+
+        &REGISTRY
+    }
     fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
         Self {
             engine,
             config,
             adapter,
         }
-    }
-
-    fn default_adapter_class() -> &'static str {
-        "modules::event::RedisAdapter"
     }
 
     fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
