@@ -315,7 +315,7 @@ impl CronAdapter {
 
 #[derive(Clone)]
 pub struct CronCoreModule {
-    cron_adapter: Arc<CronAdapter>,
+    adapter: Arc<CronAdapter>,
     engine: Arc<Engine>,
     config: CronModuleConfig,
 }
@@ -347,7 +347,7 @@ impl CoreModule for CronCoreModule {
         Ok(Box::new(Self {
             engine,
             config,
-            cron_adapter: Arc::new(adapter),
+            adapter: Arc::new(adapter),
         }))
     }
 
@@ -391,7 +391,7 @@ impl TriggerRegistrator for CronCoreModule {
                 return Err(anyhow::anyhow!("Cron expression is required"));
             }
 
-            self.cron_adapter
+            self.adapter
                 .register(&trigger.id, &cron_expression, &trigger.function_path)
                 .await
         })
@@ -403,7 +403,7 @@ impl TriggerRegistrator for CronCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             tracing::debug!(trigger_id = %trigger.id, "Unregistering cron trigger");
-            self.cron_adapter.unregister(&trigger.id).await
+            self.adapter.unregister(&trigger.id).await
         })
     }
 }

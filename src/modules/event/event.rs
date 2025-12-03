@@ -25,21 +25,11 @@ pub trait EventAdapter: Send + Sync + 'static {
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
 
+#[derive(Clone)]
 pub struct EventCoreModule {
     adapter: Arc<dyn EventAdapter>,
     engine: Arc<Engine>,
     config: EventModuleConfig,
-}
-
-impl Clone for EventCoreModule {
-    fn clone(&self) -> Self {
-        // Clone the current adapter if it exists
-        Self {
-            adapter: self.adapter.clone(),
-            engine: self.engine.clone(),
-            config: self.config.clone(),
-        }
-    }
 }
 
 impl TriggerRegistrator for EventCoreModule {

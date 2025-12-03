@@ -82,10 +82,3 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
         Ok(Box::new(Self::build(engine, parsed_config, adapter)))
     }
 }
-
-#[async_trait::async_trait]
-pub trait AdapterConfig: DeserializeOwned + Default {
-    type Adapter: Send + Sync + 'static + ?Sized;
-
-    async fn build_adapter(&self, engine: Arc<Engine>) -> anyhow::Result<Arc<Self::Adapter>>;
-}
