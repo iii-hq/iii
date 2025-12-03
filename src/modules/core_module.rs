@@ -142,6 +142,7 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
             }
         };
 
+        tracing::info!("Using adapter class '{}'", adapter_class);
         // 4. Create adapter
         let adapter_config = Self::adapter_config_from_config(&parsed_config);
         let adapter = factory(engine.clone(), adapter_config).await?;

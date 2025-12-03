@@ -5,7 +5,14 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use engine::{engine::{Engine, EngineTrait}, modules::event::EventAdapter, EngineBuilder};
+use engine::{
+    EngineBuilder,
+    engine::{Engine, EngineTrait},
+    modules::{
+        core_module::ConfigurableModule,
+        event::{EventAdapter, EventCoreModule},
+    },
+};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -37,7 +44,8 @@ impl EventAdapter for InMemoryEventAdapter {
         let subscribers = self.subscribers.read().await;
         if let Some(subs) = subscribers.get(topic) {
             for (_id, function_path) in subs {
-                self.engine.invoke_function(function_path, event_data.clone());
+                self.engine
+                    .invoke_function(function_path, event_data.clone());
             }
         }
     }
@@ -66,11 +74,14 @@ impl EventAdapter for InMemoryEventAdapter {
 async fn main() -> anyhow::Result<()> {
     engine::logging::init_tracing();
 
+    // Register the custom adapter with EventCoreModule
+    EventCoreModule::add_adapter("my::InMemoryEventAdapter", |engine, config| async move {
+        let adapter = InMemoryEventAdapter::new(config, engine).await?;
+        Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
+    })
+    .await?;
+
     EngineBuilder::new()
-        .register_event_adapter("my::InMemoryEventAdapter", |config, engine| async move {
-            let adapter = InMemoryEventAdapter::new(config, engine).await?;
-            Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-        })
         .config_file_or_default("config.yaml")?
         .address("127.0.0.1:49134")
         .build()
