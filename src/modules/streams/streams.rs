@@ -1,13 +1,13 @@
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, net::SocketAddr, pin::Pin, sync::Arc};
 
+use async_trait::async_trait;
 use axum::{
-    Router,
     extract::{ConnectInfo, State, WebSocketUpgrade, ws::WebSocket},
     response::IntoResponse,
+    Router,
     routing::get,
 };
 use colored::Colorize;
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 use uuid::Uuid;
@@ -16,11 +16,11 @@ use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
     modules::{
-        core_module::{AdapterConfig, CoreModule},
+        core_module::{ConfigurableModule, CoreModule},
         streams::{
-            StreamSocketManager,
             adapters::{RedisAdapter, StreamAdapter},
-            config::WebSocketConfig,
+            config::StreamModuleConfig,
+            StreamSocketManager,
         },
     },
     protocol::ErrorBody,
@@ -29,7 +29,7 @@ use crate::{
 #[derive(Clone)]
 pub struct StreamCoreModule {
     engine: Arc<Engine>,
-    config: WebSocketConfig,
+    config: StreamModuleConfig,
     adapter: Arc<dyn StreamAdapter>,
 }
 
@@ -65,8 +65,6 @@ impl FunctionHandler for StreamCoreModule {
                     let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
                     let data = input.get("data").cloned().unwrap_or(Value::Null);
 
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
                     let _ = self
                         .adapter
                         .set(stream_name, group_id, item_id, data.clone())
@@ -83,8 +81,6 @@ impl FunctionHandler for StreamCoreModule {
                     let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
                     let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
 
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
                     let value = self.adapter.get(stream_name, group_id, item_id).await;
 
                     Ok(value)
@@ -98,8 +94,6 @@ impl FunctionHandler for StreamCoreModule {
                     let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
                     let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
 
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
                     let _ = self.adapter.delete(stream_name, group_id, item_id).await;
 
                     Ok(Some(Value::Null))
@@ -112,8 +106,6 @@ impl FunctionHandler for StreamCoreModule {
                         .unwrap_or("");
                     let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
 
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
                     let values = self.adapter.get_group(stream_name, group_id).await;
 
                     Ok(Some(serde_json::to_value(values).unwrap()))
@@ -124,78 +116,33 @@ impl FunctionHandler for StreamCoreModule {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct StreamModuleConfig {
-    pub port: u16,
-    #[serde(default)]
-    pub adapter: StreamAdapterConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
-pub enum StreamAdapterConfig {
-    #[serde(rename = "redis")]
-    Redis { redis_url: String },
-    // #[serde(rename = "memory")]
-    // InMemory,
-}
-
-impl Default for StreamAdapterConfig {
-    fn default() -> Self {
-        Self::Redis {
-            redis_url: "redis://localhost:6379".to_string(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl AdapterConfig for StreamAdapterConfig {
-    type Adapter = dyn StreamAdapter;
-
-    async fn build_adapter(&self, _engine: Arc<Engine>) -> anyhow::Result<Arc<Self::Adapter>> {
-        match self {
-            StreamAdapterConfig::Redis { redis_url } => {
-                let adapter = match tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    RedisAdapter::new(redis_url.clone()),
-                )
-                .await
-                {
-                    Ok(Ok(adapter)) => Arc::new(adapter),
-                    Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to connect to Redis: {}", e)),
-                    Err(_) => return Err(anyhow::anyhow!("Timed out while connecting to Redis")),
-                };
-                Ok(adapter)
-            }
-        }
-    }
-}
-
-#[async_trait::async_trait]
+#[async_trait]
 impl CoreModule for StreamCoreModule {
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        let module_config: WebSocketConfig = config
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
+        use crate::modules::core_module::AdapterFactory;
+        let mut adapter_factories: HashMap<String, AdapterFactory<dyn StreamAdapter>> =
+            HashMap::new();
 
-        let adapter_config: StreamAdapterConfig = config
-            .and_then(|v| v.get("adapter").cloned())
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
+        adapter_factories.insert(
+            "modules::streams::RedisAdapter".to_string(),
+            Box::new(|_engine: Arc<Engine>, config: Option<Value>| {
+                Box::pin(async move {
+                    let redis_url = config
+                        .as_ref()
+                        .and_then(|v| v.get("redis_url").and_then(|u| u.as_str()))
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "redis://localhost:6379".to_string());
 
-        let adapter = adapter_config.build_adapter(engine.clone()).await?;
+                    let adapter = RedisAdapter::new(redis_url).await?;
+                    Ok(Arc::new(adapter) as Arc<dyn StreamAdapter>)
+                })
+            }),
+        );
 
-        Ok(Box::new(Self {
-            engine,
-            config: module_config,
-            adapter,
-        }))
+        Self::create_with_adapters(engine, config, adapter_factories).await
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -250,5 +197,31 @@ impl CoreModule for StreamCoreModule {
         });
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ConfigurableModule for StreamCoreModule {
+    type Config = StreamModuleConfig;
+    type Adapter = dyn StreamAdapter;
+
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self {
+            engine,
+            config,
+            adapter,
+        }
+    }
+
+    fn default_adapter_class() -> &'static str {
+        "modules::streams::RedisAdapter"
+    }
+
+    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.class.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
