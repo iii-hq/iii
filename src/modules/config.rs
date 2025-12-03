@@ -293,6 +293,7 @@ impl EngineBuilder {
         // Initialize modules
         for module in &self.modules {
             module.initialize().await?;
+            module.register_functions(self.engine.clone());
         }
 
         tracing::info!(

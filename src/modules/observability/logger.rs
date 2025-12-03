@@ -23,28 +23,30 @@ impl Default for Logger {
     }
 }
 
+fn get_args(args: &Option<Value>) -> String {
+    match args {
+        Some(v) => v
+            .as_object()
+            .map(|map| serde_json::to_string(map).unwrap_or_default())
+            .unwrap_or_default(),
+        None => "{}".to_string(),
+    }
+}
+
 impl LoggerAdapter for Logger {
     fn info(
         &self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
-        args: &[(&str, &Value)],
+        args: &Option<Value>,
     ) {
-        let data = format_args_as_json(args);
-
-        match (trace_id, data.as_deref()) {
-            (Some(tid), Some(d)) => {
-                tracing::info!(function = %function_name, trace_id = %tid, data = %d, "{}", message);
+        match (trace_id, &get_args(args)) {
+            (Some(tid), data) => {
+                tracing::info!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
             }
-            (Some(tid), None) => {
-                tracing::info!(function = %function_name, trace_id = %tid, "{}", message);
-            }
-            (None, Some(d)) => {
-                tracing::info!(function = %function_name, data = %d, "{}", message);
-            }
-            (None, None) => {
-                tracing::info!(function = %function_name, "{}", message);
+            (None, data) => {
+                tracing::info!(function = %function_name, data = %data, "{}", message);
             }
         }
     }
@@ -54,22 +56,14 @@ impl LoggerAdapter for Logger {
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
-        args: &[(&str, &Value)],
+        args: &Option<Value>,
     ) {
-        let data = format_args_as_json(args);
-
-        match (trace_id, data.as_deref()) {
-            (Some(tid), Some(d)) => {
-                tracing::warn!(function = %function_name, trace_id = %tid, data = %d, "{}", message);
+        match (trace_id, &get_args(args)) {
+            (Some(tid), data) => {
+                tracing::warn!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
             }
-            (Some(tid), None) => {
-                tracing::warn!(function = %function_name, trace_id = %tid, "{}", message);
-            }
-            (None, Some(d)) => {
-                tracing::warn!(function = %function_name, data = %d, "{}", message);
-            }
-            (None, None) => {
-                tracing::warn!(function = %function_name, "{}", message);
+            (None, data) => {
+                tracing::warn!(function = %function_name, data = %data, "{}", message);
             }
         }
     }
@@ -79,38 +73,15 @@ impl LoggerAdapter for Logger {
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
-        args: &[(&str, &Value)],
+        args: &Option<Value>,
     ) {
-        let data = format_args_as_json(args);
-
-        match (trace_id, data.as_deref()) {
-            (Some(tid), Some(d)) => {
-                tracing::error!(function = %function_name, trace_id = %tid, data = %d, "{}", message);
+        match (trace_id, &get_args(args)) {
+            (Some(tid), data) => {
+                tracing::error!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
             }
-            (Some(tid), None) => {
-                tracing::error!(function = %function_name, trace_id = %tid, "{}", message);
-            }
-            (None, Some(d)) => {
-                tracing::error!(function = %function_name, data = %d, "{}", message);
-            }
-            (None, None) => {
-                tracing::error!(function = %function_name, "{}", message);
+            (None, data) => {
+                tracing::error!(function = %function_name, data = %data, "{}", message);
             }
         }
     }
-}
-
-/// Convert args to JSON string if not empty
-fn format_args_as_json(args: &[(&str, &Value)]) -> Option<String> {
-    if args.is_empty() {
-        return None;
-    }
-
-    serde_json::to_string(
-        &args
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect::<std::collections::HashMap<_, _>>(),
-    )
-    .ok()
 }

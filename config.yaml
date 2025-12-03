@@ -1,0 +1,21 @@
+modules:
+  - class: modules::api::RestApiModule
+    config:
+      trigger_type: api_admin
+      port: 3111
+      default_timeout: 30000
+      default_path: /admin
+      cors:
+        allowed_origins:
+          - http://localhost:5173
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+  - class: modules::observability::LoggingModule
+  - class: modules::observability::TracingModule
+  - class: modules::cron::CronModule
+  - class: modules::streams::StreamModule
+  - class: modules::event::EventModule

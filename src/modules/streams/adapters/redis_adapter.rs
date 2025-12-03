@@ -190,7 +190,9 @@ impl StreamAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
 
         match conn.hgetall::<String, HashMap<String, String>>(key).await {
-            Ok(values) => values.into_values().map(|v| serde_json::from_str(&v).unwrap())
+            Ok(values) => values
+                .into_values()
+                .map(|v| serde_json::from_str(&v).unwrap())
                 .collect(),
             Err(e) => {
                 tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");

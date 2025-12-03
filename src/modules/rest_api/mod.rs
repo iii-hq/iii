@@ -1,7 +1,5 @@
 mod config;
 
-pub use config::RestApiConfig;
-
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use anyhow::anyhow;
@@ -13,6 +11,7 @@ use axum::{
     routing::any,
 };
 use colored::Colorize;
+pub use config::RestApiConfig;
 use dashmap::DashMap;
 use futures::Future;
 use serde::{Deserialize, Serialize};
@@ -127,6 +126,8 @@ impl Configurable for RestApiCoreModule {
 
 #[async_trait::async_trait]
 impl CoreModule for RestApiCoreModule {
+    fn register_functions(&self, _engine: Arc<Engine>) {}
+
     async fn initialize(&self) -> Result<(), anyhow::Error> {
         tracing::info!("Initializing API adapter on port {}", self.config.port);
 

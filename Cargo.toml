@@ -17,6 +17,7 @@ name = "custom_event_adapter"
 path = "examples/custom_event_adapter.rs"
 
 [dependencies]
+function-macros = { path = "function-macros" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tower = "0.4"
@@ -43,3 +44,4 @@ redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
 cron = "0.15"
+inventory = "0.3.21"

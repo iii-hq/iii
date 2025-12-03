@@ -1,11 +1,10 @@
 mod config;
 
-pub use config::CronModuleConfig;
-
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use colored::Colorize;
+pub use config::CronModuleConfig;
 use cron::Schedule;
 use futures::Future;
 use redis::{Client, aio::ConnectionManager};
@@ -17,7 +16,9 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::{adapter_registry::AdapterRegistry, configurable::Configurable, core_module::CoreModule},
+    modules::{
+        adapter_registry::AdapterRegistry, configurable::Configurable, core_module::CoreModule,
+    },
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -185,14 +186,16 @@ impl CronAdapter {
             loop {
                 // Calculate time until next execution
                 let now = chrono::Utc::now();
-                let next: chrono::DateTime<chrono::Utc> =
-                    match schedule.upcoming(chrono::Utc).next() {
-                        Some(next) => next,
-                        None => {
-                            tracing::warn!(job_id = %job_id, "No upcoming schedule found for cron job");
-                            break;
-                        }
-                    };
+                let next: chrono::DateTime<chrono::Utc> = match schedule
+                    .upcoming(chrono::Utc)
+                    .next()
+                {
+                    Some(next) => next,
+                    None => {
+                        tracing::warn!(job_id = %job_id, "No upcoming schedule found for cron job");
+                        break;
+                    }
+                };
 
                 let duration_until_next = (next - now).to_std().unwrap_or(Duration::ZERO);
 
@@ -342,6 +345,8 @@ impl CronCoreModule {
 
 #[async_trait]
 impl CoreModule for CronCoreModule {
+    fn register_functions(&self, _engine: Arc<Engine>) {}
+
     async fn initialize(&self) -> Result<(), anyhow::Error> {
         tracing::info!("Initializing CronModule");
 
