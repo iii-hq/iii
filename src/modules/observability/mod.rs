@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{configurable::Configurable, core_module::CoreModule},
+    modules::core_module::CoreModule,
     protocol::ErrorBody,
 };
 
@@ -47,18 +47,6 @@ pub struct LoggerCoreModule {
     logger: Arc<dyn LoggerAdapter>,
     #[allow(dead_code)]
     config: LoggerModuleConfig,
-}
-
-impl Configurable for LoggerCoreModule {
-    type Config = LoggerModuleConfig;
-
-    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
-        Self {
-            engine,
-            logger: Arc::new(Logger {}),
-            config,
-        }
-    }
 }
 
 impl FunctionHandler for LoggerCoreModule {
@@ -112,7 +100,13 @@ impl CoreModule for LoggerCoreModule {
             .map(|v| serde_json::from_value(v))
             .transpose()?
             .unwrap_or_default();
-        Ok(Box::new(Self::with_config(engine, config)))
+
+        let logger = Arc::new(Logger {});
+        Ok(Box::new(Self {
+            engine,
+            config,
+            logger,
+        }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {

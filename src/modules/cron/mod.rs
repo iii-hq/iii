@@ -8,7 +8,6 @@ pub use config::CronModuleConfig;
 use cron::Schedule;
 use futures::Future;
 use redis::{Client, aio::ConnectionManager};
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
     sync::{OnceCell, RwLock},
@@ -18,7 +17,7 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::{configurable::Configurable, core_module::CoreModule},
+    modules::core_module::CoreModule,
     trigger::{Trigger, TriggerRegistrator},
 };
 

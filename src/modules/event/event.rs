@@ -13,7 +13,7 @@ use super::{adapters::RedisAdapter, config::EventModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{configurable::Configurable, core_module::CoreModule},
+    modules::core_module::CoreModule,
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };

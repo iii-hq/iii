@@ -9,14 +9,13 @@ use axum::{
 use colored::Colorize;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::{net::TcpListener, sync::OnceCell};
+use tokio::net::TcpListener;
 use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
     modules::{
-        configurable::Configurable,
         core_module::{AdapterConfig, CoreModule},
         streams::{
             StreamSocketManager,

@@ -10,7 +10,6 @@ pub mod workers;
 
 pub mod modules {
     pub mod config;
-    pub mod configurable;
     pub mod core_module;
     pub mod cron;
     pub mod event;

@@ -21,7 +21,7 @@ use tower_http::cors::{Any as HTTP_Any, CorsLayer};
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::{configurable::Configurable, core_module::CoreModule},
+    modules::core_module::CoreModule,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -112,18 +112,6 @@ pub struct RestApiCoreModule {
     pub routers_registry: Arc<RwLock<DashMap<String, PathRouter>>>,
 }
 
-impl Configurable for RestApiCoreModule {
-    type Config = RestApiConfig;
-
-    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
-        Self {
-            engine,
-            config,
-            routers_registry: Arc::new(RwLock::new(DashMap::new())),
-        }
-    }
-}
-
 #[async_trait::async_trait]
 impl CoreModule for RestApiCoreModule {
     async fn create(
@@ -134,7 +122,13 @@ impl CoreModule for RestApiCoreModule {
             .map(|v| serde_json::from_value(v))
             .transpose()?
             .unwrap_or_default();
-        Ok(Box::new(Self::with_config(engine, config)))
+
+        let routers_registry = Arc::new(RwLock::new(DashMap::new()));
+        Ok(Box::new(Self {
+            engine,
+            config,
+            routers_registry,
+        }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {

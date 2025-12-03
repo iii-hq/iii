@@ -213,23 +213,6 @@ impl EngineBuilder {
         self
     }
 
-    /// Registers a module by type
-    /// The module must implement `CoreModule`.
-    pub fn register<M: CoreModule + 'static>(self, class: &str) -> Self {
-        tracing::info!("Registering module: {}", class);
-        self.registry.register::<M>(class);
-        self
-    }
-
-    /// Loads configuration from a YAML file
-    pub fn config_file(mut self, path: &str) -> anyhow::Result<Self> {
-        let yaml_content = std::fs::read_to_string(path)?;
-        let config: EngineConfig = serde_yaml::from_str(&yaml_content)?;
-        tracing::info!("Loaded config from {}", path);
-        self.config = Some(config);
-        Ok(self)
-    }
-
     /// Uses default modules configuration
     pub fn default_modules(mut self) -> Self {
         let modules = DEFAULT_MODULES
@@ -274,7 +257,6 @@ impl EngineBuilder {
                 config,
             });
         }
-
         self
     }
 
