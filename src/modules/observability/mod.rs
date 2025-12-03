@@ -1,13 +1,12 @@
 mod config;
 mod logger;
 
-pub use config::LoggerModuleConfig;
-pub use logger::Logger;
-
 use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
+pub use config::LoggerModuleConfig;
 use futures::Future;
+pub use logger::Logger;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -105,7 +104,18 @@ impl FunctionHandler for LoggerCoreModule {
 
 #[async_trait]
 impl CoreModule for LoggerCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: LoggerModuleConfig = config
+            .map(|v| serde_json::from_value(v))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Box::new(Self::with_config(engine, config)))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
         let _ = self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "logger.info".to_string(),

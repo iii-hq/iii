@@ -1,14 +1,15 @@
 mod config;
 
-pub use config::CronModuleConfig;
-
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use colored::Colorize;
+pub use config::CronModuleConfig;
 use cron::Schedule;
 use futures::Future;
 use redis::{Client, aio::ConnectionManager};
+use serde::Deserialize;
+use serde_json::Value;
 use tokio::{
     sync::{OnceCell, RwLock},
     task::JoinHandle,
@@ -17,7 +18,7 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::{adapter_registry::AdapterRegistry, configurable::Configurable, core_module::CoreModule},
+    modules::{configurable::Configurable, core_module::CoreModule},
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -185,14 +186,16 @@ impl CronAdapter {
             loop {
                 // Calculate time until next execution
                 let now = chrono::Utc::now();
-                let next: chrono::DateTime<chrono::Utc> =
-                    match schedule.upcoming(chrono::Utc).next() {
-                        Some(next) => next,
-                        None => {
-                            tracing::warn!(job_id = %job_id, "No upcoming schedule found for cron job");
-                            break;
-                        }
-                    };
+                let next: chrono::DateTime<chrono::Utc> = match schedule
+                    .upcoming(chrono::Utc)
+                    .next()
+                {
+                    Some(next) => next,
+                    None => {
+                        tracing::warn!(job_id = %job_id, "No upcoming schedule found for cron job");
+                        break;
+                    }
+                };
 
                 let duration_until_next = (next - now).to_std().unwrap_or(Duration::ZERO);
 
@@ -311,67 +314,46 @@ impl CronAdapter {
     }
 }
 
-/// Core module for cron triggers that integrates with the engine's trigger system
 #[derive(Clone)]
 pub struct CronCoreModule {
-    adapter: Arc<OnceCell<Arc<CronAdapter>>>,
+    cron_adapter: Arc<CronAdapter>,
     engine: Arc<Engine>,
     config: CronModuleConfig,
-    adapter_registry: Option<Arc<AdapterRegistry>>,
-}
-
-impl Configurable for CronCoreModule {
-    type Config = CronModuleConfig;
-
-    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
-        Self {
-            adapter: Arc::new(OnceCell::new()),
-            engine,
-            config,
-            adapter_registry: None,
-        }
-    }
-}
-
-impl CronCoreModule {
-    /// Sets the adapter registry for dynamic scheduler creation
-    pub fn set_adapter_registry(&mut self, registry: Arc<AdapterRegistry>) {
-        self.adapter_registry = Some(registry);
-    }
 }
 
 #[async_trait]
 impl CoreModule for CronCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
-        tracing::info!("Initializing CronModule");
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: CronModuleConfig = config
+            .map(|v| serde_json::from_value(v))
+            .transpose()?
+            .unwrap_or_default();
 
-        // Get scheduler class from config or use default
-        let scheduler_class = self
-            .config
+        // Get redis URL from config or use default
+        let redis_url = config
             .adapter
             .as_ref()
-            .map(|a| a.class.as_str())
-            .unwrap_or("modules::cron::RedisCronAdapter");
+            .and_then(|a| a.config.as_ref())
+            .and_then(|c| c.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("redis://localhost:6379");
 
-        let scheduler_config = self.config.adapter.as_ref().and_then(|a| a.config.clone());
+        // Create the scheduler
+        let scheduler: Arc<dyn CronScheduler> = Arc::new(RedisCronLock::new(redis_url).await?);
+        let adapter = CronAdapter::new(scheduler, engine.clone());
 
-        // Create scheduler using registry
-        let scheduler = match &self.adapter_registry {
-            Some(registry) => {
-                registry
-                    .create_cron_scheduler(scheduler_class, scheduler_config)
-                    .await?
-            }
-            None => {
-                // Fallback to config-based creation if no registry
-                self.config.create_scheduler().await?
-            }
-        };
+        Ok(Box::new(Self {
+            engine,
+            config,
+            cron_adapter: Arc::new(adapter),
+        }))
+    }
 
-        let adapter = CronAdapter::new(scheduler, self.engine.clone());
-        self.adapter
-            .set(Arc::new(adapter))
-            .map_err(|_| anyhow::anyhow!("Failed to set CronAdapter"))?;
+    async fn initialize(&self) -> anyhow::Result<()> {
+        tracing::info!("Initializing CronModule");
 
         use crate::trigger::TriggerType;
 
@@ -410,9 +392,7 @@ impl TriggerRegistrator for CronCoreModule {
                 return Err(anyhow::anyhow!("Cron expression is required"));
             }
 
-            self.adapter
-                .get()
-                .expect("CronAdapter not initialized")
+            self.cron_adapter
                 .register(&trigger.id, &cron_expression, &trigger.function_path)
                 .await
         })
@@ -424,11 +404,7 @@ impl TriggerRegistrator for CronCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             tracing::debug!(trigger_id = %trigger.id, "Unregistering cron trigger");
-            self.adapter
-                .get()
-                .expect("CronAdapter not initialized")
-                .unregister(&trigger.id)
-                .await
+            self.cron_adapter.unregister(&trigger.id).await
         })
     }
 }

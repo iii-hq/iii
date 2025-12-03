@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{CronScheduler, RedisCronLock};
@@ -12,7 +12,8 @@ fn default_redis_url() -> String {
 /// Default adapter class when none is specified
 const DEFAULT_ADAPTER_CLASS: &str = "modules::cron::RedisCronAdapter";
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CronModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
@@ -50,7 +51,7 @@ impl CronModuleConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AdapterEntry {
     pub class: String,
     #[serde(default)]

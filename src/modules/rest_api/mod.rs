@@ -1,7 +1,5 @@
 mod config;
 
-pub use config::RestApiConfig;
-
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use anyhow::anyhow;
@@ -13,12 +11,13 @@ use axum::{
     routing::any,
 };
 use colored::Colorize;
+pub use config::RestApiConfig;
 use dashmap::DashMap;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::RwLock};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{Any as HTTP_Any, CorsLayer};
 
 use crate::{
     engine::{Engine, EngineTrait},
@@ -127,7 +126,18 @@ impl Configurable for RestApiCoreModule {
 
 #[async_trait::async_trait]
 impl CoreModule for RestApiCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: RestApiConfig = config
+            .map(|v| serde_json::from_value(v))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Box::new(Self::with_config(engine, config)))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing API adapter on port {}", self.config.port);
 
         self.engine
@@ -174,7 +184,7 @@ impl RestApiCoreModule {
 
         // Origins
         if cors_config.allowed_origins.is_empty() {
-            cors = cors.allow_origin(Any);
+            cors = cors.allow_origin(HTTP_Any);
         } else {
             let origins: Vec<_> = cors_config
                 .allowed_origins
@@ -186,7 +196,7 @@ impl RestApiCoreModule {
 
         // Methods
         if cors_config.allowed_methods.is_empty() {
-            cors = cors.allow_methods(Any);
+            cors = cors.allow_methods(HTTP_Any);
         } else {
             let methods: Vec<Method> = cors_config
                 .allowed_methods
@@ -196,7 +206,7 @@ impl RestApiCoreModule {
             cors = cors.allow_methods(methods);
         }
 
-        cors.allow_headers(Any)
+        cors.allow_headers(HTTP_Any)
     }
 
     pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {

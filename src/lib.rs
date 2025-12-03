@@ -9,7 +9,6 @@ pub mod trigger;
 pub mod workers;
 
 pub mod modules {
-    pub mod adapter_registry;
     pub mod config;
     pub mod configurable;
     pub mod core_module;

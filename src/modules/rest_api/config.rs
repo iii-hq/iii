@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 fn default_port() -> u16 {
     3111
@@ -8,7 +8,8 @@ fn default_timeout() -> u64 {
     30000
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RestApiConfig {
     #[serde(default = "default_port")]
     pub port: u16,
@@ -34,7 +35,7 @@ impl Default for RestApiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CorsConfig {
     #[serde(default)]
     pub allowed_origins: Vec<String>,

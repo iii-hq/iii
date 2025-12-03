@@ -8,6 +8,7 @@ use crate::engine::Engine;
 /// Trait for modules that can be configured via YAML/JSON
 pub trait Configurable: Sized {
     /// The specific configuration type for this module
+    /// **IMPORTANT**: Must use `#[serde(deny_unknown_fields)]`
     type Config: DeserializeOwned + Default;
 
     /// Creates the module with the provided configuration
@@ -15,12 +16,13 @@ pub trait Configurable: Sized {
 
     /// Creates the module from an optional Value
     /// If None or parse error, uses Config::default()
-    fn from_value(engine: Arc<Engine>, value: Option<Value>) -> Self {
-        let config = value
-            .and_then(|v| serde_json::from_value::<Self::Config>(v).ok())
-            .unwrap_or_default();
+    fn from_value(engine: Arc<Engine>, value: Option<Value>) -> Result<Self, serde_json::Error> {
+        let config = match value {
+            Some(v) => serde_json::from_value(v)?,
+            None => Self::Config::default(),
+        };
 
-        Self::with_config(engine, config)
+        Ok(Self::with_config(engine, config))
     }
 
     /// Creates the module with default configuration

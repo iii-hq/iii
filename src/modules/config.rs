@@ -1,4 +1,10 @@
-use std::{future::Future, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    net::SocketAddr,
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
 use axum::{
     Router,
@@ -12,13 +18,8 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 
 use super::{
-    adapter_registry::AdapterRegistry,
-    configurable::Configurable,
-    core_module::CoreModule,
-    cron::{CronCoreModule, CronScheduler},
-    event::{EventAdapter, EventCoreModule},
-    observability::LoggerCoreModule,
-    rest_api::RestApiCoreModule,
+    core_module::CoreModule, cron::CronCoreModule, event::EventCoreModule,
+    observability::LoggerCoreModule, rest_api::RestApiCoreModule,
 };
 use crate::{engine::Engine, modules::streams::StreamCoreModule};
 
@@ -55,44 +56,111 @@ pub struct ModuleEntry {
     pub config: Option<Value>,
 }
 
+// =============================================================================
+// Type Aliases for Factories
+// =============================================================================
+
+/// Factory function type for creating Modules (async)
+type ModuleFactory = Arc<
+    dyn Fn(
+            Arc<Engine>,
+            Option<Value>,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn CoreModule>>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Info about a registered module
+struct ModuleInfo {
+    factory: ModuleFactory,
+}
+
+// =============================================================================
+// ModuleRegistry (unified registry for modules and adapters)
+// =============================================================================
+
+pub struct ModuleRegistry {
+    module_factories: RwLock<HashMap<String, ModuleInfo>>,
+}
+
+impl ModuleRegistry {
+    pub fn new() -> Self {
+        Self {
+            module_factories: RwLock::new(HashMap::new()),
+        }
+    }
+
+    // =========================================================================
+    // Module Registration
+    // =========================================================================
+
+    /// Registers a module by type
+    ///
+    /// The module must implement `CoreModule`. The registry uses `M::create()` to create instances.
+    pub fn register<M: CoreModule + 'static>(&self, class: &str) {
+        let info = ModuleInfo {
+            factory: Arc::new(|engine, config| Box::pin(M::create(engine, config))),
+        };
+
+        self.module_factories
+            .write()
+            .expect("RwLock poisoned")
+            .insert(class.to_string(), info);
+    }
+
+    /// Creates a module instance
+    pub async fn create_module(
+        self: &Arc<Self>,
+        class: &str,
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let factory = {
+            let factories = self.module_factories.read().expect("RwLock poisoned");
+            factories
+                .get(class)
+                .ok_or_else(|| anyhow::anyhow!("Unknown module class: {}", class))?
+                .factory
+                .clone()
+        };
+
+        factory(engine, config).await
+    }
+
+    // =========================================================================
+    // Default Registration
+    // =========================================================================
+
+    pub fn with_defaults() -> Self {
+        let registry = Self::new();
+        // Register default modules
+        registry.register::<StreamCoreModule>("modules::streams::StreamModule");
+        registry.register::<RestApiCoreModule>("modules::api::RestApiModule");
+        registry.register::<EventCoreModule>("modules::event::EventModule");
+        registry.register::<CronCoreModule>("modules::cron::CronModule");
+        registry.register::<LoggerCoreModule>("modules::observability::LoggingModule");
+
+        registry
+    }
+}
+
+impl Default for ModuleRegistry {
+    fn default() -> Self {
+        Self::with_defaults()
+    }
+}
+
 impl ModuleEntry {
     /// Creates a module instance from this entry
-    pub fn create_module(
+    pub async fn create_module(
         &self,
         engine: Arc<Engine>,
-        registry: Arc<AdapterRegistry>,
+        registry: &Arc<ModuleRegistry>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        match self.class.as_str() {
-            "modules::streams::StreamModule" => {
-                let streams_module =
-                    StreamCoreModule::from_value(engine.clone(), self.config.clone());
-                Ok(Box::new(streams_module))
-            }
-
-            "modules::api::RestApiModule" => {
-                let module = RestApiCoreModule::from_value(engine, self.config.clone());
-                Ok(Box::new(module))
-            }
-
-            "modules::event::EventModule" => {
-                let mut module = EventCoreModule::from_value(engine, self.config.clone());
-                module.set_adapter_registry(registry);
-                Ok(Box::new(module))
-            }
-
-            "modules::cron::CronModule" => {
-                let mut module = CronCoreModule::from_value(engine, self.config.clone());
-                module.set_adapter_registry(registry);
-                Ok(Box::new(module))
-            }
-
-            "modules::observability::LoggingModule" | "modules::observability::TracingModule" => {
-                let module = LoggerCoreModule::from_value(engine, self.config.clone());
-                Ok(Box::new(module))
-            }
-
-            unknown => Err(anyhow::anyhow!("Unknown module class: {}", unknown)),
-        }
+        registry
+            .create_module(&self.class, engine, self.config.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", self.class, e))
     }
 }
 
@@ -113,35 +181,11 @@ impl ModuleEntry {
 ///     .serve().await?;
 /// ```
 ///
-/// Only default modules:
+/// Register custom module:
 /// ```ignore
 /// EngineBuilder::new()
-///     .default_modules()
-///     .build().await?
-///     .serve().await?;
-/// ```
-///
-/// Register custom adapters:
-/// ```ignore
-/// EngineBuilder::new()
-///     .register_event_adapter("my::CustomEventAdapter", |config, engine| async move {
-///         let adapter = MyCustomAdapter::new(config, engine).await?;
-///         Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-///     })
-///     .register_cron_scheduler("my::CustomCronScheduler", |config| async move {
-///         let scheduler = MyCustomScheduler::new(config).await?;
-///         Ok(Arc::new(scheduler) as Arc<dyn CronScheduler>)
-///     })
-///     .config_file_or_default("config.yaml")?
-///     .build().await?
-///     .serve().await?;
-/// ```
-///
-/// Custom modules:
-/// ```ignore
-/// EngineBuilder::new()
-///     .add_module("modules::api::RestApiModule", Some(json!({"port": 8080})))
-///     .add_module("modules::observability::LoggingModule", None)
+///     .register::<MyCustomModule>("my::CustomModule")
+///     .add_module("my::CustomModule", Some(json!({"key": "value"})))
 ///     .build().await?
 ///     .serve().await?;
 /// ```
@@ -149,19 +193,17 @@ pub struct EngineBuilder {
     config: Option<EngineConfig>,
     address: String,
     engine: Arc<Engine>,
-    modules: Vec<Box<dyn CoreModule>>,
-    adapter_registry: Arc<AdapterRegistry>,
+    registry: Arc<ModuleRegistry>,
 }
 
 impl EngineBuilder {
-    /// Creates a new EngineBuilder with default adapter registry
+    /// Creates a new EngineBuilder with default registry
     pub fn new() -> Self {
         Self {
             config: None,
             address: DEFAULT_ADDRESS.to_string(),
             engine: Arc::new(Engine::new()),
-            modules: Vec::new(),
-            adapter_registry: Arc::new(AdapterRegistry::with_defaults()),
+            registry: Arc::new(ModuleRegistry::with_defaults()),
         }
     }
 
@@ -171,41 +213,11 @@ impl EngineBuilder {
         self
     }
 
-    /// Registers a custom event adapter factory
-    ///
-    /// # Example
-    /// ```ignore
-    /// builder.register_event_adapter("my::CustomAdapter", |config, engine| async move {
-    ///     let adapter = MyAdapter::new(config, engine).await?;
-    ///     Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-    /// })
-    /// ```
-    pub fn register_event_adapter<F, Fut>(self, class: &str, factory: F) -> Self
-    where
-        F: Fn(Option<Value>, Arc<Engine>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = anyhow::Result<Arc<dyn EventAdapter>>> + Send + 'static,
-    {
-        tracing::info!("Registering event adapter: {}", class);
-        self.adapter_registry.register_event_adapter(class, factory);
-        self
-    }
-
-    /// Registers a custom cron scheduler factory
-    ///
-    /// # Example
-    /// ```ignore
-    /// builder.register_cron_scheduler("my::CustomScheduler", |config| async move {
-    ///     let scheduler = MyScheduler::new(config).await?;
-    ///     Ok(Arc::new(scheduler) as Arc<dyn CronScheduler>)
-    /// })
-    /// ```
-    pub fn register_cron_scheduler<F, Fut>(self, class: &str, factory: F) -> Self
-    where
-        F: Fn(Option<Value>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = anyhow::Result<Arc<dyn CronScheduler>>> + Send + 'static,
-    {
-        self.adapter_registry
-            .register_cron_scheduler(class, factory);
+    /// Registers a module by type
+    /// The module must implement `CoreModule`.
+    pub fn register<M: CoreModule + 'static>(self, class: &str) -> Self {
+        tracing::info!("Registering module: {}", class);
+        self.registry.register::<M>(class);
         self
     }
 
@@ -268,37 +280,19 @@ impl EngineBuilder {
 
     /// Builds and initializes all modules
     pub async fn build(mut self) -> anyhow::Result<Self> {
-        let config = self.config.take().unwrap_or_else(|| {
-            tracing::info!("No config provided, using default modules");
-            EngineConfig {
-                modules: DEFAULT_MODULES
-                    .iter()
-                    .map(|class| ModuleEntry {
-                        class: class.to_string(),
-                        config: None,
-                    })
-                    .collect(),
-            }
-        });
+        let config = self.config.take().expect("No module configs founded");
 
         tracing::info!("Building engine with {} modules", config.modules.len());
 
-        // Create modules
+        // Create modules using the registry (with adapter injection)
         for entry in &config.modules {
             tracing::debug!("Creating module: {}", entry.class);
-            let module = entry.create_module(self.engine.clone(), self.adapter_registry.clone())?;
-            self.modules.push(module);
-        }
-
-        // Initialize modules
-        for module in &self.modules {
+            let module = entry
+                .create_module(self.engine.clone(), &self.registry)
+                .await?;
+            tracing::debug!("Initialing module: {}", entry.class);
             module.initialize().await?;
         }
-
-        tracing::info!(
-            "All {} modules initialized successfully",
-            self.modules.len()
-        );
 
         Ok(self)
     }

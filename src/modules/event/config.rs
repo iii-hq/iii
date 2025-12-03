@@ -3,9 +3,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::{EventAdapter, adapters::RedisAdapter};
 use crate::engine::Engine;
-
-use super::{adapters::RedisAdapter, EventAdapter};
 
 fn default_redis_url() -> String {
     "redis://localhost:6379".to_string()
@@ -15,6 +14,7 @@ fn default_redis_url() -> String {
 const DEFAULT_ADAPTER_CLASS: &str = "modules::event::RedisAdapter";
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct EventModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,

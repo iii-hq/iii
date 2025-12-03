@@ -1,17 +1,19 @@
-use std::{pin::Pin, sync::Arc};
+use std::{
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
 use async_trait::async_trait;
 use colored::Colorize;
 use futures::Future;
 use serde_json::Value;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-use super::config::EventModuleConfig;
+use super::{adapters::RedisAdapter, config::EventModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{adapter_registry::AdapterRegistry, configurable::Configurable, core_module::CoreModule},
+    modules::{configurable::Configurable, core_module::CoreModule},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -23,31 +25,20 @@ pub trait EventAdapter: Send + Sync + 'static {
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
 
-#[derive(Clone)]
 pub struct EventCoreModule {
-    adapter: Arc<OnceCell<Arc<dyn EventAdapter>>>,
+    adapter: Arc<dyn EventAdapter>,
     engine: Arc<Engine>,
     config: EventModuleConfig,
-    adapter_registry: Option<Arc<AdapterRegistry>>,
 }
 
-impl Configurable for EventCoreModule {
-    type Config = EventModuleConfig;
-
-    fn with_config(engine: Arc<Engine>, config: Self::Config) -> Self {
+impl Clone for EventCoreModule {
+    fn clone(&self) -> Self {
+        // Clone the current adapter if it exists
         Self {
-            adapter: Arc::new(OnceCell::new()),
-            engine,
-            config,
-            adapter_registry: None,
+            adapter: self.adapter.clone(),
+            engine: self.engine.clone(),
+            config: self.config.clone(),
         }
-    }
-}
-
-impl EventCoreModule {
-    /// Sets the adapter registry for dynamic adapter creation
-    pub fn set_adapter_registry(&mut self, registry: Arc<AdapterRegistry>) {
-        self.adapter_registry = Some(registry);
     }
 }
 
@@ -72,11 +63,12 @@ impl TriggerRegistrator for EventCoreModule {
             trigger.function_path.cyan()
         );
 
+        // Get adapter reference before async block
+        let adapter = self.adapter.clone();
+
         Box::pin(async move {
             if !topic.is_empty() {
-                self.adapter
-                    .get()
-                    .unwrap()
+                adapter
                     .subscribe(&topic, &trigger.id, &trigger.function_path)
                     .await;
             } else {
@@ -94,19 +86,19 @@ impl TriggerRegistrator for EventCoreModule {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        // Get adapter reference before async block
+        let adapter = self.adapter.clone();
+
         Box::pin(async move {
             tracing::debug!(trigger = %trigger.id, "Unregistering trigger");
-
-            self.adapter
-                .get()
-                .unwrap()
+            adapter
                 .unsubscribe(
                     trigger
                         .config
                         .get("topic")
                         .unwrap_or_default()
                         .as_str()
-                        .unwrap_or(""), // TODO throw error if topic is not set
+                        .unwrap_or(""),
                     &trigger.id,
                 )
                 .await;
@@ -117,35 +109,35 @@ impl TriggerRegistrator for EventCoreModule {
 
 #[async_trait]
 impl CoreModule for EventCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
-        tracing::info!("Initializing EventModule");
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: super::config::EventModuleConfig = config
+            .map(|v| serde_json::from_value(v))
+            .transpose()?
+            .unwrap_or_default();
 
-        // Get adapter class from config or use default
-        let adapter_class = self
-            .config
+        let redis_url = config
             .adapter
             .as_ref()
-            .map(|a| a.class.as_str())
-            .unwrap_or("modules::event::RedisAdapter");
+            .and_then(|a| a.config.as_ref())
+            .and_then(|c| c.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("redis://localhost:6379");
 
-        let adapter_config = self.config.adapter.as_ref().and_then(|a| a.config.clone());
+        // Create the adapter
+        let adapter = RedisAdapter::new(redis_url.to_string(), engine.clone()).await?;
 
-        // Create adapter using registry
-        let adapter = match &self.adapter_registry {
-            Some(registry) => {
-                registry
-                    .create_event_adapter(adapter_class, adapter_config, self.engine.clone())
-                    .await?
-            }
-            None => {
-                // Fallback to config-based creation if no registry
-                self.config.create_adapter(self.engine.clone()).await?
-            }
-        };
+        Ok(Box::new(Self {
+            engine,
+            config,
+            adapter: Arc::new(adapter),
+        }))
+    }
 
-        self.adapter
-            .set(adapter)
-            .map_err(|_| anyhow::anyhow!("Failed to set EventAdapter; adapter already set?"))?;
+    async fn initialize(&self) -> anyhow::Result<()> {
+        tracing::info!("Initializing EventModule");
 
         let trigger_type = TriggerType {
             id: "event".to_string(),
@@ -179,10 +171,9 @@ impl FunctionHandler for EventCoreModule {
         _function_path: String,
         input: Value,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
-        let adapter = Arc::clone(&self.adapter);
-
         tracing::debug!(input = %input, "Handling event function");
 
+        let adapter = self.adapter.clone();
         Box::pin(async move {
             let topic = input
                 .get("topic")
@@ -196,9 +187,8 @@ impl FunctionHandler for EventCoreModule {
                     message: "Topic is not set".into(),
                 });
             }
-
             tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-            let _ = adapter.get().unwrap().emit(topic, event_data).await;
+            adapter.emit(topic, event_data).await;
 
             Ok(Some(Value::Null))
         })
