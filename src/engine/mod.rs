@@ -29,6 +29,24 @@ pub struct RegisterFunctionRequest {
     pub response_format: Option<Value>,
 }
 
+pub struct Handler<H> {
+    f: H,
+}
+
+impl<H, F> Handler<H>
+where
+    H: Fn(Value) -> F + Send + Sync + 'static,
+    F: Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static,
+{
+    pub fn new(f: H) -> Self {
+        Self { f }
+    }
+
+    pub fn call(&self, input: Value) -> F {
+        (self.f)(input)
+    }
+}
+
 #[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
     fn invoke_function(&self, function_path: &str, input: Value);
@@ -38,6 +56,13 @@ pub trait EngineTrait: Send + Sync {
         request: RegisterFunctionRequest,
         handler: Box<dyn FunctionHandler + Send + Sync>,
     );
+    fn register_function_handler<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: Handler<H>,
+    ) where
+        H: Fn(Value) -> F + Send + Sync + 'static,
+        F: Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static;
 }
 
 #[derive(Default, Clone)]
@@ -567,5 +592,27 @@ impl EngineTrait for Engine {
         };
 
         self.functions.register_function(function_path, function);
+    }
+
+    fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
+    where
+        H: Fn(Value) -> F + Send + Sync + 'static,
+        F: Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static,
+    {
+        let handler_arc: Arc<H> = Arc::new(handler.f);
+
+        let function = Function {
+            handler: Arc::new(move |_id, input| {
+                let handler = handler_arc.clone();
+                Box::pin(async move { handler(input).await })
+            }),
+            _function_path: request.function_path.clone(),
+            _description: request.description,
+            request_format: request.request_format,
+            response_format: request.response_format,
+        };
+
+        self.functions
+            .register_function(request.function_path, function);
     }
 }

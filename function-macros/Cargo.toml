@@ -1,0 +1,13 @@
+[package]
+name = "function-macros"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+once_cell = "1.21.3"
+proc-macro2 = "1.0.103"
+quote = "1.0.42"
+syn = { version = "2.0.32", features = ["full", "extra-traits", "derive"] }

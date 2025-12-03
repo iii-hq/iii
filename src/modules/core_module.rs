@@ -22,6 +22,9 @@ pub trait CoreModule: Send + Sync {
 
     /// Initializes the module
     async fn initialize(&self) -> anyhow::Result<()>;
+
+    /// Registers functions to the engine
+    fn register_functions(&self, engine: Arc<Engine>);
 }
 
 pub type AdapterFactory<A> = Arc<

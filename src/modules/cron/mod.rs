@@ -351,6 +351,8 @@ impl CoreModule for CronCoreModule {
         }))
     }
 
+    fn register_functions(&self, _engine: Arc<Engine>) {}
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing CronModule");
 

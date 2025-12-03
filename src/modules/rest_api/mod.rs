@@ -131,6 +131,8 @@ impl CoreModule for RestApiCoreModule {
         }))
     }
 
+    fn register_functions(&self, _engine: Arc<Engine>) {}
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing API adapter on port {}", self.config.port);
 

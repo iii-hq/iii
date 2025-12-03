@@ -17,6 +17,7 @@ name = "custom_event_adapter"
 path = "examples/custom_event_adapter.rs"
 
 [dependencies]
+function-macros = { path = "function-macros" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tower = "0.4"
