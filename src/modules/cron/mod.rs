@@ -10,7 +10,7 @@ use futures::Future;
 use redis::{Client, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::{
-    sync::{OnceCell, RwLock},
+    sync::RwLock,
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -327,7 +327,7 @@ impl CoreModule for CronCoreModule {
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         let config: CronModuleConfig = config
-            .map(|v| serde_json::from_value(v))
+            .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
 

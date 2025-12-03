@@ -266,13 +266,13 @@ impl EngineBuilder {
 
         tracing::info!("Building engine with {} modules", config.modules.len());
 
-        // Create modules using the registry (with adapter injection)
+        // Create modules using the registry
         for entry in &config.modules {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)
                 .await?;
-            tracing::debug!("Initialing module: {}", entry.class);
+            tracing::debug!("Initializing module: {}", entry.class);
             module.initialize().await?;
         }
 

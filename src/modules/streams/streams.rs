@@ -179,13 +179,13 @@ impl CoreModule for StreamCoreModule {
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         let module_config: WebSocketConfig = config
             .clone()
-            .map(|v| serde_json::from_value(v))
+            .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
 
         let adapter_config: StreamAdapterConfig = config
             .and_then(|v| v.get("adapter").cloned())
-            .map(|v| serde_json::from_value(v))
+            .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
 

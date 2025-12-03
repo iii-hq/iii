@@ -119,7 +119,7 @@ impl CoreModule for RestApiCoreModule {
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         let config: RestApiConfig = config
-            .map(|v| serde_json::from_value(v))
+            .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
 
