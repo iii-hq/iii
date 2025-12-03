@@ -72,6 +72,17 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
         let map = registry.read().unwrap();
         map.get(name).cloned()
     }
+
+    /// Helper function to create an adapter factory from a closure
+    fn make_adapter_factory<F, Fut>(create_fn: F) -> AdapterFactory<Self::Adapter>
+    where
+        F: Fn(Arc<Engine>, Option<Value>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<Arc<Self::Adapter>>> + Send + 'static,
+    {
+        Arc::new(move |engine, config| {
+            Box::pin(create_fn(engine, config))
+        })
+    }
     /// Create with typed adapters
     async fn create_with_adapters(
         engine: Arc<Engine>,

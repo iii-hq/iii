@@ -150,25 +150,16 @@ impl ConfigurableModule for EventCoreModule {
             Lazy::new(|| {
                 let mut m = HashMap::new();
                 m.insert(
-                    "modules::event::RedisAdapter".to_string(),
-                    Arc::new(|engine: Arc<Engine>, config: Option<Value>| {
-                        Box::pin(async move {
-                            let redis_url = config
-                                .as_ref()
-                                .and_then(|v| v.get("redis_url").and_then(|u| u.as_str()))
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "redis://localhost:6379".to_string());
-
-                            let adapter = RedisAdapter::new(redis_url, engine).await?;
-                            Ok(Arc::new(adapter) as Arc<dyn EventAdapter>)
-                        })
-                            as Pin<
-                                Box<
-                                    dyn Future<Output = anyhow::Result<Arc<dyn EventAdapter>>>
-                                        + Send,
-                                >,
-                            >
-                    }) as AdapterFactory<dyn EventAdapter>,
+                    EventCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
+                    EventCoreModule::make_adapter_factory(|engine: Arc<Engine>, config: Option<Value>| async move {
+                        let redis_url = config
+                            .as_ref()
+                            .and_then(|v| v.get("redis_url"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "redis://localhost:6379".to_string());
+                        Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?) as Arc<dyn EventAdapter>)
+                    }),
                 );
                 RwLock::new(m)
             });
