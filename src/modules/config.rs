@@ -243,6 +243,15 @@ impl EngineBuilder {
         }
     }
 
+    /// Registers a custom module type in the registry
+    ///
+    /// This allows you to register a module implementation that can then be used
+    /// via `add_module` or in the config file.
+    pub fn register_module<M: CoreModule + 'static>(mut self, class: &str) -> Self {
+        self.registry.register::<M>(class);
+        self
+    }
+
     /// Adds a custom module entry
     pub fn add_module(mut self, class: &str, config: Option<Value>) -> Self {
         if self.config.is_none() {
