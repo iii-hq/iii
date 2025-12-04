@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+#[allow(dead_code)] // this is used as default value
 fn default_redis_url() -> String {
     "redis://localhost:6379".to_string()
 }
@@ -17,18 +18,4 @@ pub struct AdapterEntry {
     pub class: String,
     #[serde(default)]
     pub config: Option<Value>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RedisAdapterConfig {
-    #[serde(default = "default_redis_url")]
-    pub redis_url: String,
-}
-
-impl Default for RedisAdapterConfig {
-    fn default() -> Self {
-        Self {
-            redis_url: default_redis_url(),
-        }
-    }
 }

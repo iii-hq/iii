@@ -317,7 +317,7 @@ impl CronAdapter {
 pub struct CronCoreModule {
     adapter: Arc<CronAdapter>,
     engine: Arc<Engine>,
-    config: CronModuleConfig,
+    _config: CronModuleConfig,
 }
 
 #[async_trait]
@@ -346,7 +346,7 @@ impl CoreModule for CronCoreModule {
 
         Ok(Box::new(Self {
             engine,
-            config,
+            _config: config,
             adapter: Arc::new(adapter),
         }))
     }

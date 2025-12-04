@@ -247,7 +247,7 @@ impl EngineBuilder {
     ///
     /// This allows you to register a module implementation that can then be used
     /// via `add_module` or in the config file.
-    pub fn register_module<M: CoreModule + 'static>(mut self, class: &str) -> Self {
+    pub fn register_module<M: CoreModule + 'static>(self, class: &str) -> Self {
         self.registry.register::<M>(class);
         self
     }

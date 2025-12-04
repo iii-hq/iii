@@ -34,7 +34,7 @@ pub trait EventAdapter: Send + Sync + 'static {
 pub struct EventCoreModule {
     adapter: Arc<dyn EventAdapter>,
     engine: Arc<Engine>,
-    config: EventModuleConfig,
+    _config: EventModuleConfig,
 }
 
 impl TriggerRegistrator for EventCoreModule {
@@ -174,7 +174,7 @@ impl ConfigurableModule for EventCoreModule {
     fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
         Self {
             engine,
-            config,
+            _config: config,
             adapter,
         }
     }
