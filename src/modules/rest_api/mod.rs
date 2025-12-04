@@ -1,19 +1,23 @@
+mod config;
+
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use anyhow::anyhow;
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},
-    http::{StatusCode, header::HeaderMap},
+    http::{Method, StatusCode, header::HeaderMap},
     response::IntoResponse,
     routing::any,
 };
 use colored::Colorize;
+pub use config::RestApiConfig;
 use dashmap::DashMap;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::RwLock};
+use tower_http::cors::{Any as HTTP_Any, CorsLayer};
 
 use crate::{
     engine::{Engine, EngineTrait},
@@ -104,13 +108,31 @@ impl APIresponse {
 #[derive(Clone)]
 pub struct RestApiCoreModule {
     engine: Arc<Engine>,
+    config: RestApiConfig,
     pub routers_registry: Arc<RwLock<DashMap<String, PathRouter>>>,
 }
 
 #[async_trait::async_trait]
 impl CoreModule for RestApiCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
-        tracing::info!("Initializing API adapter");
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: RestApiConfig = config
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+
+        let routers_registry = Arc::new(RwLock::new(DashMap::new()));
+        Ok(Box::new(Self {
+            engine,
+            config,
+            routers_registry,
+        }))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
+        tracing::info!("Initializing API adapter on port {}", self.config.port);
 
         self.engine
             .clone()
@@ -122,12 +144,16 @@ impl CoreModule for RestApiCoreModule {
             })
             .await;
 
-        let addr = "127.0.0.1:3111";
-        let listener = TcpListener::bind(addr).await.unwrap();
+        let addr = format!("127.0.0.1:{}", self.config.port);
+        let listener = TcpListener::bind(&addr).await?;
+
+        let cors_layer = self.build_cors_layer();
+
         let app = Router::new()
             .route("/*path", any(dynamic_handler))
             .layer(Extension(Arc::new(self.clone())))
             .layer(Extension(self.engine.clone()))
+            .layer(cors_layer)
             .with_state(self.engine.clone());
 
         tokio::spawn(async move {
@@ -142,11 +168,39 @@ impl CoreModule for RestApiCoreModule {
 }
 
 impl RestApiCoreModule {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        Self {
-            engine,
-            routers_registry: Arc::new(RwLock::new(DashMap::new())),
+    /// Builds the CorsLayer based on configuration
+    fn build_cors_layer(&self) -> CorsLayer {
+        let Some(cors_config) = &self.config.cors else {
+            return CorsLayer::permissive();
+        };
+
+        let mut cors = CorsLayer::new();
+
+        // Origins
+        if cors_config.allowed_origins.is_empty() {
+            cors = cors.allow_origin(HTTP_Any);
+        } else {
+            let origins: Vec<_> = cors_config
+                .allowed_origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            cors = cors.allow_origin(origins);
         }
+
+        // Methods
+        if cors_config.allowed_methods.is_empty() {
+            cors = cors.allow_methods(HTTP_Any);
+        } else {
+            let methods: Vec<Method> = cors_config
+                .allowed_methods
+                .iter()
+                .filter_map(|m| m.parse().ok())
+                .collect();
+            cors = cors.allow_methods(methods);
+        }
+
+        cors.allow_headers(HTTP_Any)
     }
 
     pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {

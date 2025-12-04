@@ -1,13 +1,19 @@
+mod config;
+mod logger;
+
 use std::{pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
+pub use config::LoggerModuleConfig;
+use futures::Future;
+pub use logger::Logger;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{core_module::CoreModule, logger::Logger},
+    modules::core_module::CoreModule,
     protocol::ErrorBody,
 };
 
@@ -39,6 +45,8 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 pub struct LoggerCoreModule {
     engine: Arc<Engine>,
     logger: Arc<dyn LoggerAdapter>,
+    #[allow(dead_code)]
+    config: LoggerModuleConfig,
 }
 
 impl FunctionHandler for LoggerCoreModule {
@@ -84,7 +92,24 @@ impl FunctionHandler for LoggerCoreModule {
 
 #[async_trait]
 impl CoreModule for LoggerCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: LoggerModuleConfig = config
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+
+        let logger = Arc::new(Logger {});
+        Ok(Box::new(Self {
+            engine,
+            config,
+            logger,
+        }))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
         let _ = self.engine.register_function(
             RegisterFunctionRequest {
                 function_path: "logger.info".to_string(),
@@ -114,13 +139,5 @@ impl CoreModule for LoggerCoreModule {
         );
 
         Ok(())
-    }
-}
-
-impl LoggerCoreModule {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        let logger = Arc::new(Logger {});
-
-        Self { engine, logger }
     }
 }

@@ -1,0 +1,35 @@
+modules:
+  - class: modules::streams::StreamModule
+    config:
+      port: 31112
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+      default_timeout: 30000
+      default_path: /default
+      cors:
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:3001
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  - class: modules::observability::LoggingModule
+
+  - class: modules::event::EventModule
+    config:
+      adapter:
+        class: modules::event::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::RedisCronAdapter
+        config:
+          redis_url: redis://localhost:6379

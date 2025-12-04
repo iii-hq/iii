@@ -21,7 +21,6 @@ pub async fn emit_event<'a>(
 
     if let Err(e) = conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json).await {
         tracing::error!(error = %e, "Failed to publish event to Redis");
-        return;
     } else {
         tracing::debug!("Event published to Redis");
     }

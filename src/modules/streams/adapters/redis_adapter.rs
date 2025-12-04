@@ -50,54 +50,6 @@ impl RedisAdapter {
             connections: Arc::new(RwLock::new(HashMap::new())),
         })
     }
-
-    pub async fn watch_events(&self) {
-        tracing::debug!("Watching events");
-
-        let mut pubsub = match self.subscriber.get_async_pubsub().await {
-            Ok(pubsub) => pubsub,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to get async pubsub connection");
-                return;
-            }
-        };
-
-        if let Err(e) = pubsub.subscribe(&STREAM_TOPIC).await {
-            tracing::error!(error = %e, "Failed to subscribe to Redis channel");
-            return;
-        }
-
-        let mut msg = pubsub.into_on_message();
-
-        while let Some(msg) = msg.next().await {
-            let payload: String = match msg.get_payload() {
-                Ok(payload) => payload,
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to get message payload");
-                    continue;
-                }
-            };
-
-            let connections = self.connections.read().await;
-            let msg: StreamWrapperMessage =
-                match serde_json::from_str::<StreamWrapperMessage>(&payload) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to parse message as JSON");
-                        continue;
-                    }
-                };
-
-            for connection in connections.values() {
-                match connection.handle_stream_message(&msg).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = ?e, "Failed to handle stream message");
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[async_trait]
@@ -191,8 +143,8 @@ impl StreamAdapter for RedisAdapter {
 
         match conn.hgetall::<String, HashMap<String, String>>(key).await {
             Ok(values) => values
-                .into_iter()
-                .map(|(_, v)| serde_json::from_str(&v).unwrap())
+                .into_values()
+                .map(|v| serde_json::from_str(&v).unwrap())
                 .collect(),
             Err(e) => {
                 tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
@@ -209,5 +161,53 @@ impl StreamAdapter for RedisAdapter {
     async fn unsubscribe(&self, id: String) {
         let mut connections = self.connections.write().await;
         connections.remove(&id);
+    }
+
+    async fn watch_events(&self) {
+        tracing::debug!("Watching events");
+
+        let mut pubsub = match self.subscriber.get_async_pubsub().await {
+            Ok(pubsub) => pubsub,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to get async pubsub connection");
+                return;
+            }
+        };
+
+        if let Err(e) = pubsub.subscribe(&STREAM_TOPIC).await {
+            tracing::error!(error = %e, "Failed to subscribe to Redis channel");
+            return;
+        }
+
+        let mut msg = pubsub.into_on_message();
+
+        while let Some(msg) = msg.next().await {
+            let payload: String = match msg.get_payload() {
+                Ok(payload) => payload,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get message payload");
+                    continue;
+                }
+            };
+
+            let connections = self.connections.read().await;
+            let msg: StreamWrapperMessage =
+                match serde_json::from_str::<StreamWrapperMessage>(&payload) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to parse message as JSON");
+                        continue;
+                    }
+                };
+
+            for connection in connections.values() {
+                match connection.handle_stream_message(&msg).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = ?e, "Failed to handle stream message");
+                    }
+                }
+            }
+        }
     }
 }

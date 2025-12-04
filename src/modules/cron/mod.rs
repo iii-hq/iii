@@ -1,12 +1,16 @@
+mod config;
+
 use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use colored::Colorize;
+pub use config::CronModuleConfig;
 use cron::Schedule;
 use futures::Future;
 use redis::{Client, aio::ConnectionManager};
+use serde_json::Value;
 use tokio::{
-    sync::{OnceCell, RwLock},
+    sync::RwLock,
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -309,39 +313,47 @@ impl CronAdapter {
     }
 }
 
-/// Core module for cron triggers that integrates with the engine's trigger system
 #[derive(Clone)]
 pub struct CronCoreModule {
-    adapter: Arc<OnceCell<Arc<CronAdapter>>>,
+    adapter: Arc<CronAdapter>,
     engine: Arc<Engine>,
-}
-
-impl CronCoreModule {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        let adapter = Arc::new(OnceCell::new());
-        Self { adapter, engine }
-    }
+    _config: CronModuleConfig,
 }
 
 #[async_trait]
 impl CoreModule for CronCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
-        let cron_lock = match RedisCronLock::new("redis://localhost:6379").await {
-            Ok(lock) => lock,
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "{}: {}",
-                    "Failed to initialize Cron lock adapter".red(),
-                    e.to_string().yellow()
-                );
-                panic!("Cannot proceed without a working Redis connection for cron locks");
-            }
-        };
-        let adapter = CronAdapter::new(Arc::new(cron_lock), self.engine.clone());
-        self.adapter
-            .set(Arc::new(adapter))
-            .map_err(|_| anyhow::anyhow!("Failed to set CronAdapter"))?;
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        let config: CronModuleConfig = config
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+
+        // Get redis URL from config or use default
+        let redis_url = config
+            .adapter
+            .as_ref()
+            .and_then(|a| a.config.as_ref())
+            .and_then(|c| c.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("redis://localhost:6379");
+
+        // Create the scheduler
+        let scheduler: Arc<dyn CronScheduler> = Arc::new(RedisCronLock::new(redis_url).await?);
+        let adapter = CronAdapter::new(scheduler, engine.clone());
+
+        Ok(Box::new(Self {
+            engine,
+            _config: config,
+            adapter: Arc::new(adapter),
+        }))
+    }
+
+    async fn initialize(&self) -> anyhow::Result<()> {
+        tracing::info!("Initializing CronModule");
+
         use crate::trigger::TriggerType;
 
         let trigger_type = TriggerType {
@@ -380,8 +392,6 @@ impl TriggerRegistrator for CronCoreModule {
             }
 
             self.adapter
-                .get()
-                .expect("CronAdapter not initialized")
                 .register(&trigger.id, &cron_expression, &trigger.function_path)
                 .await
         })
@@ -393,11 +403,7 @@ impl TriggerRegistrator for CronCoreModule {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         Box::pin(async move {
             tracing::debug!(trigger_id = %trigger.id, "Unregistering cron trigger");
-            self.adapter
-                .get()
-                .expect("CronAdapter not initialized")
-                .unregister(&trigger.id)
-                .await
+            self.adapter.unregister(&trigger.id).await
         })
     }
 }

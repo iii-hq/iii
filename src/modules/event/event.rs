@@ -1,16 +1,24 @@
-use std::{pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    sync::{Arc, RwLock},
+};
 
 use async_trait::async_trait;
 use colored::Colorize;
 use futures::Future;
+use once_cell::sync::Lazy;
 use serde_json::Value;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
+use super::config::EventModuleConfig;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionHandler,
-    modules::{core_module::CoreModule, event::adapters::RedisAdapter},
+    modules::{
+        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        event::adapters::RedisAdapter,
+    },
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -24,8 +32,9 @@ pub trait EventAdapter: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct EventCoreModule {
-    adapter: Arc<OnceCell<Arc<dyn EventAdapter>>>,
+    adapter: Arc<dyn EventAdapter>,
     engine: Arc<Engine>,
+    _config: EventModuleConfig,
 }
 
 impl TriggerRegistrator for EventCoreModule {
@@ -49,11 +58,12 @@ impl TriggerRegistrator for EventCoreModule {
             trigger.function_path.cyan()
         );
 
+        // Get adapter reference before async block
+        let adapter = self.adapter.clone();
+
         Box::pin(async move {
             if !topic.is_empty() {
-                self.adapter
-                    .get()
-                    .unwrap()
+                adapter
                     .subscribe(&topic, &trigger.id, &trigger.function_path)
                     .await;
             } else {
@@ -71,19 +81,19 @@ impl TriggerRegistrator for EventCoreModule {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        // Get adapter reference before async block
+        let adapter = self.adapter.clone();
+
         Box::pin(async move {
             tracing::debug!(trigger = %trigger.id, "Unregistering trigger");
-
-            self.adapter
-                .get()
-                .unwrap()
+            adapter
                 .unsubscribe(
                     trigger
                         .config
                         .get("topic")
                         .unwrap_or_default()
                         .as_str()
-                        .unwrap_or(""), // TODO throw error if topic is not set
+                        .unwrap_or(""),
                     &trigger.id,
                 )
                 .await;
@@ -94,21 +104,15 @@ impl TriggerRegistrator for EventCoreModule {
 
 #[async_trait]
 impl CoreModule for EventCoreModule {
-    async fn initialize(&self) -> Result<(), anyhow::Error> {
-        let adapter = match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            RedisAdapter::new("redis://localhost:6379".to_string(), self.engine.clone()),
-        )
-        .await
-        {
-            Ok(Ok(adapter)) => Arc::new(adapter),
-            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to connect to Redis: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!("Timed out while connecting to Redis")),
-        };
+    async fn create(
+        engine: Arc<Engine>,
+        config: Option<Value>,
+    ) -> anyhow::Result<Box<dyn CoreModule>> {
+        Self::create_with_adapters(engine, config).await
+    }
 
-        self.adapter
-            .set(adapter)
-            .map_err(|_| anyhow::anyhow!("Failed to set EventAdapter; adapter already set?"))?;
+    async fn initialize(&self) -> anyhow::Result<()> {
+        tracing::info!("Initializing EventModule");
 
         let trigger_type = TriggerType {
             id: "event".to_string(),
@@ -127,7 +131,6 @@ impl CoreModule for EventCoreModule {
                     "data": { "type": "object" }
                 })),
                 response_format: None,
-                // functions
             },
             Box::new(self.clone()),
         );
@@ -136,11 +139,52 @@ impl CoreModule for EventCoreModule {
     }
 }
 
-impl EventCoreModule {
-    pub fn new(engine: Arc<Engine>) -> Self {
-        let adapter = Arc::new(OnceCell::new());
+#[async_trait]
+impl ConfigurableModule for EventCoreModule {
+    type Config = EventModuleConfig;
+    type Adapter = dyn EventAdapter;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::event::RedisAdapter";
 
-        Self { adapter, engine }
+    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
+        let mut m = HashMap::new();
+        m.insert(
+            EventCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
+            EventCoreModule::make_adapter_factory(
+                |engine: Arc<Engine>, config: Option<Value>| async move {
+                    let redis_url = config
+                        .as_ref()
+                        .and_then(|v| v.get("redis_url"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "redis://localhost:6379".to_string());
+                    Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?)
+                        as Arc<dyn EventAdapter>)
+                },
+            ),
+        );
+        m
+    }
+
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn EventAdapter>>>> =
+            Lazy::new(|| RwLock::new(EventCoreModule::build_registry()));
+        &REGISTRY
+    }
+
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self {
+            engine,
+            _config: config,
+            adapter,
+        }
+    }
+
+    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.class.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
 
@@ -151,10 +195,9 @@ impl FunctionHandler for EventCoreModule {
         _function_path: String,
         input: Value,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
-        let adapter = Arc::clone(&self.adapter);
-
         tracing::debug!(input = %input, "Handling event function");
 
+        let adapter = self.adapter.clone();
         Box::pin(async move {
             let topic = input
                 .get("topic")
@@ -168,9 +211,8 @@ impl FunctionHandler for EventCoreModule {
                     message: "Topic is not set".into(),
                 });
             }
-
             tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-            let _ = adapter.get().unwrap().emit(topic, event_data).await;
+            adapter.emit(topic, event_data).await;
 
             Ok(Some(Value::Null))
         })
