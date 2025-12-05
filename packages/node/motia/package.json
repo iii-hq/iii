@@ -1,0 +1,37 @@
+{
+  "name": "motia",
+  "version": "0.0.1",
+  "private": true,
+  "packageManager": "pnpm@10.19.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsdown"
+  },
+  "exports": {
+    ".": {
+      "types": "./types.d.ts",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.mjs"
+    },
+    "./build": {
+      "types": "./build.d.ts",
+      "require": "./dist/build.cjs",
+      "import": "./dist/build.mjs"
+    }
+  },
+  "bin": {
+    "motia": "./dist/build.mjs"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.0.0",
+    "esbuild": "^0.27.0",
+    "glob": "^13.0.0",
+    "iii": "workspace:*",
+    "picocolors": "^1.1.1",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsdown": "^0.17.0"
+  }
+}

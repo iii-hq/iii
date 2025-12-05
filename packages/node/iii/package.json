@@ -5,12 +5,23 @@
   "author": "III",
   "type": "module",
   "description": "III Core",
+  "scripts": {
+    "build": "tsdown"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
   "dependencies": {
     "async_hooks": "^1.0.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
+    "tsdown": "^0.17.0",
     "typescript": "^5.9.3"
   }
 }

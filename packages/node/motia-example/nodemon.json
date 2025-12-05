@@ -1,0 +1,9 @@
+{
+  "watch": [
+    "steps",
+    "src"
+  ],
+  "ext": "ts,js",
+  "exec": "motia && bun dist/index.js",
+  "quiet": true
+}

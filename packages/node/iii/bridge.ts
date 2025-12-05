@@ -1,4 +1,4 @@
-import { WebSocket } from 'ws'
+import { WebSocket, type Data } from 'ws'
 import {
   BridgeMessage,
   InvocationResultMessage,
@@ -22,7 +22,7 @@ import { withContext } from './context'
 import { Logger, LoggerParams } from './logger'
 
 export class Bridge implements BridgeClient {
-  private ws: WebSocket
+  private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
   private services = new Map<string, Omit<RegisterServiceMessage, 'functions'>>()
   private invocations = new Map<string, Invocation>()
@@ -103,7 +103,7 @@ export class Bridge implements BridgeClient {
   }
 
   private onSocketOpen() {
-    this.ws.on('message', this.onMessage.bind(this))
+    this.ws?.on('message', this.onMessage.bind(this))
 
     this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
     this.services.forEach((service) => this.sendMessage(MessageType.RegisterService, service, true))
@@ -111,16 +111,16 @@ export class Bridge implements BridgeClient {
     this.triggers.forEach((trigger) => this.sendMessage(MessageType.RegisterTrigger, trigger, true))
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
-      .forEach((message) => this.ws.send(JSON.stringify(message)))
+      .forEach((message) => this.ws?.send(JSON.stringify(message)))
   }
 
   private isOpen() {
-    return this.ws.readyState === WebSocket.OPEN
+    return this.ws?.readyState === WebSocket.OPEN
   }
 
   private sendMessage(type: MessageType, message: Omit<BridgeMessage, 'type'>, skipIfClosed = false) {
     if (this.isOpen()) {
-      this.ws.send(JSON.stringify({ ...message, type }))
+      this.ws?.send(JSON.stringify({ ...message, type }))
     } else if (!skipIfClosed) {
       this.messagesToSend.push({ ...message, type } as BridgeMessage)
     }
@@ -148,10 +148,18 @@ export class Bridge implements BridgeClient {
         const result = await fn.handler(input)
         this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, result })
       } catch (error) {
-        this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, error })
+        this.sendMessage(MessageType.InvocationResult, {
+          invocationId,
+          functionPath,
+          error: { code: 'invocation_failed', message: (error as Error).message },
+        })
       }
     } else {
-      this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, error: 'Function not found' })
+      this.sendMessage(MessageType.InvocationResult, {
+        invocationId,
+        functionPath,
+        error: { code: 'function_not_found', message: 'Function not found' },
+      })
     }
   }
 
@@ -168,13 +176,13 @@ export class Bridge implements BridgeClient {
           id,
           triggerType,
           functionPath,
-          error: { code: 'trigger_registration_failed', message: error.message },
+          error: { code: 'trigger_registration_failed', message: (error as Error).message },
         })
       }
     }
   }
 
-  private onMessage(socketMessage: WebSocket.Data) {
+  private onMessage(socketMessage: Data) {
     const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
 
     if (type === MessageType.InvocationResult) {
