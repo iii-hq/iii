@@ -53,6 +53,7 @@ impl PathRouter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct APIrequest {
     pub query_params: HashMap<String, String>,
+    pub path_params: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub path: String,
     pub method: String,
@@ -72,6 +73,7 @@ impl APIrequest {
         let body_value = body.map(|Json(v)| v).unwrap_or(serde_json::json!({}));
         APIrequest {
             query_params,
+            path_params,
             headers: headers
                 .iter()
                 .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
@@ -220,7 +222,22 @@ fn build_routers_from_routers_registry(
                 &path,
                 delete(dynamic_handler).layer(Extension(path_for_extension)),
             ),
-            _ => continue,
+            "PATCH" => router.route(
+                &path,
+                axum::routing::patch(dynamic_handler).layer(Extension(path_for_extension)),
+            ),
+            "HEAD" => router.route(
+                &path,
+                axum::routing::head(dynamic_handler).layer(Extension(path_for_extension)),
+            ),
+            "OPTIONS" => router.route(
+                &path,
+                axum::routing::options(dynamic_handler).layer(Extension(path_for_extension)),
+            ),
+            _ => {
+                tracing::warn!("Unsupported HTTP method: {}", method);
+                router
+            }
         };
     }
 
