@@ -62,6 +62,7 @@ struct APIrequest {
 impl APIrequest {
     pub fn new(
         query_params: HashMap<String, String>,
+        path_params: HashMap<String, String>,
         headers: HeaderMap,
         path: String,
         method: String,
@@ -517,7 +518,7 @@ async fn dynamic_handler(
     Extension(engine): Extension<Arc<Engine>>,
     Extension(api_handler): Extension<Arc<RestApiCoreModule>>,
     Extension(registered_path): Extension<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(query_params): Query<HashMap<String, String>>,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
     let actual_path = uri.path();
@@ -525,7 +526,7 @@ async fn dynamic_handler(
     tracing::debug!("Registered route path: {}", registered_path);
     tracing::debug!("Actual path: {}", actual_path);
     tracing::debug!("HTTP Method: {}", method);
-    tracing::debug!("Query parameters: {:?}", params);
+    tracing::debug!("Query parameters: {:?}", query_params);
     tracing::debug!("Headers: {:?}", headers);
     let path_parameters: HashMap<String, String> =
         extract_path_params(&registered_path, actual_path);
@@ -540,7 +541,8 @@ async fn dynamic_handler(
         }
         let function_handler = function.expect("function existence checked");
         let api_request = APIrequest::new(
-            params.clone(),
+            query_params.clone(),
+            path_parameters.clone(),
             headers,
             registered_path.clone(),
             method.as_str().to_string(),
@@ -551,7 +553,7 @@ async fn dynamic_handler(
 
         let func_result = engine
             .non_worker_invocations
-            .handle_invocation(api_request_value, function_handler, path_parameters, params)
+            .handle_invocation(api_request_value, function_handler)
             .await;
 
         return match func_result {

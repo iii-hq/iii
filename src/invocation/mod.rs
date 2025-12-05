@@ -1,4 +1,4 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
 use futures::Future;
@@ -51,8 +51,6 @@ impl NonWorkerInvocations {
         &self,
         body: Value,
         function_handler: Function,
-        path_parameters: HashMap<String, String>,
-        query_parameters: HashMap<String, String>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let invocation_id = uuid::Uuid::new_v4();
