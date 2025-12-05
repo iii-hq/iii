@@ -10,12 +10,10 @@ use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use uuid::Uuid;
 
 use super::config::EventModuleConfig;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
-    function::FunctionHandler,
     modules::{
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         event::adapters::RedisAdapter,
@@ -40,14 +38,9 @@ pub struct EventCoreModule {
 
 #[service(name = "event")]
 impl EventCoreModule {
-    /// Sets the adapter registry for dynamic adapter creation
-    pub fn set_adapter_registry(&mut self, registry: Arc<AdapterRegistry>) {
-        self.adapter_registry = Some(registry);
-    }
-
     #[function(name = "emit", description = "Emit an event")]
     pub async fn emit(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
-        let adapter = self.adapter.get().unwrap();
+        let adapter = self.adapter.clone();
         let topic = input
             .get("topic")
             .and_then(|value| value.as_str())

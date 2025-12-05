@@ -1,19 +1,17 @@
 mod config;
 mod logger;
 
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
-use futures::Future;
 pub use logger::Logger;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
-    function::FunctionHandler,
     modules::core_module::CoreModule,
     protocol::ErrorBody,
 };
@@ -109,6 +107,10 @@ impl CoreModule for LoggerCoreModule {
 
         let logger = Arc::new(Logger {});
         Ok(Box::new(Self { config, logger }))
+    }
+
+    fn register_functions(&self, engine: Arc<Engine>) {
+        self.register_functions(engine);
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {

@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
@@ -10,7 +10,7 @@ use colored::Colorize;
 use function_macros::{function, service};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::{net::TcpListener, sync::OnceCell};
+use tokio::net::TcpListener;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -109,7 +109,6 @@ impl CoreModule for StreamCoreModule {
         let adapter = adapter_config.build_adapter(engine.clone()).await?;
 
         Ok(Box::new(Self {
-            engine,
             config: module_config,
             adapter,
         }))
@@ -122,22 +121,7 @@ impl CoreModule for StreamCoreModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamCoreModule");
 
-        let adapter = match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            RedisAdapter::new("redis://localhost:6379".to_string()),
-        )
-        .await
-        {
-            Ok(Ok(adapter)) => Arc::new(adapter),
-            Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to connect to Redis: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!("Timed out while connecting to Redis")),
-        };
-
-        self.adapter
-            .set(adapter.clone())
-            .map_err(|_| anyhow::anyhow!("Failed to set StreamAdapter"))?;
-
-        let socket_manager = Arc::new(StreamSocketManager::new(adapter.clone()));
+        let socket_manager = Arc::new(StreamSocketManager::new(self.adapter.clone()));
         let addr = format!("127.0.0.1:{}", self.config.port)
             .parse::<SocketAddr>()
             .unwrap();
@@ -171,16 +155,9 @@ impl CoreModule for StreamCoreModule {
 
 #[service(name = "streams")]
 impl StreamCoreModule {
-    pub fn new() -> Self {
-        let adapter = Arc::new(OnceCell::new());
-        let config = WebSocketConfig::default();
-
-        Self { adapter, config }
-    }
-
     #[function(name = "streams.set", description = "Set a value in a stream")]
     pub async fn set(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
-        let adapter = self.adapter.get().unwrap();
+        let adapter = self.adapter.clone();
         let stream_name = input
             .get("stream_name")
             .and_then(|v| v.as_str())
@@ -206,8 +183,7 @@ impl StreamCoreModule {
         let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
         let data = input.get("data").cloned().unwrap_or(Value::Null);
 
-        let adapter = Arc::clone(&self.adapter);
-        let adapter = adapter.get().unwrap();
+        let adapter = self.adapter.clone();
         let _ = adapter
             .set(stream_name, group_id, item_id, data.clone())
             .await;
@@ -224,8 +200,7 @@ impl StreamCoreModule {
         let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
         let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
 
-        let adapter = Arc::clone(&self.adapter);
-        let adapter = adapter.get().unwrap();
+        let adapter = self.adapter.clone();
         let _ = adapter.delete(stream_name, group_id, item_id).await;
 
         Ok(Some(Value::Null))
@@ -239,8 +214,7 @@ impl StreamCoreModule {
             .unwrap_or("");
         let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
 
-        let adapter = Arc::clone(&self.adapter);
-        let adapter = adapter.get().unwrap();
+        let adapter = self.adapter.clone();
         let values = adapter.get_group(stream_name, group_id).await;
 
         Ok(Some(serde_json::to_value(values).unwrap()))
