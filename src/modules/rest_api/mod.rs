@@ -195,12 +195,7 @@ fn build_routers_from_routers_registry(
     for entry in routers_registry.iter() {
         let mut path = entry.http_path.clone();
         if !path.starts_with('/') {
-            // need to check if
-            // we want to do this
-            // or return an error
-            // when registering
-            // with leading slash
-
+            // need to check if we want to do this or return an error when registering with leading slash
             path = format!("/{}", path);
         }
         let method = entry.http_method.clone();
@@ -235,7 +230,7 @@ fn build_routers_from_routers_registry(
                 axum::routing::options(dynamic_handler).layer(Extension(path_for_extension)),
             ),
             _ => {
-                tracing::warn!("Unsupported HTTP method: {}", method);
+                tracing::warn!("Unsupported HTTP method: {}", method.purple());
                 router
             }
         };
@@ -373,11 +368,8 @@ impl RestApiCoreModule {
     pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
         let method = http_method.to_uppercase();
         let http_path = if http_path.starts_with('/') {
-            tracing::debug!("Looking up router for path with leading slash"); // need to check if
-            // we want to do this
-            // or return an error
-            // when registering
-            // with leading slash
+            tracing::debug!("Looking up router for path with leading slash");
+            // need to check if we want to do this or return an error when registering with leading slash http_path
             http_path
                 .to_string()
                 .clone()
