@@ -75,15 +75,6 @@ impl FunctionsRegistry {
     }
 
     pub fn register_function(&self, function_path: String, function: Function) {
-        let available_functions: Vec<String> = self
-            .functions
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect();
-        tracing::debug!(
-            "Available functions before registration: {:?}",
-            available_functions
-        );
         tracing::info!(
             "{} Function {}",
             "[REGISTERED]".green(),

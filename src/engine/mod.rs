@@ -496,7 +496,7 @@ impl Engine {
     }
 
     async fn cleanup_worker(&self, worker: &Worker) {
-        let worker_function = worker
+        let worker_functions = worker
             .function_paths
             .read()
             .await
@@ -504,8 +504,8 @@ impl Engine {
             .cloned()
             .collect::<Vec<String>>();
 
-        tracing::debug!(worker_id = %worker.id, functions = ?worker_function, "Worker registered functions");
-        for function_path in worker_function.iter() {
+        tracing::debug!(worker_id = %worker.id, functions = ?worker_functions, "Worker registered functions");
+        for function_path in worker_functions.iter() {
             self.remove_function(function_path);
             self.service_registry
                 .remove_function_from_services(function_path)
