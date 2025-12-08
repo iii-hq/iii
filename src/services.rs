@@ -1,8 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
-use tokio::sync::RwLock;
-
 use dashmap::DashMap;
+use tokio::sync::RwLock;
 
 #[derive(Default)]
 pub struct ServicesRegistry {
@@ -13,6 +12,58 @@ impl ServicesRegistry {
         ServicesRegistry {
             services: Arc::new(RwLock::new(DashMap::new())),
         }
+    }
+
+    pub async fn remove_function_from_services(&self, func_path: &str) {
+        let service_name = match Self::get_service_name_from_func_path(func_path) {
+            Some(name) => name,
+            None => {
+                tracing::warn!(func_path = %func_path, "Invalid function path format");
+                return;
+            }
+        };
+        let function_name = match Self::get_function_name_from_func_path(func_path) {
+            Some(name) => name,
+            None => {
+                tracing::warn!(func_path = %func_path, "Invalid function path format");
+                return;
+            }
+        };
+        let mut should_remove_service = false;
+        if let Some(mut service) = self.services.write().await.get_mut(&service_name) {
+            tracing::debug!(
+                service_name = %service_name,
+                function_name = %function_name,
+                "Removing function from service"
+            );
+            service.remove_function_from_service(&function_name);
+            if service.functions.is_empty() {
+                should_remove_service = true;
+            }
+        }
+        if should_remove_service {
+            tracing::debug!(
+                service_name = %service_name,
+                "Removing service as it has no more functions"
+            );
+            self.services.write().await.remove(&service_name);
+        }
+    }
+
+    fn get_service_name_from_func_path(func_path: &str) -> Option<String> {
+        let parts: Vec<&str> = func_path.split(".").collect();
+        if parts.len() < 2 {
+            return None;
+        }
+        Some(parts[0].to_string())
+    }
+
+    fn get_function_name_from_func_path(func_path: &str) -> Option<String> {
+        let parts: Vec<&str> = func_path.split(".").collect();
+        if parts.len() < 2 {
+            return None;
+        }
+        Some(parts[1..].join("."))
     }
 
     pub async fn register_service_from_func_path(&self, func_path: &str) {
@@ -83,7 +134,7 @@ impl Service {
         self.functions.insert(function);
     }
 
-    pub fn _remove_function(&mut self, function: &str) {
+    pub fn remove_function_from_service(&mut self, function: &str) {
         self.functions.remove(function);
     }
 }

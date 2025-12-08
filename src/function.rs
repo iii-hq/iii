@@ -75,6 +75,15 @@ impl FunctionsRegistry {
     }
 
     pub fn register_function(&self, function_path: String, function: Function) {
+        let available_functions: Vec<String> = self
+            .functions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        tracing::debug!(
+            "Available functions before registration: {:?}",
+            available_functions
+        );
         tracing::info!(
             "{} Function {}",
             "[REGISTERED]".green(),
@@ -85,6 +94,7 @@ impl FunctionsRegistry {
 
     pub fn remove(&self, function_path: &str) {
         self.functions.remove(function_path);
+        tracing::info!("{} Function {}", "[REMOVED]".red(), function_path.purple());
     }
 
     pub fn get(&self, function_path: &str) -> Option<Function> {
