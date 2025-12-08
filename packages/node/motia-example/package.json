@@ -10,8 +10,7 @@
     "dev": "nodemon --config nodemon.json"
   },
   "dependencies": {
-    "iii": "workspace:*",
-    "motia": "workspace:*",
+    "@iii-dev/motia": "workspace:*",
     "zod": "^4.1.13"
   },
   "devDependencies": {

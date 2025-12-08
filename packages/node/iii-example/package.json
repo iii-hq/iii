@@ -1,5 +1,5 @@
 {
-  "name": "@iii/example",
+  "name": "@iii-dev/example",
   "version": "1.0.0",
   "main": "index.js",
   "author": "III",
@@ -7,7 +7,7 @@
     "dev": "nodemon --config nodemon.json"
   },
   "dependencies": {
-    "iii": "workspace:*"
+    "@iii-dev/sdk": "workspace:*"
   },
   "devDependencies": {
     "esbuild": "^0.27.0",

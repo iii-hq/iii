@@ -29,7 +29,7 @@ importers:
 
   iii-example:
     dependencies:
-      iii:
+      '@iii-dev/sdk':
         specifier: workspace:*
         version: link:../iii
     devDependencies:
@@ -45,6 +45,9 @@ importers:
 
   motia:
     dependencies:
+      '@iii-dev/sdk':
+        specifier: workspace:*
+        version: link:../iii
       '@standard-schema/spec':
         specifier: ^1.0.0
         version: 1.0.0
@@ -54,9 +57,6 @@ importers:
       glob:
         specifier: ^13.0.0
         version: 13.0.0
-      iii:
-        specifier: workspace:*
-        version: link:../iii
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -73,10 +73,7 @@ importers:
 
   motia-example:
     dependencies:
-      iii:
-        specifier: workspace:*
-        version: link:../iii
-      motia:
+      '@iii-dev/motia':
         specifier: workspace:*
         version: link:../motia
       zod:
