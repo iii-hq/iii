@@ -95,8 +95,26 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let this = self.clone();
                             let #handler_ident = Handler::new(move |input: Value| {
                                 let this = this.clone();
-                                let input: #input_type = serde_json::from_value(input).unwrap(); // TODO fix
-                                async move { this.#method_ident(input).await }
+                    
+                                async move {
+                                    let parsed: Result<#input_type, _> = serde_json::from_value(input);
+                                    let input = match parsed {
+                                        Ok(v) => v,
+                                        Err(err) => {
+                                            eprintln!(
+                                                "[warning] Failed to deserialize input for {}: {}",
+                                                #name,
+                                                err
+                                            );
+                                            return Err(ErrorBody {
+                                                code: "deserialization_error".into(),
+                                                message: format!("Failed to deserialize input for {}: {}", #name, err.to_string()),
+                                            });
+                                        }
+                                    };
+                    
+                                    this.#method_ident(input).await
+                                }
                             });
 
                             engine.register_function_handler(

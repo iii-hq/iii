@@ -19,6 +19,7 @@ use crate::{
         streams::{
             StreamSocketManager,
             adapters::{RedisAdapter, StreamAdapter},
+            structs::{StreamDeleteInput, StreamGetGroupInput, StreamGetInput, StreamSetInput},
         },
     },
     protocol::ErrorBody,
@@ -156,67 +157,53 @@ impl CoreModule for StreamCoreModule {
 #[service(name = "streams")]
 impl StreamCoreModule {
     #[function(name = "streams.set", description = "Set a value in a stream")]
-    pub async fn set(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+    pub async fn set(&self, input: StreamSetInput) -> Result<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
-        let stream_name = input
-            .get("stream_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-        let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-        let data = input.get("data").cloned().unwrap_or(Value::Null);
+        let stream_name = input.stream_name;
+        let group_id = input.group_id;
+        let item_id = input.item_id;
+        let data = input.data;
 
         let _ = adapter
-            .set(stream_name, group_id, item_id, data.clone())
+            .set(&stream_name, &group_id, &item_id, data.clone())
             .await;
 
         Ok(Some(data))
     }
 
     #[function(name = "streams.get", description = "Get a value from a stream")]
-    pub async fn get(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
-        let stream_name = input
-            .get("stream_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-        let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-        let data = input.get("data").cloned().unwrap_or(Value::Null);
+    pub async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, ErrorBody> {
+        let stream_name = input.stream_name;
+        let group_id = input.group_id;
+        let item_id = input.item_id;
 
         let adapter = self.adapter.clone();
-        let _ = adapter
-            .set(stream_name, group_id, item_id, data.clone())
-            .await;
+        let data = adapter.get(&stream_name, &group_id, &item_id).await;
 
-        Ok(Some(data))
+        Ok(data)
     }
 
     #[function(name = "streams.delete", description = "Delete a value from a stream")]
-    pub async fn delete(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
-        let stream_name = input
-            .get("stream_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-        let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+    pub async fn delete(&self, input: StreamDeleteInput) -> Result<Option<Value>, ErrorBody> {
+        let stream_name = input.stream_name;
+        let group_id = input.group_id;
+        let item_id = input.item_id;
 
         let adapter = self.adapter.clone();
-        let _ = adapter.delete(stream_name, group_id, item_id).await;
+        let data = adapter.get(&stream_name, &group_id, &item_id).await;
+        let _ = adapter.delete(&stream_name, &group_id, &item_id).await;
 
-        Ok(Some(Value::Null))
+        Ok(data)
     }
 
     #[function(name = "streams.getGroup", description = "Get a group from a stream")]
-    pub async fn get_group(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
-        let stream_name = input
-            .get("stream_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+    pub async fn get_group(&self, input: StreamGetGroupInput) -> Result<Option<Value>, ErrorBody> {
+        let stream_name = input.stream_name;
+        let group_id = input.group_id;
 
         let adapter = self.adapter.clone();
-        let values = adapter.get_group(stream_name, group_id).await;
+        let values = adapter.get_group(&stream_name, &group_id).await;
 
-        Ok(Some(serde_json::to_value(values).unwrap()))
+        Ok(Some(serde_json::to_value(values).unwrap_or(Value::Null)))
     }
 }

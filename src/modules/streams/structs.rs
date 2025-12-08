@@ -66,3 +66,31 @@ pub enum StreamOutbound {
     Stream(StreamWrapperMessage),
     Raw(WsMessage),
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamSetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamGetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamDeleteInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamGetGroupInput {
+    pub stream_name: String,
+    pub group_id: String,
+}
