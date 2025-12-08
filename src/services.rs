@@ -29,24 +29,29 @@ impl ServicesRegistry {
                 return;
             }
         };
-        let mut should_remove_service = false;
-        if let Some(mut service) = self.services.write().await.get_mut(&service_name) {
+
+        let services_write = self.services.write().await;
+
+        if let Some(mut service) = services_write.get_mut(&service_name) {
             tracing::debug!(
                 service_name = %service_name,
                 function_name = %function_name,
                 "Removing function from service"
             );
+
             service.remove_function_from_service(&function_name);
-            if service.functions.is_empty() {
-                should_remove_service = true;
+            let is_functions_empty = service.functions.is_empty();
+
+            drop(service); // important to drop the service before removing it
+
+            if is_functions_empty {
+                tracing::debug!(
+                    service_name = %service_name,
+                    "Removing service as it has no more functions"
+                );
+
+                services_write.remove(&service_name);
             }
-        }
-        if should_remove_service {
-            tracing::debug!(
-                service_name = %service_name,
-                "Removing service as it has no more functions"
-            );
-            self.services.write().await.remove(&service_name);
         }
     }
 
