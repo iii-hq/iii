@@ -7,7 +7,13 @@ import { StreamConfig } from './types-stream'
 import { existsSync } from 'fs'
 import { globSync } from 'glob'
 import { Printer } from './printer'
-import type { ApiRouteHandler, ApiRequest as MotiaApiRequest, ApiResponse as MotiaApiResponse } from './types'
+import type {
+  ApiMiddleware,
+  ApiRouteHandler,
+  ApiRequest as MotiaApiRequest,
+  ApiResponse as MotiaApiResponse,
+} from './types'
+import { StateManager } from './new/state'
 
 export * from './types'
 export * from './types-stream'
@@ -31,6 +37,19 @@ export const getStepFilesFromDir = (dir: string): string[] => {
 
 type StepWithHandler = Step & { handler: StepHandler<any> }
 
+const composeMiddleware = <TRequestBody = unknown, TResponseBody = unknown>(
+  ...middlewares: ApiMiddleware<TRequestBody, any, TResponseBody>[]
+) => {
+  return async (req: any, ctx: any, handler: () => Promise<any>): Promise<any> => {
+    const composedHandler = middlewares.reduceRight<() => Promise<any>>(
+      (nextHandler, middleware) => () => middleware(req, ctx, nextHandler),
+      handler,
+    )
+
+    return composedHandler()
+  }
+}
+
 export const stepWrapper = (
   config: StepConfig,
   stepPath: string,
@@ -39,6 +58,7 @@ export const stepWrapper = (
 ) => {
   const step: StepWithHandler = { config, handler, filePath: stepPath, version: '' }
   const functionPath = `steps.${step.config.name}`
+  const state = new StateManager()
 
   printer.printStepCreated(step)
 
@@ -49,7 +69,7 @@ export const stepWrapper = (
       const context: FlowContext<any> = {
         emit,
         traceId: crypto.randomUUID(),
-        state: null as never,
+        state,
         logger,
         streams,
       }
@@ -61,8 +81,13 @@ export const stepWrapper = (
         headers: req.headers,
       }
 
-      const handler = step.handler as ApiRouteHandler<any, MotiaApiResponse, any>
-      const response: MotiaApiResponse = await handler(motiaReq, context)
+      const middlewares = Array.isArray(step.config.middleware) ? step.config.middleware : []
+      const handler = composeMiddleware(...middlewares)
+      const handlerFn = async () => {
+        const stepHandler = step.handler as ApiRouteHandler<any, MotiaApiResponse, any>
+        return stepHandler(motiaReq, context)
+      }
+      const response: MotiaApiResponse = await handler(motiaReq, context, handlerFn)
 
       return {
         status_code: response.status,
@@ -77,7 +102,7 @@ export const stepWrapper = (
       const context: FlowContext<any> = {
         emit,
         traceId: crypto.randomUUID(),
-        state: null as never,
+        state,
         logger,
         streams,
       }
