@@ -1,7 +1,10 @@
 {
   "name": "@iii-dev/motia",
   "version": "0.0.1",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "packageManager": "pnpm@10.19.0",
   "type": "module",
   "scripts": {
@@ -20,7 +23,8 @@
     }
   },
   "bin": {
-    "motia": "./dist/build.mjs"
+    "motia": "./dist/build.mjs",
+    "iii": "./iii"
   },
   "dependencies": {
     "@iii-dev/sdk": "workspace:*",
