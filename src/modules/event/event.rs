@@ -6,15 +6,14 @@ use std::{
 
 use async_trait::async_trait;
 use colored::Colorize;
+use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use uuid::Uuid;
 
 use super::config::EventModuleConfig;
 use crate::{
-    engine::{Engine, EngineTrait, RegisterFunctionRequest},
-    function::FunctionHandler,
+    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     modules::{
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         event::adapters::RedisAdapter,
@@ -35,6 +34,31 @@ pub struct EventCoreModule {
     adapter: Arc<dyn EventAdapter>,
     engine: Arc<Engine>,
     _config: EventModuleConfig,
+}
+
+#[service(name = "event")]
+impl EventCoreModule {
+    #[function(name = "emit", description = "Emit an event")]
+    pub async fn emit(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+        let adapter = self.adapter.clone();
+        let topic = input
+            .get("topic")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let event_data = input.get("data").cloned().unwrap_or(Value::Null);
+
+        if topic.is_empty() {
+            return Err(ErrorBody {
+                code: "topic_not_set".into(),
+                message: "Topic is not set".into(),
+            });
+        }
+
+        tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
+        let _ = adapter.emit(topic, event_data).await;
+
+        Ok(Some(Value::Null))
+    }
 }
 
 impl TriggerRegistrator for EventCoreModule {
@@ -111,6 +135,10 @@ impl CoreModule for EventCoreModule {
         Self::create_with_adapters(engine, config).await
     }
 
+    fn register_functions(&self, engine: Arc<Engine>) {
+        self.register_functions(engine);
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing EventModule");
 
@@ -122,18 +150,6 @@ impl CoreModule for EventCoreModule {
         };
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
-        self.engine.register_function(
-            RegisterFunctionRequest {
-                function_path: "emit".to_string(),
-                description: Some("Emit an event".to_string()),
-                request_format: Some(serde_json::json!({
-                    "topic": { "type": "string" },
-                    "data": { "type": "object" }
-                })),
-                response_format: None,
-            },
-            Box::new(self.clone()),
-        );
 
         Ok(())
     }
@@ -185,36 +201,5 @@ impl ConfigurableModule for EventCoreModule {
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
         config.adapter.as_ref().and_then(|a| a.config.clone())
-    }
-}
-
-impl FunctionHandler for EventCoreModule {
-    fn handle_function(
-        &self,
-        _invocation_id: Option<Uuid>,
-        _function_path: String,
-        input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
-        tracing::debug!(input = %input, "Handling event function");
-
-        let adapter = self.adapter.clone();
-        Box::pin(async move {
-            let topic = input
-                .get("topic")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let event_data = input.get("data").cloned().unwrap_or(Value::Null);
-
-            if topic.is_empty() {
-                return Err(ErrorBody {
-                    code: "topic_not_set".into(),
-                    message: "Topic is not set".into(),
-                });
-            }
-            tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-            adapter.emit(topic, event_data).await;
-
-            Ok(Some(Value::Null))
-        })
     }
 }

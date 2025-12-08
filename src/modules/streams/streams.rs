@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
@@ -7,14 +7,13 @@ use axum::{
     routing::get,
 };
 use colored::Colorize;
+use function_macros::{function, service};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
-use uuid::Uuid;
 
 use crate::{
-    engine::{Engine, EngineTrait, RegisterFunctionRequest},
-    function::FunctionHandler,
+    engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     modules::{
         core_module::CoreModule,
         streams::{
@@ -27,7 +26,6 @@ use crate::{
 
 #[derive(Clone)]
 pub struct StreamCoreModule {
-    engine: Arc<Engine>,
     config: StreamModuleConfig,
     adapter: Arc<dyn StreamAdapter>,
 }
@@ -44,83 +42,6 @@ async fn ws_handler(
             tracing::error!(addr = %addr, error = ?err, "stream socket error");
         }
     })
-}
-
-impl FunctionHandler for StreamCoreModule {
-    fn handle_function<'a>(
-        &'a self,
-        _invocation_id: Option<Uuid>,
-        function_path: String,
-        input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
-        Box::pin(async move {
-            match function_path.as_str() {
-                "streams.set" => {
-                    let stream_name = input
-                        .get("stream_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let data = input.get("data").cloned().unwrap_or(Value::Null);
-
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
-                    let _ = self
-                        .adapter
-                        .set(stream_name, group_id, item_id, data.clone())
-                        .await;
-
-                    Ok(Some(data))
-                }
-
-                "streams.get" => {
-                    let stream_name = input
-                        .get("stream_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
-                    let value = self.adapter.get(stream_name, group_id, item_id).await;
-
-                    Ok(value)
-                }
-
-                "streams.delete" => {
-                    let stream_name = input
-                        .get("stream_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
-                    let _ = self.adapter.delete(stream_name, group_id, item_id).await;
-
-                    Ok(Some(Value::Null))
-                }
-
-                "streams.get_group" => {
-                    let stream_name = input
-                        .get("stream_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
-
-                    // let adapter = Arc::clone(&self.adapter);
-                    // let adapter = adapter.get().unwrap();
-                    let values = self.adapter.get_group(stream_name, group_id).await;
-
-                    Ok(Some(serde_json::to_value(values).unwrap()))
-                }
-                _ => Ok(None),
-            }
-        })
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -188,36 +109,19 @@ impl CoreModule for StreamCoreModule {
         let adapter = adapter_config.build_adapter(engine.clone()).await?;
 
         Ok(Box::new(Self {
-            engine,
             config: module_config,
             adapter,
         }))
     }
 
+    fn register_functions(&self, engine: Arc<Engine>) {
+        self.register_functions(engine);
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamCoreModule");
 
-        let functions = [
-            ("streams.set", "Set a value in a stream"),
-            ("streams.get", "Get a value from a stream"),
-            ("streams.delete", "Delete a value from a stream"),
-            ("streams.get_group", "Get a group of values from a stream"),
-        ];
-
-        for (function_path, description) in functions.iter() {
-            let _ = self.engine.register_function(
-                RegisterFunctionRequest {
-                    function_path: function_path.to_string(),
-                    description: Some(description.to_string()),
-                    request_format: None,
-                    response_format: None,
-                },
-                Box::new(self.clone()),
-            );
-        }
-
         let socket_manager = Arc::new(StreamSocketManager::new(self.adapter.clone()));
-
         let addr = format!("127.0.0.1:{}", self.config.port)
             .parse::<SocketAddr>()
             .unwrap();
@@ -246,5 +150,73 @@ impl CoreModule for StreamCoreModule {
         });
 
         Ok(())
+    }
+}
+
+#[service(name = "streams")]
+impl StreamCoreModule {
+    #[function(name = "streams.set", description = "Set a value in a stream")]
+    pub async fn set(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+        let adapter = self.adapter.clone();
+        let stream_name = input
+            .get("stream_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+        let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+        let data = input.get("data").cloned().unwrap_or(Value::Null);
+
+        let _ = adapter
+            .set(stream_name, group_id, item_id, data.clone())
+            .await;
+
+        Ok(Some(data))
+    }
+
+    #[function(name = "streams.get", description = "Get a value from a stream")]
+    pub async fn get(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+        let stream_name = input
+            .get("stream_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+        let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+        let data = input.get("data").cloned().unwrap_or(Value::Null);
+
+        let adapter = self.adapter.clone();
+        let _ = adapter
+            .set(stream_name, group_id, item_id, data.clone())
+            .await;
+
+        Ok(Some(data))
+    }
+
+    #[function(name = "streams.delete", description = "Delete a value from a stream")]
+    pub async fn delete(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+        let stream_name = input
+            .get("stream_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+        let item_id = input.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+
+        let adapter = self.adapter.clone();
+        let _ = adapter.delete(stream_name, group_id, item_id).await;
+
+        Ok(Some(Value::Null))
+    }
+
+    #[function(name = "streams.getGroup", description = "Get a group from a stream")]
+    pub async fn get_group(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+        let stream_name = input
+            .get("stream_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let group_id = input.get("group_id").and_then(|v| v.as_str()).unwrap_or("");
+
+        let adapter = self.adapter.clone();
+        let values = adapter.get_group(stream_name, group_id).await;
+
+        Ok(Some(serde_json::to_value(values).unwrap()))
     }
 }

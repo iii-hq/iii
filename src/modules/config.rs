@@ -283,6 +283,7 @@ impl EngineBuilder {
                 .await?;
             tracing::debug!("Initializing module: {}", entry.class);
             module.initialize().await?;
+            module.register_functions(self.engine.clone());
         }
 
         Ok(self)
