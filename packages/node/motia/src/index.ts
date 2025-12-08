@@ -1,16 +1,16 @@
 import { type ApiRequest as IIIApiRequest, type ApiResponse as IIIApiResponse, getContext } from '@iii-dev/sdk'
 import { bridge } from './new/bridge'
 import { Stream } from './new/streams'
-import { isApiStep, isCronStep, isEventStep } from './src/guards'
-import { FlowContext, Step, StepConfig, StepHandler } from './src/types'
-import { StreamConfig } from './src/types-stream'
+import { isApiStep, isCronStep, isEventStep } from './guards'
+import { FlowContext, Step, StepConfig, StepHandler } from './types'
+import { StreamConfig } from './types-stream'
 import { existsSync } from 'fs'
 import { globSync } from 'glob'
-import { Printer } from './src/printer'
-import type { ApiRouteHandler, ApiRequest as MotiaApiRequest, ApiResponse as MotiaApiResponse } from './src/types'
+import { Printer } from './printer'
+import type { ApiRouteHandler, ApiRequest as MotiaApiRequest, ApiResponse as MotiaApiResponse } from './types'
 
-export * from './src/types'
-export * from './src/types-stream'
+export * from './types'
+export * from './types-stream'
 export { Stream } from './new/streams'
 
 const printer = new Printer(process.cwd())

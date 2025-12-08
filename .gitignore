@@ -5,3 +5,4 @@ worker_py/__pycache__/
 .venv
 .vscode/
 dist/
+.DS_Store
