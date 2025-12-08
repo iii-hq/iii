@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
@@ -92,7 +92,6 @@ impl Engine {
     }
 
     fn remove_function(&self, function_path: &str) {
-        tracing::debug!(function_path = %function_path, "Removing function");
         self.functions.remove(function_path);
     }
 
@@ -497,15 +496,20 @@ impl Engine {
     }
 
     async fn cleanup_worker(&self, worker: &Worker) {
-        for function_path in worker
+        let worker_functions = worker
             .function_paths
             .read()
             .await
             .iter()
             .cloned()
-            .collect::<HashSet<String>>()
-        {
-            self.remove_function(&function_path);
+            .collect::<Vec<String>>();
+
+        tracing::debug!(worker_id = %worker.id, functions = ?worker_functions, "Worker registered functions");
+        for function_path in worker_functions.iter() {
+            self.remove_function(function_path);
+            self.service_registry
+                .remove_function_from_services(function_path)
+                .await;
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;

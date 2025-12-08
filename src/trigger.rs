@@ -184,10 +184,8 @@ impl TriggerRegistry {
         let trigger_type = trigger_type_lock.get(&trigger_type.clone());
 
         if let Some(tt) = trigger_type {
-            let result: Result<(), anyhow::Error> = tt
-                .registrator
-                .unregister_trigger(trigger.clone())
-                .await;
+            let result: Result<(), anyhow::Error> =
+                tt.registrator.unregister_trigger(trigger.clone()).await;
 
             result?
         }

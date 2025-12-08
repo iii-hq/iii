@@ -85,6 +85,7 @@ impl FunctionsRegistry {
 
     pub fn remove(&self, function_path: &str) {
         self.functions.remove(function_path);
+        tracing::info!("{} Function {}", "[REMOVED]".red(), function_path.purple());
     }
 
     pub fn get(&self, function_path: &str) -> Option<Function> {
