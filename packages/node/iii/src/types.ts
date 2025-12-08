@@ -50,8 +50,8 @@ export type Trigger = {
 }
 
 export type ApiRequest<TBody = unknown> = {
-  pathParams: Record<string, string>
-  queryParams: Record<string, string | string[]>
+  path_params: Record<string, string>
+  query_params: Record<string, string | string[]>
   body: TBody
   headers: Record<string, string | string[]>
   method: string

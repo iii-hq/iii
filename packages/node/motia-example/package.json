@@ -1,0 +1,21 @@
+{
+  "name": "@iii/motia-example",
+  "version": "0.0.1",
+  "private": true,
+  "packageManager": "pnpm@10.19.0",
+  "type": "module",
+  "scripts": {
+    "build": "motia",
+    "start": "bun dist/index.js",
+    "dev": "nodemon --config nodemon.json"
+  },
+  "dependencies": {
+    "@iii-dev/motia": "workspace:*",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "nodemon": "^3.1.10",
+    "typescript": "^5.9.3"
+  }
+}

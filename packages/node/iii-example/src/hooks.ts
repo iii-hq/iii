@@ -1,5 +1,5 @@
 import { bridge } from './bridge'
-import { type ApiResponse, type ApiRequest, getContext, Context } from 'iii'
+import { type ApiResponse, type ApiRequest, getContext, Context } from '@iii-dev/sdk'
 
 export const useApi = (
   config: { name: string; api_path: string; http_method: string },
