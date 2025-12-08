@@ -1,4 +1,4 @@
-import { type ApiRequest as IIIApiRequest, type ApiResponse as IIIApiResponse, getContext } from 'iii'
+import { type ApiRequest as IIIApiRequest, type ApiResponse as IIIApiResponse, getContext } from '@iii-dev/sdk'
 import { bridge } from './new/bridge'
 import { Stream } from './new/streams'
 import { isApiStep, isCronStep, isEventStep } from './src/guards'

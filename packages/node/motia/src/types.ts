@@ -1,5 +1,5 @@
 import type { ZodArray, ZodObject } from 'zod'
-import type { Logger } from 'iii'
+import type { Logger } from '@iii-dev/sdk'
 import type { JsonSchema } from './types/schema.types'
 
 export type ZodInput = ZodObject<any> | ZodArray<any>
