@@ -30,6 +30,8 @@ export class Bridge implements BridgeClient {
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
 
+  private interval?: NodeJS.Timeout
+
   constructor(private readonly address: string) {
     this.connect()
   }
@@ -100,9 +102,25 @@ export class Bridge implements BridgeClient {
   private connect() {
     this.ws = new WebSocket(this.address)
     this.ws.on('open', this.onSocketOpen.bind(this))
+    this.ws.on('close', this.onSocketClose.bind(this))
+  }
+
+  private clearInterval() {
+    clearInterval(this.interval)
+    this.interval = undefined
+  }
+
+  private onSocketClose() {
+    this.ws?.removeAllListeners()
+    this.ws?.terminate()
+    this.ws = undefined
+
+    this.clearInterval()
+    this.interval = setInterval(() => this.connect(), 2000)
   }
 
   private onSocketOpen() {
+    this.clearInterval()
     this.ws?.on('message', this.onMessage.bind(this))
 
     this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
