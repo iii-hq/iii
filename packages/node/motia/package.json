@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/motia",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -24,6 +24,7 @@
   },
   "bin": {
     "motia": "./dist/build.mjs",
+    "motia-iii": "./dist/build.mjs",
     "iii": "./iii"
   },
   "dependencies": {

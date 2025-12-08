@@ -575,7 +575,7 @@ async fn dynamic_handler(
                 let api_response = APIresponse::from_function_return(result);
                 (
                     StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK),
-                    Json(api_response),
+                    Json(api_response.body),
                 )
                     .into_response()
             }
