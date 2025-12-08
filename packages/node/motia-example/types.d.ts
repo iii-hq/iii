@@ -4,9 +4,9 @@
  *
  * Consider adding this file to .prettierignore and eslint ignore.
  */
-import { EventHandler, ApiRouteHandler, ApiResponse, MotiaStream, CronHandler } from 'motia'
+import { EventHandler, ApiRouteHandler, ApiResponse, MotiaStream, CronHandler } from '@iii-dev/motia'
 
-declare module 'motia' {
+declare module '@iii-dev/motia' {
   interface FlowContextStateStreams {
     todo: MotiaStream<{ id: string; description: string; createdAt: string; dueDate?: string; completedAt?: string }>
   }

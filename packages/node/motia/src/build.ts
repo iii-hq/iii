@@ -64,7 +64,7 @@ const generateIndex = () => {
   })
 
   return [
-    "import { stepWrapper, streamWrapper } from 'motia'",
+    "import { stepWrapper, streamWrapper } from '@iii-dev/motia'",
     ...streams.map((stream) => stream.importStatement),
     ...steps.map((step) => step.importStatement),
     '',

@@ -9,6 +9,7 @@ use colored::Colorize;
 use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::config::EventModuleConfig;
@@ -36,16 +37,19 @@ pub struct EventCoreModule {
     _config: EventModuleConfig,
 }
 
+#[derive(Deserialize)]
+pub struct EventInput {
+    topic: String,
+    data: Value,
+}
+
 #[service(name = "event")]
 impl EventCoreModule {
     #[function(name = "emit", description = "Emit an event")]
-    pub async fn emit(&self, input: Value) -> Result<Option<Value>, ErrorBody> {
+    pub async fn emit(&self, input: EventInput) -> Result<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
-        let topic = input
-            .get("topic")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let event_data = input.get("data").cloned().unwrap_or(Value::Null);
+        let event_data = input.data;
+        let topic = input.topic;
 
         if topic.is_empty() {
             return Err(ErrorBody {
@@ -55,7 +59,7 @@ impl EventCoreModule {
         }
 
         tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-        let _ = adapter.emit(topic, event_data).await;
+        let _ = adapter.emit(&topic, event_data).await;
 
         Ok(Some(Value::Null))
     }

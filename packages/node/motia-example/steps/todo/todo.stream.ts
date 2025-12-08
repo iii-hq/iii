@@ -1,4 +1,4 @@
-import { StreamConfig } from 'motia'
+import { StreamConfig } from '@iii-dev/motia'
 import { z } from 'zod'
 
 const todoSchema = z.object({

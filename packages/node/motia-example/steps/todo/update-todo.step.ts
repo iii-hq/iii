@@ -1,4 +1,4 @@
-import { ApiRouteConfig, Handlers } from 'motia'
+import { ApiRouteConfig, Handlers } from '@iii-dev/motia'
 import { z } from 'zod'
 import { todoSchema } from './create-todo.step'
 
