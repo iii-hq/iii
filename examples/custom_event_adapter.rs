@@ -11,7 +11,7 @@ use std::{
 use async_trait::async_trait;
 use engine::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
-    function::FunctionHandler,
+    function::{FunctionHandler, FunctionResult},
     modules::{
         config::EngineBuilder,
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
@@ -179,6 +179,8 @@ pub struct CustomEventModule {
 
 #[async_trait]
 impl CoreModule for CustomEventModule {
+    fn register_functions(&self, _engine: Arc<Engine>) {}
+
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,
@@ -266,7 +268,8 @@ impl FunctionHandler for CustomEventModule {
         _invocation_id: Option<Uuid>,
         _function_path: String,
         input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static>> {
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static>>
+    {
         let adapter = self.adapter.clone();
         Box::pin(async move {
             let topic = input
@@ -276,7 +279,7 @@ impl FunctionHandler for CustomEventModule {
             let event_data = input.get("data").cloned().unwrap_or(Value::Null);
 
             if topic.is_empty() {
-                return Err(ErrorBody {
+                return FunctionResult::Failure(ErrorBody {
                     code: "topic_not_set".into(),
                     message: "Topic is not set".into(),
                 });
@@ -285,7 +288,7 @@ impl FunctionHandler for CustomEventModule {
             tracing::debug!(topic = %topic, event_data = %event_data, "Emitting custom event");
             adapter.emit(topic, event_data).await;
 
-            Ok(Some(Value::Null))
+            FunctionResult::Success(None)
         })
     }
 }

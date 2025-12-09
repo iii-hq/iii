@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    function::{Function, FunctionHandler, FunctionsRegistry},
+    function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
     pending_invocations::PendingInvocations,
     protocol::{ErrorBody, FunctionMessage, Message},
@@ -36,7 +36,7 @@ pub struct Handler<H> {
 impl<H, F> Handler<H>
 where
     H: Fn(Value) -> F + Send + Sync + 'static,
-    F: Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static,
+    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
 {
     pub fn new(f: H) -> Self {
         Self { f }
@@ -62,7 +62,7 @@ pub trait EngineTrait: Send + Sync {
         handler: Handler<H>,
     ) where
         H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static;
+        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
 }
 
 #[derive(Default, Clone)]
@@ -272,7 +272,7 @@ impl Engine {
                     tracing::debug!(function_path = %function_path, "Found function handler");
 
                     match function.call_handler(*invocation_id, data.clone()).await {
-                        Ok(Some(result)) => {
+                        FunctionResult::Success(result) => {
                             if let Some(invocation_id) = *invocation_id {
                                 let _ = worker
                                     .handle_invocation_result(
@@ -280,15 +280,15 @@ impl Engine {
                                             invocation_id,
                                             function_path: function_path.clone(),
                                         },
-                                        Some(result),
+                                        result,
                                         None,
                                     )
                                     .await;
                                 self.remove_invocation(&invocation_id).await;
                             }
                         }
-                        Ok(None) => {}
-                        Err(error_body) => {
+                        FunctionResult::NoResult => {}
+                        FunctionResult::Failure(error_body) => {
                             if let Some(invocation_id) = *invocation_id {
                                 let _ = worker
                                     .handle_invocation_result(
@@ -546,7 +546,18 @@ impl EngineTrait for Engine {
                 tracing::debug!(function_path = %function_path, "Invoking function");
 
                 let result = future.await;
-                tracing::debug!(result = ?result, "Function result");
+
+                match result {
+                    FunctionResult::Success(result) => {
+                        tracing::debug!(result = ?result, "Function result");
+                    }
+                    FunctionResult::NoResult => {
+                        tracing::debug!("Function result");
+                    }
+                    FunctionResult::Failure(error_body) => {
+                        tracing::error!(error = ?error_body, "Function error");
+                    }
+                }
             });
         } else {
             tracing::warn!(function_path = %function_path, "Function not found");
@@ -601,7 +612,7 @@ impl EngineTrait for Engine {
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
     where
         H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'static,
+        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 

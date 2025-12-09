@@ -106,7 +106,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                                 #name,
                                                 err
                                             );
-                                            return Err(ErrorBody {
+                                            return FunctionResult::Failure(ErrorBody {
                                                 code: "deserialization_error".into(),
                                                 message: format!("Failed to deserialize input for {}: {}", #name, err.to_string()),
                                             });

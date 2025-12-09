@@ -15,6 +15,7 @@ use serde_json::Value;
 use super::config::EventModuleConfig;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    function::FunctionResult,
     modules::{
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         event::adapters::RedisAdapter,
@@ -46,13 +47,13 @@ pub struct EventInput {
 #[service(name = "event")]
 impl EventCoreModule {
     #[function(name = "emit", description = "Emit an event")]
-    pub async fn emit(&self, input: EventInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn emit(&self, input: EventInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let event_data = input.data;
         let topic = input.topic;
 
         if topic.is_empty() {
-            return Err(ErrorBody {
+            return FunctionResult::Failure(ErrorBody {
                 code: "topic_not_set".into(),
                 message: "Topic is not set".into(),
             });
@@ -61,7 +62,7 @@ impl EventCoreModule {
         tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
         let _ = adapter.emit(&topic, event_data).await;
 
-        Ok(Some(Value::Null))
+        FunctionResult::Success(None)
     }
 }
 

@@ -14,6 +14,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    function::FunctionResult,
     modules::{
         core_module::CoreModule,
         streams::{
@@ -157,7 +158,7 @@ impl CoreModule for StreamCoreModule {
 #[service(name = "streams")]
 impl StreamCoreModule {
     #[function(name = "streams.set", description = "Set a value in a stream")]
-    pub async fn set(&self, input: StreamSetInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -168,11 +169,11 @@ impl StreamCoreModule {
             .set(&stream_name, &group_id, &item_id, data.clone())
             .await;
 
-        Ok(Some(data))
+        FunctionResult::Success(Some(data))
     }
 
     #[function(name = "streams.get", description = "Get a value from a stream")]
-    pub async fn get(&self, input: StreamGetInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
@@ -180,11 +181,14 @@ impl StreamCoreModule {
         let adapter = self.adapter.clone();
         let data = adapter.get(&stream_name, &group_id, &item_id).await;
 
-        Ok(data)
+        FunctionResult::Success(data)
     }
 
     #[function(name = "streams.delete", description = "Delete a value from a stream")]
-    pub async fn delete(&self, input: StreamDeleteInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn delete(
+        &self,
+        input: StreamDeleteInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
@@ -193,17 +197,20 @@ impl StreamCoreModule {
         let data = adapter.get(&stream_name, &group_id, &item_id).await;
         let _ = adapter.delete(&stream_name, &group_id, &item_id).await;
 
-        Ok(data)
+        FunctionResult::Success(data)
     }
 
     #[function(name = "streams.getGroup", description = "Get a group from a stream")]
-    pub async fn get_group(&self, input: StreamGetGroupInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn get_group(
+        &self,
+        input: StreamGetGroupInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
         let adapter = self.adapter.clone();
         let values = adapter.get_group(&stream_name, &group_id).await;
 
-        Ok(Some(serde_json::to_value(values).unwrap_or(Value::Null)))
+        FunctionResult::Success(serde_json::to_value(values).ok())
     }
 }
