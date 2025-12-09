@@ -501,6 +501,7 @@ dependencies = [
  "jsonschema",
  "once_cell",
  "redis",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

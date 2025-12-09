@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    env,
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -13,6 +14,7 @@ use axum::{
     routing::get,
 };
 use colored::Colorize;
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -227,10 +229,38 @@ impl EngineBuilder {
         self
     }
 
+    fn expand_env_vars(yaml_content: &str) -> String {
+        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
+
+        re.replace_all(yaml_content, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let default_value = caps.get(2).map(|m| m.as_str());
+
+            match env::var(var_name) {
+                Ok(value) => value,
+                Err(_) => match default_value {
+                    Some(default) => default.to_string(),
+                    None => {
+                        tracing::error!(
+                            "Environment variable '{}' not set and no
+    default provided",
+                            var_name
+                        );
+                        panic!(
+                            "Environment variable '{}' not set and no default provided",
+                            var_name
+                        );
+                    }
+                },
+            }
+        })
+        .to_string()
+    }
     /// Loads config from file if exists, otherwise uses defaults
     pub fn config_file_or_default(mut self, path: &str) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(yaml_content) => {
+                let yaml_content = Self::expand_env_vars(&yaml_content);
                 let config = serde_yaml::from_str(&yaml_content);
                 match config {
                     Ok(cfg) => {
@@ -347,4 +377,142 @@ async fn ws_handler(
             tracing::error!(addr = %addr, error = ?err, "worker error");
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_env_var_expansion() {
+        unsafe {
+            env::set_var("TEST_VAR", "value1");
+        }
+        let input = "This is a ${TEST_VAR} and ${UNSET_VAR:default_value}";
+        let expected = "This is a value1 and default_value";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_with_default_when_var_missing() {
+        unsafe {
+            env::remove_var("MISSING_VAR");
+        }
+        let input = "Value is ${MISSING_VAR:default}";
+        let expected = "Value is default";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_existing_var_ignores_default() {
+        // When var exists, default should be ignored
+        unsafe {
+            env::set_var("TEST_VAR_WITH_DEFAULT", "real_value");
+        }
+        let input = "url: ${TEST_VAR_WITH_DEFAULT:ignored_default}";
+        let expected = "url: real_value";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_variables_unchanged() {
+        // Text without variables should remain unchanged
+        let input = "plain text without any variables";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_expand_env_vars_empty_default() {
+        // Explicit empty default ${VAR:} should return empty string
+        unsafe {
+            env::remove_var("TEST_EMPTY_DEFAULT");
+        }
+        let input = "value: ${TEST_EMPTY_DEFAULT:}";
+        let expected = "value: ";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_default_with_special_chars() {
+        // Default containing special chars like URLs with colons
+        unsafe {
+            env::remove_var("TEST_REDIS_URL");
+        }
+        let input = "redis: ${TEST_REDIS_URL:redis://localhost:6379/0}";
+        let expected = "redis: redis://localhost:6379/0";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_multiple_same_var() {
+        // Same variable used multiple times
+        unsafe {
+            env::set_var("TEST_REPEATED", "abc");
+        }
+        let input = "${TEST_REPEATED}-${TEST_REPEATED}-${TEST_REPEATED}";
+        let expected = "abc-abc-abc";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_adjacent_variables() {
+        // Variables directly adjacent to each other
+        unsafe {
+            env::set_var("TEST_FIRST", "hello");
+            env::set_var("TEST_SECOND", "world");
+        }
+        let input = "${TEST_FIRST}${TEST_SECOND}";
+        let expected = "helloworld";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    #[should_panic(expected = "not set and no default provided")]
+    fn test_expand_env_vars_missing_var_no_default_panics() {
+        // Missing var without default should panic
+        unsafe {
+            env::remove_var("TEST_MUST_PANIC");
+        }
+        let input = "key: ${TEST_MUST_PANIC}";
+        EngineBuilder::expand_env_vars(input);
+    }
+
+    #[test]
+    fn test_expand_env_vars_var_with_underscore_and_numbers() {
+        // Variable names with underscores and numbers
+        unsafe {
+            env::set_var("MY_VAR_123", "test_value");
+        }
+        let input = "value: ${MY_VAR_123}";
+        let expected = "value: test_value";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn test_expand_env_vars_multiline_yaml() {
+        // Realistic YAML config with multiple lines
+        unsafe {
+            env::set_var("TEST_HOST", "localhost");
+            env::set_var("TEST_PORT", "8080");
+        }
+        let input = r#"server:
+  host: ${TEST_HOST}
+  port: ${TEST_PORT}
+  timeout: ${TEST_TIMEOUT:30}"#;
+        let expected = r#"server:
+  host: localhost
+  port: 8080
+  timeout: 30"#;
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
 }

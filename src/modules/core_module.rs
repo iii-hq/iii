@@ -24,7 +24,10 @@ pub trait CoreModule: Send + Sync {
     async fn initialize(&self) -> anyhow::Result<()>;
 
     /// Registers functions to the engine
-    fn register_functions(&self, engine: Arc<Engine>);
+    #[allow(unused_variables)]
+    fn register_functions(&self, engine: Arc<Engine>) {
+        // blank implementation since it going to be overriden by the macros
+    }
 }
 
 pub type AdapterFactory<A> = Arc<
