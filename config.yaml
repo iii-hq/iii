@@ -1,7 +1,7 @@
 modules:
   - class: modules::streams::StreamModule
     config:
-      port: 31112
+      port: ${STREAMS_PORT:31112}
   - class: modules::api::RestApiModule
     config:
       port: 3111

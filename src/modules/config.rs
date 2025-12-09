@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    env,
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -13,6 +14,7 @@ use axum::{
     routing::get,
 };
 use colored::Colorize;
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -227,10 +229,38 @@ impl EngineBuilder {
         self
     }
 
+    fn expand_env_vars(yaml_content: &str) -> String {
+        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
+
+        re.replace_all(yaml_content, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let default_value = caps.get(2).map(|m| m.as_str());
+
+            match env::var(var_name) {
+                Ok(value) => value,
+                Err(_) => match default_value {
+                    Some(default) => default.to_string(),
+                    None => {
+                        tracing::error!(
+                            "Environment variable '{}' not set and no
+    default provided",
+                            var_name
+                        );
+                        panic!(
+                            "Environment variable '{}' not set and no default provided",
+                            var_name
+                        );
+                    }
+                },
+            }
+        })
+        .to_string()
+    }
     /// Loads config from file if exists, otherwise uses defaults
     pub fn config_file_or_default(mut self, path: &str) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(yaml_content) => {
+                let yaml_content = Self::expand_env_vars(&yaml_content);
                 let config = serde_yaml::from_str(&yaml_content);
                 match config {
                     Ok(cfg) => {

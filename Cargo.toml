@@ -47,3 +47,4 @@ colored = "3.0.0"
 cron = "0.15"
 once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
+regex = "1"
