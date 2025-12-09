@@ -489,6 +489,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "clap",
  "colored",
  "cron",
  "dashmap",
