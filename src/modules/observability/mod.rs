@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    function::FunctionResult,
     modules::core_module::CoreModule,
     protocol::ErrorBody,
 };
@@ -58,7 +59,7 @@ pub struct LoggerInput {
 #[service(name = "logger")]
 impl LoggerCoreModule {
     #[function(name = "logger.info", description = "Log an info message")]
-    pub async fn info(&self, input: LoggerInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn info(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.logger.info(
             input.trace_id.as_deref(),
             &input.function_name.as_str(),
@@ -66,11 +67,11 @@ impl LoggerCoreModule {
             &input.data,
         );
 
-        Ok(Some(Value::Null))
+        FunctionResult::NoResult
     }
 
     #[function(name = "logger.warn", description = "Log a warn message")]
-    pub async fn warn(&self, input: LoggerInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn warn(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.logger.warn(
             input.trace_id.as_deref(),
             &input.function_name.as_str(),
@@ -78,11 +79,11 @@ impl LoggerCoreModule {
             &input.data,
         );
 
-        Ok(Some(Value::Null))
+        FunctionResult::NoResult
     }
 
     #[function(name = "logger.error", description = "Log an error message")]
-    pub async fn error(&self, input: LoggerInput) -> Result<Option<Value>, ErrorBody> {
+    pub async fn error(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.logger.error(
             input.trace_id.as_deref(),
             &input.function_name.as_str(),
@@ -90,7 +91,7 @@ impl LoggerCoreModule {
             &input.data,
         );
 
-        Ok(Some(Value::Null))
+        FunctionResult::NoResult
     }
 }
 

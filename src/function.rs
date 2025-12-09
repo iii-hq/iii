@@ -8,7 +8,12 @@ use uuid::Uuid;
 
 use crate::protocol::*;
 
-type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send>>;
+pub enum FunctionResult<T, E> {
+    Success(T),
+    Failure(E),
+    NoResult,
+}
+type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
 pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
 
 #[derive(Clone)]
@@ -25,7 +30,7 @@ impl Function {
         self,
         invocation_id: Option<Uuid>,
         data: Value,
-    ) -> Result<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         (self.handler)(invocation_id, data.clone()).await
     }
 }
@@ -47,7 +52,7 @@ pub trait FunctionHandler {
         invocation_id: Option<Uuid>,
         function_path: String,
         input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>>;
 }
 
 #[derive(Default)]

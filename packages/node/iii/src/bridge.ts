@@ -159,7 +159,16 @@ export class Bridge implements BridgeClient {
 
     if (fn) {
       if (!invocationId) {
-        return fn.handler(input) // no need to wait on anything
+        try {
+          return fn.handler(input) // no need to wait on anything
+        } catch (error) {
+          console.error({
+            message: 'Error invoking function',
+            error: error,
+            functionPath,
+            input,
+          })
+        }
       }
 
       try {

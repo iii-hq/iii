@@ -4,12 +4,14 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::engine::Outbound;
-use crate::function::FunctionHandler;
-use crate::invocation::{Invocation, InvocationHandler};
-use crate::protocol::{ErrorBody, Message};
-use crate::trigger::{Trigger, TriggerRegistrator};
-use crate::workers::Worker;
+use crate::{
+    engine::Outbound,
+    function::{FunctionHandler, FunctionResult},
+    invocation::{Invocation, InvocationHandler},
+    protocol::{ErrorBody, Message},
+    trigger::{Trigger, TriggerRegistrator},
+    workers::Worker,
+};
 
 impl TriggerRegistrator for Worker {
     fn register_trigger(
@@ -69,9 +71,10 @@ impl FunctionHandler for Worker {
         invocation_id: Option<Uuid>,
         function_path: String,
         input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         Box::pin(async move {
-            self.channel
+            let _ = self
+                .channel
                 .send(Outbound::Protocol(Message::InvokeFunction {
                     invocation_id,
                     function_path,
@@ -81,8 +84,9 @@ impl FunctionHandler for Worker {
                 .map_err(|err| ErrorBody {
                     code: "channel_send_failed".into(),
                     message: err.to_string(),
-                })?;
-            Ok(None)
+                });
+
+            FunctionResult::NoResult
         })
     }
 }

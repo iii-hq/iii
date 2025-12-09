@@ -56,8 +56,7 @@ pub struct StreamWrapperMessage {
     pub stream_name: String,
     #[serde(rename = "groupId")]
     pub group_id: String,
-    #[serde(rename = "itemId")]
-    pub item_id: Option<String>,
+    pub id: Option<String>,
     pub event: StreamOutboundMessage,
 }
 

@@ -142,7 +142,7 @@ impl SocketStreamConnection {
                             timestamp,
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
-                            item_id: Some(id.clone()),
+                            id: Some(id.clone()),
                             event: StreamOutboundMessage::Sync {
                                 data: data.unwrap_or(Value::Null),
                             },
@@ -155,7 +155,7 @@ impl SocketStreamConnection {
                             timestamp,
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
-                            item_id: None,
+                            id: None,
                             event: StreamOutboundMessage::Sync {
                                 data: serde_json::to_value(data).unwrap_or(Value::Null),
                             },
@@ -187,7 +187,7 @@ impl StreamConnection for SocketStreamConnection {
 
             if subscription.stream_name == msg.stream_name
                 && subscription.group_id == msg.group_id
-                && (subscription.id.is_none() || subscription.id == msg.item_id)
+                && (subscription.id.is_none() || subscription.id == msg.id)
             {
                 match self.sender.send(StreamOutbound::Stream(msg.clone())).await {
                     Ok(_) => {}

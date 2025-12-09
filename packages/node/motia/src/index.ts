@@ -10,6 +10,8 @@ import { Printer } from './printer'
 import type {
   ApiMiddleware,
   ApiRouteHandler,
+  EmitData,
+  Emitter,
   ApiRequest as MotiaApiRequest,
   ApiResponse as MotiaApiResponse,
 } from './types'
@@ -59,13 +61,13 @@ export const stepWrapper = (
   const step: StepWithHandler = { config, handler, filePath: stepPath, version: '' }
   const functionPath = `steps.${step.config.name}`
   const state = new StateManager()
+  const emit: Emitter<EmitData> = async (event: EmitData): Promise<void> => bridge.invokeFunction('emit', event)
 
   printer.printStepCreated(step)
 
   if (isApiStep(step)) {
     bridge.registerFunction({ functionPath }, async (req: IIIApiRequest<any>): Promise<IIIApiResponse> => {
       const { logger } = getContext()
-      const emit = <TData>(event: TData): Promise<void> => bridge.invokeFunction('emit', { event })
       const context: FlowContext<any> = {
         emit,
         traceId: crypto.randomUUID(),
@@ -98,7 +100,6 @@ export const stepWrapper = (
   } else {
     bridge.registerFunction({ functionPath }, async (req) => {
       const { logger } = getContext()
-      const emit = <TData>(event: TData): Promise<void> => bridge.invokeFunction('emit', { event })
       const context: FlowContext<any> = {
         emit,
         traceId: crypto.randomUUID(),
@@ -129,7 +130,7 @@ export const stepWrapper = (
     bridge.registerTrigger({
       triggerType: 'cron',
       functionPath,
-      config: { cron: step.config.cron },
+      config: { expression: step.config.cron },
     })
   }
 }

@@ -82,7 +82,7 @@ impl StreamAdapter for RedisAdapter {
                 timestamp,
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
-                item_id: Some(item_id.to_string()),
+                id: Some(item_id.to_string()),
                 event: match event_type {
                     "update" => StreamOutboundMessage::Update { data },
                     "create" => StreamOutboundMessage::Create { data },
@@ -128,7 +128,7 @@ impl StreamAdapter for RedisAdapter {
                 timestamp,
                 stream_name: stream_name.to_string(),
                 group_id: group_id.to_string(),
-                item_id: Some(item_id.to_string()),
+                id: Some(item_id.to_string()),
                 event: StreamOutboundMessage::Delete {
                     data: serde_json::json!({ "id": item_id }),
                 },
