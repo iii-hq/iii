@@ -378,3 +378,19 @@ async fn ws_handler(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_env_var_expansion() {
+        unsafe {
+            env::set_var("TEST_VAR", "value1");
+        }
+        let input = "This is a ${TEST_VAR} and ${UNSET_VAR:default_value}";
+        let expected = "This is a value1 and default_value";
+        let output = EngineBuilder::expand_env_vars(input);
+        assert_eq!(output, expected);
+    }
+}
