@@ -121,10 +121,12 @@ export const stepWrapper = (
       config: { api_path: apiPath, http_method: step.config.method },
     })
   } else if (isEventStep(step)) {
-    bridge.registerTrigger({
-      triggerType: 'event',
-      functionPath,
-      config: { topic: step.config.subscribes[0] }, // TODO we need to ensure that we support multiple topics
+    step.config.subscribes.forEach((topic) => {
+      bridge.registerTrigger({
+        triggerType: 'event',
+        functionPath,
+        config: { topic },
+      })
     })
   } else if (isCronStep(step)) {
     bridge.registerTrigger({
