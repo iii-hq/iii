@@ -231,10 +231,19 @@ impl EngineBuilder {
     pub fn config_file_or_default(mut self, path: &str) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(yaml_content) => {
-                let config: EngineConfig = serde_yaml::from_str(&yaml_content)?;
-                tracing::info!("Loaded config from {}", path);
-                self.config = Some(config);
-                Ok(self)
+                let config = serde_yaml::from_str(&yaml_content);
+                match config {
+                    Ok(cfg) => {
+                        tracing::info!("Parsed config file: {}", path);
+                        self.config = Some(cfg);
+                        Ok(self)
+                    }
+                    Err(err) => Err(anyhow::anyhow!(
+                        "Failed to parse config file {}: {}",
+                        path,
+                        err
+                    )),
+                }
             }
             Err(_) => {
                 tracing::info!("No {} found, using default modules", path);
