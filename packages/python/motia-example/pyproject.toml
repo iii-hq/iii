@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "motia-example"
+version = "0.0.1"
+description = "Motia Framework Example"
+authors = [{ name = "III" }]
+requires-python = ">=3.10"
+dependencies = [
+    "iii-motia>=0.0.1",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "watchdog>=4.0",
+]
