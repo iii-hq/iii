@@ -315,7 +315,7 @@ impl RestApiCoreModule {
         let mut new_router = build_routers_from_routers_registry(
             self.engine.clone(),
             Arc::new(self.clone()),
-            &*routers_registry_guard,
+            &routers_registry_guard,
         );
         drop(routers_registry_guard); // Release the lock explicitly
 

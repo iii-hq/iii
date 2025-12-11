@@ -10,16 +10,15 @@ use futures::Future;
 use once_cell::sync::Lazy;
 use serde_json::Value;
 
-use crate::{
-    engine::{Engine, EngineTrait},
-    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
-    trigger::{Trigger, TriggerRegistrator},
-};
-
 use super::{
     adapters::RedisCronLock,
     config::CronModuleConfig,
     structs::{CronAdapter, CronSchedulerAdapter},
+};
+use crate::{
+    engine::{Engine, EngineTrait},
+    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+    trigger::{Trigger, TriggerRegistrator},
 };
 
 #[derive(Clone)]

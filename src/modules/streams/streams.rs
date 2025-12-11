@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{Arc, RwLock},
+};
 
 use axum::{
     Router,
@@ -8,7 +12,8 @@ use axum::{
 };
 use colored::Colorize;
 use function_macros::{function, service};
-use serde::Deserialize;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
@@ -16,10 +21,11 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        core_module::CoreModule,
+        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         streams::{
             StreamSocketManager,
             adapters::{RedisAdapter, StreamAdapter},
+            config::AdapterEntry,
             structs::{StreamDeleteInput, StreamGetGroupInput, StreamGetInput, StreamSetInput},
         },
     },
@@ -46,48 +52,12 @@ async fn ws_handler(
     })
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct StreamModuleConfig {
-    pub port: u16,
     #[serde(default)]
-    pub adapter: StreamAdapterConfig,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
-pub enum StreamAdapterConfig {
-    #[serde(rename = "redis")]
-    Redis { redis_url: String },
-    // #[serde(rename = "memory")]
-    // InMemory,
-}
-
-impl Default for StreamAdapterConfig {
-    fn default() -> Self {
-        Self::Redis {
-            redis_url: "redis://localhost:6379".to_string(),
-        }
-    }
-}
-
-impl StreamAdapterConfig {
-    async fn build_adapter(&self, _engine: Arc<Engine>) -> anyhow::Result<Arc<dyn StreamAdapter>> {
-        match self {
-            StreamAdapterConfig::Redis { redis_url } => {
-                let adapter = match tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    RedisAdapter::new(redis_url.clone()),
-                )
-                .await
-                {
-                    Ok(Ok(adapter)) => Arc::new(adapter),
-                    Ok(Err(e)) => return Err(anyhow::anyhow!("Failed to connect to Redis: {}", e)),
-                    Err(_) => return Err(anyhow::anyhow!("Timed out while connecting to Redis")),
-                };
-                Ok(adapter)
-            }
-        }
-    }
+    pub adapter: Option<AdapterEntry>,
+    port: u16,
 }
 
 #[async_trait::async_trait]
@@ -96,24 +66,7 @@ impl CoreModule for StreamCoreModule {
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        let module_config: StreamModuleConfig = config
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
-
-        let adapter_config: StreamAdapterConfig = config
-            .and_then(|v| v.get("adapter").cloned())
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
-
-        let adapter = adapter_config.build_adapter(engine.clone()).await?;
-
-        Ok(Box::new(Self {
-            config: module_config,
-            adapter,
-        }))
+        Self::create_with_adapters(engine, config).await
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
@@ -152,6 +105,51 @@ impl CoreModule for StreamCoreModule {
         });
 
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ConfigurableModule for StreamCoreModule {
+    type Config = StreamModuleConfig;
+    type Adapter = dyn StreamAdapter;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::streams::adapters::RedisAdapter";
+
+    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
+        let mut registry = HashMap::new();
+
+        registry.insert(
+            StreamCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
+            StreamCoreModule::make_adapter_factory(
+                |_engine: Arc<Engine>, config: Option<Value>| async move {
+                    let redis_url = config
+                        .as_ref()
+                        .and_then(|c| c.get("redis_url"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("redis://localhost:6379")
+                        .to_string();
+                    Ok(Arc::new(RedisAdapter::new(redis_url).await?) as Arc<dyn StreamAdapter>)
+                },
+            ),
+        );
+
+        registry
+    }
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
+            Lazy::new(|| RwLock::new(StreamCoreModule::build_registry()));
+        &REGISTRY
+    }
+
+    fn build(_engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self { config, adapter }
+    }
+
+    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.class.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
 
