@@ -4,6 +4,10 @@ fn default_port() -> u16 {
     3111
 }
 
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
 fn default_timeout() -> u64 {
     30000
 }
@@ -13,6 +17,9 @@ fn default_timeout() -> u64 {
 pub struct RestApiConfig {
     #[serde(default = "default_port")]
     pub port: u16,
+
+    #[serde(default = "default_host")]
+    pub host: String,
 
     #[serde(default = "default_timeout")]
     pub default_timeout: u64,
@@ -28,6 +35,7 @@ impl Default for RestApiConfig {
     fn default() -> Self {
         Self {
             port: default_port(),
+            host: default_host(),
             default_timeout: default_timeout(),
             default_path: None,
             cors: None,

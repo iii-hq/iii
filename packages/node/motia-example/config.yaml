@@ -2,6 +2,7 @@ modules:
   - class: modules::streams::StreamModule
     config:
       port: ${STREAMS_PORT:31112}
+      host: 0.0.0.0
       adapter:
         type: redis
         redis_url: ${REDIS_URL:redis://localhost:6379}
@@ -9,6 +10,7 @@ modules:
   - class: modules::api::RestApiModule
     config:
       port: 3111
+      host: 0.0.0.0
       cors:
         allowed_origins:
           - http://localhost:3000

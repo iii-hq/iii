@@ -4,6 +4,7 @@ import { Printer } from '../../printer'
 import type {
   ApiMiddleware,
   ApiRouteHandler,
+  CronHandler,
   EmitData,
   Emitter,
   ApiRequest as MotiaApiRequest,
@@ -76,6 +77,19 @@ export const stepWrapper = (
         headers: response.headers,
         body: response.body,
       }
+    })
+  } else if (isCronStep(step)) {
+    bridge.registerFunction({ functionPath }, async () => {
+      const { logger } = getContext()
+      const context: FlowContext<any> = {
+        emit,
+        traceId: crypto.randomUUID(),
+        state,
+        logger,
+        streams,
+      }
+
+      return (step.handler as CronHandler<any>)(context)
     })
   } else {
     bridge.registerFunction({ functionPath }, async (req) => {
