@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  app:
+    platform: linux/amd64
+    build:
+      context: ../../..
+      dockerfile: packages/node/motia-example/Dockerfile
+    ports:
+      - "3111:3111"
+      - "31112:31112"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - STREAMS_PORT=31112
+    depends_on:
+      - redis
+    networks:
+      - motia-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - motia-network
+    command: redis-server --appendonly yes
+
+networks:
+  motia-network:
+    driver: bridge
+
+volumes:
+  redis-data:

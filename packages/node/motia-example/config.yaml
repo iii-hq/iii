@@ -4,8 +4,9 @@ modules:
       port: ${STREAMS_PORT:31112}
       host: 0.0.0.0
       adapter:
-        type: redis
-        redis_url: ${REDIS_URL:redis://localhost:6379}
+        class: modules::streams::adapters::RedisAdapter
+        config:
+          redis_url: redis://redis:6379
 
   - class: modules::api::RestApiModule
     config:
@@ -29,7 +30,7 @@ modules:
       adapter:
         class: modules::event::RedisAdapter
         config:
-          redis_url: ${REDIS_URL:redis://localhost:6379}
+          redis_url: ${REDIS_URL:redis://redis:6379}
 
   - class: modules::cron::CronModule
     config:

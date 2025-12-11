@@ -59,6 +59,9 @@ impl CoreModule for StreamCoreModule {
     ) -> anyhow::Result<Box<dyn CoreModule>> {
         Self::create_with_adapters(engine, config).await
     }
+    fn register_functions(&self, engine: Arc<Engine>) {
+        self.register_functions(engine);
+    }
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamCoreModule");
