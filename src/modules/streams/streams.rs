@@ -52,30 +52,6 @@ async fn ws_handler(
     })
 }
 
-// #[derive(Debug, Clone, Deserialize, Default)]
-// pub struct StreamModuleConfig {
-//     pub port: u16,
-//     #[serde(default)]
-//     pub adapter: StreamAdapterConfig,
-// }
-
-// #[derive(Debug, Clone, Deserialize)]
-// #[serde(tag = "type")]
-// pub enum StreamAdapterConfig {
-//     #[serde(rename = "redis")]
-//     Redis { redis_url: String },
-//     // #[serde(rename = "memory")]
-//     // InMemory,
-// }
-
-// impl Default for StreamAdapterConfig {
-//     fn default() -> Self {
-//         Self::Redis {
-//             redis_url: "redis://localhost:6379".to_string(),
-//         }
-//     }
-// }
-
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct StreamModuleConfig {
