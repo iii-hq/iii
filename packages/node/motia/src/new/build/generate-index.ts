@@ -30,7 +30,7 @@ const toSnakeCaseConst = (filePath: string) => {
   return identifier.toLowerCase()
 }
 
-const generateIndex = () => {
+export const generateIndex = () => {
   const streamsFiles = [
     ...getStreamFilesFromDir(path.join(process.cwd(), 'streams')),
     ...getStreamFilesFromDir(path.join(process.cwd(), 'src')),
@@ -75,22 +75,3 @@ const generateIndex = () => {
     ...steps.map((step) => step.content),
   ].join('\n')
 }
-
-export const build = () => {
-  return esbuild.build({
-    stdin: {
-      contents: generateIndex(),
-      sourcefile: 'index.js',
-      resolveDir: process.cwd(),
-      loader: 'js',
-    },
-    packages: 'external',
-    platform: 'node',
-    target: ['node22'],
-    format: 'esm',
-    bundle: true,
-    outfile: 'dist/index.js',
-  })
-}
-
-build().catch(console.error)
