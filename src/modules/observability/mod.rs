@@ -62,8 +62,8 @@ impl LoggerCoreModule {
     pub async fn info(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.logger.info(
             input.trace_id.as_deref(),
-            &input.function_name.as_str(),
-            &input.message.as_str(),
+            input.function_name.as_str(),
+            input.message.as_str(),
             &input.data,
         );
 
@@ -74,8 +74,8 @@ impl LoggerCoreModule {
     pub async fn warn(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.logger.warn(
             input.trace_id.as_deref(),
-            &input.function_name.as_str(),
-            &input.message.as_str(),
+            input.function_name.as_str(),
+            input.message.as_str(),
             &input.data,
         );
 
@@ -86,8 +86,8 @@ impl LoggerCoreModule {
     pub async fn error(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.logger.error(
             input.trace_id.as_deref(),
-            &input.function_name.as_str(),
-            &input.message.as_str(),
+            input.function_name.as_str(),
+            input.message.as_str(),
             &input.data,
         );
 

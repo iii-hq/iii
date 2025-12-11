@@ -2,6 +2,10 @@ modules:
   - class: modules::streams::StreamModule
     config:
       port: ${STREAMS_PORT:31112}
+      adapter:
+        class: modules::streams::adapters::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
   - class: modules::api::RestApiModule
     config:
       port: 3111

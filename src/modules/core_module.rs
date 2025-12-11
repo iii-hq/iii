@@ -131,9 +131,16 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
             .unwrap_or_default();
 
         // 2. Determine which adapter to use
-        let adapter_class = Self::adapter_class_from_config(&parsed_config)
-            .unwrap_or_else(|| Self::default_adapter_class().to_string());
-
+        let adapter_class = match Self::adapter_class_from_config(&parsed_config) {
+            Some(class) => class,
+            None => {
+                tracing::debug!(
+                    "No adapter class specified in config, using default: '{}'",
+                    Self::default_adapter_class()
+                );
+                Self::default_adapter_class().to_string()
+            }
+        };
         // 3. Get the factory
         let factory = match Self::get_adapter(&adapter_class).await {
             Some(factory) => factory,
@@ -150,9 +157,12 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
 
         // 4. Create adapter
         let adapter_config = Self::adapter_config_from_config(&parsed_config);
-        tracing::debug!("Using adapter class '{}' with config: {:?}", adapter_class, &adapter_config);
+        tracing::debug!(
+            "Using adapter class '{}' with config: {:?}",
+            adapter_class,
+            &adapter_config
+        );
         let adapter = factory(engine.clone(), adapter_config).await?;
-
 
         // 5. Build module
         Ok(Box::new(Self::build(engine, parsed_config, adapter)))
