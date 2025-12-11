@@ -1,23 +1,28 @@
 mod config;
 
-use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    pin::Pin,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use colored::Colorize;
 pub use config::CronModuleConfig;
 use cron::Schedule;
 use futures::Future;
+use once_cell::sync::Lazy;
 use redis::{Client, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::{
-    sync::RwLock,
     task::JoinHandle,
     time::{sleep, timeout},
 };
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::core_module::CoreModule,
+    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -32,7 +37,7 @@ const CRON_LOCK_PREFIX: &str = "cron_lock:";
 
 /// Trait for cron scheduling operations
 #[async_trait]
-pub trait CronScheduler: Send + Sync + 'static {
+pub trait CronSchedulerAdapter: Send + Sync + 'static {
     /// Try to acquire a distributed lock for a cron job
     async fn try_acquire_lock(&self, job_id: &str) -> bool;
 
@@ -72,7 +77,7 @@ impl RedisCronLock {
 }
 
 #[async_trait]
-impl CronScheduler for RedisCronLock {
+impl CronSchedulerAdapter for RedisCronLock {
     async fn try_acquire_lock(&self, job_id: &str) -> bool {
         let lock_key = format!("{}{}", CRON_LOCK_PREFIX, job_id);
         let mut conn = self.connection.lock().await;
@@ -146,16 +151,16 @@ struct CronJobInfo {
 }
 
 pub struct CronAdapter {
-    scheduler: Arc<dyn CronScheduler>,
-    jobs: Arc<RwLock<HashMap<String, CronJobInfo>>>,
+    adapter: Arc<dyn CronSchedulerAdapter>,
+    jobs: Arc<tokio::sync::RwLock<HashMap<String, CronJobInfo>>>,
     engine: Arc<Engine>,
 }
 
 impl CronAdapter {
-    pub fn new(scheduler: Arc<dyn CronScheduler>, engine: Arc<Engine>) -> Self {
+    pub fn new(scheduler: Arc<dyn CronSchedulerAdapter>, engine: Arc<Engine>) -> Self {
         Self {
-            scheduler,
-            jobs: Arc::new(RwLock::new(HashMap::new())),
+            adapter: scheduler,
+            jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             engine,
         }
     }
@@ -174,7 +179,7 @@ impl CronAdapter {
         schedule: Schedule,
         function_path: String,
     ) -> JoinHandle<()> {
-        let scheduler = Arc::clone(&self.scheduler);
+        let scheduler = Arc::clone(&self.adapter);
         let engine = Arc::clone(&self.engine);
         let job_id = id.clone();
         let func_path = function_path.clone();
@@ -304,7 +309,7 @@ impl CronAdapter {
             job_info.task_handle.abort();
 
             // Release any held lock
-            self.scheduler.release_lock(id).await;
+            self.adapter.release_lock(id).await;
 
             Ok(())
         } else {
@@ -326,29 +331,7 @@ impl CoreModule for CronCoreModule {
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        let config: CronModuleConfig = config
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
-
-        // Get redis URL from config or use default
-        let redis_url = config
-            .adapter
-            .as_ref()
-            .and_then(|a| a.config.as_ref())
-            .and_then(|c| c.get("redis_url"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("redis://localhost:6379");
-
-        // Create the scheduler
-        let scheduler: Arc<dyn CronScheduler> = Arc::new(RedisCronLock::new(redis_url).await?);
-        let adapter = CronAdapter::new(scheduler, engine.clone());
-
-        Ok(Box::new(Self {
-            engine,
-            _config: config,
-            adapter: Arc::new(adapter),
-        }))
+        Self::create_with_adapters(engine, config).await
     }
 
     fn register_functions(&self, _engine: Arc<Engine>) {}
@@ -407,5 +390,57 @@ impl TriggerRegistrator for CronCoreModule {
             tracing::debug!(trigger_id = %trigger.id, "Unregistering cron trigger");
             self.adapter.unregister(&trigger.id).await
         })
+    }
+}
+
+#[async_trait]
+impl ConfigurableModule for CronCoreModule {
+    type Config = CronModuleConfig;
+    type Adapter = dyn CronSchedulerAdapter;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::RedisCronAdapter";
+
+    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
+        let mut registry = HashMap::new();
+
+        registry.insert(
+            CronCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
+            CronCoreModule::make_adapter_factory(
+                |_engine: Arc<Engine>, config: Option<Value>| async move {
+                    let redis_url = config
+                        .as_ref()
+                        .and_then(|c| c.get("redis_url"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("redis://localhost:6379")
+                        .to_string();
+
+                    Ok(Arc::new(RedisCronLock::new(&redis_url).await?)
+                        as Arc<dyn CronSchedulerAdapter>)
+                },
+            ),
+        );
+        registry
+    }
+
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CronSchedulerAdapter>>>> =
+            Lazy::new(|| RwLock::new(CronCoreModule::build_registry()));
+        &REGISTRY
+    }
+
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        let cron_adapter = CronAdapter::new(adapter, engine.clone());
+        Self {
+            engine,
+            _config: config,
+            adapter: Arc::new(cron_adapter),
+        }
+    }
+
+    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.class.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
