@@ -4,12 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "motia-example"
-version = "0.0.1"
+version = "0.0.2"
 description = "Motia Framework Example"
 authors = [{ name = "III" }]
 requires-python = ">=3.10"
+
+[[tool.pip.index]]
+name = "motia-python-dev"
+url = "https://dl.cloudsmith.io/tXwTsIAtcE3qX4z1/motia-python-dev/motia/python/simple/"
+
 dependencies = [
-    "iii-motia>=0.0.1",
+    "iii-motia>=0.0.2",
     "pydantic>=2.0",
 ]
 
@@ -17,3 +22,6 @@ dependencies = [
 dev = [
     "watchdog>=4.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["steps"]
