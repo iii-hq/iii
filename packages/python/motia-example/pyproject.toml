@@ -14,7 +14,8 @@ name = "motia-python-dev"
 url = "https://dl.cloudsmith.io/tXwTsIAtcE3qX4z1/motia-python-dev/motia/python/simple/"
 
 dependencies = [
-    "iii-motia>=0.0.2",
+    "iii-sdk>=0.0.2",
+    "iii-motia>=0.0.3",
     "pydantic>=2.0",
 ]
 

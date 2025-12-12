@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iii-motia"
-version = "0.0.2"
+version = "0.0.3"
 description = "Motia framework for III Engine"
 authors = [{ name = "III" }]
 readme = "README.md"
@@ -24,7 +24,7 @@ name = "motia-python-dev"
 url = "https://dl.cloudsmith.io/tXwTsIAtcE3qX4z1/motia-python-dev/motia/python/simple/"
 
 dependencies = [
-    "iii-sdk>=0.0.1",
+    "iii-sdk>=0.0.2",
     "pydantic>=2.0",
 ]
 
