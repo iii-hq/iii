@@ -10,7 +10,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    logging::init_tracing();
+    logging::init_log();
     let args = Args::parse();
 
     EngineBuilder::new()
