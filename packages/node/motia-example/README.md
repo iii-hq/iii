@@ -13,11 +13,11 @@ docker build -f DockerfileBun -t iii/bun .
 ## Tag Image
 
 ```yaml
-docker tag iii/bun:latest http://600627348446.dkr.ecr.us-east-1.amazonaws.com/iii/development:latest
+docker tag iii/bun:latest http://600627348446.dkr.ecr.us-east-1.amazonaws.com/iii/bun:latest
 ```
 
 ## Push image
 
 ```yaml
-docker push http://600627348446.dkr.ecr.us-east-1.amazonaws.com/iii/development:latest
+docker push http://600627348446.dkr.ecr.us-east-1.amazonaws.com/iii/bun:latest
 ```
