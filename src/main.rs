@@ -10,8 +10,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    logging::init_log();
     let args = Args::parse();
+    logging::init_log(&args.config);
 
     EngineBuilder::new()
         .config_file_or_default(&args.config)?

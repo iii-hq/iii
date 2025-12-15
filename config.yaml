@@ -23,6 +23,9 @@ modules:
           - OPTIONS
 
   - class: modules::observability::LoggingModule
+    config:
+      level: debug
+      format: json
 
   - class: modules::event::EventModule
     config:
