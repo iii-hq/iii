@@ -281,7 +281,7 @@ impl CoreModule for RestApiCoreModule {
             })
             .await;
 
-        let addr = format!("127.0.0.1:{}", self.config.port);
+        let addr = format!("{}:{}", self.config.host, self.config.port);
         let listener = TcpListener::bind(&addr).await?;
 
         // Build initial router from registry

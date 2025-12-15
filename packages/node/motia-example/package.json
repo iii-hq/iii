@@ -5,9 +5,9 @@
   "packageManager": "pnpm@10.19.0",
   "type": "module",
   "scripts": {
-    "build": "motia",
-    "start": "bun dist/index.js",
-    "dev": "nodemon --config nodemon.json"
+    "dev": "nodemon --config nodemon.json",
+    "build": "motia build",
+    "start": "bun run --enable-source-maps dist/index-production.js"
   },
   "dependencies": {
     "@iii-dev/motia": "workspace:*",

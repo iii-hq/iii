@@ -6,6 +6,10 @@ use serde_json::Value;
 pub struct StreamModuleConfig {
     #[serde(default = "default_port")]
     pub port: u16,
+
+    #[serde(default = "default_host")]
+    pub host: String,
+
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -14,10 +18,15 @@ fn default_port() -> u16 {
     31112
 }
 
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
 impl Default for StreamModuleConfig {
     fn default() -> Self {
         Self {
             port: default_port(),
+            host: default_host(),
             adapter: None,
         }
     }

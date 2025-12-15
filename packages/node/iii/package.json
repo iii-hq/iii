@@ -1,9 +1,9 @@
 {
   "name": "@iii-dev/sdk",
-  "version": "0.0.3",
-  "private": true,
+  "version": "0.0.6",
+  "private": false,
   "publishConfig": {
-    "access": "public"
+    "access": "private"
   },
   "main": "index.js",
   "author": "III",

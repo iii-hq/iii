@@ -320,7 +320,7 @@ impl Engine {
                             None,
                             Some(ErrorBody {
                                 code: "function_not_found".into(),
-                                message: "Function not found".to_string(),
+                                message: format!("Function {} not found", function_path),
                             }),
                         )
                         .await;

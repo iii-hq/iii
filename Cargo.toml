@@ -1,16 +1,15 @@
 [package]
-name = "engine"
+name = "iii"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "engine"
+name = "iii"
 path = "src/lib.rs"
 
 [[bin]]
-name = "engine"
+name = "iii"
 path = "src/main.rs"
-
 
 [[example]]
 name = "custom_event_adapter"
