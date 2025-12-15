@@ -1,8 +1,7 @@
-use std::{env, fmt, sync::OnceLock};
+use std::{fmt, sync::OnceLock};
 
 use chrono::Local;
 use colored::Colorize;
-use regex::Regex;
 use tracing::{
     Event, Level, Subscriber,
     field::{Field, Visit},
@@ -265,97 +264,61 @@ where
 
 static TRACING: OnceLock<()> = OnceLock::new();
 
-fn expand_env_vars(yaml_content: &str) -> String {
-    let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
-
-    re.replace_all(yaml_content, |caps: &regex::Captures| {
-        let var_name = &caps[1];
-        let default_value = caps.get(2).map(|m| m.as_str());
-
-        match env::var(var_name) {
-            Ok(value) => value,
-            Err(_) => match default_value {
-                Some(default) => default.to_string(),
-                None => {
-                    tracing::error!(
-                        "Environment variable '{}' not set and no
-    default provided",
-                        var_name
-                    );
-                    panic!(
-                        "Environment variable '{}' not set and no default provided",
-                        var_name
-                    );
-                }
-            },
-        }
-    })
-    .to_string()
-}
-
 pub fn init_log(path: &str) {
     println!("Initializing logging from config file: {}", path);
-    match std::fs::read_to_string(path) {
-        Ok(yaml_content) => {
-            let yaml_content = expand_env_vars(&yaml_content);
-            let config = serde_yaml::from_str::<EngineConfig>(&yaml_content);
-            match config {
-                Ok(cfg) => {
-                    println!("Parsed config file: {}", path);
-                    let log_module_name = "modules::observability::LoggingModule";
-                    let log_module_cfg = cfg.modules.iter().find(|m| m.class == log_module_name);
-                    match log_module_cfg {
-                        Some(_) => {
-                            let log_level = log_module_cfg
-                                .and_then(|m| {
-                                    m.config
-                                        .as_ref()?
-                                        .get("level")
-                                        .or_else(|| m.config.as_ref()?.get("log_level"))
-                                })
-                                .map(|v| {
-                                    v.as_str()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| v.to_string())
-                                })
-                                .unwrap_or_else(|| "info".to_string());
+    let cfg = EngineConfig::config_file_or_default(path);
+    if let Err(e) = cfg {
+        println!(
+            "Failed to parse config file: {}, using default local logging. Error: {}",
+            path, e
+        );
+        init_local_log("info");
+        return;
+    };
 
-                            let log_format = log_module_cfg
-                                .and_then(|m| m.config.as_ref()?.get("format"))
-                                .map(|v| {
-                                    v.as_str()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| v.to_string())
-                                })
-                                .unwrap_or_else(|| "default".to_string());
+    let cfg = cfg.expect("Failed to parse config file");
 
-                            println!(
-                                "Log level from config: {}, Log format: {}",
-                                log_level, log_format
-                            );
+    println!("Parsed config file: {}", path);
+    let log_module_name = "modules::observability::LoggingModule";
+    let log_module_cfg = cfg.modules.iter().find(|m| m.class == log_module_name);
+    match log_module_cfg {
+        Some(_) => {
+            let log_level = log_module_cfg
+                .and_then(|m| {
+                    m.config
+                        .as_ref()?
+                        .get("level")
+                        .or_else(|| m.config.as_ref()?.get("log_level"))
+                })
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_else(|| "info".to_string());
 
-                            if log_format.to_lowercase() == "json" {
-                                init_prod_log(log_level.as_str());
-                            } else {
-                                init_local_log(log_level.as_str());
-                            }
-                        }
-                        None => {
-                            println!(
-                                "LoggingModule not found in config, using default local logging"
-                            );
-                            init_local_log("info");
-                        }
-                    }
-                }
-                Err(err) => {
-                    eprintln!("Failed to parse config file {}: {}", path, err);
-                    init_local_log("info");
-                }
+            let log_format = log_module_cfg
+                .and_then(|m| m.config.as_ref()?.get("format"))
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_else(|| "default".to_string());
+
+            println!(
+                "Log level from config: {}, Log format: {}",
+                log_level, log_format
+            );
+
+            if log_format.to_lowercase() == "json" {
+                init_prod_log(log_level.as_str());
+            } else {
+                init_local_log(log_level.as_str());
             }
         }
-        Err(_) => {
-            println!("No config for logging found at {}, using default", path);
+        None => {
+            println!("LoggingModule not found in config, using default local logging");
             init_local_log("info");
         }
     }
