@@ -41,6 +41,10 @@ modules:
 
   - class: modules::shell::ExecModule
     config:
+      watch:
+        - steps/
+        - src/
+      extensions: ts,js
       exec:
         - npx motia dev
         - bun run --enable-source-maps dist/index-dev.js
