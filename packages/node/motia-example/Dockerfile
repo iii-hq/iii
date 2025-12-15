@@ -4,4 +4,4 @@ WORKDIR /app
 
 COPY dist/index-production.js .
 COPY dist/index-production.js.map .
-COPY config.yaml .
+COPY config-production.yaml config.yaml

@@ -1,0 +1,46 @@
+modules:
+  - class: modules::streams::StreamModule
+    config:
+      port: ${STREAMS_PORT:31112}
+      host: 0.0.0.0
+      adapter:
+        class: modules::streams::adapters::RedisAdapter
+        config:
+          redis_url: ${REDIS_URL:redis://localhost:6379}
+
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+      host: 0.0.0.0
+      cors:
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:5173
+          - https://todo-app-xi-umber.vercel.app
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  - class: modules::observability::LoggingModule
+
+  - class: modules::event::EventModule
+    config:
+      adapter:
+        class: modules::event::RedisAdapter
+        config:
+          redis_url: ${REDIS_URL:redis://localhost:6379}
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::RedisCronAdapter
+        config:
+          redis_url: ${REDIS_URL:redis://localhost:6379}
+
+  - class: modules::shell::ExecModule
+    config:
+      exec:
+        - bun run --enable-source-maps dist/index-production.js
