@@ -1,9 +1,9 @@
 {
   "name": "@iii-dev/motia",
-  "version": "0.0.12",
-  "private": true,
+  "version": "0.0.16",
+  "private": false,
   "publishConfig": {
-    "access": "public"
+    "access": "private"
   },
   "packageManager": "pnpm@10.19.0",
   "type": "module",
@@ -23,8 +23,8 @@
     }
   },
   "bin": {
-    "motia": "./dist/build.mjs",
-    "motia-iii": "./dist/build.mjs",
+    "motia": "./dist/new/cli.mjs",
+    "motia-iii": "./dist/new/cli.mjs",
     "iii": "./iii"
   },
   "dependencies": {
@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "commander": "^14.0.2",
     "tsdown": "^0.17.0"
   }
 }

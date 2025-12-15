@@ -13,7 +13,6 @@ use axum::{
 use colored::Colorize;
 use function_macros::{function, service};
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
@@ -25,7 +24,7 @@ use crate::{
         streams::{
             StreamSocketManager,
             adapters::{RedisAdapter, StreamAdapter},
-            config::AdapterEntry,
+            config::StreamModuleConfig,
             structs::{StreamDeleteInput, StreamGetGroupInput, StreamGetInput, StreamSetInput},
         },
     },
@@ -52,14 +51,6 @@ async fn ws_handler(
     })
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct StreamModuleConfig {
-    #[serde(default)]
-    pub adapter: Option<AdapterEntry>,
-    port: u16,
-}
-
 #[async_trait::async_trait]
 impl CoreModule for StreamCoreModule {
     async fn create(
@@ -77,7 +68,7 @@ impl CoreModule for StreamCoreModule {
         tracing::info!("Initializing StreamCoreModule");
 
         let socket_manager = Arc::new(StreamSocketManager::new(self.adapter.clone()));
-        let addr = format!("127.0.0.1:{}", self.config.port)
+        let addr = format!("{}:{}", self.config.host, self.config.port)
             .parse::<SocketAddr>()
             .unwrap();
         let listener = TcpListener::bind(addr).await.unwrap();

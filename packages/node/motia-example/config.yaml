@@ -2,18 +2,16 @@ modules:
   - class: modules::streams::StreamModule
     config:
       port: ${STREAMS_PORT:31112}
-      host: 127.0.0.1
+      host: 0.0.0.0
       adapter:
         class: modules::streams::adapters::RedisAdapter
         config:
-          redis_url: redis://localhost:6379
+          redis_url: ${REDIS_URL:redis://localhost:6379}
 
   - class: modules::api::RestApiModule
     config:
       port: 3111
-      host: 127.0.0.1
-      default_timeout: 30000
-      default_path: /default
+      host: 0.0.0.0
       cors:
         allowed_origins:
           - http://localhost:3000
@@ -32,11 +30,11 @@ modules:
       adapter:
         class: modules::event::RedisAdapter
         config:
-          redis_url: redis://localhost:6379
+          redis_url: ${REDIS_URL:redis://localhost:6379}
 
   - class: modules::cron::CronModule
     config:
       adapter:
         class: modules::cron::RedisCronAdapter
         config:
-          redis_url: redis://localhost:6379
+          redis_url: ${REDIS_URL:redis://localhost:6379}

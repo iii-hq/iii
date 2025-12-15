@@ -9,7 +9,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use engine::{
+use futures::Future;
+use iii::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::{FunctionHandler, FunctionResult},
     modules::{
@@ -18,7 +19,6 @@ use engine::{
     },
     protocol::ErrorBody,
 };
-use futures::Future;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
@@ -299,7 +299,7 @@ impl FunctionHandler for CustomEventModule {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    engine::logging::init_tracing();
+    iii::logging::init_tracing();
 
     // Register custom adapters for CustomEventModule
     CustomEventModule::add_adapter("my::CustomInMemoryAdapter", |engine, config| async move {
