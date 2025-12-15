@@ -64,7 +64,7 @@ impl EngineConfig {
         Self { modules }
     }
 
-    fn expand_env_vars(yaml_content: &str) -> String {
+    pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
         let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
 
         re.replace_all(yaml_content, |caps: &regex::Captures| {
@@ -404,7 +404,7 @@ mod tests {
         }
         let input = "This is a ${TEST_VAR} and ${UNSET_VAR:default_value}";
         let expected = "This is a value1 and default_value";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -415,7 +415,7 @@ mod tests {
         }
         let input = "Value is ${MISSING_VAR:default}";
         let expected = "Value is default";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -427,7 +427,7 @@ mod tests {
         }
         let input = "url: ${TEST_VAR_WITH_DEFAULT:ignored_default}";
         let expected = "url: real_value";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -435,7 +435,7 @@ mod tests {
     fn test_expand_env_vars_no_variables_unchanged() {
         // Text without variables should remain unchanged
         let input = "plain text without any variables";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, input);
     }
 
@@ -447,7 +447,7 @@ mod tests {
         }
         let input = "value: ${TEST_EMPTY_DEFAULT:}";
         let expected = "value: ";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -459,7 +459,7 @@ mod tests {
         }
         let input = "redis: ${TEST_REDIS_URL:redis://localhost:6379/0}";
         let expected = "redis: redis://localhost:6379/0";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -471,7 +471,7 @@ mod tests {
         }
         let input = "${TEST_REPEATED}-${TEST_REPEATED}-${TEST_REPEATED}";
         let expected = "abc-abc-abc";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -484,7 +484,7 @@ mod tests {
         }
         let input = "${TEST_FIRST}${TEST_SECOND}";
         let expected = "helloworld";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -496,7 +496,7 @@ mod tests {
             env::remove_var("TEST_MUST_PANIC");
         }
         let input = "key: ${TEST_MUST_PANIC}";
-        EngineBuilder::expand_env_vars(input);
+        EngineConfig::expand_env_vars(input);
     }
 
     #[test]
@@ -507,7 +507,7 @@ mod tests {
         }
         let input = "value: ${MY_VAR_123}";
         let expected = "value: test_value";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -526,7 +526,7 @@ mod tests {
   host: localhost
   port: 8080
   timeout: 30"#;
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 }

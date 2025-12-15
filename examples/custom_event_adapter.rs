@@ -299,7 +299,7 @@ impl FunctionHandler for CustomEventModule {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    engine::logging::init_tracing();
+    engine::logging::init_log("config.yaml");
 
     // Register custom adapters for CustomEventModule
     CustomEventModule::add_adapter("my::CustomInMemoryAdapter", |engine, config| async move {
