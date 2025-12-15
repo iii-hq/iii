@@ -15,6 +15,7 @@ pub mod modules {
     pub mod event;
     pub mod observability;
     pub mod rest_api;
+    pub mod shell;
     pub mod streams;
 }
 

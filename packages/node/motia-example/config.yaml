@@ -38,3 +38,9 @@ modules:
         class: modules::cron::RedisCronAdapter
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
+
+  - class: modules::shell::ExecModule
+    config:
+      exec:
+        - npx motia dev
+        - bun run --enable-source-maps dist/index-dev.js
