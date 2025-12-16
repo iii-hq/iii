@@ -21,6 +21,8 @@ pub struct Exec {
     exec: Vec<String>,
 }
 
+const MAX_WATCH_EVENTS: usize = 100;
+
 impl Exec {
     pub fn new(config: ExecConfig) -> Self {
         let extensions = config
@@ -38,7 +40,7 @@ impl Exec {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        let (tx, mut rx) = mpsc::channel::<Event>(100);
+        let (tx, mut rx) = mpsc::channel::<Event>(MAX_WATCH_EVENTS);
 
         let watch = self.watch.clone();
         let mut watcher: RecommendedWatcher;
