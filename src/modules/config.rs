@@ -21,12 +21,10 @@ use tokio::net::TcpListener;
 
 use super::{
     core_module::CoreModule, cron::CronCoreModule, event::EventCoreModule,
-    observability::LoggerCoreModule, rest_api::RestApiCoreModule,
+    observability::LoggerCoreModule, rest_api::RestApiCoreModule, shell::ExecCoreModule,
+    streams::StreamCoreModule,
 };
-use crate::{
-    engine::Engine,
-    modules::{shell::ExecCoreModule, streams::StreamCoreModule},
-};
+use crate::engine::Engine;
 
 // =============================================================================
 // Constants

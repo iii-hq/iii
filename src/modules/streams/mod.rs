@@ -1,8 +1,11 @@
-pub mod adapters;
-pub mod config;
-pub mod socket;
-pub mod streams;
-pub mod structs;
+mod adapters;
+mod config;
+mod socket;
+
+#[allow(clippy::module_inception)]
+mod streams;
+
+mod structs;
 
 pub use self::{
     socket::StreamSocketManager,

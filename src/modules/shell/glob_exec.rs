@@ -83,7 +83,7 @@ impl GlobExec {
         // Extension filtering
         if pattern.contains('{') {
             if let Some(list) = Self::extract_extension_group(pattern) {
-                return list.iter().any(|e| *e == ext);
+                return list.contains(&ext);
             }
         } else if let Some(expected) = Self::extract_single_extension(pattern) {
             return expected == ext;

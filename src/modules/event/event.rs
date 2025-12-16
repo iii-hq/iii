@@ -12,9 +12,8 @@ use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::config::EventModuleConfig;
+use super::{EventAdapter, config::EventModuleConfig};
 use crate::{
-    EventAdapter,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
