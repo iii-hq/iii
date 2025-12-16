@@ -11,6 +11,7 @@ use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
 use tokio::{net::TcpListener, sync::RwLock};
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     cors::{Any as HTTP_Any, CorsLayer},
     timeout::TimeoutLayer,
@@ -116,7 +117,7 @@ impl CoreModule for RestApiCoreModule {
 }
 
 impl RestApiCoreModule {
-    /// Updates the router with all routes from the registry
+    /// Updates the router with all routes from the registry and configurations
     async fn update_routes(&self) -> anyhow::Result<()> {
         // Build CORS layer
         let cors_layer = self.build_cors_layer();
@@ -138,6 +139,11 @@ impl RestApiCoreModule {
             StatusCode::GATEWAY_TIMEOUT,
             std::time::Duration::from_millis(self.config.default_timeout),
         ));
+
+        new_router = new_router.layer(ConcurrencyLimitLayer::new(
+            self.config.concurrency_request_limit,
+        ));
+
         // Update the shared router
         let mut shared_router = self.shared_routers.write().await;
         *shared_router = new_router;

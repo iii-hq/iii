@@ -14,6 +14,7 @@ modules:
       host: 127.0.0.1
       default_timeout: 30000
       default_path: /default
+      concurrency_request_limit: 1024
       cors:
         allowed_origins:
           - http://localhost:3000
