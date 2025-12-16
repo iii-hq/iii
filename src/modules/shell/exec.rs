@@ -10,7 +10,7 @@ use tokio::{
     process::Command,
     sync::{Mutex, mpsc},
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::modules::shell::config::ExecConfig;
 
@@ -101,7 +101,7 @@ impl Exec {
 
     async fn run_pipeline(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) -> Result<()> {
         for cmd in &self.exec {
-            info!("Pipeline step: {}", cmd.purple());
+            debug!("Pipeline step: {}", cmd.purple());
 
             let spawned = self.spawn_single(cmd).await?;
             *child.lock().await = Some(spawned);
@@ -177,7 +177,7 @@ impl Exec {
             if let Err(err) = proc.kill().await {
                 error!("Failed to kill process: {:?}", err);
             } else {
-                info!("Killed process");
+                debug!("Process killed");
             }
         }
     }
