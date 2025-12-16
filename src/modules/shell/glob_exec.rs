@@ -140,28 +140,33 @@ fn extract_non_recursive_root() {
     );
 }
 
-#[test]
-fn match_single_extension() {
-    let g = GlobExec::new(vec!["src/**/*.ts".into()]);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    assert!(g.should_trigger(Path::new("src/main.ts")));
-    assert!(!g.should_trigger(Path::new("src/main.js")));
-}
+    #[test]
+    fn match_single_extension() {
+        let g = GlobExec::new(vec!["src/**/*.ts".into()]);
 
-#[test]
-fn match_extension_group() {
-    let g = GlobExec::new(vec!["steps/**/*.{ts,js}".into()]);
+        assert!(g.should_trigger(Path::new("src/main.ts")));
+        assert!(!g.should_trigger(Path::new("src/main.js")));
+    }
 
-    assert!(g.should_trigger(Path::new("steps/a.ts")));
-    assert!(g.should_trigger(Path::new("steps/a.js")));
-    assert!(!g.should_trigger(Path::new("steps/a.rs")));
-}
+    #[test]
+    fn match_extension_group() {
+        let g = GlobExec::new(vec!["steps/**/*.{ts,js}".into()]);
 
-#[test]
-fn multiple_patterns() {
-    let g = GlobExec::new(vec!["steps/**/*.ts".into(), "src/**/*.js".into()]);
+        assert!(g.should_trigger(Path::new("steps/a.ts")));
+        assert!(g.should_trigger(Path::new("steps/a.js")));
+        assert!(!g.should_trigger(Path::new("steps/a.rs")));
+    }
 
-    assert!(g.should_trigger(Path::new("steps/a.ts")));
-    assert!(g.should_trigger(Path::new("src/a.js")));
-    assert!(!g.should_trigger(Path::new("src/a.ts")));
+    #[test]
+    fn multiple_patterns() {
+        let g = GlobExec::new(vec!["steps/**/*.ts".into(), "src/**/*.js".into()]);
+
+        assert!(g.should_trigger(Path::new("steps/a.ts")));
+        assert!(g.should_trigger(Path::new("src/a.js")));
+        assert!(!g.should_trigger(Path::new("src/a.ts")));
+    }
 }

@@ -3,13 +3,8 @@ use std::sync::Arc;
 use anyhow::Ok;
 use serde_json::Value;
 
-use crate::{
-    engine::Engine,
-    modules::{
-        core_module::CoreModule,
-        shell::{Exec, ExecConfig},
-    },
-};
+use super::{config::ExecConfig, exec::Exec};
+use crate::{engine::Engine, modules::core_module::CoreModule};
 
 #[derive(Clone)]
 pub struct ExecCoreModule {

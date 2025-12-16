@@ -1006,7 +1006,6 @@ dependencies = [
  "futures-util",
  "hyper 1.8.1",
  "jsonschema",
- "libc",
  "notify",
  "once_cell",
  "redis",
