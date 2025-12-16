@@ -7,8 +7,9 @@ use axum::{
     response::IntoResponse,
 };
 use serde_json::{Value, json};
+use super::types::{APIrequest, APIresponse};
 
-use super::{RestApiCoreModule, APIrequest, APIresponse};
+use super::RestApiCoreModule;
 use crate::engine::Engine;
 
 // Helper function to extract all path parameters from a route pattern and actual path
