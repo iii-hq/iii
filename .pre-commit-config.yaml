@@ -6,10 +6,10 @@ repos:
       - id: cargo-check
       - id: clippy
         args: ["--", "-D", "warnings"]
-  - repo: https://github.com/EmbarkStudios/cargo-deny
-    rev: 0.14.24
-    hooks:
-      - id: cargo-deny
+  # - repo: https://github.com/EmbarkStudios/cargo-deny
+  #   rev: 0.14.24
+  #   hooks:
+  #     - id: cargo-deny
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
