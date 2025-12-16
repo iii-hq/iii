@@ -12,6 +12,10 @@ fn default_timeout() -> u64 {
     30000
 }
 
+fn default_concurrency_request_limit() -> usize {
+    1024
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RestApiConfig {
@@ -25,10 +29,10 @@ pub struct RestApiConfig {
     pub default_timeout: u64,
 
     #[serde(default)]
-    pub default_path: Option<String>,
-
-    #[serde(default)]
     pub cors: Option<CorsConfig>,
+
+    #[serde(default = "default_concurrency_request_limit")]
+    pub concurrency_request_limit: usize,
 }
 
 impl Default for RestApiConfig {
@@ -37,8 +41,8 @@ impl Default for RestApiConfig {
             port: default_port(),
             host: default_host(),
             default_timeout: default_timeout(),
-            default_path: None,
             cors: None,
+            concurrency_request_limit: default_concurrency_request_limit(),
         }
     }
 }

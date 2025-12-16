@@ -19,8 +19,8 @@ path = "examples/custom_event_adapter.rs"
 function-macros = { path = "function-macros" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower = { version = "0.4", features = ["util", "timeout", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 # check if we need both futures and futures-core
