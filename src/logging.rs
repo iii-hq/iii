@@ -2,12 +2,17 @@ use std::{fmt, sync::OnceLock};
 
 use chrono::Local;
 use colored::Colorize;
-use tracing::{Event, Level, Subscriber, field::{Field, Visit}};
+use tracing::{
+    Event, Level, Subscriber,
+    field::{Field, Visit},
+};
 use tracing_subscriber::{
     EnvFilter,
     fmt::{self as tracing_fmt, FmtContext, FormatEvent, FormatFields},
     registry::LookupSpan,
 };
+
+use crate::modules::config::EngineConfig;
 
 /// Collected field from tracing event
 #[derive(Debug, Clone)]
@@ -56,31 +61,43 @@ impl Visit for FieldCollector {
         match field.name() {
             "message" => self.message = Some(value.to_string()),
             "function" => self.function = Some(value.to_string()),
-            _ => self.fields.push((field.name().to_string(), FieldValue::String(value.to_string()))),
+            _ => self.fields.push((
+                field.name().to_string(),
+                FieldValue::String(value.to_string()),
+            )),
         }
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.fields.push((field.name().to_string(), FieldValue::I64(value)));
+        self.fields
+            .push((field.name().to_string(), FieldValue::I64(value)));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.fields.push((field.name().to_string(), FieldValue::U64(value)));
+        self.fields
+            .push((field.name().to_string(), FieldValue::U64(value)));
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.fields.push((field.name().to_string(), FieldValue::F64(value)));
+        self.fields
+            .push((field.name().to_string(), FieldValue::F64(value)));
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.fields.push((field.name().to_string(), FieldValue::Bool(value)));
+        self.fields
+            .push((field.name().to_string(), FieldValue::Bool(value)));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         match field.name() {
             "message" => self.message = Some(format!("{:?}", value)),
-            "function" => self.function = Some(format!("{:?}", value).trim_matches('"').to_string()),
-            _ => self.fields.push((field.name().to_string(), FieldValue::Debug(format!("{:?}", value)))),
+            "function" => {
+                self.function = Some(format!("{:?}", value).trim_matches('"').to_string())
+            }
+            _ => self.fields.push((
+                field.name().to_string(),
+                FieldValue::Debug(format!("{:?}", value)),
+            )),
         }
     }
 }
@@ -125,7 +142,11 @@ fn render_json_value(value: &serde_json::Value, indent: usize) -> String {
                     s.push('\n');
                 }
             }
-            s.push_str(&format!("\n{}{}", "    ".repeat(indent - 1), "}".bright_black()));
+            s.push_str(&format!(
+                "\n{}{}",
+                "    ".repeat(indent - 1),
+                "}".bright_black()
+            ));
             s
         }
         serde_json::Value::Array(arr) => {
@@ -142,7 +163,11 @@ fn render_json_value(value: &serde_json::Value, indent: usize) -> String {
                     s.push('\n');
                 }
             }
-            s.push_str(&format!("\n{}{}", "    ".repeat(indent - 1), "]".bright_black()));
+            s.push_str(&format!(
+                "\n{}{}",
+                "    ".repeat(indent - 1),
+                "]".bright_black()
+            ));
             s
         }
         serde_json::Value::String(st) => format!("{}", format!("\"{}\"", st).cyan()),
@@ -166,9 +191,12 @@ fn render_fields_tree(fields: &[(&String, &FieldValue)]) -> String {
         let branch = if is_last { "└" } else { "├" };
         let field_name = name.white();
         let field_value = render_field_value(value);
-        
-        result.push_str(&format!("{}{} {}: {}", pad, branch, field_name, field_value));
-        
+
+        result.push_str(&format!(
+            "{}{} {}: {}",
+            pad, branch, field_name, field_value
+        ));
+
         if !is_last {
             result.push('\n');
         }
@@ -217,9 +245,7 @@ where
         write!(writer, "[{}] ", level_str)?;
 
         // Use "function" field if present, otherwise use target (module path)
-        let display_name = collector
-            .get_function()
-            .unwrap_or(meta.target());
+        let display_name = collector.get_function().unwrap_or(meta.target());
         write!(writer, "{} ", display_name.cyan().bold())?;
 
         // Write message if present
@@ -238,10 +264,82 @@ where
 
 static TRACING: OnceLock<()> = OnceLock::new();
 
-pub fn init_tracing() {
+pub fn init_log(path: &str) {
+    println!("Initializing logging from config file: {}", path);
+    let cfg = EngineConfig::config_file_or_default(path);
+    if let Err(e) = cfg {
+        println!(
+            "Failed to parse config file: {}, using default local logging. Error: {}",
+            path, e
+        );
+        init_local_log("info");
+        return;
+    };
+
+    let cfg = cfg.expect("Failed to parse config file");
+
+    println!("Parsed config file: {}", path);
+    let log_module_name = "modules::observability::LoggingModule";
+    let log_module_cfg = cfg.modules.iter().find(|m| m.class == log_module_name);
+    match log_module_cfg {
+        Some(_) => {
+            let log_level = log_module_cfg
+                .and_then(|m| {
+                    m.config
+                        .as_ref()?
+                        .get("level")
+                        .or_else(|| m.config.as_ref()?.get("log_level"))
+                })
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_else(|| "info".to_string());
+
+            let log_format = log_module_cfg
+                .and_then(|m| m.config.as_ref()?.get("format"))
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_else(|| "default".to_string());
+
+            println!(
+                "Log level from config: {}, Log format: {}",
+                log_level, log_format
+            );
+
+            if log_format.to_lowercase() == "json" {
+                init_prod_log(log_level.as_str());
+            } else {
+                init_local_log(log_level.as_str());
+            }
+        }
+        None => {
+            println!("LoggingModule not found in config, using default local logging");
+            init_local_log("info");
+        }
+    }
+}
+
+fn init_prod_log(log_level: &str) {
     TRACING.get_or_init(|| {
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        tracing_fmt::Subscriber::builder()
+        let filter = EnvFilter::new(log_level);
+        tracing_subscriber::fmt::Subscriber::builder()
+            .with_env_filter(filter)
+            .json()
+            .with_current_span(true)
+            .with_span_list(true)
+            .init();
+    });
+}
+
+fn init_local_log(log_level: &str) {
+    TRACING.get_or_init(|| {
+        let filter = EnvFilter::new(log_level);
+        tracing_subscriber::fmt::Subscriber::builder()
             .with_env_filter(filter)
             .event_format(IIILogFormatter)
             .init();

@@ -51,6 +51,80 @@ pub struct EngineConfig {
     pub modules: Vec<ModuleEntry>,
 }
 
+impl EngineConfig {
+    pub fn default_modules(self) -> Self {
+        let modules = DEFAULT_MODULES
+            .iter()
+            .map(|class| ModuleEntry {
+                class: class.to_string(),
+                config: None,
+            })
+            .collect();
+
+        Self { modules }
+    }
+
+    pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
+        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
+
+        re.replace_all(yaml_content, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let default_value = caps.get(2).map(|m| m.as_str());
+
+            match env::var(var_name) {
+                Ok(value) => value,
+                Err(_) => match default_value {
+                    Some(default) => default.to_string(),
+                    None => {
+                        tracing::error!(
+                            "Environment variable '{}' not set and no
+    default provided",
+                            var_name
+                        );
+                        panic!(
+                            "Environment variable '{}' not set and no default provided",
+                            var_name
+                        );
+                    }
+                },
+            }
+        })
+        .to_string()
+    }
+
+    pub fn config_file_or_default(path: &str) -> anyhow::Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(yaml_content) => {
+                let yaml_content = Self::expand_env_vars(&yaml_content);
+                let config = serde_yaml::from_str(&yaml_content);
+                match config {
+                    Ok(cfg) => {
+                        tracing::info!("Parsed config file: {}", path);
+                        Ok(cfg)
+                    }
+                    Err(err) => Err(anyhow::anyhow!(
+                        "Failed to parse config file {}: {}",
+                        path,
+                        err
+                    )),
+                }
+            }
+            Err(_) => {
+                tracing::info!("No {} found, using default modules", path);
+                Ok(Self {
+                    modules: DEFAULT_MODULES
+                        .iter()
+                        .map(|class| ModuleEntry {
+                            class: class.to_string(),
+                            config: None,
+                        })
+                        .collect(),
+                })
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ModuleEntry {
     pub class: String,
@@ -215,71 +289,11 @@ impl EngineBuilder {
         self
     }
 
-    /// Uses default modules configuration
-    pub fn default_modules(mut self) -> Self {
-        let modules = DEFAULT_MODULES
-            .iter()
-            .map(|class| ModuleEntry {
-                class: class.to_string(),
-                config: None,
-            })
-            .collect();
-
-        self.config = Some(EngineConfig { modules });
-        self
-    }
-
-    fn expand_env_vars(yaml_content: &str) -> String {
-        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
-
-        re.replace_all(yaml_content, |caps: &regex::Captures| {
-            let var_name = &caps[1];
-            let default_value = caps.get(2).map(|m| m.as_str());
-
-            match env::var(var_name) {
-                Ok(value) => value,
-                Err(_) => match default_value {
-                    Some(default) => default.to_string(),
-                    None => {
-                        tracing::error!(
-                            "Environment variable '{}' not set and no
-    default provided",
-                            var_name
-                        );
-                        panic!(
-                            "Environment variable '{}' not set and no default provided",
-                            var_name
-                        );
-                    }
-                },
-            }
-        })
-        .to_string()
-    }
     /// Loads config from file if exists, otherwise uses defaults
     pub fn config_file_or_default(mut self, path: &str) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(yaml_content) => {
-                let yaml_content = Self::expand_env_vars(&yaml_content);
-                let config = serde_yaml::from_str(&yaml_content);
-                match config {
-                    Ok(cfg) => {
-                        tracing::info!("Parsed config file: {}", path);
-                        self.config = Some(cfg);
-                        Ok(self)
-                    }
-                    Err(err) => Err(anyhow::anyhow!(
-                        "Failed to parse config file {}: {}",
-                        path,
-                        err
-                    )),
-                }
-            }
-            Err(_) => {
-                tracing::info!("No {} found, using default modules", path);
-                Ok(self.default_modules())
-            }
-        }
+        let config = EngineConfig::config_file_or_default(path)?;
+        self.config = Some(config);
+        Ok(self)
     }
 
     /// Registers a custom module type in the registry
@@ -390,7 +404,7 @@ mod tests {
         }
         let input = "This is a ${TEST_VAR} and ${UNSET_VAR:default_value}";
         let expected = "This is a value1 and default_value";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -401,7 +415,7 @@ mod tests {
         }
         let input = "Value is ${MISSING_VAR:default}";
         let expected = "Value is default";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -413,7 +427,7 @@ mod tests {
         }
         let input = "url: ${TEST_VAR_WITH_DEFAULT:ignored_default}";
         let expected = "url: real_value";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -421,7 +435,7 @@ mod tests {
     fn test_expand_env_vars_no_variables_unchanged() {
         // Text without variables should remain unchanged
         let input = "plain text without any variables";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, input);
     }
 
@@ -433,7 +447,7 @@ mod tests {
         }
         let input = "value: ${TEST_EMPTY_DEFAULT:}";
         let expected = "value: ";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -445,7 +459,7 @@ mod tests {
         }
         let input = "redis: ${TEST_REDIS_URL:redis://localhost:6379/0}";
         let expected = "redis: redis://localhost:6379/0";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -457,7 +471,7 @@ mod tests {
         }
         let input = "${TEST_REPEATED}-${TEST_REPEATED}-${TEST_REPEATED}";
         let expected = "abc-abc-abc";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -470,7 +484,7 @@ mod tests {
         }
         let input = "${TEST_FIRST}${TEST_SECOND}";
         let expected = "helloworld";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -482,7 +496,7 @@ mod tests {
             env::remove_var("TEST_MUST_PANIC");
         }
         let input = "key: ${TEST_MUST_PANIC}";
-        EngineBuilder::expand_env_vars(input);
+        EngineConfig::expand_env_vars(input);
     }
 
     #[test]
@@ -493,7 +507,7 @@ mod tests {
         }
         let input = "value: ${MY_VAR_123}";
         let expected = "value: test_value";
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 
@@ -512,7 +526,7 @@ mod tests {
   host: localhost
   port: 8080
   timeout: 30"#;
-        let output = EngineBuilder::expand_env_vars(input);
+        let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
 }
