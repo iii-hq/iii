@@ -30,8 +30,6 @@ impl CoreModule for ExecCoreModule {
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing DevWatcherCoreModule");
-
         let watcher = Exec::new(self.config.clone());
 
         tokio::spawn(async move {

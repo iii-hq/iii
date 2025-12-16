@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use super::config::EventModuleConfig;
 use crate::{
+    EventAdapter,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
@@ -23,13 +24,6 @@ use crate::{
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
-
-#[async_trait]
-pub trait EventAdapter: Send + Sync + 'static {
-    async fn emit(&self, topic: &str, event_data: Value);
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str);
-    async fn unsubscribe(&self, topic: &str, id: &str);
-}
 
 #[derive(Clone)]
 pub struct EventCoreModule {

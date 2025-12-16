@@ -148,7 +148,7 @@ impl RestApiCoreModule {
         let mut shared_router = self.shared_routers.write().await;
         *shared_router = new_router;
 
-        tracing::info!("Routes updated successfully");
+        tracing::debug!("Routes updated successfully");
         Ok(())
     }
 

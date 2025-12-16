@@ -11,40 +11,33 @@ use tokio::{
     sync::{Mutex, mpsc},
 };
 
-use crate::modules::shell::config::ExecConfig;
+use crate::modules::shell::{config::ExecConfig, glob_exec::GlobExec};
 
 #[derive(Debug, Clone)]
 pub struct Exec {
-    watch: Option<Vec<String>>,
-    extensions: Vec<String>,
     exec: Vec<String>,
+    glob_exec: Option<GlobExec>,
 }
 
 const MAX_WATCH_EVENTS: usize = 100;
 
 impl Exec {
     pub fn new(config: ExecConfig) -> Self {
-        let extensions = config
-            .extensions
-            .unwrap_or_default()
-            .split(',')
-            .map(|e| e.trim().trim_start_matches('.').to_string())
-            .collect();
+        tracing::info!("Creating Exec module with config: {:?}", config);
 
         Self {
-            watch: config.watch,
-            extensions,
+            glob_exec: config.watch.map(GlobExec::new),
             exec: config.exec,
         }
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
         let (tx, mut rx) = mpsc::channel::<Event>(MAX_WATCH_EVENTS);
-
-        let watch = self.watch.clone();
         let mut watcher: RecommendedWatcher;
 
-        if let Some(watch) = watch {
+        if let Some(ref glob_exec) = self.glob_exec {
+            tracing::info!("Creating watcher for glob exec: {:?}", glob_exec);
+
             watcher = Watcher::new(
                 move |res| {
                     if let Ok(event) = res {
@@ -54,15 +47,16 @@ impl Exec {
                 Config::default(),
             )?;
 
-            for path in &watch {
-                watcher.watch(Path::new(path), RecursiveMode::Recursive)?;
+            for root in glob_exec.watch_roots() {
+                watcher.watch(
+                    Path::new(&root.path),
+                    if root.recursive {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    },
+                )?;
             }
-
-            tracing::info!(
-                "Watching paths: {} extensions: {}",
-                watch.join(", ").purple(),
-                self.extensions.join(", ").purple()
-            );
         }
 
         let child = Arc::new(Mutex::new(None::<tokio::process::Child>));
@@ -100,21 +94,24 @@ impl Exec {
 
     async fn run_pipeline(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) -> Result<()> {
         for cmd in &self.exec {
-            tracing::debug!("Pipeline step: {}", cmd.purple());
-
             let spawned = self.spawn_single(cmd).await?;
             *child.lock().await = Some(spawned);
 
-            // ⏳ wait for command to finish
-            let status = child.lock().await.as_mut().unwrap().wait().await?;
+            // Check if this is the last command in the pipeline
+            let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
 
-            if !status.success() {
-                tracing::error!("Pipeline step failed, aborting pipeline");
-                break;
+            if !is_last {
+                // ⏳ wait for command to finish
+                let status = child.lock().await.as_mut().unwrap().wait().await?;
+
+                if !status.success() {
+                    tracing::error!("Pipeline step failed, aborting pipeline");
+                    break;
+                }
+
+                // clear child before next step
+                *child.lock().await = None;
             }
-
-            // clear child before next step
-            *child.lock().await = None;
         }
 
         Ok(())
@@ -127,13 +124,7 @@ impl Exec {
         let mut cmd = {
             let mut c = Command::new("sh");
             c.arg("-c").arg(command);
-
-            unsafe {
-                c.pre_exec(|| {
-                    libc::setpgid(0, 0);
-                    Ok(())
-                });
-            }
+            c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
             c
         };
@@ -142,6 +133,8 @@ impl Exec {
         let mut cmd = {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(command);
+            c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
             c
         };
 
@@ -163,12 +156,14 @@ impl Exec {
             return false;
         }
 
-        event.paths.iter().any(|path| {
-            path.extension()
-                .and_then(|e| e.to_str())
-                .map(|ext| self.extensions.contains(&ext.to_string()))
-                .unwrap_or(false)
-        })
+        if let Some(ref glob_exec) = self.glob_exec {
+            return event
+                .paths
+                .iter()
+                .any(|path| glob_exec.should_trigger(path));
+        }
+
+        return false;
     }
 
     async fn kill_process(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) {

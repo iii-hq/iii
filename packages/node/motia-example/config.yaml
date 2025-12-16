@@ -42,9 +42,7 @@ modules:
   - class: modules::shell::ExecModule
     config:
       watch:
-        - steps/
-        - src/
-      extensions: ts,js
+        - steps/**/*.ts
       exec:
         - npx motia dev
         - bun run --enable-source-maps dist/index-dev.js

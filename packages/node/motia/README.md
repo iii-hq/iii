@@ -65,9 +65,8 @@ modules:
     config:
       # watch and extensions should be included only in development mode
       watch:
-        - steps/
-        - src/
-      extensions: ts,js
+        - steps/**/*.{ts,js}
+        - src/**/*.ts
 
       # exec is a pipeline of commands, we only need one in production mode
       exec:

@@ -4,6 +4,5 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ExecConfig {
     pub watch: Option<Vec<String>>,
-    pub extensions: Option<String>,
     pub exec: Vec<String>,
 }
