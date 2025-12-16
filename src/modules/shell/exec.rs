@@ -10,7 +10,6 @@ use tokio::{
     process::Command,
     sync::{Mutex, mpsc},
 };
-use tracing::{debug, error, info};
 
 use crate::modules::shell::config::ExecConfig;
 
@@ -59,7 +58,7 @@ impl Exec {
                 watcher.watch(Path::new(path), RecursiveMode::Recursive)?;
             }
 
-            info!(
+            tracing::info!(
                 "Watching paths: {} extensions: {}",
                 watch.join(", ").purple(),
                 self.extensions.join(", ").purple()
@@ -77,7 +76,7 @@ impl Exec {
                 continue;
             }
 
-            info!(
+            tracing::info!(
                 "File change detected {} → restarting pipeline",
                 event
                     .paths
@@ -101,7 +100,7 @@ impl Exec {
 
     async fn run_pipeline(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) -> Result<()> {
         for cmd in &self.exec {
-            debug!("Pipeline step: {}", cmd.purple());
+            tracing::debug!("Pipeline step: {}", cmd.purple());
 
             let spawned = self.spawn_single(cmd).await?;
             *child.lock().await = Some(spawned);
@@ -110,7 +109,7 @@ impl Exec {
             let status = child.lock().await.as_mut().unwrap().wait().await?;
 
             if !status.success() {
-                error!("Pipeline step failed, aborting pipeline");
+                tracing::error!("Pipeline step failed, aborting pipeline");
                 break;
             }
 
@@ -122,7 +121,7 @@ impl Exec {
     }
 
     async fn spawn_single(&self, command: &str) -> Result<tokio::process::Child> {
-        info!("Starting process: {}", command.purple());
+        tracing::info!("Starting process: {}", command.purple());
 
         #[cfg(not(windows))]
         let mut cmd = {
@@ -175,9 +174,9 @@ impl Exec {
     async fn kill_process(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) {
         if let Some(mut proc) = child.lock().await.take() {
             if let Err(err) = proc.kill().await {
-                error!("Failed to kill process: {:?}", err);
+                tracing::error!("Failed to kill process: {:?}", err);
             } else {
-                debug!("Process killed");
+                tracing::debug!("Process killed");
             }
         }
     }
