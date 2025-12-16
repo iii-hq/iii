@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::RwLock};
 use tower::Service;
-use tower_http::cors::{Any as HTTP_Any, CorsLayer};
+use tower_http::{cors::{Any as HTTP_Any, CorsLayer}, timeout::TimeoutLayer};
 
 use crate::{
     engine::{Engine, EngineTrait},
@@ -322,6 +322,11 @@ impl RestApiCoreModule {
         // Apply CORS layer to the router
         new_router = new_router.layer(cors_layer);
 
+        // Apply timeout layer based on configuration
+        new_router = new_router.layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            std::time::Duration::from_millis(self.config.default_timeout),
+        ));
         // Update the shared router
         let mut shared_router = self.shared_routers.write().await;
         *shared_router = new_router;
