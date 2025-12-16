@@ -29,9 +29,6 @@ pub struct RestApiConfig {
     pub default_timeout: u64,
 
     #[serde(default)]
-    pub default_path: Option<String>,
-
-    #[serde(default)]
     pub cors: Option<CorsConfig>,
 
     #[serde(default = "default_concurrency_request_limit")]
@@ -44,7 +41,6 @@ impl Default for RestApiConfig {
             port: default_port(),
             host: default_host(),
             default_timeout: default_timeout(),
-            default_path: None,
             cors: None,
             concurrency_request_limit: default_concurrency_request_limit(),
         }
