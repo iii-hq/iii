@@ -23,7 +23,10 @@ use super::{
     core_module::CoreModule, cron::CronCoreModule, event::EventCoreModule,
     observability::LoggerCoreModule, rest_api::RestApiCoreModule,
 };
-use crate::{engine::Engine, modules::streams::StreamCoreModule};
+use crate::{
+    engine::Engine,
+    modules::{shell::ExecCoreModule, streams::StreamCoreModule},
+};
 
 // =============================================================================
 // Constants
@@ -215,6 +218,7 @@ impl ModuleRegistry {
         registry.register::<EventCoreModule>("modules::event::EventModule");
         registry.register::<CronCoreModule>("modules::cron::CronModule");
         registry.register::<LoggerCoreModule>("modules::observability::LoggingModule");
+        registry.register::<ExecCoreModule>("modules::shell::ExecModule");
 
         registry
     }

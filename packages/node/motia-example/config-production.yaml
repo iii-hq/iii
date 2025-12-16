@@ -16,6 +16,7 @@ modules:
         allowed_origins:
           - http://localhost:3000
           - http://localhost:5173
+          - https://todo-app-xi-umber.vercel.app
         allowed_methods:
           - GET
           - POST
@@ -41,8 +42,5 @@ modules:
 
   - class: modules::shell::ExecModule
     config:
-      watch:
-        - steps/**/*.ts
       exec:
-        - npx motia dev
-        - bun run --enable-source-maps dist/index-dev.js
+        - bun run --enable-source-maps dist/index-production.js

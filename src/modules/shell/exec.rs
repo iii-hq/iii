@@ -1,0 +1,178 @@
+use std::{path::Path, process::Stdio, sync::Arc};
+
+use anyhow::Result;
+use colored::Colorize;
+use notify::{
+    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode},
+};
+use tokio::{
+    process::Command,
+    sync::{Mutex, mpsc},
+};
+
+use crate::modules::shell::{config::ExecConfig, glob_exec::GlobExec};
+
+#[derive(Debug, Clone)]
+pub struct Exec {
+    exec: Vec<String>,
+    glob_exec: Option<GlobExec>,
+}
+
+const MAX_WATCH_EVENTS: usize = 100;
+
+impl Exec {
+    pub fn new(config: ExecConfig) -> Self {
+        tracing::info!("Creating Exec module with config: {:?}", config);
+
+        Self {
+            glob_exec: config.watch.map(GlobExec::new),
+            exec: config.exec,
+        }
+    }
+
+    pub async fn run(self) -> anyhow::Result<()> {
+        let (tx, mut rx) = mpsc::channel::<Event>(MAX_WATCH_EVENTS);
+        let mut watcher: RecommendedWatcher;
+
+        if let Some(ref glob_exec) = self.glob_exec {
+            tracing::info!("Creating watcher for glob exec: {:?}", glob_exec);
+
+            watcher = Watcher::new(
+                move |res| {
+                    if let Ok(event) = res {
+                        let _ = tx.blocking_send(event);
+                    }
+                },
+                Config::default(),
+            )?;
+
+            for root in glob_exec.watch_roots() {
+                watcher.watch(
+                    Path::new(&root.path),
+                    if root.recursive {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    },
+                )?;
+            }
+        }
+
+        let child = Arc::new(Mutex::new(None::<tokio::process::Child>));
+        let cwd = std::env::current_dir().unwrap_or_default();
+
+        // 🔥 start pipeline
+        self.run_pipeline(child.clone()).await?;
+
+        while let Some(event) = rx.recv().await {
+            if !self.should_restart(&event) {
+                continue;
+            }
+
+            tracing::info!(
+                "File change detected {} → restarting pipeline",
+                event
+                    .paths
+                    .iter()
+                    .map(|p| {
+                        p.strip_prefix(&cwd)
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| p.to_string_lossy().to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+                    .purple()
+            );
+
+            self.kill_process(child.clone()).await;
+            self.run_pipeline(child.clone()).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn run_pipeline(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) -> Result<()> {
+        for cmd in &self.exec {
+            let spawned = self.spawn_single(cmd).await?;
+            *child.lock().await = Some(spawned);
+
+            // Check if this is the last command in the pipeline
+            let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
+
+            if !is_last {
+                // ⏳ wait for command to finish
+                let status = child.lock().await.as_mut().unwrap().wait().await?;
+
+                if !status.success() {
+                    tracing::error!("Pipeline step failed, aborting pipeline");
+                    break;
+                }
+
+                // clear child before next step
+                *child.lock().await = None;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn spawn_single(&self, command: &str) -> Result<tokio::process::Child> {
+        tracing::info!("Starting process: {}", command.purple());
+
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(command);
+            c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
+            c
+        };
+
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(command);
+            c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
+            c
+        };
+
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
+        Ok(cmd.spawn()?)
+    }
+
+    fn should_restart(&self, event: &Event) -> bool {
+        let is_valid_event = matches!(
+            event.kind,
+            EventKind::Create(CreateKind::File)
+                | EventKind::Modify(ModifyKind::Data(DataChange::Content))
+                | EventKind::Modify(ModifyKind::Name(RenameMode::Any))
+                | EventKind::Remove(RemoveKind::File)
+        );
+
+        if !is_valid_event {
+            return false;
+        }
+
+        if let Some(ref glob_exec) = self.glob_exec {
+            return event
+                .paths
+                .iter()
+                .any(|path| glob_exec.should_trigger(path));
+        }
+
+        return false;
+    }
+
+    async fn kill_process(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) {
+        if let Some(mut proc) = child.lock().await.take() {
+            if let Err(err) = proc.kill().await {
+                tracing::error!("Failed to kill process: {:?}", err);
+            } else {
+                tracing::debug!("Process killed");
+            }
+        }
+    }
+}

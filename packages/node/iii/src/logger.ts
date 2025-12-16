@@ -20,7 +20,6 @@ export class Logger {
       trace_id: this.traceId,
       function_name: this.functionName,
     })
-    console.log(`[INFO] ${message}`, data)
   }
 
   warn(message: string, data?: any) {
@@ -30,7 +29,6 @@ export class Logger {
       trace_id: this.traceId ?? '',
       function_name: this.functionName ?? '',
     })
-    console.warn(`[WARN] ${message}`, data)
   }
 
   error(message: string, data?: any) {
@@ -40,6 +38,5 @@ export class Logger {
       trace_id: this.traceId,
       function_name: this.functionName,
     })
-    console.error(`[ERROR] ${message}`, data)
   }
 }
