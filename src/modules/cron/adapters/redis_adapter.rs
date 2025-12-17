@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use redis::{aio::ConnectionManager, Client};
+use redis::{Client, aio::ConnectionManager};
 use tokio::time::timeout;
 
 use super::super::structs::CronSchedulerAdapter;

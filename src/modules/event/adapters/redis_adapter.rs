@@ -43,13 +43,7 @@ impl RedisAdapter {
                     redis_url
                 )
             })?
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to connect to Redis at {}: {}",
-                    redis_url,
-                    e
-                )
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", redis_url, e))?;
 
         let publisher = Arc::new(Mutex::new(manager));
         let subscriber = Arc::new(client);

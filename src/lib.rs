@@ -20,6 +20,6 @@ pub mod modules {
 }
 
 // Re-export commonly used types
-pub use modules::{config::EngineBuilder, cron::CronSchedulerAdapter, event::EventAdapter};
+pub use modules::{config::EngineBuilder, event::EventAdapter};
 
 // todo: create a prelude module for commonly used traits and types

@@ -1,5 +1,6 @@
-pub mod adapters;
+mod adapters;
 mod config;
+#[allow(clippy::module_inception)]
 mod event;
 
 use axum::async_trait;

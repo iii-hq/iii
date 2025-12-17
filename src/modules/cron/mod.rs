@@ -1,8 +1,8 @@
 mod adapters;
 mod config;
+
+#[allow(clippy::module_inception)]
 mod cron;
 mod structs;
 
-pub use config::CronModuleConfig;
 pub use cron::CronCoreModule;
-pub use structs::CronSchedulerAdapter;

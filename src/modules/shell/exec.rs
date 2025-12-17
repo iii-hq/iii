@@ -163,7 +163,7 @@ impl Exec {
                 .any(|path| glob_exec.should_trigger(path));
         }
 
-        return false;
+        false
     }
 
     async fn kill_process(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) {

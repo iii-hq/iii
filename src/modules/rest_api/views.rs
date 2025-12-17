@@ -7,9 +7,11 @@ use axum::{
     response::IntoResponse,
 };
 use serde_json::{Value, json};
-use super::types::{APIrequest, APIresponse};
 
-use super::RestApiCoreModule;
+use super::{
+    RestApiCoreModule,
+    types::{APIrequest, APIresponse},
+};
 use crate::engine::Engine;
 
 // Helper function to extract all path parameters from a route pattern and actual path
@@ -50,6 +52,7 @@ fn extract_path_params(registered_path: &str, actual_path: &str) -> HashMap<Stri
 
     params
 }
+#[allow(clippy::too_many_arguments)]
 #[axum::debug_handler]
 pub async fn dynamic_handler(
     method: axum::http::Method,

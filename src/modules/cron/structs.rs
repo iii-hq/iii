@@ -66,7 +66,9 @@ impl CronAdapter {
             loop {
                 // Calculate time until next execution
                 let now = chrono::Utc::now();
-                let next: chrono::DateTime<chrono::Utc> = match schedule.upcoming(chrono::Utc).next()
+                let next: chrono::DateTime<chrono::Utc> = match schedule
+                    .upcoming(chrono::Utc)
+                    .next()
                 {
                     Some(next) => next,
                     None => {
