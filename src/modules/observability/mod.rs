@@ -1,7 +1,7 @@
 mod config;
 mod logger;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 pub use config::LoggerModuleConfig;
@@ -19,21 +19,21 @@ use crate::{
 
 pub trait LoggerAdapter: Send + Sync + 'static {
     fn info(
-        &self,
+        &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
     );
     fn warn(
-        &self,
+        &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
     );
     fn error(
-        &self,
+        &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
@@ -43,7 +43,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct LoggerCoreModule {
-    logger: Arc<dyn LoggerAdapter>,
+    logger: Arc<Mutex<dyn LoggerAdapter>>,
     #[allow(dead_code)]
     config: LoggerModuleConfig,
 }
@@ -60,7 +60,7 @@ pub struct LoggerInput {
 impl LoggerCoreModule {
     #[function(name = "logger.info", description = "Log an info message")]
     pub async fn info(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger.info(
+        self.logger.lock().unwrap().info(
             input.trace_id.as_deref(),
             input.function_name.as_str(),
             input.message.as_str(),
@@ -72,7 +72,7 @@ impl LoggerCoreModule {
 
     #[function(name = "logger.warn", description = "Log a warn message")]
     pub async fn warn(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger.warn(
+        self.logger.lock().unwrap().warn(
             input.trace_id.as_deref(),
             input.function_name.as_str(),
             input.message.as_str(),
@@ -84,7 +84,7 @@ impl LoggerCoreModule {
 
     #[function(name = "logger.error", description = "Log an error message")]
     pub async fn error(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger.error(
+        self.logger.lock().unwrap().error(
             input.trace_id.as_deref(),
             input.function_name.as_str(),
             input.message.as_str(),
@@ -106,7 +106,7 @@ impl CoreModule for LoggerCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        let logger = Arc::new(Logger {});
+        let logger = Arc::new(Mutex::new(Logger::new(60)));
         Ok(Box::new(Self { config, logger }))
     }
 

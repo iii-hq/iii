@@ -1,3 +1,3 @@
 
 watch-debug:
-	cargo watch -w src -s "RUST_LOG=debug cargo run "
+	cargo watch -w Cargo.toml -w config.yaml -w src -s "RUST_LOG=debug cargo run "
