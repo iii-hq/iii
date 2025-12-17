@@ -147,8 +147,15 @@ impl EventAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::debug!(topic = %topic_for_task, function_path = %function_path_for_task, "Received event from Redis, invoking function");
-                engine.invoke_function(&function_path_for_task, event_data);
+                tracing::debug!(topic = %topic_for_task, function_path = %function_path, "Received event from Redis, invoking function");
+
+                let engine = Arc::clone(&engine);
+                let function_path = function_path_for_task.clone();
+
+                // We may want to limit concurrency at some point
+                tokio::spawn(async move {
+                    let _ = engine.invoke_function(&function_path, event_data).await;
+                });
             }
 
             tracing::debug!(topic = %topic_for_task, id = %id_for_task, "Subscription task ended");

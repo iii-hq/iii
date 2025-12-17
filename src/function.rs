@@ -11,6 +11,7 @@ use crate::protocol::*;
 pub enum FunctionResult<T, E> {
     Success(T),
     Failure(E),
+    Deferred,
     NoResult,
 }
 type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;

@@ -12,7 +12,7 @@ use super::{
     RestApiCoreModule,
     types::{APIrequest, APIresponse},
 };
-use crate::engine::Engine;
+use crate::engine::{Engine, EngineTrait};
 
 // Helper function to extract all path parameters from a route pattern and actual path
 // Returns a HashMap<String, String> where keys are parameter names (without ':') and values are their corresponding values
@@ -78,11 +78,6 @@ pub async fn dynamic_handler(
         .get_router(method.as_str(), &registered_path)
         .await
     {
-        let function = engine.functions.get(function_path.as_str());
-        if function.is_none() {
-            return (StatusCode::NOT_FOUND, "Function Not Found").into_response();
-        }
-        let function_handler = function.expect("function existence checked");
         let api_request = APIrequest::new(
             query_params.clone(),
             path_parameters.clone(),
@@ -95,12 +90,11 @@ pub async fn dynamic_handler(
         let api_request_value = serde_json::to_value(api_request).unwrap_or(serde_json::json!({}));
 
         let func_result = engine
-            .non_worker_invocations
-            .handle_invocation(api_request_value, function_handler)
+            .invoke_function(&function_path, api_request_value)
             .await;
 
         return match func_result {
-            Ok(Ok(result)) => {
+            Ok(result) => {
                 let result = result.unwrap_or(json!({}));
                 let status_code = result
                     .get("status_code")
@@ -113,14 +107,9 @@ pub async fn dynamic_handler(
                 )
                     .into_response()
             }
-            Ok(Err(err)) => (
+            Err(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": err})),
-            )
-                .into_response(),
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Invocation timed out or channel closed"})),
             )
                 .into_response(),
         };

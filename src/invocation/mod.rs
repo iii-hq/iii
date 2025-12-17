@@ -1,63 +1,93 @@
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use dashmap::DashMap;
-use futures::Future;
 use serde_json::Value;
 use tokio::sync::oneshot::{self, error::RecvError};
 use uuid::Uuid;
 
-use crate::{function::Function, protocol::ErrorBody};
-
-type InvocationFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>>;
-
-type Invocations = Arc<DashMap<Uuid, oneshot::Sender<Result<Option<Value>, ErrorBody>>>>;
+use crate::{
+    function::{Function, FunctionResult},
+    protocol::ErrorBody,
+};
 
 pub struct Invocation {
-    pub invocation_id: Uuid,
+    pub id: Uuid,
     pub function_path: String,
+    pub worker_id: Option<Uuid>,
+    pub sender: oneshot::Sender<Result<Option<Value>, ErrorBody>>,
 }
 
-pub trait InvocationHandler {
-    fn handle_invocation_result<'a>(
-        &'a self,
-        invocation: Invocation,
-        result: Option<Value>,
-        error: Option<ErrorBody>,
-    ) -> InvocationFuture<'a>;
-}
+type Invocations = Arc<DashMap<Uuid, Invocation>>;
 
 #[derive(Default)]
-pub struct NonWorkerInvocations {
+pub struct InvocationHandler {
     invocations: Invocations,
 }
-impl NonWorkerInvocations {
+impl InvocationHandler {
     pub fn new() -> Self {
         Self {
             invocations: Arc::new(DashMap::new()),
         }
     }
 
-    pub fn remove(
-        &self,
-        invocation_id: &Uuid,
-    ) -> Option<oneshot::Sender<Result<Option<Value>, ErrorBody>>> {
+    pub fn remove(&self, invocation_id: &Uuid) -> Option<Invocation> {
         self.invocations
             .remove(invocation_id)
             .map(|(_, sender)| sender)
     }
 
+    pub fn halt_invocation(&self, invocation_id: &Uuid) {
+        let invocation = self.remove(invocation_id);
+
+        if let Some(invocation) = invocation {
+            let _ = invocation.sender.send(Err(ErrorBody {
+                code: "invocation_stopped".into(),
+                message: "Invocation stopped".into(),
+            }));
+        }
+    }
+
     pub async fn handle_invocation(
         &self,
+        invocation_id: Option<Uuid>,
+        worker_id: Option<Uuid>,
+        function_path: String,
         body: Value,
         function_handler: Function,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        let invocation_id = uuid::Uuid::new_v4();
-        self.invocations.insert(invocation_id, sender);
-        let _ = function_handler
+        let invocation_id = invocation_id.unwrap_or_else(|| uuid::Uuid::new_v4());
+        let invocation = Invocation {
+            id: invocation_id,
+            function_path,
+            worker_id,
+            sender,
+        };
+
+        let result = function_handler
             .call_handler(Some(invocation_id), body)
             .await;
+
+        match result {
+            FunctionResult::Success(result) => {
+                tracing::debug!(invocation_id = %invocation_id, "Function result: {:?}", result);
+                let _ = invocation.sender.send(Ok(result));
+            }
+            FunctionResult::Failure(error) => {
+                tracing::debug!(invocation_id = %invocation_id, "Function error: {:?}", error);
+                let _ = invocation.sender.send(Err(error));
+            }
+            FunctionResult::NoResult => {
+                tracing::debug!(invocation_id = %invocation_id, "Function no result");
+                let _ = invocation.sender.send(Ok(None));
+            }
+            FunctionResult::Deferred => {
+                tracing::debug!(invocation_id = %invocation_id, "Function deferred");
+                // we need to store the invocation because it's a worker invocation
+                self.invocations.insert(invocation_id, invocation);
+            }
+        }
+
         receiver.await
     }
 }

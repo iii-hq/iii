@@ -2,7 +2,6 @@ pub mod engine;
 pub mod function;
 pub mod invocation;
 pub mod logging;
-pub mod pending_invocations;
 pub mod protocol;
 pub mod services;
 pub mod trigger;

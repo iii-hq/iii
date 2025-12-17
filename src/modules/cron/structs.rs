@@ -107,7 +107,7 @@ impl CronAdapter {
                     });
 
                     // Invoke the function
-                    engine.invoke_function(&func_path, event_data);
+                    let _ = engine.invoke_function(&func_path, event_data).await;
 
                     // Release the lock
                     scheduler.release_lock(&job_id).await;

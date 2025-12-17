@@ -3,13 +3,12 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot::error::RecvError};
 use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
-    invocation::{Invocation, InvocationHandler, NonWorkerInvocations},
-    pending_invocations::PendingInvocations,
+    invocation::InvocationHandler,
     protocol::{ErrorBody, FunctionMessage, Message},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
@@ -49,7 +48,11 @@ where
 
 #[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
-    fn invoke_function(&self, function_path: &str, input: Value);
+    async fn invoke_function(
+        &self,
+        function_path: &str,
+        input: Value,
+    ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
         &self,
@@ -71,8 +74,7 @@ pub struct Engine {
     pub functions: Arc<FunctionsRegistry>,
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
-    pub pending_invocations: Arc<PendingInvocations>,
-    pub non_worker_invocations: Arc<NonWorkerInvocations>,
+    pub invocations: Arc<InvocationHandler>,
 }
 
 impl Engine {
@@ -81,9 +83,8 @@ impl Engine {
             worker_registry: Arc::new(WorkerRegistry::new()),
             functions: Arc::new(FunctionsRegistry::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
-            pending_invocations: Arc::new(PendingInvocations::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
-            non_worker_invocations: Arc::new(NonWorkerInvocations::new()),
+            invocations: Arc::new(InvocationHandler::new()),
         }
     }
 
@@ -95,35 +96,41 @@ impl Engine {
         self.functions.remove(function_path);
     }
 
-    async fn remember_invocation(&self, worker: &Worker, invocation_id: Uuid, function_path: &str) {
+    async fn remember_invocation(
+        &self,
+        worker: &Worker,
+        invocation_id: Option<Uuid>,
+        function_path: &str,
+        body: Value,
+    ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
-            %invocation_id,
+            ?invocation_id,
             function_path = function_path,
             "Remembering invocation for worker"
         );
-        worker
-            .add_invocation(Invocation {
-                invocation_id,
-                function_path: function_path.to_string(),
-            })
-            .await;
-        self.pending_invocations
-            .insert(invocation_id, worker.id)
-            .await;
-    }
 
-    async fn remove_invocation(&self, invocation_id: &Uuid) {
-        tracing::debug!(invocation_id = %invocation_id, "Removing invocation");
-        let _ = self.pending_invocations.remove(invocation_id).await;
-    }
+        if let Some(function) = self.functions.get(function_path) {
+            if let Some(invocation_id) = invocation_id {
+                worker.add_invocation(invocation_id).await;
+            }
 
-    async fn halt_invocation(&self, invocation_id: &Uuid) {
-        tracing::debug!(invocation_id = %invocation_id, "Halting invocation");
-        if let Some(worker_id) = self.pending_invocations.remove(invocation_id).await
-            && let Some(worker_ref) = self.worker_registry.get_worker(&worker_id).await
-        {
-            worker_ref.halt_invocation(invocation_id).await;
+            self.invocations
+                .handle_invocation(
+                    invocation_id,
+                    Some(worker.id),
+                    function_path.to_string(),
+                    body,
+                    function,
+                )
+                .await
+        } else {
+            tracing::error!(function_path = %function_path, "Function not found");
+
+            Ok(Err(ErrorBody {
+                code: "function_not_found".into(),
+                message: "Function not found".into(),
+            }))
         }
     }
 
@@ -155,22 +162,6 @@ impl Engine {
                 .send(Outbound::Protocol(msg.clone()))
                 .await;
         }
-    }
-
-    async fn take_invocation_sender(
-        &self,
-        invocation_id: &Uuid,
-    ) -> Option<(mpsc::Sender<Outbound>, Invocation)> {
-        let worker_id = self.pending_invocations.remove(invocation_id).await?;
-        let worker_ref = self.worker_registry.get_worker(&worker_id).await?;
-        let sender = worker_ref.channel.clone();
-        let invocation = worker_ref
-            .invocations
-            .write()
-            .await
-            .remove(invocation_id)?
-            .1;
-        Some((sender, invocation))
     }
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
@@ -264,67 +255,55 @@ impl Engine {
                     "InvokeFunction"
                 );
 
-                if let Some(id) = *invocation_id {
-                    self.remember_invocation(worker, id, function_path).await;
-                }
+                let result = self
+                    .remember_invocation(worker, *invocation_id, function_path, data.clone())
+                    .await;
 
-                if let Some(function) = self.functions.get(function_path) {
-                    tracing::debug!(function_path = %function_path, "Found function handler");
-
-                    match function.call_handler(*invocation_id, data.clone()).await {
-                        FunctionResult::Success(result) => {
-                            if let Some(invocation_id) = *invocation_id {
-                                let _ = worker
-                                    .handle_invocation_result(
-                                        Invocation {
-                                            invocation_id,
-                                            function_path: function_path.clone(),
-                                        },
-                                        result,
-                                        None,
-                                    )
-                                    .await;
-                                self.remove_invocation(&invocation_id).await;
+                if let Some(invocation_id) = invocation_id {
+                    match result {
+                        Ok(result) => match result {
+                            Ok(result) => {
+                                self.send_msg(
+                                    worker,
+                                    Message::InvocationResult {
+                                        invocation_id: *invocation_id,
+                                        function_path: function_path.to_string(),
+                                        result: result.clone(),
+                                        error: None,
+                                    },
+                                )
+                                .await;
                             }
-                        }
-                        FunctionResult::NoResult => {}
-                        FunctionResult::Failure(error_body) => {
-                            if let Some(invocation_id) = *invocation_id {
-                                let _ = worker
-                                    .handle_invocation_result(
-                                        Invocation {
-                                            invocation_id,
-                                            function_path: function_path.clone(),
-                                        },
-                                        None,
-                                        Some(error_body.clone()),
-                                    )
-                                    .await;
-                                self.remove_invocation(&invocation_id).await;
-                            } else {
-                                tracing::error!(
-                                    function_path = %function_path,
-                                    error = ?error_body,
-                                    "Invocation failed without id"
-                                );
+                            Err(err) => {
+                                self.send_msg(
+                                    worker,
+                                    Message::InvocationResult {
+                                        invocation_id: *invocation_id,
+                                        function_path: function_path.to_string(),
+                                        result: None,
+                                        error: Some(err.clone()),
+                                    },
+                                )
+                                .await;
                             }
+                        },
+                        Err(err) => {
+                            tracing::error!(error = ?err, "Error remembering invocation");
+                            self.send_msg(
+                                worker,
+                                Message::InvocationResult {
+                                    invocation_id: *invocation_id,
+                                    function_path: function_path.to_string(),
+                                    result: None,
+                                    error: Some(ErrorBody {
+                                        code: "invocation_error".into(),
+                                        message: err.to_string(),
+                                    }),
+                                },
+                            )
+                            .await;
                         }
                     }
-                } else if let Some(invocation_id) = *invocation_id {
-                    let _ = worker
-                        .handle_invocation_result(
-                            Invocation {
-                                invocation_id,
-                                function_path: function_path.clone(),
-                            },
-                            None,
-                            Some(ErrorBody {
-                                code: "function_not_found".into(),
-                                message: format!("Function {} not found", function_path),
-                            }),
-                        )
-                        .await;
-                    self.remove_invocation(&invocation_id).await;
                 }
                 Ok(())
             }
@@ -342,27 +321,15 @@ impl Engine {
                     "InvocationResult"
                 );
 
-                if let Some(sender) = self.non_worker_invocations.remove(invocation_id) {
-                    let payload = if let Some(err) = error {
-                        Err(err.clone())
-                    } else {
-                        Ok(result.clone())
-                    };
-                    let _ = sender.send(payload);
-                    return Ok(());
-                }
+                worker.remove_invocation(invocation_id).await;
 
-                if let Some((caller, _invocation)) =
-                    self.take_invocation_sender(invocation_id).await
-                {
-                    caller
-                        .send(Outbound::Protocol(Message::InvocationResult {
-                            invocation_id: *invocation_id,
-                            function_path: function_path.clone(),
-                            result: result.clone(),
-                            error: error.clone(),
-                        }))
-                        .await?;
+                if let Some(invocation) = self.invocations.remove(invocation_id) {
+                    if let Some(err) = error {
+                        let _ = invocation.sender.send(Err(err.clone()));
+                    } else {
+                        let _ = invocation.sender.send(Ok(result.clone()));
+                    };
+                    return Ok(());
                 } else {
                     tracing::warn!(
                         invocation_id = %invocation_id,
@@ -512,55 +479,46 @@ impl Engine {
                 .await;
         }
 
+        let worker_invocations = worker.invocations.read().await;
+        tracing::debug!(worker_id = %worker.id, invocations = ?worker_invocations, "Worker invocations");
+        for invocation_id in worker_invocations.iter() {
+            tracing::debug!(invocation_id = %invocation_id, "Halting invocation");
+            self.invocations.halt_invocation(invocation_id);
+        }
+
         self.trigger_registry.unregister_worker(&worker.id).await;
         self.worker_registry.unregister_worker(&worker.id).await;
 
-        let worker_invocations = worker.invocations.read().await;
-
-        for entry in worker_invocations.iter() {
-            self.halt_invocation(entry.key()).await;
-        }
-
         tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
-
-        let invocations = self
-            .pending_invocations
-            .invocations_for_worker(&worker.id)
-            .await;
-
-        // remove pending invocations from this worker
-        for invocation_id in invocations {
-            self.remove_invocation(&invocation_id).await;
-        }
     }
 }
 
 impl EngineTrait for Engine {
-    fn invoke_function(&self, function_path: &str, input: Value) {
+    async fn invoke_function(
+        &self,
+        function_path: &str,
+        input: Value,
+    ) -> Result<Option<Value>, ErrorBody> {
         let function_opt = self.functions.get(function_path);
+
         if let Some(function) = function_opt {
-            let future = (function.handler)(None, input);
-            let function_path = function_path.to_string();
+            let result = self
+                .invocations
+                .handle_invocation(None, None, function_path.to_string(), input, function)
+                .await;
 
-            tokio::spawn(async move {
-                tracing::debug!(function_path = %function_path, "Invoking function");
-
-                let result = future.await;
-
-                match result {
-                    FunctionResult::Success(result) => {
-                        tracing::debug!(result = ?result, "Function result");
-                    }
-                    FunctionResult::NoResult => {
-                        tracing::debug!("Function result");
-                    }
-                    FunctionResult::Failure(error_body) => {
-                        tracing::error!(error = ?error_body, "Function error");
-                    }
-                }
-            });
+            match result {
+                Ok(result) => return result,
+                Err(err) => Err(ErrorBody {
+                    code: "invocation_error".into(),
+                    message: err.to_string(),
+                }),
+            }
         } else {
-            tracing::warn!(function_path = %function_path, "Function not found");
+            Err(ErrorBody {
+                code: "function_not_found".into(),
+                message: "Function not found".into(),
+            })
         }
     }
 

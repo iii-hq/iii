@@ -4,6 +4,6 @@
     "src"
   ],
   "ext": "ts,js",
-  "exec": "motia dev && bun run --enable-source-maps dist/index.js",
+  "exec": "motia dev && bun run --enable-source-maps dist/index-dev.js",
   "quiet": true
 }
