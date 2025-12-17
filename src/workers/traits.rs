@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::{
     engine::Outbound,
     function::{FunctionHandler, FunctionResult},
-    invocation::{Invocation, InvocationHandler},
     protocol::{ErrorBody, Message},
     trigger::{Trigger, TriggerRegistrator},
     workers::Worker,
@@ -73,6 +72,11 @@ impl FunctionHandler for Worker {
         input: Value,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         Box::pin(async move {
+            self.invocations
+                .write()
+                .await
+                .insert(invocation_id.unwrap());
+
             let _ = self
                 .channel
                 .send(Outbound::Protocol(Message::InvokeFunction {
@@ -86,38 +90,7 @@ impl FunctionHandler for Worker {
                     message: err.to_string(),
                 });
 
-            FunctionResult::NoResult
-        })
-    }
-}
-
-impl InvocationHandler for Worker {
-    fn handle_invocation_result<'a>(
-        &'a self,
-        invocation: Invocation,
-        result: Option<Value>,
-        error: Option<ErrorBody>,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a>> {
-        Box::pin(async move {
-            self.invocations
-                .write()
-                .await
-                .remove(&invocation.invocation_id);
-
-            self.channel
-                .send(Outbound::Protocol(Message::InvocationResult {
-                    invocation_id: invocation.invocation_id,
-                    function_path: invocation.function_path,
-                    result: result.clone(),
-                    error: error.clone(),
-                }))
-                .await
-                .map_err(|err| ErrorBody {
-                    code: "channel_send_failed".into(),
-                    message: err.to_string(),
-                })?;
-
-            Ok(None)
+            FunctionResult::Deferred
         })
     }
 }

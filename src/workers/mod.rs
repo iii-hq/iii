@@ -6,11 +6,7 @@ use dashmap::DashMap;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
-use crate::{
-    engine::Outbound,
-    invocation::Invocation,
-    protocol::{ErrorBody, Message},
-};
+use crate::engine::Outbound;
 
 #[derive(Default)]
 pub struct WorkerRegistry {
@@ -41,8 +37,8 @@ impl WorkerRegistry {
 pub struct Worker {
     pub id: Uuid,
     pub channel: mpsc::Sender<Outbound>,
-    pub invocations: Arc<RwLock<DashMap<Uuid, Invocation>>>,
     pub function_paths: Arc<RwLock<HashSet<String>>>,
+    pub invocations: Arc<RwLock<HashSet<Uuid>>>,
 }
 
 impl Worker {
@@ -51,7 +47,7 @@ impl Worker {
         Self {
             id,
             channel,
-            invocations: Arc::new(RwLock::new(DashMap::new())),
+            invocations: Arc::new(RwLock::new(HashSet::new())),
             function_paths: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -62,26 +58,11 @@ impl Worker {
             .insert(function_path.to_owned());
     }
 
-    pub async fn add_invocation(&self, invocation: Invocation) {
-        self.invocations
-            .write()
-            .await
-            .insert(invocation.invocation_id, invocation);
+    pub async fn add_invocation(&self, invocation_id: Uuid) {
+        self.invocations.write().await.insert(invocation_id);
     }
 
-    pub async fn halt_invocation(&self, invocation_id: &Uuid) {
+    pub async fn remove_invocation(&self, invocation_id: &Uuid) {
         self.invocations.write().await.remove(invocation_id);
-        self.channel
-            .send(Outbound::Protocol(Message::InvocationResult {
-                invocation_id: *invocation_id,
-                function_path: "".to_string(), // we don't need the function path here because the invocation is stopped
-                result: None,
-                error: Some(ErrorBody {
-                    code: "invocation_stopped".to_string(),
-                    message: "Invocation stopped".to_string(),
-                }),
-            }))
-            .await
-            .unwrap();
     }
 }
