@@ -3,6 +3,7 @@ modules:
     config:
       port: ${STREAMS_PORT:31112}
       host: 0.0.0.0
+      auth_function: motia.streams.authenticate
       adapter:
         class: modules::streams::adapters::RedisAdapter
         config:
@@ -25,6 +26,9 @@ modules:
           - OPTIONS
 
   - class: modules::observability::LoggingModule
+    config:
+      level: ${RUST_LOG:info}
+      format: json
 
   - class: modules::event::EventModule
     config:
@@ -43,4 +47,4 @@ modules:
   - class: modules::shell::ExecModule
     config:
       exec:
-        - bun run --enable-source-maps dist/index-production.js
+        - bun run --enable-source-maps index-production.js

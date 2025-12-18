@@ -7,4 +7,4 @@ COPY iii ./iii
 EXPOSE 3111
 EXPOSE 31112
 
-CMD ["iii", "--config", "config.yaml"]
+CMD ["./iii", "--config", "config.yaml"]

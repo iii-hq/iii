@@ -1,12 +1,13 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock as SyncRwLock},
 };
 
 use axum::{
     Router,
     extract::{ConnectInfo, State, WebSocketUpgrade, ws::WebSocket},
+    http::{HeaderMap, Uri},
     response::IntoResponse,
     routing::get,
 };
@@ -25,27 +26,79 @@ use crate::{
             StreamSocketManager,
             adapters::{RedisAdapter, StreamAdapter},
             config::StreamModuleConfig,
-            structs::{StreamDeleteInput, StreamGetGroupInput, StreamGetInput, StreamSetInput},
+            structs::{
+                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
+                StreamGetInput, StreamSetInput,
+            },
+            trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
+            utils::{headers_to_map, query_to_multi_map},
         },
     },
     protocol::ErrorBody,
+    trigger::TriggerType,
 };
 
 #[derive(Clone)]
 pub struct StreamCoreModule {
     config: StreamModuleConfig,
     adapter: Arc<dyn StreamAdapter>,
+    engine: Arc<Engine>,
+
+    pub triggers: Arc<StreamTriggers>,
 }
 
 async fn ws_handler(
     State(module): State<Arc<StreamSocketManager>>,
     ws: WebSocketUpgrade,
+    uri: Uri,
+    headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
     let module = module.clone();
 
+    if let Some(auth_function) = module.auth_function.clone() {
+        let engine = module.engine.clone();
+        let input = StreamAuthInput {
+            headers: headers_to_map(&headers),
+            path: uri.path().to_string(),
+            query_params: query_to_multi_map(uri.query()),
+            addr: addr.to_string(),
+        };
+        let input = serde_json::to_value(input);
+
+        match input {
+            Ok(input) => match engine.invoke_function(&auth_function, input).await {
+                Ok(Some(result)) => {
+                    let context = serde_json::from_value::<StreamAuthContext>(result);
+
+                    match context {
+                        Ok(context) => {
+                            return ws.on_upgrade(move |socket: WebSocket| async move {
+                                    if let Err(err) = module.socket_handler(socket, Some(context)).await {
+                                        tracing::error!(addr = %addr, error = ?err, "stream socket error");
+                                    }
+                                });
+                        }
+                        Err(err) => {
+                            tracing::error!(error = ?err, "Failed to convert result to context");
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::debug!("No result from auth function");
+                }
+                Err(err) => {
+                    tracing::error!(error = ?err, "Failed to invoke auth function");
+                }
+            },
+            Err(err) => {
+                tracing::error!(error = ?err, "Failed to convert input to value");
+            }
+        }
+    }
+
     ws.on_upgrade(move |socket: WebSocket| async move {
-        if let Err(err) = module.socket_handler(socket, addr).await {
+        if let Err(err) = module.socket_handler(socket, None).await {
             tracing::error!(addr = %addr, error = ?err, "stream socket error");
         }
     })
@@ -67,7 +120,12 @@ impl CoreModule for StreamCoreModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamCoreModule");
 
-        let socket_manager = Arc::new(StreamSocketManager::new(self.adapter.clone()));
+        let socket_manager = Arc::new(StreamSocketManager::new(
+            self.engine.clone(),
+            self.adapter.clone(),
+            self.config.auth_function.clone(),
+            self.triggers.clone(),
+        ));
         let addr = format!("{}:{}", self.config.host, self.config.port)
             .parse::<SocketAddr>()
             .unwrap();
@@ -75,6 +133,26 @@ impl CoreModule for StreamCoreModule {
         let app = Router::new()
             .route("/", get(ws_handler))
             .with_state(socket_manager);
+
+        let _ = self
+            .engine
+            .register_trigger_type(TriggerType {
+                id: JOIN_TRIGGER_TYPE.to_string(),
+                _description: "Stream join trigger".to_string(),
+                registrator: Box::new(self.clone()),
+                worker_id: None,
+            })
+            .await;
+
+        let _ = self
+            .engine
+            .register_trigger_type(TriggerType {
+                id: LEAVE_TRIGGER_TYPE.to_string(),
+                _description: "Stream leave trigger".to_string(),
+                registrator: Box::new(self.clone()),
+                worker_id: None,
+            })
+            .await;
 
         tokio::spawn(async move {
             tracing::info!(
@@ -125,14 +203,19 @@ impl ConfigurableModule for StreamCoreModule {
 
         registry
     }
-    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
-        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
-            Lazy::new(|| RwLock::new(StreamCoreModule::build_registry()));
+    async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
+            Lazy::new(|| SyncRwLock::new(StreamCoreModule::build_registry()));
         &REGISTRY
     }
 
-    fn build(_engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
-        Self { config, adapter }
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self {
+            config,
+            adapter,
+            engine,
+            triggers: Arc::new(StreamTriggers::new()),
+        }
     }
 
     fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
