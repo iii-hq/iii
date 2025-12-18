@@ -1,7 +1,7 @@
 mod config;
 mod logger;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 pub use config::LoggerModuleConfig;
@@ -10,6 +10,7 @@ pub use logger::Logger;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -30,24 +31,24 @@ pub struct LogEntry {
 
 #[async_trait]
 pub trait LoggerAdapter: Send + Sync + 'static {
-    async fn save_logs(logs: Arc<Mutex<Vec<LogEntry>>>, polling_interval: u64)
+    async fn save_logs(logs: Arc<RwLock<Vec<LogEntry>>>, polling_interval: u64)
     where
         Self: Sized;
-    fn info(
+    async fn info(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
     );
-    fn warn(
+    async fn warn(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
     );
-    fn error(
+    async fn error(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
@@ -58,7 +59,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct LoggerCoreModule {
-    logger: Arc<Mutex<dyn LoggerAdapter>>,
+    logger: Arc<RwLock<dyn LoggerAdapter>>,
     #[allow(dead_code)]
     config: LoggerModuleConfig,
 }
@@ -75,36 +76,48 @@ pub struct LoggerInput {
 impl LoggerCoreModule {
     #[function(name = "logger.info", description = "Log an info message")]
     pub async fn info(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger.lock().unwrap().info(
-            input.trace_id.as_deref(),
-            input.function_name.as_str(),
-            input.message.as_str(),
-            &input.data,
-        );
+        self.logger
+            .write()
+            .await
+            .info(
+                input.trace_id.as_deref(),
+                input.function_name.as_str(),
+                input.message.as_str(),
+                &input.data,
+            )
+            .await;
 
         FunctionResult::NoResult
     }
 
     #[function(name = "logger.warn", description = "Log a warn message")]
     pub async fn warn(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger.lock().unwrap().warn(
-            input.trace_id.as_deref(),
-            input.function_name.as_str(),
-            input.message.as_str(),
-            &input.data,
-        );
+        self.logger
+            .write()
+            .await
+            .warn(
+                input.trace_id.as_deref(),
+                input.function_name.as_str(),
+                input.message.as_str(),
+                &input.data,
+            )
+            .await;
 
         FunctionResult::NoResult
     }
 
     #[function(name = "logger.error", description = "Log an error message")]
     pub async fn error(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger.lock().unwrap().error(
-            input.trace_id.as_deref(),
-            input.function_name.as_str(),
-            input.message.as_str(),
-            &input.data,
-        );
+        self.logger
+            .write()
+            .await
+            .error(
+                input.trace_id.as_deref(),
+                input.function_name.as_str(),
+                input.message.as_str(),
+                &input.data,
+            )
+            .await;
 
         FunctionResult::NoResult
     }
@@ -121,7 +134,7 @@ impl CoreModule for LoggerCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        let logger = Arc::new(Mutex::new(Logger::new(60)));
+        let logger = Arc::new(RwLock::new(Logger::new(60)));
         Ok(Box::new(Self { config, logger }))
     }
 

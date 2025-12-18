@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rkyv::rancor::Error;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use super::{LogEntry, LoggerAdapter};
 
@@ -15,12 +15,12 @@ use super::{LogEntry, LoggerAdapter};
 /// which the formatter will use as the display name instead of the module path.
 #[derive(Debug, Clone)]
 pub struct Logger {
-    logs: Arc<Mutex<Vec<LogEntry>>>,
+    logs: Arc<RwLock<Vec<LogEntry>>>,
 }
 
 impl Logger {
     pub fn new(save_interval: u64) -> Self {
-        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs = Arc::new(RwLock::new(Vec::new()));
         let logs_for_task = Arc::clone(&logs);
 
         tokio::spawn(async move {
@@ -30,8 +30,11 @@ impl Logger {
         Self { logs }
     }
 
-    fn serialize_logs(logs: &Arc<Mutex<Vec<LogEntry>>>) -> Vec<u8> {
-        let logs_guard = logs.lock().unwrap();
+    async fn serialize_logs(logs: &Arc<RwLock<Vec<LogEntry>>>) -> Vec<u8> {
+        let logs_guard = logs.read().await;
+        if logs_guard.is_empty() {
+            return Vec::new();
+        }
         let bytes = rkyv::to_bytes::<Error>(&*logs_guard).unwrap();
         bytes.to_vec()
     }
@@ -54,20 +57,19 @@ fn get_args(args: &Option<Value>) -> String {
 }
 
 impl Logger {
-    fn save_log(&self, entry: LogEntry) {
-        self.logs.lock().unwrap().push(entry);
+    async fn save_log(&self, entry: LogEntry) {
+        self.logs.write().await.push(entry);
     }
 }
 
 #[async_trait]
 impl LoggerAdapter for Logger {
-    async fn save_logs(logs: Arc<Mutex<Vec<LogEntry>>>, polling_interval: u64) {
+    async fn save_logs(logs: Arc<RwLock<Vec<LogEntry>>>, polling_interval: u64) {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(polling_interval));
         loop {
             interval.tick().await;
-            let bytes = Self::serialize_logs(&logs);
+            let bytes = Self::serialize_logs(&logs).await;
             if !bytes.is_empty() {
-                tracing::debug!("Saving logs to disk...");
                 let path = "logs.bin";
                 let mut file = tokio::fs::File::create(path).await.unwrap();
                 file.write_all(&bytes).await.unwrap();
@@ -77,7 +79,7 @@ impl LoggerAdapter for Logger {
             }
         }
     }
-    fn info(
+    async fn info(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
@@ -93,7 +95,7 @@ impl LoggerAdapter for Logger {
             function_name: function_name.to_string(),
             date: chrono::Utc::now().to_rfc3339(),
         };
-        self.save_log(log_entry);
+        self.save_log(log_entry).await;
         match (trace_id, &get_args(args)) {
             (Some(tid), data) => {
                 tracing::info!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
@@ -104,7 +106,7 @@ impl LoggerAdapter for Logger {
         }
     }
 
-    fn warn(
+    async fn warn(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
@@ -120,7 +122,7 @@ impl LoggerAdapter for Logger {
             function_name: function_name.to_string(),
             date: chrono::Utc::now().to_rfc3339(),
         };
-        self.save_log(log_entry);
+        self.save_log(log_entry).await;
         match (trace_id, &get_args(args)) {
             (Some(tid), data) => {
                 tracing::warn!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
@@ -131,7 +133,7 @@ impl LoggerAdapter for Logger {
         }
     }
 
-    fn error(
+    async fn error(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
@@ -147,7 +149,7 @@ impl LoggerAdapter for Logger {
             function_name: function_name.to_string(),
             date: chrono::Utc::now().to_rfc3339(),
         };
-        self.save_log(log_entry);
+        self.save_log(log_entry).await;
         match (trace_id, &get_args(args)) {
             (Some(tid), data) => {
                 tracing::error!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
