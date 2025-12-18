@@ -1,5 +1,6 @@
 mod config;
 mod logger;
+mod redis_logger;
 
 use std::sync::Arc;
 
@@ -15,11 +16,11 @@ use tokio::sync::RwLock;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::CoreModule,
+    modules::{core_module::CoreModule, observability::redis_logger::RedisLogger},
     protocol::ErrorBody,
 };
 
-#[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug)]
+#[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug, Serialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct LogEntry {
     trace_id: Option<String>,
@@ -32,11 +33,7 @@ pub struct LogEntry {
 
 #[async_trait]
 pub trait LoggerAdapter: Send + Sync + 'static {
-    async fn save_logs(
-        logs: Arc<RwLock<Vec<LogEntry>>>,
-        polling_interval: u64,
-        file_path: &str,
-    ) -> anyhow::Result<()>
+    async fn save_logs(self, polling_interval: u64, file_path: &str) -> anyhow::Result<()>
     where
         Self: Sized;
 
@@ -44,27 +41,96 @@ pub trait LoggerAdapter: Send + Sync + 'static {
     where
         Self: Sized;
 
+    async fn include_logs(&self, entry: LogEntry);
+
+    fn get_args(&self, args: &Option<Value>) -> String {
+        match args {
+            Some(v) => v
+                .as_object()
+                .map(|map| serde_json::to_string(map).unwrap_or_default())
+                .unwrap_or_default(),
+            None => "{}".to_string(),
+        }
+    }
     async fn info(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
-    );
+    ) {
+        let args_entry = args.as_ref().map(|v| v.clone().to_string());
+        let log_entry = LogEntry {
+            trace_id: trace_id.map(|s| s.to_string()),
+            message: message.to_string(),
+            args: args_entry,
+            level: "info".to_string(),
+            function_name: function_name.to_string(),
+            date: chrono::Utc::now().to_rfc3339(),
+        };
+        self.include_logs(log_entry).await;
+        match (trace_id, self.get_args(args)) {
+            (Some(tid), data) => {
+                tracing::info!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
+            }
+            (None, data) => {
+                tracing::info!(function = %function_name, data = %data, "{}", message);
+            }
+        }
+    }
     async fn warn(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
-    );
+    ) {
+        let args_entry = args.as_ref().map(|v| v.clone().to_string());
+        let log_entry = LogEntry {
+            trace_id: trace_id.map(|s| s.to_string()),
+            message: message.to_string(),
+            args: args_entry,
+            level: "warn".to_string(),
+            function_name: function_name.to_string(),
+            date: chrono::Utc::now().to_rfc3339(),
+        };
+        self.include_logs(log_entry).await;
+        match (trace_id, self.get_args(args)) {
+            (Some(tid), data) => {
+                tracing::warn!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
+            }
+            (None, data) => {
+                tracing::warn!(function = %function_name, data = %data, "{}", message);
+            }
+        }
+    }
+
     async fn error(
         &mut self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
         args: &Option<Value>,
-    );
+    ) {
+        let args_entry = args.as_ref().map(|v| v.clone().to_string());
+        let log_entry = LogEntry {
+            trace_id: trace_id.map(|s| s.to_string()),
+            message: message.to_string(),
+            args: args_entry,
+            level: "error".to_string(),
+            function_name: function_name.to_string(),
+            date: chrono::Utc::now().to_rfc3339(),
+        };
+        self.include_logs(log_entry).await;
+        match (trace_id, self.get_args(args)) {
+            (Some(tid), data) => {
+                tracing::error!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
+            }
+            (None, data) => {
+                tracing::error!(function = %function_name, data = %data, "{}", message);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -144,7 +210,10 @@ impl CoreModule for LoggerCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        let logger = Arc::new(RwLock::new(Logger::new(5, "logs.bin")));
+        let logger = Arc::new(RwLock::new(
+            RedisLogger::new("redis://localhost:6379").await?,
+        ));
+        //let logger = Arc::new(RwLock::new(Logger::new(5, "logs.bin")));
         Ok(Box::new(Self { config, logger }))
     }
 

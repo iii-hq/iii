@@ -1,0 +1,74 @@
+use std::{sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
+use tokio::{
+    sync::{Mutex, RwLock},
+    time::timeout,
+};
+
+use super::LoggerAdapter;
+
+pub struct RedisLogger {
+    connection_manager: Arc<Mutex<ConnectionManager>>,
+    logs: Arc<RwLock<Vec<super::LogEntry>>>,
+}
+
+const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl RedisLogger {
+    pub async fn new(url: &str) -> anyhow::Result<Self> {
+        let connection_manager = Self::get_connection(url).await?;
+        let logs = Arc::new(RwLock::new(Vec::new()));
+        Ok(Self {
+            connection_manager,
+            logs,
+        })
+    }
+
+    async fn get_connection(url: &str) -> anyhow::Result<Arc<Mutex<ConnectionManager>>> {
+        let client = Client::open(url)?;
+        let manager = timeout(REDIS_CONNECTION_TIMEOUT, client.get_connection_manager())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
+                    REDIS_CONNECTION_TIMEOUT,
+                    url
+                )
+            })?
+            .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", url, e))?;
+
+        Ok(Arc::new(Mutex::new(manager)))
+    }
+}
+
+#[async_trait]
+impl LoggerAdapter for RedisLogger {
+    async fn load_logs(_file_path: &str) -> Result<Vec<super::LogEntry>, std::io::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn include_logs(&self, entry: super::LogEntry) {
+        let mut conn = self.connection_manager.lock().await;
+        let log_data = serde_json::to_string(&entry).unwrap_or_default();
+        let _: () = conn.rpush("logs", log_data).await.unwrap_or(());
+        self.logs.write().await.push(entry);
+    }
+
+    async fn save_logs(self, polling_interval: u64, _file_path: &str) -> anyhow::Result<()> {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(polling_interval));
+        loop {
+            interval.tick().await;
+            let logs_guard = self.logs.read().await;
+            if logs_guard.is_empty() {
+                continue;
+            }
+            let mut conn = self.connection_manager.lock().await;
+            for log in logs_guard.iter() {
+                let log_data = serde_json::to_string(log).unwrap_or_default();
+                let _: () = conn.rpush("logs", log_data).await?;
+            }
+        }
+    }
+}

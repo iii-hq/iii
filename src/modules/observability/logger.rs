@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use rkyv::rancor::Error;
-use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use super::{LogEntry, LoggerAdapter};
@@ -23,11 +22,13 @@ impl Logger {
         let logs = Arc::new(RwLock::new(Vec::new()));
         let logs_for_task = logs.clone();
 
+        let clonned_self = Self {
+            logs: logs_for_task,
+        };
         let file_path = file_path.to_string();
         tokio::spawn(async move {
-            let _ = Self::save_logs(logs_for_task, save_interval, &file_path).await;
+            let _ = clonned_self.save_logs(save_interval, &file_path).await;
         });
-
         Self { logs }
     }
 
@@ -47,35 +48,22 @@ impl Default for Logger {
     }
 }
 
-fn get_args(args: &Option<Value>) -> String {
-    match args {
-        Some(v) => v
-            .as_object()
-            .map(|map| serde_json::to_string(map).unwrap_or_default())
-            .unwrap_or_default(),
-        None => "{}".to_string(),
-    }
-}
-
-impl Logger {
-    async fn include_logs(&self, entry: LogEntry) {
-        self.logs.write().await.push(entry);
-    }
-}
-
 #[async_trait]
 impl LoggerAdapter for Logger {
-    async fn save_logs(
-        logs: Arc<RwLock<Vec<LogEntry>>>,
-        polling_interval: u64,
-        file_path: &str,
-    ) -> anyhow::Result<()> {
+    async fn save_logs(self, polling_interval: u64, file_path: &str) -> anyhow::Result<()> {
+        dbg!("Starting log saving task...");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(polling_interval));
         loop {
             interval.tick().await;
-            let bytes = Self::serialize_logs(&logs).await;
+            let bytes = Self::serialize_logs(&self.logs).await;
             if !bytes.is_empty() {
-                let mut file = tokio::fs::File::create(file_path).await?;
+                tracing::debug!("Saving {} bytes of logs to {}", bytes.len(), file_path);
+                let file = tokio::fs::File::create(file_path).await;
+                if let Err(e) = file {
+                    tracing::error!("Failed to create log file {}: {}", file_path, e);
+                    continue;
+                }
+                let mut file = file.expect("Failed to create log file");
                 file.write_all(&bytes).await?;
                 file.flush().await?;
             } else {
@@ -83,90 +71,13 @@ impl LoggerAdapter for Logger {
             }
         }
     }
+
+    async fn include_logs(&self, entry: LogEntry) {
+        self.logs.write().await.push(entry);
+    }
     async fn load_logs(file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
         let bytes = tokio::fs::read(file_path).await?;
         rkyv::from_bytes::<Vec<LogEntry>, Error>(&bytes)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    }
-
-    async fn info(
-        &mut self,
-        trace_id: Option<&str>,
-        function_name: &str,
-        message: &str,
-        args: &Option<Value>,
-    ) {
-        let args_entry = args.as_ref().map(|v| v.clone().to_string());
-        let log_entry = LogEntry {
-            trace_id: trace_id.map(|s| s.to_string()),
-            message: message.to_string(),
-            args: args_entry,
-            level: "info".to_string(),
-            function_name: function_name.to_string(),
-            date: chrono::Utc::now().to_rfc3339(),
-        };
-        self.include_logs(log_entry).await;
-        match (trace_id, &get_args(args)) {
-            (Some(tid), data) => {
-                tracing::info!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
-            }
-            (None, data) => {
-                tracing::info!(function = %function_name, data = %data, "{}", message);
-            }
-        }
-    }
-
-    async fn warn(
-        &mut self,
-        trace_id: Option<&str>,
-        function_name: &str,
-        message: &str,
-        args: &Option<Value>,
-    ) {
-        let args_entry = args.as_ref().map(|v| v.clone().to_string());
-        let log_entry = LogEntry {
-            trace_id: trace_id.map(|s| s.to_string()),
-            message: message.to_string(),
-            args: args_entry,
-            level: "warn".to_string(),
-            function_name: function_name.to_string(),
-            date: chrono::Utc::now().to_rfc3339(),
-        };
-        self.include_logs(log_entry).await;
-        match (trace_id, &get_args(args)) {
-            (Some(tid), data) => {
-                tracing::warn!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
-            }
-            (None, data) => {
-                tracing::warn!(function = %function_name, data = %data, "{}", message);
-            }
-        }
-    }
-
-    async fn error(
-        &mut self,
-        trace_id: Option<&str>,
-        function_name: &str,
-        message: &str,
-        args: &Option<Value>,
-    ) {
-        let args_entry = args.as_ref().map(|v| v.clone().to_string());
-        let log_entry = LogEntry {
-            trace_id: trace_id.map(|s| s.to_string()),
-            message: message.to_string(),
-            args: args_entry,
-            level: "error".to_string(),
-            function_name: function_name.to_string(),
-            date: chrono::Utc::now().to_rfc3339(),
-        };
-        self.include_logs(log_entry).await;
-        match (trace_id, &get_args(args)) {
-            (Some(tid), data) => {
-                tracing::error!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
-            }
-            (None, data) => {
-                tracing::error!(function = %function_name, data = %data, "{}", message);
-            }
-        }
     }
 }
