@@ -7,6 +7,7 @@ use async_trait::async_trait;
 pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
 pub use logger::Logger;
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -17,7 +18,21 @@ use crate::{
     protocol::ErrorBody,
 };
 
+#[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug)]
+pub struct LogEntry {
+    trace_id: Option<String>,
+    message: String,
+    args: Option<String>,
+    level: String,
+    function_name: String,
+    date: String,
+}
+
+#[async_trait]
 pub trait LoggerAdapter: Send + Sync + 'static {
+    async fn save_logs(logs: Arc<Mutex<Vec<LogEntry>>>, polling_interval: u64)
+    where
+        Self: Sized;
     fn info(
         &mut self,
         trace_id: Option<&str>,
