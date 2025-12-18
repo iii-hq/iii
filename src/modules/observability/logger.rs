@@ -19,12 +19,13 @@ pub struct Logger {
 }
 
 impl Logger {
-    pub fn new(save_interval: u64) -> Self {
+    pub fn new(save_interval: u64, file_path: &str) -> Self {
         let logs = Arc::new(RwLock::new(Vec::new()));
-        let logs_for_task = Arc::clone(&logs);
+        let logs_for_task = logs.clone();
 
+        let file_path = file_path.to_string();
         tokio::spawn(async move {
-            Self::save_logs(logs_for_task, save_interval).await;
+            let _ = Self::save_logs(logs_for_task, save_interval, &file_path).await;
         });
 
         Self { logs }
@@ -42,7 +43,7 @@ impl Logger {
 
 impl Default for Logger {
     fn default() -> Self {
-        Self::new(60)
+        Self::new(60, "logs.bin")
     }
 }
 
@@ -57,28 +58,37 @@ fn get_args(args: &Option<Value>) -> String {
 }
 
 impl Logger {
-    async fn save_log(&self, entry: LogEntry) {
+    async fn include_logs(&self, entry: LogEntry) {
         self.logs.write().await.push(entry);
     }
 }
 
 #[async_trait]
 impl LoggerAdapter for Logger {
-    async fn save_logs(logs: Arc<RwLock<Vec<LogEntry>>>, polling_interval: u64) {
+    async fn save_logs(
+        logs: Arc<RwLock<Vec<LogEntry>>>,
+        polling_interval: u64,
+        file_path: &str,
+    ) -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(polling_interval));
         loop {
             interval.tick().await;
             let bytes = Self::serialize_logs(&logs).await;
             if !bytes.is_empty() {
-                let path = "logs.bin";
-                let mut file = tokio::fs::File::create(path).await.unwrap();
-                file.write_all(&bytes).await.unwrap();
-                file.flush().await.unwrap();
+                let mut file = tokio::fs::File::create(file_path).await?;
+                file.write_all(&bytes).await?;
+                file.flush().await?;
             } else {
                 tracing::debug!("No logs to save.");
             }
         }
     }
+    async fn load_logs(file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
+        let bytes = tokio::fs::read(file_path).await?;
+        rkyv::from_bytes::<Vec<LogEntry>, Error>(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
     async fn info(
         &mut self,
         trace_id: Option<&str>,
@@ -95,7 +105,7 @@ impl LoggerAdapter for Logger {
             function_name: function_name.to_string(),
             date: chrono::Utc::now().to_rfc3339(),
         };
-        self.save_log(log_entry).await;
+        self.include_logs(log_entry).await;
         match (trace_id, &get_args(args)) {
             (Some(tid), data) => {
                 tracing::info!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
@@ -122,7 +132,7 @@ impl LoggerAdapter for Logger {
             function_name: function_name.to_string(),
             date: chrono::Utc::now().to_rfc3339(),
         };
-        self.save_log(log_entry).await;
+        self.include_logs(log_entry).await;
         match (trace_id, &get_args(args)) {
             (Some(tid), data) => {
                 tracing::warn!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
@@ -149,7 +159,7 @@ impl LoggerAdapter for Logger {
             function_name: function_name.to_string(),
             date: chrono::Utc::now().to_rfc3339(),
         };
-        self.save_log(log_entry).await;
+        self.include_logs(log_entry).await;
         match (trace_id, &get_args(args)) {
             (Some(tid), data) => {
                 tracing::error!(function = %function_name, trace_id = %tid, data = %data, "{}", message);

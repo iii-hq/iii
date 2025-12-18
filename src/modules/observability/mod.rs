@@ -20,6 +20,7 @@ use crate::{
 };
 
 #[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug)]
+#[rkyv(compare(PartialEq), derive(Debug))]
 pub struct LogEntry {
     trace_id: Option<String>,
     message: String,
@@ -31,9 +32,18 @@ pub struct LogEntry {
 
 #[async_trait]
 pub trait LoggerAdapter: Send + Sync + 'static {
-    async fn save_logs(logs: Arc<RwLock<Vec<LogEntry>>>, polling_interval: u64)
+    async fn save_logs(
+        logs: Arc<RwLock<Vec<LogEntry>>>,
+        polling_interval: u64,
+        file_path: &str,
+    ) -> anyhow::Result<()>
     where
         Self: Sized;
+
+    async fn load_logs(file_path: &str) -> Result<Vec<LogEntry>, std::io::Error>
+    where
+        Self: Sized;
+
     async fn info(
         &mut self,
         trace_id: Option<&str>,
@@ -134,7 +144,7 @@ impl CoreModule for LoggerCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        let logger = Arc::new(RwLock::new(Logger::new(60)));
+        let logger = Arc::new(RwLock::new(Logger::new(5, "logs.bin")));
         Ok(Box::new(Self { config, logger }))
     }
 
