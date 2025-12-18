@@ -1,13 +1,12 @@
+mod adapters;
 mod config;
-mod logger;
-mod redis_logger;
 
 use std::sync::Arc;
 
+pub use adapters::{FileLogger, RedisLogger};
 use async_trait::async_trait;
 pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
-pub use logger::Logger;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,11 +15,11 @@ use tokio::sync::RwLock;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::{core_module::CoreModule, observability::redis_logger::RedisLogger},
+    modules::core_module::CoreModule,
     protocol::ErrorBody,
 };
 
-#[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug, Serialize)]
+#[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug, Serialize, Deserialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
 pub struct LogEntry {
     trace_id: Option<String>,
@@ -37,7 +36,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
     where
         Self: Sized;
 
-    async fn load_logs(file_path: &str) -> Result<Vec<LogEntry>, std::io::Error>
+    async fn load_logs(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error>
     where
         Self: Sized;
 
@@ -210,10 +209,10 @@ impl CoreModule for LoggerCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        let logger = Arc::new(RwLock::new(
-            RedisLogger::new("redis://localhost:6379").await?,
-        ));
-        //let logger = Arc::new(RwLock::new(Logger::new(5, "logs.bin")));
+        // let logger = Arc::new(RwLock::new(
+        //     RedisLogger::new("redis://localhost:6379").await?,
+        // ));
+        let logger = Arc::new(RwLock::new(FileLogger::new(5, "logs.bin")));
         Ok(Box::new(Self { config, logger }))
     }
 

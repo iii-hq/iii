@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rkyv::rancor::Error;
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
-use super::{LogEntry, LoggerAdapter};
+use crate::modules::observability::{LogEntry, LoggerAdapter};
 
 /// Logger implementation that uses tracing for output.
 /// This maintains compatibility with the LoggerAdapter trait while
@@ -13,11 +13,11 @@ use super::{LogEntry, LoggerAdapter};
 /// The `function_name` parameter is passed as the `function` field to tracing,
 /// which the formatter will use as the display name instead of the module path.
 #[derive(Debug, Clone)]
-pub struct Logger {
+pub struct FileLogger {
     logs: Arc<RwLock<Vec<LogEntry>>>,
 }
 
-impl Logger {
+impl FileLogger {
     pub fn new(save_interval: u64, file_path: &str) -> Self {
         let logs = Arc::new(RwLock::new(Vec::new()));
         let logs_for_task = logs.clone();
@@ -42,16 +42,15 @@ impl Logger {
     }
 }
 
-impl Default for Logger {
+impl Default for FileLogger {
     fn default() -> Self {
         Self::new(60, "logs.bin")
     }
 }
 
 #[async_trait]
-impl LoggerAdapter for Logger {
+impl LoggerAdapter for FileLogger {
     async fn save_logs(self, polling_interval: u64, file_path: &str) -> anyhow::Result<()> {
-        dbg!("Starting log saving task...");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(polling_interval));
         loop {
             interval.tick().await;
@@ -75,7 +74,7 @@ impl LoggerAdapter for Logger {
     async fn include_logs(&self, entry: LogEntry) {
         self.logs.write().await.push(entry);
     }
-    async fn load_logs(file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
+    async fn load_logs(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
         let bytes = tokio::fs::read(file_path).await?;
         rkyv::from_bytes::<Vec<LogEntry>, Error>(&bytes)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))

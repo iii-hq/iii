@@ -7,11 +7,11 @@ use tokio::{
     time::timeout,
 };
 
-use super::LoggerAdapter;
+use crate::modules::observability::{LogEntry, LoggerAdapter};
 
 pub struct RedisLogger {
     connection_manager: Arc<Mutex<ConnectionManager>>,
-    logs: Arc<RwLock<Vec<super::LogEntry>>>,
+    logs: Arc<RwLock<Vec<LogEntry>>>,
 }
 
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,11 +45,21 @@ impl RedisLogger {
 
 #[async_trait]
 impl LoggerAdapter for RedisLogger {
-    async fn load_logs(_file_path: &str) -> Result<Vec<super::LogEntry>, std::io::Error> {
-        Ok(Vec::new())
+    async fn load_logs(&self, _file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
+        let mut conn = self.connection_manager.lock().await;
+        let log_strings: Vec<String> = conn.lrange("logs", 0, -1).await.unwrap_or_default();
+        let mut logs = Vec::new();
+        for log_str in log_strings {
+            if let Ok(entry) = serde_json::from_str::<LogEntry>(&log_str) {
+                logs.push(entry);
+            } else {
+                tracing::warn!("Failed to deserialize log entry : {}", log_str);
+            }
+        }
+        Ok(logs)
     }
 
-    async fn include_logs(&self, entry: super::LogEntry) {
+    async fn include_logs(&self, entry: LogEntry) {
         let mut conn = self.connection_manager.lock().await;
         let log_data = serde_json::to_string(&entry).unwrap_or_default();
         let _: () = conn.rpush("logs", log_data).await.unwrap_or(());
