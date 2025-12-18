@@ -1,21 +1,27 @@
 mod adapters;
+
+mod registry;
+use std::sync::RwLock;
 mod config;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 pub use adapters::{FileLogger, RedisLogger};
 use async_trait::async_trait;
 pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
+use once_cell::sync::Lazy;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::RwLock;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::CoreModule,
+    modules::{
+        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        observability::registry::LoggerAdapterRegistration,
+    },
     protocol::ErrorBody,
 };
 
@@ -52,7 +58,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
         }
     }
     async fn info(
-        &mut self,
+        &self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
@@ -78,7 +84,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
         }
     }
     async fn warn(
-        &mut self,
+        &self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
@@ -105,7 +111,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
     }
 
     async fn error(
-        &mut self,
+        &self,
         trace_id: Option<&str>,
         function_name: &str,
         message: &str,
@@ -134,7 +140,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 
 #[derive(Clone)]
 pub struct LoggerCoreModule {
-    logger: Arc<RwLock<dyn LoggerAdapter>>,
+    adapter: Arc<dyn LoggerAdapter>,
     #[allow(dead_code)]
     config: LoggerModuleConfig,
 }
@@ -151,9 +157,7 @@ pub struct LoggerInput {
 impl LoggerCoreModule {
     #[function(name = "logger.info", description = "Log an info message")]
     pub async fn info(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger
-            .write()
-            .await
+        self.adapter
             .info(
                 input.trace_id.as_deref(),
                 input.function_name.as_str(),
@@ -167,9 +171,7 @@ impl LoggerCoreModule {
 
     #[function(name = "logger.warn", description = "Log a warn message")]
     pub async fn warn(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger
-            .write()
-            .await
+        self.adapter
             .warn(
                 input.trace_id.as_deref(),
                 input.function_name.as_str(),
@@ -183,9 +185,7 @@ impl LoggerCoreModule {
 
     #[function(name = "logger.error", description = "Log an error message")]
     pub async fn error(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.logger
-            .write()
-            .await
+        self.adapter
             .error(
                 input.trace_id.as_deref(),
                 input.function_name.as_str(),
@@ -209,11 +209,11 @@ impl CoreModule for LoggerCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        // let logger = Arc::new(RwLock::new(
+        // let logger = Arc::new(TokioRwLock::new(
         //     RedisLogger::new("redis://localhost:6379").await?,
         // ));
-        let logger = Arc::new(RwLock::new(FileLogger::new(5, "logs.bin")));
-        Ok(Box::new(Self { config, logger }))
+        let adapter: Arc<dyn LoggerAdapter> = Arc::new(FileLogger::new(5, "logs.bin"));
+        Ok(Box::new(Self { config, adapter }))
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
@@ -222,6 +222,24 @@ impl CoreModule for LoggerCoreModule {
 
     async fn initialize(&self) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ConfigurableModule for LoggerCoreModule {
+    type Config = LoggerModuleConfig;
+    type Adapter = dyn LoggerAdapter;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "file_logger";
+    type AdapterRegistration = LoggerAdapterRegistration;
+
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn LoggerAdapter>>>> =
+            Lazy::new(|| RwLock::new(LoggerCoreModule::build_registry()));
+        &REGISTRY
+    }
+
+    fn build(_engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self { adapter, config }
     }
 }
 
