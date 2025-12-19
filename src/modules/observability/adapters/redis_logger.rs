@@ -2,12 +2,18 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
+use serde_json::Value;
 use tokio::{
     sync::{Mutex, RwLock},
     time::timeout,
 };
 
-use crate::modules::observability::{LogEntry, LoggerAdapter};
+use crate::{
+    engine::Engine,
+    modules::observability::{
+        LogEntry, LoggerAdapter, LoggerAdapterRegistration, registry::LoggerAdapterFuture,
+    },
+};
 
 pub struct RedisLogger {
     connection_manager: Arc<Mutex<ConnectionManager>>,
@@ -82,3 +88,16 @@ impl LoggerAdapter for RedisLogger {
         }
     }
 }
+
+fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> LoggerAdapterFuture {
+    Box::pin(async move {
+        let redis_url = config
+            .as_ref()
+            .and_then(|c| c.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("redis://localhost:6379");
+        Ok(Arc::new(RedisLogger::new(redis_url).await?) as Arc<dyn LoggerAdapter>)
+    })
+}
+
+crate::register_adapter!(<LoggerAdapterRegistration> "modules::observability::adapters::RedisLogger", make_adapter);

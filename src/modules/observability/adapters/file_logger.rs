@@ -2,9 +2,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use rkyv::rancor::Error;
+use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::RwLock};
 
-use crate::modules::observability::{LogEntry, LoggerAdapter};
+use crate::{
+    engine::Engine,
+    modules::observability::{
+        LogEntry, LoggerAdapter, LoggerAdapterRegistration, registry::LoggerAdapterFuture,
+    },
+};
 
 /// Logger implementation that uses tracing for output.
 /// This maintains compatibility with the LoggerAdapter trait while
@@ -18,7 +24,16 @@ pub struct FileLogger {
 }
 
 impl FileLogger {
-    pub fn new(save_interval: u64, file_path: &str) -> Self {
+    pub fn new(config: Option<Value>) -> Self {
+        let save_interval_ms = config
+            .as_ref()
+            .and_then(|c| c.get("save_interval_ms").and_then(|v| v.as_u64()))
+            .unwrap_or(60);
+        let file_path = config
+            .as_ref()
+            .and_then(|c| c.get("file_path").and_then(|v| v.as_str()))
+            .unwrap_or("app.log");
+
         let logs = Arc::new(RwLock::new(Vec::new()));
         let logs_for_task = logs.clone();
 
@@ -27,7 +42,7 @@ impl FileLogger {
         };
         let file_path = file_path.to_string();
         tokio::spawn(async move {
-            let _ = clonned_self.save_logs(save_interval, &file_path).await;
+            let _ = clonned_self.save_logs(save_interval_ms, &file_path).await;
         });
         Self { logs }
     }
@@ -42,16 +57,11 @@ impl FileLogger {
     }
 }
 
-impl Default for FileLogger {
-    fn default() -> Self {
-        Self::new(60, "logs.bin")
-    }
-}
-
 #[async_trait]
 impl LoggerAdapter for FileLogger {
     async fn save_logs(self, polling_interval: u64, file_path: &str) -> anyhow::Result<()> {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(polling_interval));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(polling_interval));
         loop {
             interval.tick().await;
             let bytes = Self::serialize_logs(&self.logs).await;
@@ -80,3 +90,9 @@ impl LoggerAdapter for FileLogger {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 }
+
+fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> LoggerAdapterFuture {
+    Box::pin(async move { Ok(Arc::new(FileLogger::new(config)) as Arc<dyn LoggerAdapter>) })
+}
+
+crate::register_adapter!(<LoggerAdapterRegistration> "modules::observability::adapters::FileLogger", make_adapter);

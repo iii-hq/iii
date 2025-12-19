@@ -141,8 +141,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct LoggerCoreModule {
     adapter: Arc<dyn LoggerAdapter>,
-    #[allow(dead_code)]
-    config: LoggerModuleConfig,
+    _config: LoggerModuleConfig,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -201,19 +200,10 @@ impl LoggerCoreModule {
 #[async_trait]
 impl CoreModule for LoggerCoreModule {
     async fn create(
-        _engine: Arc<Engine>,
+        engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        let config: LoggerModuleConfig = config
-            .map(serde_json::from_value)
-            .transpose()?
-            .unwrap_or_default();
-
-        // let logger = Arc::new(TokioRwLock::new(
-        //     RedisLogger::new("redis://localhost:6379").await?,
-        // ));
-        let adapter: Arc<dyn LoggerAdapter> = Arc::new(FileLogger::new(5, "logs.bin"));
-        Ok(Box::new(Self { config, adapter }))
+        Self::create_with_adapters(engine, config).await
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
@@ -229,8 +219,16 @@ impl CoreModule for LoggerCoreModule {
 impl ConfigurableModule for LoggerCoreModule {
     type Config = LoggerModuleConfig;
     type Adapter = dyn LoggerAdapter;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "file_logger";
     type AdapterRegistration = LoggerAdapterRegistration;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::observability::adapters::FileAdapter";
+
+    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.class.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
+    }
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn LoggerAdapter>>>> =
@@ -239,7 +237,10 @@ impl ConfigurableModule for LoggerCoreModule {
     }
 
     fn build(_engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
-        Self { adapter, config }
+        Self {
+            adapter,
+            _config: config,
+        }
     }
 }
 
