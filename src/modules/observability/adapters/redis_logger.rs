@@ -89,6 +89,8 @@ impl LoggerAdapter for RedisLogger {
                 let log_data = serde_json::to_string(log).unwrap_or_default();
                 let _: () = conn.rpush("logs", log_data).await?;
             }
+            drop(logs_guard);
+            self.logs.write().await.clear();
         }
     }
 }

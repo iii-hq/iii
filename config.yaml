@@ -30,15 +30,15 @@ modules:
       level: debug
       format: default
 
-      adapter:
-        class: modules::observability::adapters::RedisLogger
-        config:
-          redis_url: redis://localhost:6379
       # adapter:
-      #   class: modules::observability::adapters::FileAdapter
+      #   class: modules::observability::adapters::RedisLogger
       #   config:
-      #     file_path: app.log
-      #     save_interval_ms: 5000
+      #     redis_url: redis://localhost:6379
+      adapter:
+        class: modules::observability::adapters::FileAdapter
+        config:
+          file_path: app.log
+          save_interval_ms: 5000
 
   - class: modules::event::EventModule
     config:

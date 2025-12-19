@@ -3,7 +3,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rkyv::rancor::Error;
 use serde_json::Value;
-use tokio::{io::AsyncWriteExt, sync::RwLock};
+use tokio::{
+    fs::OpenOptions,
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::RwLock,
+};
 
 use crate::{
     engine::Engine,
@@ -47,13 +51,92 @@ impl FileLogger {
         Self { logs }
     }
 
-    async fn serialize_logs(logs: &Arc<RwLock<Vec<LogEntry>>>) -> Vec<u8> {
-        let logs_guard = logs.read().await;
-        if logs_guard.is_empty() {
-            return Vec::new();
+    async fn drain_logs(&self) -> Vec<LogEntry> {
+        let mut logs_guard = self.logs.write().await;
+        std::mem::take(&mut *logs_guard)
+    }
+
+    async fn restore_logs_front(&self, drained: Vec<LogEntry>) {
+        if drained.is_empty() {
+            return;
         }
-        let bytes = rkyv::to_bytes::<Error>(&*logs_guard).unwrap();
-        bytes.to_vec()
+
+        let mut logs_guard = self.logs.write().await;
+        if logs_guard.is_empty() {
+            *logs_guard = drained;
+            return;
+        }
+
+        let current = std::mem::take(&mut *logs_guard);
+        let mut merged = drained;
+        merged.extend(current);
+        *logs_guard = merged;
+    }
+
+    fn encode_chunk(logs: &Vec<LogEntry>) -> Vec<u8> {
+        let payload = rkyv::to_bytes::<Error>(logs).unwrap();
+        let payload = payload.as_ref();
+
+        let len: u32 = payload
+            .len()
+            .try_into()
+            .expect("Serialized log chunk too large");
+
+        let mut out = Vec::with_capacity(4 + payload.len());
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    async fn append_chunk(file_path: &str, chunk: &[u8]) -> anyhow::Result<()> {
+        let exists = tokio::fs::metadata(file_path).await.is_ok();
+
+        let mut file = if exists {
+            OpenOptions::new().append(true).open(file_path).await?
+        } else {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .await?
+        };
+
+        file.write_all(chunk).await?;
+        file.flush().await?;
+        Ok(())
+    }
+
+    fn decode_chunks(bytes: &[u8]) -> Result<Vec<LogEntry>, std::io::Error> {
+        let mut offset = 0usize;
+        let mut out = Vec::new();
+
+        while offset < bytes.len() {
+            if bytes.len() - offset < 4 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid log file: truncated chunk header",
+                ));
+            }
+
+            let len = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+            offset += 4;
+
+            if bytes.len() - offset < len {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Invalid log file: truncated chunk payload",
+                ));
+            }
+
+            let payload = &bytes[offset..offset + len];
+            offset += len;
+
+            let mut chunk_logs = rkyv::from_bytes::<Vec<LogEntry>, Error>(payload)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            out.append(&mut chunk_logs);
+        }
+
+        Ok(out)
     }
 }
 
@@ -64,19 +147,18 @@ impl LoggerAdapter for FileLogger {
             tokio::time::interval(std::time::Duration::from_millis(polling_interval));
         loop {
             interval.tick().await;
-            let bytes = Self::serialize_logs(&self.logs).await;
-            if !bytes.is_empty() {
-                tracing::debug!("Saving {} bytes of logs to {}", bytes.len(), file_path);
-                let file = tokio::fs::File::create(file_path).await;
-                if let Err(e) = file {
-                    tracing::error!("Failed to create log file {}: {}", file_path, e);
-                    continue;
-                }
-                let mut file = file.expect("Failed to create log file");
-                file.write_all(&bytes).await?;
-                file.flush().await?;
-            } else {
+            let drained = self.drain_logs().await;
+            if drained.is_empty() {
                 tracing::debug!("No logs to save.");
+                continue;
+            }
+
+            let chunk = Self::encode_chunk(&drained);
+            tracing::debug!("Saving {} bytes of logs to {}", chunk.len(), file_path);
+
+            if let Err(e) = Self::append_chunk(file_path, &chunk).await {
+                tracing::error!("Failed to save logs to {}: {}", file_path, e);
+                self.restore_logs_front(drained).await;
             }
         }
     }
@@ -85,9 +167,10 @@ impl LoggerAdapter for FileLogger {
         self.logs.write().await.push(entry);
     }
     async fn load_logs(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
-        let bytes = tokio::fs::read(file_path).await?;
-        rkyv::from_bytes::<Vec<LogEntry>, Error>(&bytes)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let mut file = tokio::fs::File::open(file_path).await?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await?;
+        Self::decode_chunks(&bytes)
     }
 }
 
