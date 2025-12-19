@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+use crate::modules::core_module::AdapterEntry;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -34,11 +35,4 @@ impl Default for StreamModuleConfig {
             auth_function: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdapterEntry {
-    pub class: String,
-    #[serde(default)]
-    pub config: Option<Value>,
 }
