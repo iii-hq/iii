@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use redis::{Client, aio::ConnectionManager};
@@ -8,11 +8,11 @@ use tokio::time::timeout;
 use super::super::structs::CronSchedulerAdapter;
 use crate::{
     engine::Engine,
-    modules::cron::registry::{CronAdapterFuture, CronAdapterRegistration},
+    modules::{
+        cron::registry::{CronAdapterFuture, CronAdapterRegistration},
+        redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
+    },
 };
-
-/// Default timeout for Redis connection attempts
-const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default lock TTL for distributed cron locking (in milliseconds)
 const CRON_LOCK_TTL_MS: u64 = 30_000; // 30 seconds
@@ -30,16 +30,19 @@ impl RedisCronLock {
     pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
         let client = Client::open(redis_url)?;
 
-        let manager = timeout(REDIS_CONNECTION_TIMEOUT, client.get_connection_manager())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
-                    REDIS_CONNECTION_TIMEOUT,
-                    redis_url
-                )
-            })?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", redis_url, e))?;
+        let manager = timeout(
+            DEFAULT_REDIS_CONNECTION_TIMEOUT,
+            client.get_connection_manager(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
+                DEFAULT_REDIS_CONNECTION_TIMEOUT,
+                redis_url
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", redis_url, e))?;
 
         // Generate a unique instance ID for this engine instance
         let instance_id = uuid::Uuid::new_v4().to_string();

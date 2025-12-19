@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -12,14 +12,14 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::event::{
-        EventAdapter,
-        registry::{EventAdapterFuture, EventAdapterRegistration},
+    modules::{
+        event::{
+            EventAdapter,
+            registry::{EventAdapterFuture, EventAdapterRegistration},
+        },
+        redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
     },
 };
-
-/// Default timeout for Redis connection attempts
-const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
@@ -37,16 +37,19 @@ impl RedisAdapter {
     pub async fn new(redis_url: String, engine: Arc<Engine>) -> anyhow::Result<Self> {
         let client = Client::open(redis_url.as_str())?;
 
-        let manager = timeout(REDIS_CONNECTION_TIMEOUT, client.get_connection_manager())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
-                    REDIS_CONNECTION_TIMEOUT,
-                    redis_url
-                )
-            })?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", redis_url, e))?;
+        let manager = timeout(
+            DEFAULT_REDIS_CONNECTION_TIMEOUT,
+            client.get_connection_manager(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
+                DEFAULT_REDIS_CONNECTION_TIMEOUT,
+                redis_url
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", redis_url, e))?;
 
         let publisher = Arc::new(Mutex::new(manager));
         let subscriber = Arc::new(client);

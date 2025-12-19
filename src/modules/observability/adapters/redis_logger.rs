@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
@@ -10,8 +10,11 @@ use tokio::{
 
 use crate::{
     engine::Engine,
-    modules::observability::{
-        LogEntry, LoggerAdapter, LoggerAdapterRegistration, registry::LoggerAdapterFuture,
+    modules::{
+        observability::{
+            LogEntry, LoggerAdapter, LoggerAdapterRegistration, registry::LoggerAdapterFuture,
+        },
+        redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
     },
 };
 
@@ -19,8 +22,6 @@ pub struct RedisLogger {
     connection_manager: Arc<Mutex<ConnectionManager>>,
     logs: Arc<RwLock<Vec<LogEntry>>>,
 }
-
-const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl RedisLogger {
     pub async fn new(url: &str) -> anyhow::Result<Self> {
@@ -34,16 +35,19 @@ impl RedisLogger {
 
     async fn get_connection(url: &str) -> anyhow::Result<Arc<Mutex<ConnectionManager>>> {
         let client = Client::open(url)?;
-        let manager = timeout(REDIS_CONNECTION_TIMEOUT, client.get_connection_manager())
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
-                    REDIS_CONNECTION_TIMEOUT,
-                    url
-                )
-            })?
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", url, e))?;
+        let manager = timeout(
+            DEFAULT_REDIS_CONNECTION_TIMEOUT,
+            client.get_connection_manager(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Redis connection timed out after {:?}. Please ensure Redis is running at: {}",
+                DEFAULT_REDIS_CONNECTION_TIMEOUT,
+                url
+            )
+        })?
+        .map_err(|e| anyhow::anyhow!("Failed to connect to Redis at {}: {}", url, e))?;
 
         Ok(Arc::new(Mutex::new(manager)))
     }
