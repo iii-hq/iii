@@ -152,6 +152,32 @@ impl RestApiCoreModule {
         Ok(())
     }
 
+    fn build_router_for_axum(path: &String) -> String {
+        // Axum requires paths to start with a leading slash
+        // and convert :param to {param}, since axum 0.8 changed the syntax
+
+        // update for axum 0.8, replacing todo/:id to todo/{id}
+        let axum_path = path
+            .clone()
+            .split('/')
+            .map(|segment| {
+                if segment.strip_prefix(':').is_some() {
+                    format!("{{{}}}", &segment[1..])
+                } else {
+                    segment.to_string()
+                }
+            })
+            .collect::<Vec<String>>()
+            .join("/");
+        tracing::debug!("Converted path from :{} to : {}", path, axum_path);
+
+        //ensure the path starts with a leading slash
+        if !axum_path.starts_with('/') {
+            format!("/{}", axum_path)
+        } else {
+            axum_path
+        }
+    }
     fn build_routers_from_routers_registry(
         engine: Arc<Engine>,
         api_handler: Arc<RestApiCoreModule>,
@@ -162,11 +188,8 @@ impl RestApiCoreModule {
         let mut router = Router::new();
 
         for entry in routers_registry.iter() {
-            let mut path = entry.http_path.clone();
-            if !path.starts_with('/') {
-                // need to check if we want to do this or return an error when registering with leading slash
-                path = format!("/{}", path);
-            }
+            let path = Self::build_router_for_axum(&entry.http_path);
+
             let method = entry.http_method.clone();
             let path_for_extension = path.clone();
             router = match method.as_str() {
