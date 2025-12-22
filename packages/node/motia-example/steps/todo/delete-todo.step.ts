@@ -8,7 +8,7 @@ export const config: ApiRouteConfig = {
   flows: ['todo-app'],
 
   method: 'DELETE',
-  path: '/todo/:todoId',
+  path: '/todo/{todoId}',
   responseSchema: {
     200: z.object({ id: z.string() }),
     404: z.object({ error: z.string() }),

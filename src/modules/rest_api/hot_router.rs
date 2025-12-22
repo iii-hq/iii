@@ -62,7 +62,7 @@ pub struct MakeHotRouterService {
     pub router: HotRouter,
 }
 
-impl<'a> tower::Service<IncomingStream<'a>> for MakeHotRouterService {
+impl<'a, L: axum::serve::Listener> tower::Service<IncomingStream<'a, L>> for MakeHotRouterService {
     type Response = HotRouter;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -71,7 +71,7 @@ impl<'a> tower::Service<IncomingStream<'a>> for MakeHotRouterService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, _req: IncomingStream<'a>) -> Self::Future {
+    fn call(&mut self, _req: IncomingStream<'a, L>) -> Self::Future {
         let router = self.router.clone();
         Box::pin(async move { Ok(router) })
     }

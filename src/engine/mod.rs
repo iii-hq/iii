@@ -407,7 +407,7 @@ impl Engine {
             while let Some(outbound) = rx.recv().await {
                 let send_result = match outbound {
                     Outbound::Protocol(msg) => match serde_json::to_string(&msg) {
-                        Ok(payload) => ws_tx.send(WsMessage::Text(payload)).await,
+                        Ok(payload) => ws_tx.send(WsMessage::Text(payload.into())).await,
                         Err(err) => {
                             tracing::error!(peer = %peer, error = ?err, "serialize error");
                             continue;
@@ -508,7 +508,7 @@ impl EngineTrait for Engine {
                 .await;
 
             match result {
-                Ok(result) => return result,
+                Ok(result) => result,
                 Err(err) => Err(ErrorBody {
                     code: "invocation_error".into(),
                     message: err.to_string(),

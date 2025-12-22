@@ -9,7 +9,7 @@ export const config: ApiRouteConfig = {
   flows: ['todo-app'],
 
   method: 'PUT',
-  path: '/todo/:todoId',
+  path: '/todo/{todoId}',
   bodySchema: z.object({
     description: z.string().optional(),
     dueDate: z.string().optional(),

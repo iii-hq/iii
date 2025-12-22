@@ -40,9 +40,10 @@ pub trait CustomEventAdapter: Send + Sync + 'static {
 // 2. Implement your custom Adapters
 // =============================================================================
 
+type SubscriberMap = HashMap<String, Vec<(String, String)>>;
 // Adapter 1: InMemoryEventAdapter - stores subscribers in memory
 pub struct InMemoryEventAdapter {
-    subscribers: Arc<TokioRwLock<HashMap<String, Vec<(String, String)>>>>,
+    subscribers: Arc<TokioRwLock<SubscriberMap>>,
     engine: Arc<Engine>,
 }
 
@@ -60,10 +61,14 @@ impl CustomEventAdapter for InMemoryEventAdapter {
     async fn emit(&self, topic: &str, event_data: Value) {
         let subscribers = self.subscribers.read().await;
         if let Some(subs) = subscribers.get(topic) {
+            let mut invokes = vec![];
             for (_id, function_path) in subs {
-                self.engine
+                let invoke = self
+                    .engine
                     .invoke_function(function_path, event_data.clone());
+                invokes.push(invoke);
             }
+            futures::future::join_all(invokes).await;
         }
     }
 
