@@ -38,7 +38,7 @@ export const stepWrapper = (
   stepPath: string,
   handler: StepHandler<any>,
   streams: Record<string, Stream<any>>,
-) => {
+): void => {
   const step: StepWithHandler = { config, handler, filePath: stepPath, version: '' }
   const functionPath = `steps.${step.config.name}`
   const state = new StateManager()
@@ -131,7 +131,7 @@ export const stepWrapper = (
   }
 }
 
-export const streamWrapper = (config: StreamConfig, streamPath: string) => {
+export const streamWrapper = (config: StreamConfig, streamPath: string): Stream<any> => {
   printer.printStreamCreated({ filePath: streamPath, config, hidden: false })
 
   return new Stream<any>(config.name)

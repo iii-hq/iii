@@ -1,20 +1,20 @@
-import * as esbuild from 'esbuild'
-import { existsSync } from 'fs'
-import { globSync } from 'glob'
+import { existsSync } from 'node:fs'
 import path from 'path'
 
 export const getStreamFilesFromDir = (dir: string): string[] => {
   if (!existsSync(dir)) {
     return []
   }
-  return globSync('**/*.stream.{ts,js}', { absolute: true, cwd: dir }).map((file) => file.replace(process.cwd(), '.'))
+  const glob = new Bun.Glob('**/*.stream.{ts,js}')
+  return [...glob.scanSync({ cwd: dir, absolute: true })].map((file) => file.replace(process.cwd(), '.'))
 }
 
 export const getStepFilesFromDir = (dir: string): string[] => {
   if (!existsSync(dir)) {
     return []
   }
-  return globSync('**/*.step.{ts,js}', { absolute: true, cwd: dir }).map((file) => file.replace(process.cwd(), '.'))
+  const glob = new Bun.Glob('**/*.step.{ts,js}')
+  return [...glob.scanSync({ cwd: dir, absolute: true })].map((file) => file.replace(process.cwd(), '.'))
 }
 
 const toSnakeCaseConst = (filePath: string) => {

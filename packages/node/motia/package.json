@@ -5,39 +5,32 @@
   "publishConfig": {
     "access": "private"
   },
-  "packageManager": "pnpm@10.19.0",
+  "packageManager": "pnpm@10.26.1",
   "type": "module",
   "scripts": {
-    "build": "tsdown"
+    "build": "bunup"
   },
   "exports": {
     ".": {
-      "types": "./types.d.ts",
+      "types": "./dist/index.d.ts",
       "require": "./dist/index.cjs",
-      "import": "./dist/index.mjs"
-    },
-    "./build": {
-      "types": "./build.d.ts",
-      "require": "./dist/build.cjs",
-      "import": "./dist/build.mjs"
+      "import": "./dist/index.js"
     }
   },
   "bin": {
-    "motia": "./dist/new/cli.mjs",
-    "motia-iii": "./dist/new/cli.mjs",
-    "iii": "./iii"
+    "motia": "./bin/cli",
+    "motia-iii": "./bin/cli"
   },
   "dependencies": {
     "@iii-dev/sdk": "workspace:*",
-    "@standard-schema/spec": "^1.0.0",
-    "esbuild": "^0.27.0",
-    "glob": "^13.0.0",
+    "@standard-schema/spec": "^1.1.0",
     "picocolors": "^1.1.1",
-    "zod": "^4.1.13"
+    "zod": "^4.2.1"
   },
   "devDependencies": {
-    "@types/node": "^24.10.1",
+    "@types/bun": "^1.3.5",
+    "@types/node": "^25.0.3",
     "commander": "^14.0.2",
-    "tsdown": "^0.17.0"
+    "bunup": "^0.16.11"
   }
 }

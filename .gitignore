@@ -6,6 +6,6 @@ worker_py/__pycache__/
 .vscode/
 dist/
 .DS_Store
-
+bin/
 packages/node/motia/iii
 packages/node/motia-example/iii

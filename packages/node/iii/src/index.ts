@@ -1,4 +1,5 @@
-export { Bridge } from './bridge'
+export { Bridge, type FunctionsAvailableCallback } from './bridge'
 export { Logger } from './logger'
 export { withContext, getContext, type Context } from './context'
 export { type ApiResponse, type ApiRequest } from './types'
+export { type FunctionMessage, type FunctionsAvailableMessage } from './bridge-types'

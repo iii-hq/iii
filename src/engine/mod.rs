@@ -26,6 +26,7 @@ pub struct RegisterFunctionRequest {
     pub description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
+    pub metadata: Option<Value>,
 }
 
 pub struct Handler<H> {
@@ -343,6 +344,7 @@ impl Engine {
                 description,
                 request_format: req,
                 response_format: res,
+                metadata,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -361,6 +363,7 @@ impl Engine {
                         description: description.clone(),
                         request_format: req.clone(),
                         response_format: res.clone(),
+                        metadata: metadata.clone(),
                     },
                     Box::new(worker.clone()),
                 );
@@ -547,6 +550,7 @@ impl EngineTrait for Engine {
             description,
             request_format,
             response_format,
+            metadata,
         } = request;
 
         let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
@@ -562,6 +566,7 @@ impl EngineTrait for Engine {
             _description: description,
             request_format,
             response_format,
+            metadata,
         };
 
         self.functions.register_function(function_path, function);
@@ -583,6 +588,7 @@ impl EngineTrait for Engine {
             _description: request.description,
             request_format: request.request_format,
             response_format: request.response_format,
+            metadata: request.metadata,
         };
 
         self.functions

@@ -38,6 +38,8 @@ pub enum Message {
         description: Option<String>,
         request_format: Option<Value>,
         response_format: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     InvokeFunction {
         #[serde(rename = "invocationId")]
@@ -79,6 +81,8 @@ pub struct FunctionMessage {
     pub request_format: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

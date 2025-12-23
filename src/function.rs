@@ -24,6 +24,7 @@ pub struct Function {
     pub _description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
+    pub metadata: Option<Value>,
 }
 
 impl Function {
@@ -43,6 +44,7 @@ impl From<&Function> for FunctionMessage {
             description: func._description.clone(),
             request_format: func.request_format.clone(),
             response_format: func.response_format.clone(),
+            metadata: func.metadata.clone(),
         }
     }
 }

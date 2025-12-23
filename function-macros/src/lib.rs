@@ -123,6 +123,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     description: #description,
                                     request_format: None,
                                     response_format: None,
+                                    metadata: None,
                                 },
                                 #handler_ident,
                             );

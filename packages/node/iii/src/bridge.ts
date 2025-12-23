@@ -1,6 +1,8 @@
 import { WebSocket, type Data } from 'ws'
 import {
   BridgeMessage,
+  FunctionMessage,
+  FunctionsAvailableMessage,
   InvocationResultMessage,
   InvokeFunctionMessage,
   MessageType,
@@ -21,6 +23,8 @@ import { TriggerHandler } from './triggers'
 import { withContext } from './context'
 import { Logger, LoggerParams } from './logger'
 
+export type FunctionsAvailableCallback = (functions: FunctionMessage[]) => void
+
 export class Bridge implements BridgeClient {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
@@ -29,6 +33,7 @@ export class Bridge implements BridgeClient {
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
+  private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
 
   private interval?: NodeJS.Timeout
 
@@ -95,6 +100,21 @@ export class Bridge implements BridgeClient {
 
   invokeFunctionAsync<TInput>(functionPath: string, data: TInput): void {
     this.sendMessage(MessageType.InvokeFunction, { functionPath, data })
+  }
+
+  /**
+   * Register a callback to be invoked when the engine broadcasts available functions.
+   * @param callback - Function to be called with the list of available functions
+   * @returns A function to unregister the callback
+   */
+  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void {
+    this.functionsAvailableCallbacks.push(callback)
+    return () => {
+      const index = this.functionsAvailableCallbacks.indexOf(callback)
+      if (index !== -1) {
+        this.functionsAvailableCallbacks.splice(index, 1)
+      }
+    }
   }
 
   // private methods
@@ -220,6 +240,9 @@ export class Bridge implements BridgeClient {
       this.onInvokeFunction(invocationId, functionPath, data)
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
+    } else if (type === MessageType.FunctionsAvailable) {
+      const { functions } = message as FunctionsAvailableMessage
+      this.functionsAvailableCallbacks.forEach((callback) => callback(functions))
     }
   }
 }
