@@ -13,11 +13,23 @@ export const config: StreamConfig = {
   baseConfig: { storageType: 'default' },
   name: 'todo',
   schema: todoSchema,
-  // canAccess(subscription, authContext) {
-  //   console.log('subscription', subscription)
-  //   console.log('authContext', authContext)
-  //   return true
-  // },
+
+  onJoin: async (subscription, context, authContext) => {
+    const inbox = (await context.streams.inbox.get('watching', subscription.groupId)) ?? { watching: 0 }
+    inbox.watching++
+    await context.streams.inbox.set('watching', subscription.groupId, inbox)
+
+    context.logger.info('Todo stream joined', { subscription, authContext })
+    return { unauthorized: false }
+  },
+
+  onLeave: async (subscription, context, authContext) => {
+    const inbox = (await context.streams.inbox.get('watching', subscription.groupId)) ?? { watching: 1 }
+    inbox.watching--
+    await context.streams.inbox.set('watching', subscription.groupId, inbox)
+
+    context.logger.info('Todo stream left', { subscription, authContext })
+  },
 }
 
 export type Todo = z.infer<typeof todoSchema>

@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.19.0",
   "type": "module",
   "scripts": {
-    "dev": "nodemon --config nodemon.json",
+    "dev": "iii",
     "build": "motia build",
     "start": "bun run --enable-source-maps dist/index-production.js"
   },
@@ -15,7 +15,6 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "nodemon": "^3.1.10",
     "typescript": "^5.9.3"
   }
 }

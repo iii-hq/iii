@@ -24,4 +24,5 @@ pub trait StreamAdapter: Send + Sync {
 #[async_trait]
 pub trait StreamConnection: Send + Sync {
     async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
+    async fn cleanup(&self);
 }

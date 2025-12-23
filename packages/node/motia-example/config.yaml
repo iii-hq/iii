@@ -3,6 +3,7 @@ modules:
     config:
       port: ${STREAMS_PORT:31112}
       host: 0.0.0.0
+      auth_function: motia.streams.authenticate
       adapter:
         class: modules::streams::adapters::RedisAdapter
         config:
@@ -43,6 +44,7 @@ modules:
     config:
       watch:
         - steps/**/*.ts
+        - motia.config.ts
       exec:
         - npx motia dev
         - bun run --enable-source-maps dist/index-dev.js

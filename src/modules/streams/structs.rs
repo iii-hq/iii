@@ -1,21 +1,18 @@
+use std::collections::HashMap;
+
 use axum::extract::ws::Message as WsMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// pub struct StreamConfig {
-//     pub stream_name: String,
-//     pub schema: Value,
-//     pub can_access_function_path: String,
-// }
-
 pub struct Subscription {
+    pub subscription_id: String,
     pub stream_name: String,
     pub group_id: String,
     pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JoinData {
+pub struct StreamIncomingMessageData {
     #[serde(rename = "subscriptionId")]
     pub subscription_id: String,
     #[serde(rename = "streamName")]
@@ -28,8 +25,8 @@ pub struct JoinData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamIncomingMessage {
-    Join { data: JoinData },
-    Leave { data: JoinData },
+    Join { data: StreamIncomingMessageData },
+    Leave { data: StreamIncomingMessageData },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +39,7 @@ pub struct EventData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamOutboundMessage {
+    Unauthorized {},
     Sync { data: Value },
     Create { data: Value },
     Update { data: Value },
@@ -92,4 +90,31 @@ pub struct StreamDeleteInput {
 pub struct StreamGetGroupInput {
     pub stream_name: String,
     pub group_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamAuthInput {
+    pub headers: HashMap<String, String>,
+    pub path: String,
+    pub query_params: HashMap<String, Vec<String>>,
+    pub addr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamAuthContext {
+    pub context: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamJoinLeaveEvent {
+    pub subscription_id: String,
+    pub stream_name: String,
+    pub group_id: String,
+    pub id: Option<String>,
+    pub context: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamJoinResult {
+    pub unauthorized: bool,
 }

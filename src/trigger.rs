@@ -26,13 +26,26 @@ pub trait TriggerRegistrator: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Eq)]
 pub struct Trigger {
     pub id: String,
     pub trigger_type: String,
     pub function_path: String,
     pub config: Value,
     pub worker_id: Option<Uuid>,
+}
+
+// Only `id` is considered for Hash and Eq/PartialEq
+impl PartialEq for Trigger {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl std::hash::Hash for Trigger {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 #[derive(Default)]

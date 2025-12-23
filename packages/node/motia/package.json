@@ -1,6 +1,6 @@
 {
   "name": "@iii-dev/motia",
-  "version": "0.0.18",
+  "version": "0.0.21",
   "private": false,
   "publishConfig": {
     "access": "private"

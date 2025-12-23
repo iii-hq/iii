@@ -144,6 +144,7 @@ impl Exec {
     }
 
     fn should_restart(&self, event: &Event) -> bool {
+        let cwd = std::env::current_dir().unwrap_or_default();
         let is_valid_event = matches!(
             event.kind,
             EventKind::Create(CreateKind::File)
@@ -160,7 +161,7 @@ impl Exec {
             return event
                 .paths
                 .iter()
-                .any(|path| glob_exec.should_trigger(path));
+                .any(|path| glob_exec.should_trigger(path.strip_prefix(&cwd).unwrap_or(path)));
         }
 
         false

@@ -9,6 +9,7 @@ import { EventHandler, ApiRouteHandler, ApiResponse, MotiaStream, CronHandler } 
 declare module '@iii-dev/motia' {
   interface FlowContextStateStreams {
     todo: MotiaStream<{ id: string; description: string; createdAt: string; dueDate?: string; completedAt?: string }>
+    inbox: MotiaStream<{ watching: number }>
   }
 
   interface Handlers {

@@ -11,6 +11,9 @@ pub struct StreamModuleConfig {
     pub host: String,
 
     #[serde(default)]
+    pub auth_function: Option<String>,
+
+    #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
 
@@ -28,6 +31,7 @@ impl Default for StreamModuleConfig {
             port: default_port(),
             host: default_host(),
             adapter: None,
+            auth_function: None,
         }
     }
 }
