@@ -17,8 +17,8 @@ path = "examples/custom_event_adapter.rs"
 
 [dependencies]
 function-macros = { path = "function-macros" }
-tokio = { version = "1", features = ["process", "macros", "rt-multi-thread"] }
-tower = { version = "0.4", features = ["util", "timeout", "limit"] }
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread" ] }
+tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
@@ -26,7 +26,7 @@ futures = "0.3"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 
-axum = { version = "0.7", features = ["ws", "macros"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -34,7 +34,7 @@ serde_yaml = "0.9"
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
-redis = { version = "0.32.7", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
 cron = "0.15"

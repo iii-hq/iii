@@ -56,7 +56,7 @@ impl StreamSocketManager {
             while let Some(outbound) = rx.recv().await {
                 let send_result = match outbound {
                     StreamOutbound::Stream(msg) => match serde_json::to_string(&msg) {
-                        Ok(payload) => ws_tx.send(WsMessage::Text(payload)).await,
+                        Ok(payload) => ws_tx.send(WsMessage::Text(payload.into())).await,
                         Err(err) => {
                             tracing::error!(error = ?err, "serialize error");
                             continue;

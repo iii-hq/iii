@@ -56,7 +56,7 @@ impl InvocationHandler {
         function_handler: Function,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        let invocation_id = invocation_id.unwrap_or_else(|| uuid::Uuid::new_v4());
+        let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
         let invocation = Invocation {
             id: invocation_id,
             function_path,
