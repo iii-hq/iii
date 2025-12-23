@@ -12,7 +12,8 @@ use crate::{
         StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage, Subscription,
         adapters::{StreamAdapter, StreamConnection},
         structs::{
-            JoinData, StreamAuthContext, StreamJoinLeaveEvent, StreamJoinResult, StreamOutbound,
+            StreamAuthContext, StreamIncomingMessageData, StreamJoinLeaveEvent, StreamJoinResult,
+            StreamOutbound,
         },
         trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
     },
@@ -47,19 +48,24 @@ impl SocketStreamConnection {
         }
     }
 
-    pub async fn handle_join_leave(&self, data: &JoinData, event_type: &str) -> StreamJoinResult {
-        let stream_name = data.stream_name.clone();
-        let group_id = data.group_id.clone();
-        let id = data.id.clone();
-        let subscription_id = data.subscription_id.clone();
-        let triggers = match event_type {
-            JOIN_TRIGGER_TYPE => self.triggers.join_triggers.read().await,
-            LEAVE_TRIGGER_TYPE => self.triggers.leave_triggers.read().await,
-            _ => {
-                return StreamJoinResult {
-                    unauthorized: false,
-                };
-            }
+    pub async fn handle_join_leave(&self, message: &StreamIncomingMessage) -> StreamJoinResult {
+        let (stream_name, group_id, id, subscription_id, event_type, triggers) = match message {
+            StreamIncomingMessage::Join { data } => (
+                data.stream_name.clone(),
+                data.group_id.clone(),
+                data.id.clone(),
+                data.subscription_id.clone(),
+                JOIN_TRIGGER_TYPE,
+                self.triggers.join_triggers.read().await,
+            ),
+            StreamIncomingMessage::Leave { data } => (
+                data.stream_name.clone(),
+                data.group_id.clone(),
+                data.id.clone(),
+                data.subscription_id.clone(),
+                LEAVE_TRIGGER_TYPE,
+                self.triggers.leave_triggers.read().await,
+            ),
         };
 
         let event = StreamJoinLeaveEvent {
@@ -135,7 +141,7 @@ impl SocketStreamConnection {
                 let group_id = data.group_id.clone();
                 let id = data.id.clone();
                 let subscription_id = data.subscription_id.clone();
-                let result = self.handle_join_leave(data, JOIN_TRIGGER_TYPE).await;
+                let result = self.handle_join_leave(msg).await;
                 let timestamp = chrono::Utc::now().timestamp_millis();
 
                 if result.unauthorized {
@@ -195,7 +201,7 @@ impl SocketStreamConnection {
                 Ok(())
             }
             StreamIncomingMessage::Leave { data } => {
-                self.handle_join_leave(data, LEAVE_TRIGGER_TYPE).await;
+                self.handle_join_leave(msg).await;
                 self.subscriptions
                     .write()
                     .await
@@ -214,15 +220,14 @@ impl StreamConnection for SocketStreamConnection {
         for subscription in subscriptions.iter() {
             let subscription = subscription.value();
             let _ = self
-                .handle_join_leave(
-                    &JoinData {
+                .handle_join_leave(&StreamIncomingMessage::Leave {
+                    data: StreamIncomingMessageData {
                         subscription_id: subscription.subscription_id.clone(),
                         stream_name: subscription.stream_name.clone(),
                         group_id: subscription.group_id.clone(),
                         id: subscription.id.clone(),
                     },
-                    LEAVE_TRIGGER_TYPE,
-                )
+                })
                 .await;
         }
     }

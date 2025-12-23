@@ -12,7 +12,7 @@ pub struct Subscription {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JoinData {
+pub struct StreamIncomingMessageData {
     #[serde(rename = "subscriptionId")]
     pub subscription_id: String,
     #[serde(rename = "streamName")]
@@ -25,8 +25,8 @@ pub struct JoinData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamIncomingMessage {
-    Join { data: JoinData },
-    Leave { data: JoinData },
+    Join { data: StreamIncomingMessageData },
+    Leave { data: StreamIncomingMessageData },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
