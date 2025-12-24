@@ -3,7 +3,7 @@ import { generateIndex } from './generate-index'
 import { typegen } from './typegen'
 
 export const dev = async () => {
-  const [_, result] = await Promise.all([
+  return Promise.all([
     typegen({ watch: true, silent: false }),
     esbuild.build({
       stdin: {
@@ -21,6 +21,4 @@ export const dev = async () => {
       outfile: 'dist/index-dev.js',
     })
   ])
-
-  return result
 }
