@@ -1,6 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{RwLock, broadcast};
 
@@ -18,21 +20,162 @@ type TopicName = String;
 type GroupId = String;
 type ItemId = String;
 type ItemsData = HashMap<ItemId, Value>;
+type ItemsDataAsString = HashMap<ItemId, String>;
+type StoreKey = (TopicName, GroupId);
 
+#[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
+pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
+//type Storage = HashMap<StoreKey, ItemsData>;
+
+impl Storage {
+    pub fn new() -> Self {
+        Storage(HashMap::new())
+    }
+}
 pub struct KvStore {
-    store: RwLock<HashMap<(TopicName, GroupId), ItemsData>>,
+    store: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
     subscribers: RwLock<HashMap<TopicName, Subscribers>>,
     events_tx: tokio::sync::broadcast::Sender<StreamWrapperMessage>,
+    #[allow(
+        dead_code,
+        reason = "Going to be used in the future for graceful shutdown"
+    )]
+    handler: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn snapshot_to_storage(value: &HashMap<StoreKey, ItemsData>) -> Storage {
+    let mut storage = Storage::new();
+    for (key, items) in value.iter() {
+        let mut items_as_string = HashMap::new();
+        for (item_id, data) in items.iter() {
+            let data_as_string = serde_json::to_string(data).unwrap_or_default();
+            items_as_string.insert(item_id.clone(), data_as_string);
+        }
+        storage.0.insert(key.clone(), items_as_string);
+    }
+    storage
+}
+
+fn load_storage(file_path: &str) -> Storage {
+    let bytes = match std::fs::read(file_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::info!(error = ?err, "storage file not found,
+  starting empty");
+            return Storage::new();
+        }
+    };
+
+    match rkyv::from_bytes::<Storage, rkyv::rancor::Error>(&bytes) {
+        Ok(storage) => storage,
+        Err(err) => {
+            tracing::error!(error = ?err, "failed to parse
+  storage from disk");
+            Storage::new()
+        }
+    }
+}
+
+fn storage_to_store(storage: Storage) -> HashMap<StoreKey, ItemsData> {
+    storage
+        .0
+        .into_iter()
+        .map(|(key, items)| {
+            let items: ItemsData = items
+                .into_iter()
+                .filter_map(|(item_id, data_str)| {
+                    serde_json::from_str::<Value>(&data_str)
+                        .ok()
+                        .map(|value| (item_id, value))
+                })
+                .collect();
+            (key, items)
+        })
+        .collect()
 }
 
 impl KvStore {
-    pub fn new() -> Self {
-        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(256);
+    pub fn new(config: Option<Value>) -> Self {
+        tracing::debug!("Initializing KvStore with config: {:?}", config);
+        let store_method = config
+            .clone()
+            .and_then(|cfg| {
+                cfg.get("store_method")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "in_memory".to_string());
+
+        let channel_size = config
+            .clone()
+            .and_then(|cfg| cfg.get("channel_size").and_then(|v| v.as_u64()))
+            .unwrap_or(256) as usize;
+
+        let file_path = config
+            .clone()
+            .and_then(|cfg| {
+                cfg.get("file_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "kv_store_data.rkyv".to_string());
+
+        let interval = config
+            .clone()
+            .and_then(|cfg| cfg.get("save_interval_ms").and_then(|v| v.as_u64()))
+            .unwrap_or(5000);
+
+        let storage = match store_method.as_str() {
+            "in_memory" => Storage::new(),
+            "file_based" => load_storage(&file_path),
+            other => {
+                tracing::warn!(store_method = %other, "Unknown store_method, defaulting to in_memory");
+                Storage::new()
+            }
+        };
+        let store = Arc::new(RwLock::new(storage_to_store(storage)));
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(channel_size);
+        let storage_clone = store.clone();
+        let handler = match store_method.as_str() {
+            "file_based" => Some(tokio::spawn(async move {
+                Self::save_loop(storage_clone, interval, &file_path).await;
+            })),
+            _ => None,
+        };
         Self {
-            store: RwLock::new(HashMap::new()),
+            store,
             subscribers: RwLock::new(HashMap::new()),
             events_tx,
+            handler,
         }
+    }
+
+    async fn save_loop(
+        storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
+        polling_interval: u64,
+        file_path: &str,
+    ) {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(polling_interval));
+        loop {
+            interval.tick().await;
+            Self::save_in_disk(storage.clone(), file_path).await;
+        }
+    }
+
+    async fn save_in_disk(storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>, file_path: &str) {
+        let snapshot = {
+            let store = storage.read().await;
+            store.clone()
+        };
+        let file_path = file_path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let storage = snapshot_to_storage(&snapshot);
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage).unwrap();
+            let humanized_size = bytes.len();
+            tracing::info!("Saving storage to disk, size {:?}", humanized_size);
+            std::fs::write(file_path, bytes).unwrap();
+        });
     }
 }
 
@@ -161,11 +304,8 @@ impl StreamAdapter for KvStore {
     }
 }
 
-fn make_adapter(_engine: Arc<Engine>, _config: Option<Value>) -> StreamAdapterFuture {
-    Box::pin(async move {
-        let kv_store = KvStore::new();
-        Ok(Arc::new(kv_store) as Arc<dyn StreamAdapter>)
-    })
+fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
+    Box::pin(async move { Ok(Arc::new(KvStore::new(config)) as Arc<dyn StreamAdapter>) })
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::KvStore", make_adapter);

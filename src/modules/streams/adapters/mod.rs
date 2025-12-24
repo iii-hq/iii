@@ -6,7 +6,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-pub use self::{kv_store::KvStore, redis_adapter::RedisAdapter};
 use crate::modules::streams::StreamWrapperMessage;
 
 #[async_trait]
