@@ -38,8 +38,7 @@ impl Storage {
         let bytes = match std::fs::read(file_path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                tracing::info!(error = ?err, "storage file not found,
-  starting empty");
+                tracing::info!(error = ?err, "storage file not found, starting empty");
                 return Storage::new();
             }
         };
@@ -170,11 +169,20 @@ impl KvStore {
             if !dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 continue;
             }
-            Self::save_in_disk(storage.clone(), file_path).await;
+            match Self::save_in_disk(storage.clone(), file_path).await {
+                Ok(_) => tracing::info!("Storage saved to disk successfully"),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to save storage to disk");
+                    dirty.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
         }
     }
 
-    async fn save_in_disk(storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>, file_path: &str) {
+    async fn save_in_disk(
+        storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
+        file_path: &str,
+    ) -> Result<(), tokio::task::JoinError> {
         let snapshot = {
             let store = storage.read().await;
             store.clone()
@@ -185,8 +193,13 @@ impl KvStore {
             let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage).unwrap();
             let humanized_size = bytes.len();
             tracing::info!("Saving storage to disk, size {:?}", humanized_size);
-            std::fs::write(file_path, bytes).unwrap();
-        });
+            let temp_file_path = format!("{}.tmp", file_path);
+
+            std::fs::write(&temp_file_path, bytes).expect("Failed to write storage to temp file");
+            std::fs::rename(&temp_file_path, file_path)
+                .expect("Failed to rename temp file to storage file");
+        })
+        .await
     }
 }
 
@@ -257,9 +270,9 @@ impl StreamAdapter for KvStore {
                 event: StreamOutboundMessage::Delete { data: data.clone() },
             };
             self.emit_event(message).await;
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
             return;
         }
-        self.dirty.store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Item to delete not found");
     }
 
