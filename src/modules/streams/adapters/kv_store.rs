@@ -120,7 +120,7 @@ impl KvStore {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .unwrap_or_else(|| "kv_store_data.rkyv".to_string());
+            .unwrap_or_else(|| "kv_store_data.db".to_string());
 
         let interval = config
             .clone()
@@ -194,7 +194,10 @@ impl KvStore {
             let humanized_size = bytes.len();
             tracing::info!("Saving storage to disk, size {:?}", humanized_size);
             let temp_file_path = format!("{}.tmp", file_path);
-
+            if let Some(parent) = std::path::Path::new(&file_path).parent() {
+                std::fs::create_dir_all(parent)
+                    .expect("Failed to create parent directories for storage file");
+            }
             std::fs::write(&temp_file_path, bytes).expect("Failed to write storage to temp file");
             std::fs::rename(&temp_file_path, file_path)
                 .expect("Failed to rename temp file to storage file");
