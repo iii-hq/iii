@@ -16,7 +16,6 @@ pub mod modules {
     pub mod rest_api;
     pub mod shell;
     pub mod streams;
-    pub mod typegen;
 }
 
 // Re-export commonly used types
