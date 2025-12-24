@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use async_trait::async_trait;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -25,13 +28,63 @@ type StoreKey = (TopicName, GroupId);
 
 #[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
 pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
-//type Storage = HashMap<StoreKey, ItemsData>;
 
 impl Storage {
     pub fn new() -> Self {
         Storage(HashMap::new())
     }
+
+    fn load_storage(file_path: &str) -> Storage {
+        let bytes = match std::fs::read(file_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::info!(error = ?err, "storage file not found,
+  starting empty");
+                return Storage::new();
+            }
+        };
+
+        match rkyv::from_bytes::<Storage, rkyv::rancor::Error>(&bytes) {
+            Ok(storage) => storage,
+            Err(err) => {
+                tracing::error!(error = ?err, "failed to parse
+  storage from disk");
+                Storage::new()
+            }
+        }
+    }
+
+    fn storage_to_store(self) -> HashMap<StoreKey, ItemsData> {
+        self.0
+            .into_iter()
+            .map(|(key, items)| {
+                let items: ItemsData = items
+                    .into_iter()
+                    .filter_map(|(item_id, data_str)| {
+                        serde_json::from_str::<Value>(&data_str)
+                            .ok()
+                            .map(|value| (item_id, value))
+                    })
+                    .collect();
+                (key, items)
+            })
+            .collect()
+    }
+
+    fn snapshot_to_storage(value: &HashMap<StoreKey, ItemsData>) -> Storage {
+        let mut storage = Storage::new();
+        for (key, items) in value.iter() {
+            let mut items_as_string = HashMap::new();
+            for (item_id, data) in items.iter() {
+                let data_as_string = serde_json::to_string(data).unwrap_or_default();
+                items_as_string.insert(item_id.clone(), data_as_string);
+            }
+            storage.0.insert(key.clone(), items_as_string);
+        }
+        storage
+    }
 }
+
 pub struct KvStore {
     store: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
     subscribers: RwLock<HashMap<TopicName, Subscribers>>,
@@ -41,57 +94,7 @@ pub struct KvStore {
         reason = "Going to be used in the future for graceful shutdown"
     )]
     handler: Option<tokio::task::JoinHandle<()>>,
-}
-
-fn snapshot_to_storage(value: &HashMap<StoreKey, ItemsData>) -> Storage {
-    let mut storage = Storage::new();
-    for (key, items) in value.iter() {
-        let mut items_as_string = HashMap::new();
-        for (item_id, data) in items.iter() {
-            let data_as_string = serde_json::to_string(data).unwrap_or_default();
-            items_as_string.insert(item_id.clone(), data_as_string);
-        }
-        storage.0.insert(key.clone(), items_as_string);
-    }
-    storage
-}
-
-fn load_storage(file_path: &str) -> Storage {
-    let bytes = match std::fs::read(file_path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            tracing::info!(error = ?err, "storage file not found,
-  starting empty");
-            return Storage::new();
-        }
-    };
-
-    match rkyv::from_bytes::<Storage, rkyv::rancor::Error>(&bytes) {
-        Ok(storage) => storage,
-        Err(err) => {
-            tracing::error!(error = ?err, "failed to parse
-  storage from disk");
-            Storage::new()
-        }
-    }
-}
-
-fn storage_to_store(storage: Storage) -> HashMap<StoreKey, ItemsData> {
-    storage
-        .0
-        .into_iter()
-        .map(|(key, items)| {
-            let items: ItemsData = items
-                .into_iter()
-                .filter_map(|(item_id, data_str)| {
-                    serde_json::from_str::<Value>(&data_str)
-                        .ok()
-                        .map(|value| (item_id, value))
-                })
-                .collect();
-            (key, items)
-        })
-        .collect()
+    dirty: Arc<AtomicBool>,
 }
 
 impl KvStore {
@@ -127,18 +130,21 @@ impl KvStore {
 
         let storage = match store_method.as_str() {
             "in_memory" => Storage::new(),
-            "file_based" => load_storage(&file_path),
+            "file_based" => Storage::load_storage(&file_path),
             other => {
                 tracing::warn!(store_method = %other, "Unknown store_method, defaulting to in_memory");
                 Storage::new()
             }
         };
-        let store = Arc::new(RwLock::new(storage_to_store(storage)));
+        let store = Arc::new(RwLock::new(storage.storage_to_store()));
         let (events_tx, _events_rx) = tokio::sync::broadcast::channel(channel_size);
         let storage_clone = store.clone();
+
+        let dirty = Arc::new(AtomicBool::new(false));
+        let dirty_clone = dirty.clone();
         let handler = match store_method.as_str() {
             "file_based" => Some(tokio::spawn(async move {
-                Self::save_loop(storage_clone, interval, &file_path).await;
+                Self::save_loop(storage_clone, interval, &file_path, dirty_clone).await;
             })),
             _ => None,
         };
@@ -147,6 +153,7 @@ impl KvStore {
             subscribers: RwLock::new(HashMap::new()),
             events_tx,
             handler,
+            dirty,
         }
     }
 
@@ -154,11 +161,15 @@ impl KvStore {
         storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
         polling_interval: u64,
         file_path: &str,
+        dirty: Arc<AtomicBool>,
     ) {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(polling_interval));
         loop {
             interval.tick().await;
+            if !dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                continue;
+            }
             Self::save_in_disk(storage.clone(), file_path).await;
         }
     }
@@ -170,7 +181,7 @@ impl KvStore {
         };
         let file_path = file_path.to_string();
         tokio::task::spawn_blocking(move || {
-            let storage = snapshot_to_storage(&snapshot);
+            let storage = Storage::snapshot_to_storage(&snapshot);
             let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage).unwrap();
             let humanized_size = bytes.len();
             tracing::info!("Saving storage to disk, size {:?}", humanized_size);
@@ -203,6 +214,7 @@ impl StreamAdapter for KvStore {
                 event,
             };
             self.emit_event(message).await;
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
             return;
         } else {
             let mut topic = HashMap::new();
@@ -216,6 +228,7 @@ impl StreamAdapter for KvStore {
                 event: StreamOutboundMessage::Create { data },
             };
             self.emit_event(message).await;
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
             return;
         }
     }
@@ -246,6 +259,7 @@ impl StreamAdapter for KvStore {
             self.emit_event(message).await;
             return;
         }
+        self.dirty.store(true, std::sync::atomic::Ordering::Release);
         tracing::warn!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Item to delete not found");
     }
 

@@ -6,7 +6,7 @@ modules:
       adapter:
         class: modules::streams::adapters::KvStore
         config:
-          store_method: in_memory # Options: in_memory, file_based
+          store_method: file_based # Options: in_memory, file_based
         # class: modules::streams::adapters::RedisAdapter
         # config:
         #   redis_url: redis://localhost:6379
