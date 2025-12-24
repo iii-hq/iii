@@ -22,9 +22,9 @@ export const generateTypesString = (
  * 
  * Consider adding this file to .prettierignore and eslint ignore.
  */
-import { EventHandler, ApiRouteHandler, ApiResponse, MotiaStream, CronHandler } from 'motia'
+import { EventHandler, ApiRouteHandler, ApiResponse, MotiaStream, CronHandler } from '@iii-dev/motia'
 
-declare module 'motia' {
+declare module '@iii-dev/motia' {
   interface FlowContextStateStreams {
     ${Object.entries(streams)
       .map(([key, value]) => `'${key}': MotiaStream<${value}>`)
@@ -117,11 +117,19 @@ export const generateTypesFromSteps = (steps: Step[], printer: Printer): Handler
       const input = step.config.input ? generateTypeFromSchema(step.config.input as never as JsonSchema) : 'never'
       handlers[step.config.name] = { type: 'EventHandler', generics: [input, emits] }
     } else if (isApiStep(step)) {
-      const input = step.config.bodySchema
-        ? generateTypeFromSchema(step.config.bodySchema as never as JsonSchema)
-        : 'Record<string, unknown>'
-      const result = step.config.responseSchema
-        ? generateTypesFromResponse(step.config.responseSchema as never as Record<number, JsonSchema>)
+      const bodyJsonSchema = step.config.bodySchema ? schemaToJsonSchema(step.config.bodySchema) : null
+      const input = bodyJsonSchema ? generateTypeFromSchema(bodyJsonSchema) : 'Record<string, unknown>'
+      
+      const responseJsonSchemas = step.config.responseSchema
+        ? Object.fromEntries(
+            Object.entries(step.config.responseSchema).map(([status, schema]) => [
+              status,
+              schemaToJsonSchema(schema) ?? schema,
+            ]),
+          )
+        : null
+      const result = responseJsonSchemas
+        ? generateTypesFromResponse(responseJsonSchemas as Record<number, JsonSchema>)
         : 'unknown'
       handlers[step.config.name] = { type: 'ApiRouteHandler', generics: [input, result, emits] }
     } else if (isCronStep(step)) {
@@ -135,7 +143,8 @@ export const generateTypesFromSteps = (steps: Step[], printer: Printer): Handler
 export const generateTypesFromStreams = (streams: Record<string, Stream>): StreamsMap => {
   return Object.entries(streams).reduce((acc, [key, stream]) => {
     if (!stream.hidden) {
-      acc[key] = generateTypeFromSchema(stream.config.schema as unknown as JsonSchema)
+      const jsonSchema = schemaToJsonSchema(stream.config.schema)
+      acc[key] = jsonSchema ? generateTypeFromSchema(jsonSchema) : 'unknown'
     }
     return acc
   }, {} as StreamsMap)
