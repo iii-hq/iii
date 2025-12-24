@@ -182,15 +182,15 @@ impl KvStore {
     async fn save_in_disk(
         storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
         file_path: &str,
-    ) -> Result<(), tokio::task::JoinError> {
+    ) -> anyhow::Result<()> {
         let snapshot = {
             let store = storage.read().await;
             store.clone()
         };
         let file_path = file_path.to_string();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             let storage = Storage::snapshot_to_storage(&snapshot);
-            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage).unwrap();
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage)?;
             let humanized_size = bytes.len();
             tracing::info!("Saving storage to disk, size {:?}", humanized_size);
             let temp_file_path = format!("{}.tmp", file_path);
@@ -198,11 +198,15 @@ impl KvStore {
                 std::fs::create_dir_all(parent)
                     .expect("Failed to create parent directories for storage file");
             }
-            std::fs::write(&temp_file_path, bytes).expect("Failed to write storage to temp file");
-            std::fs::rename(&temp_file_path, file_path)
-                .expect("Failed to rename temp file to storage file");
+            std::fs::write(&temp_file_path, bytes)?;
+            std::fs::rename(&temp_file_path, file_path)?;
+            Ok(())
         })
-        .await
+        .await;
+        match result {
+            Ok(inner) => inner,
+            Err(e) => Err(anyhow::Error::new(e)),
+        }
     }
 }
 
