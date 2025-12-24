@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 use super::{
     core_module::CoreModule, cron::CronCoreModule, event::EventCoreModule,
     observability::LoggerCoreModule, rest_api::RestApiCoreModule, shell::ExecCoreModule,
-    streams::StreamCoreModule, typegen::TypeGenCoreModule,
+    streams::StreamCoreModule,
 };
 use crate::engine::Engine;
 
@@ -217,7 +217,6 @@ impl ModuleRegistry {
         registry.register::<CronCoreModule>("modules::cron::CronModule");
         registry.register::<LoggerCoreModule>("modules::observability::LoggingModule");
         registry.register::<ExecCoreModule>("modules::shell::ExecModule");
-        registry.register::<TypeGenCoreModule>("modules::typegen::TypeGenModule");
 
         registry
     }
