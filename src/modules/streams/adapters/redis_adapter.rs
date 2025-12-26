@@ -11,16 +11,13 @@ use tokio::{
 
 use crate::{
     engine::Engine,
-    modules::{
-        registry::register_adapter,
-        streams::{
-            StreamOutboundMessage, StreamWrapperMessage,
-            adapters::{
-                StreamAdapter, StreamConnection,
-                emit::{STREAM_TOPIC, emit_event},
-            },
-            registry::{StreamAdapterFuture, StreamAdapterRegistration},
+    modules::streams::{
+        StreamOutboundMessage, StreamWrapperMessage,
+        adapters::{
+            StreamAdapter, StreamConnection,
+            emit::{STREAM_TOPIC, emit_event},
         },
+        registry::{StreamAdapterFuture, StreamAdapterRegistration},
     },
 };
 
@@ -231,4 +228,4 @@ impl StreamAdapter for RedisAdapter {
     }
 }
 
-register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::RedisAdapter", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::RedisAdapter", make_adapter);

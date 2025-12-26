@@ -16,6 +16,7 @@ use iii::{
     modules::{
         config::EngineBuilder,
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        registry::{AdapterFuture, AdapterRegistration},
     },
     protocol::ErrorBody,
 };
@@ -35,6 +36,11 @@ pub trait CustomEventAdapter: Send + Sync + 'static {
     async fn subscribe(&self, topic: &str, id: &str, function_path: &str);
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
+
+type CustomEventAdapterFuture = AdapterFuture<dyn CustomEventAdapter>;
+type CustomEventAdapterRegistration = AdapterRegistration<dyn CustomEventAdapter>;
+
+inventory::collect!(CustomEventAdapterRegistration);
 
 // =============================================================================
 // 2. Implement your custom Adapters
@@ -153,6 +159,23 @@ impl CustomEventAdapter for LoggingEventAdapter {
     }
 }
 
+fn make_inmemory_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomEventAdapterFuture {
+    Box::pin(async move {
+        Ok(Arc::new(InMemoryEventAdapter::new(config, engine).await?)
+            as Arc<dyn CustomEventAdapter>)
+    })
+}
+
+fn make_logging_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomEventAdapterFuture {
+    Box::pin(async move {
+        Ok(Arc::new(LoggingEventAdapter::new(config, engine).await?)
+            as Arc<dyn CustomEventAdapter>)
+    })
+}
+
+iii::register_adapter!(<CustomEventAdapterRegistration> "my::InMemoryEventAdapter", make_inmemory_adapter);
+iii::register_adapter!(<CustomEventAdapterRegistration> "my::LoggingEventAdapter", make_logging_adapter);
+
 // =============================================================================
 // 3. Define your Module Config
 // =============================================================================
@@ -218,31 +241,8 @@ impl CoreModule for CustomEventModule {
 impl ConfigurableModule for CustomEventModule {
     type Config = CustomEventModuleConfig;
     type Adapter = dyn CustomEventAdapter;
+    type AdapterRegistration = CustomEventAdapterRegistration;
     const DEFAULT_ADAPTER_CLASS: &'static str = "my::InMemoryEventAdapter";
-
-    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
-        let mut m = HashMap::new();
-
-        // Register InMemoryEventAdapter as the default
-        m.insert(
-            "my::InMemoryEventAdapter".to_string(),
-            Self::make_adapter_factory(|engine: Arc<Engine>, config: Option<Value>| async move {
-                Ok(Arc::new(InMemoryEventAdapter::new(config, engine).await?)
-                    as Arc<dyn CustomEventAdapter>)
-            }),
-        );
-
-        // Register LoggingEventAdapter as a custom adapter
-        m.insert(
-            "my::LoggingEventAdapter".to_string(),
-            Self::make_adapter_factory(|engine: Arc<Engine>, config: Option<Value>| async move {
-                Ok(Arc::new(LoggingEventAdapter::new(config, engine).await?)
-                    as Arc<dyn CustomEventAdapter>)
-            }),
-        );
-
-        m
-    }
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomEventAdapter>>>> =
@@ -305,19 +305,6 @@ impl FunctionHandler for CustomEventModule {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     iii::logging::init_log("config.yaml");
-
-    // Register custom adapters for CustomEventModule
-    CustomEventModule::add_adapter("my::CustomInMemoryAdapter", |engine, config| async move {
-        Ok(Arc::new(InMemoryEventAdapter::new(config, engine).await?)
-            as Arc<dyn CustomEventAdapter>)
-    })
-    .await?;
-
-    CustomEventModule::add_adapter("my::CustomLoggingAdapter", |engine, config| async move {
-        Ok(Arc::new(LoggingEventAdapter::new(config, engine).await?)
-            as Arc<dyn CustomEventAdapter>)
-    })
-    .await?;
 
     // Register the custom module and add it to the engine using EngineBuilder
     EngineBuilder::new()

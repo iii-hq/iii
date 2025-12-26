@@ -8,10 +8,7 @@ use tokio::time::timeout;
 use super::super::structs::CronSchedulerAdapter;
 use crate::{
     engine::Engine,
-    modules::{
-        cron::registry::{CronAdapterFuture, CronAdapterRegistration},
-        registry::register_adapter,
-    },
+    modules::cron::registry::{CronAdapterFuture, CronAdapterRegistration},
 };
 
 /// Default timeout for Redis connection attempts
@@ -66,7 +63,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> CronAdapterFutur
     })
 }
 
-register_adapter!(<CronAdapterRegistration> "modules::cron::RedisCronAdapter", make_adapter);
+crate::register_adapter!(<CronAdapterRegistration> "modules::cron::RedisCronAdapter", make_adapter);
 
 #[async_trait]
 impl CronSchedulerAdapter for RedisCronLock {

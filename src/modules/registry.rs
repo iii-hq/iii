@@ -28,9 +28,10 @@ impl<A: ?Sized + Send + Sync + 'static> AdapterRegistrationEntry<A> for AdapterR
     }
 }
 
+#[macro_export]
 macro_rules! register_adapter {
     (<$registration:path> $class:expr, $factory:expr) => {
-        inventory::submit! {
+        ::inventory::submit! {
             $registration {
                 class: $class,
                 factory: $factory,
@@ -38,7 +39,7 @@ macro_rules! register_adapter {
         }
     };
     ($registration:path, $class:expr, $factory:expr) => {
-        inventory::submit! {
+        ::inventory::submit! {
             $registration {
                 class: $class,
                 factory: $factory,
@@ -46,5 +47,3 @@ macro_rules! register_adapter {
         }
     };
 }
-
-pub(crate) use register_adapter;

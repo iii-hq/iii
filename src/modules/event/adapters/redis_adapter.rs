@@ -12,12 +12,9 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::{
-        event::{
-            EventAdapter,
-            registry::{EventAdapterFuture, EventAdapterRegistration},
-        },
-        registry::register_adapter,
+    modules::event::{
+        EventAdapter,
+        registry::{EventAdapterFuture, EventAdapterRegistration},
     },
 };
 
@@ -75,7 +72,7 @@ fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFutur
     })
 }
 
-register_adapter!(<EventAdapterRegistration> "modules::event::RedisAdapter", make_adapter);
+crate::register_adapter!(<EventAdapterRegistration> "modules::event::RedisAdapter", make_adapter);
 
 #[async_trait]
 impl EventAdapter for RedisAdapter {
