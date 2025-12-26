@@ -3,7 +3,7 @@ use crate::modules::{
     streams::adapters::StreamAdapter,
 };
 
-pub(crate) type StreamAdapterFuture = AdapterFuture<dyn StreamAdapter>;
-pub(crate) type StreamAdapterRegistration = AdapterRegistration<dyn StreamAdapter>;
+pub type StreamAdapterFuture = AdapterFuture<dyn StreamAdapter>;
+pub type StreamAdapterRegistration = AdapterRegistration<dyn StreamAdapter>;
 
 inventory::collect!(StreamAdapterRegistration);
