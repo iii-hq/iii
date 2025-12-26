@@ -16,7 +16,7 @@ use iii::{
     modules::{
         config::EngineBuilder,
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
-        registry::{AdapterFuture, AdapterRegistration},
+        registry::{AdapterFuture, AdapterRegistrationEntry},
     },
     protocol::ErrorBody,
 };
@@ -38,7 +38,21 @@ pub trait CustomEventAdapter: Send + Sync + 'static {
 }
 
 type CustomEventAdapterFuture = AdapterFuture<dyn CustomEventAdapter>;
-type CustomEventAdapterRegistration = AdapterRegistration<dyn CustomEventAdapter>;
+
+pub struct CustomEventAdapterRegistration {
+    pub class: &'static str,
+    pub factory: fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture,
+}
+
+impl AdapterRegistrationEntry<dyn CustomEventAdapter> for CustomEventAdapterRegistration {
+    fn class(&self) -> &'static str {
+        self.class
+    }
+
+    fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture {
+        self.factory
+    }
+}
 
 inventory::collect!(CustomEventAdapterRegistration);
 
