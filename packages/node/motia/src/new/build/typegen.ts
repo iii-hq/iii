@@ -1,8 +1,7 @@
 import { writeFileSync, existsSync } from 'fs'
 import { watch } from 'fs'
-import { generateTypesString, generateTypesFromSteps, generateTypesFromStreams } from '../../types/generate-types'
+import { generateTypesString } from '../../types/generate-types'
 import { loadStepsAndStreams } from './loader'
-import { Printer } from '../../printer'
 
 export interface TypegenOptions {
   watch?: boolean
@@ -12,24 +11,21 @@ export interface TypegenOptions {
 
 export const typegen = async (options: TypegenOptions = {}): Promise<() => void> => {
   const output = options.output ?? 'types.d.ts'
-  const printer = new Printer(process.cwd())
 
-  await generateTypes(output, printer)
+  await generateTypes(output)
 
   if (options.watch) {
-    return watchFiles(() => generateTypes(output, printer))
+    return watchFiles(() => generateTypes(output))
   }
 
   return () => {}
 }
 
-const generateTypes = async (output: string, printer: Printer) => {
+const generateTypes = async (output: string) => {
   try {
     const { steps, streams } = await loadStepsAndStreams()
 
-    const handlersMap = generateTypesFromSteps(steps, printer)
-    const streamsMap = generateTypesFromStreams(streams)
-    const content = generateTypesString(handlersMap, streamsMap)
+    const content = generateTypesString(steps, streams)
 
     writeFileSync(output, content)
   } catch (error) {

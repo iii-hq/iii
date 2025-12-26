@@ -17,15 +17,12 @@ export type InternalStateManager = {
 export type EmitData = { topic: ''; data: unknown; messageGroupId?: string }
 export type Emitter<TData> = (event: TData) => Promise<void>
 
-// biome-ignore lint/suspicious/noEmptyInterface: we need to define this interface to avoid type errors
-export interface FlowContextStateStreams {}
-
 export interface FlowContext<TEmitData = never> {
   emit: Emitter<TEmitData>
   traceId: string
   state: InternalStateManager
   logger: Logger
-  streams: FlowContextStateStreams
+  streams: Streams
 }
 
 export type EventHandler<TInput, TEmitData> = (input: TInput, ctx: FlowContext<TEmitData>) => Promise<void>
@@ -54,17 +51,13 @@ export type EventConfig = {
   type: 'event'
   name: string
   description?: string
-  subscribes: string[]
-  emits: Emit[]
-  virtualEmits?: Emit[]
-  virtualSubscribes?: string[]
+  subscribes: readonly string[]
+  emits: readonly Emit[]
+  virtualEmits?: readonly Emit[]
+  virtualSubscribes?: readonly string[]
   input?: StepSchemaInput
-  flows?: string[]
-  /**
-   * Files to include in the step bundle.
-   * Needs to be relative to the step file.
-   */
-  includeFiles?: string[]
+  flows?: readonly string[]
+  includeFiles?: readonly string[]
   infrastructure?: Partial<InfrastructureConfig>
 }
 
@@ -72,9 +65,9 @@ export type NoopConfig = {
   type: 'noop'
   name: string
   description?: string
-  virtualEmits: Emit[]
-  virtualSubscribes: string[]
-  flows?: string[]
+  virtualEmits: readonly Emit[]
+  virtualSubscribes: readonly string[]
+  flows?: readonly string[]
 }
 
 export type ApiRouteMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS' | 'HEAD'
@@ -96,19 +89,15 @@ export interface ApiRouteConfig {
   description?: string
   path: string
   method: ApiRouteMethod
-  emits: Emit[]
-  virtualEmits?: Emit[]
-  virtualSubscribes?: string[]
-  flows?: string[]
-  middleware?: ApiMiddleware<any, any, any>[]
+  emits: readonly Emit[]
+  virtualEmits?: readonly Emit[]
+  virtualSubscribes?: readonly string[]
+  flows?: readonly string[]
+  middleware?: readonly ApiMiddleware<any, any, any>[]
   bodySchema?: StepSchemaInput
   responseSchema?: Record<number, StepSchemaInput>
-  queryParams?: QueryParam[]
-  /**
-   * Files to include in the step bundle.
-   * Needs to be relative to the step file.
-   */
-  includeFiles?: string[]
+  queryParams?: readonly QueryParam[]
+  includeFiles?: readonly string[]
 }
 
 export interface ApiRequest<TBody = unknown> {
@@ -135,15 +124,11 @@ export type CronConfig = {
   name: string
   description?: string
   cron: string
-  virtualEmits?: Emit[]
-  virtualSubscribes?: string[]
-  emits: Emit[]
-  flows?: string[]
-  /**
-   * Files to include in the step bundle.
-   * Needs to be relative to the step file.
-   */
-  includeFiles?: string[]
+  virtualEmits?: readonly Emit[]
+  virtualSubscribes?: readonly string[]
+  emits: readonly Emit[]
+  flows?: readonly string[]
+  includeFiles?: readonly string[]
 }
 
 export type CronHandler<TEmitData = never> = (ctx: FlowContext<TEmitData>) => Promise<void>
@@ -197,4 +182,61 @@ export type Flow = {
 }
 
 // biome-ignore lint/suspicious/noEmptyInterface: we need to define this interface to avoid type errors
-export interface Handlers {}
+export interface Streams {}
+
+// biome-ignore lint/suspicious/noEmptyInterface: we need to define this interface to avoid type errors
+export interface Emits {}
+
+type HasOutput = { _output: unknown }
+
+type InferSchema<T, TFallback = unknown> =
+  T extends HasOutput ? T['_output'] :
+  [T] extends [object] ? T :
+  TFallback
+
+type InferBody<T> =
+  T extends { bodySchema: infer B }
+    ? InferSchema<B, Record<string, unknown>>
+    : Record<string, unknown>
+
+type InferInput<T> =
+  T extends { input: infer I } ? InferSchema<I> : unknown
+
+type EmitTopic<T extends string> =
+  T extends keyof Emits ? Emits[T] : unknown
+
+type NormalizeEmit<E> =
+  E extends string ? { topic: E } :
+  E extends { topic: infer T extends string } ? { topic: T } :
+  never
+
+type EmitElement<E> =
+  NormalizeEmit<E> extends { topic: infer T extends string }
+    ? { topic: T; data: EmitTopic<T> }
+    : never
+
+type InferEmits<T> =
+  T extends { emits: readonly unknown[] }
+    ? EmitElement<T['emits'][number]>
+    : never
+
+type StatusCode<T> = Extract<keyof T, number>
+
+type InferResponse<T> =
+  T extends { responseSchema: infer R extends Record<number, unknown> }
+    ? { [K in StatusCode<R>]: ApiResponse<K, InferSchema<R[K]>> }[StatusCode<R>]
+    : ApiResponse<number, unknown>
+
+type InvalidConfigType = {
+  __brand: 'InvalidConfigType'
+  message: 'Config type must be "api", "event", or "cron"'
+}
+
+export type Handlers<TConfig> =
+  TConfig extends { type: 'api' }
+    ? ApiRouteHandler<InferBody<TConfig>, InferResponse<TConfig>, InferEmits<TConfig>>
+    : TConfig extends { type: 'event' }
+      ? EventHandler<InferInput<TConfig>, InferEmits<TConfig>>
+      : TConfig extends { type: 'cron' }
+        ? CronHandler<InferEmits<TConfig>>
+        : InvalidConfigType
