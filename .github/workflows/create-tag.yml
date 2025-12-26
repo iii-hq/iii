@@ -85,6 +85,8 @@ jobs:
           else
             echo "✅ Latest CI run passed"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get latest tag
         id: get_latest_tag
