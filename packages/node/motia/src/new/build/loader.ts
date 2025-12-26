@@ -70,7 +70,6 @@ const loadFile = async (file: string, type: 'step' | 'stream'): Promise<LoadedSt
       return { config: module.config, filePath: file }
     }
   } catch (error) {
-    console.error(`Failed to load ${file}:`, error)
     return null
   }
 }
