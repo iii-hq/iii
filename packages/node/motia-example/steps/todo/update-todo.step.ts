@@ -2,7 +2,7 @@ import { ApiRouteConfig, Handlers } from '@iii-dev/motia'
 import { z } from 'zod'
 import { todoSchema } from './create-todo.step'
 
-export const config: ApiRouteConfig = {
+export const config = {
   type: 'api',
   name: 'UpdateTodo',
   description: 'Update an existing todo item',
@@ -21,9 +21,9 @@ export const config: ApiRouteConfig = {
   },
   emits: [],
   virtualSubscribes: ['todo-created'],
-}
+} as const satisfies ApiRouteConfig
 
-export const handler: Handlers['UpdateTodo'] = async (req, { logger, streams }) => {
+export const handler: Handlers<typeof config> = async (req, { logger, streams }) => {
   const { todoId } = req.pathParams
   logger.info('Updating todo', { todoId, body: req.body })
 
