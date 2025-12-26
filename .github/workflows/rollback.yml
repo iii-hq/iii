@@ -1,0 +1,205 @@
+name: Rollback Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Version to rollback to (e.g., v0.1.0)'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+      delete_bad_release:
+        description: 'Delete the problematic release'
+        required: true
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  rollback:
+    name: Rollback to ${{ github.event.inputs.target_version }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
+          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Validate target version
+        id: validate
+        run: |
+          TARGET_VERSION="${{ github.event.inputs.target_version }}"
+          
+          if [[ ! $TARGET_VERSION =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Use vX.Y.Z (e.g., v0.1.0)"
+            exit 1
+          fi
+          
+          git fetch --tags
+          if ! git rev-parse "$TARGET_VERSION" >/dev/null 2>&1; then
+            echo "Error: Tag $TARGET_VERSION does not exist"
+            exit 1
+          fi
+          
+          echo "target_version=$TARGET_VERSION" >> $GITHUB_OUTPUT
+          echo "Validated target version: $TARGET_VERSION"
+
+      - name: Get current version
+        id: current
+        run: |
+          CURRENT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_TAG"
+
+      - name: Notify Slack - Rollback Started
+        id: slack_start
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "⚠️ Rollback initiated",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Rollback Initiated* ⚠️\n\nFrom: `${{ steps.current.outputs.current_tag }}`\nTo: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}\nInitiated by: ${{ github.actor }}\n\n⏳ Processing rollback..."
+                  }
+                }
+              ]
+            }
+
+      - name: Delete bad release
+        if: github.event.inputs.delete_bad_release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          CURRENT_TAG="${{ steps.current.outputs.current_tag }}"
+          if [ "$CURRENT_TAG" != "none" ]; then
+            echo "Deleting release $CURRENT_TAG"
+            gh release delete "$CURRENT_TAG" --yes --cleanup-tag || echo "Release not found or already deleted"
+          fi
+
+      - name: Update Cargo.toml to target version
+        run: |
+          TARGET_VERSION="${{ github.event.inputs.target_version }}"
+          VERSION_NUMBER="${TARGET_VERSION#v}"
+          
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION_NUMBER\"/" Cargo.toml
+          rm Cargo.toml.bak
+          
+          echo "Updated Cargo.toml to version $VERSION_NUMBER"
+          git diff Cargo.toml
+
+      - name: Commit rollback
+        run: |
+          TARGET_VERSION="${{ github.event.inputs.target_version }}"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git commit -m "chore: rollback to $TARGET_VERSION - ${{ github.event.inputs.reason }}"
+          git push origin main
+
+      - name: Create rollback tag
+        run: |
+          TARGET_VERSION="${{ github.event.inputs.target_version }}"
+          ROLLBACK_TAG="${TARGET_VERSION}-rollback"
+          
+          git tag -a "$ROLLBACK_TAG" -m "Rollback to $TARGET_VERSION: ${{ github.event.inputs.reason }}"
+          git push origin "$ROLLBACK_TAG"
+          
+          echo "Created rollback tag: $ROLLBACK_TAG"
+
+      - name: Update Slack - Rollback Complete
+        if: success()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          update-ts: ${{ steps.slack_start.outputs.ts }}
+          payload: |
+            {
+              "text": "✅ Rollback completed successfully",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Rollback Complete* ✅\n\nFrom: `${{ steps.current.outputs.current_tag }}`\nTo: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}\nInitiated by: ${{ github.actor }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/releases|View Releases>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Update Slack - Rollback Failed
+        if: failure()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          update-ts: ${{ steps.slack_start.outputs.ts }}
+          payload: |
+            {
+              "text": "❌ Rollback failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Rollback Failed* ❌\n\nTarget version: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Rollback Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Target Version:** \`${{ github.event.inputs.target_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Reason:** ${{ github.event.inputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Initiated by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Rollback completed successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Rollback failed - check logs for details" >> $GITHUB_STEP_SUMMARY
+          fi
+

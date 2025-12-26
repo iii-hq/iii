@@ -1,0 +1,280 @@
+name: Validate Release
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate Release Artifacts
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
+          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get release tag
+        id: get_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then
+            echo "No tag found, skipping validation"
+            exit 0
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Validating release: $TAG"
+
+      - name: Download Slack notification data
+        id: download_slack
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: slack-notification-data
+          path: slack-data/
+          github-token: ${{ steps.generate_token.outputs.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Get Slack message timestamp
+        id: get_slack_ts
+        run: |
+          if [ -f "slack-data/message_ts.txt" ]; then
+            SLACK_TS=$(cat slack-data/message_ts.txt)
+            echo "slack_ts=$SLACK_TS" >> $GITHUB_OUTPUT
+            echo "has_slack_ts=true" >> $GITHUB_OUTPUT
+            echo "Found Slack timestamp: $SLACK_TS"
+          else
+            echo "has_slack_ts=false" >> $GITHUB_OUTPUT
+            echo "No Slack timestamp found, will send new message"
+          fi
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          if [ -z "$TAG" ]; then
+            exit 0
+          fi
+          
+          echo "Downloading assets for release $TAG"
+          mkdir -p release-assets
+          cd release-assets
+          
+          gh release download "$TAG" || {
+            echo "Failed to download release assets"
+            exit 1
+          }
+          
+          ls -lh
+
+      - name: Validate all platforms present
+        id: validate_platforms
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          if [ -z "$TAG" ]; then
+            exit 0
+          fi
+          
+          EXPECTED_PLATFORMS=(
+            "x86_64-apple-darwin"
+            "aarch64-apple-darwin"
+            "x86_64-pc-windows-msvc"
+            "i686-pc-windows-msvc"
+            "aarch64-pc-windows-msvc"
+            "x86_64-unknown-linux-gnu"
+            "x86_64-unknown-linux-musl"
+            "aarch64-unknown-linux-gnu"
+            "armv7-unknown-linux-gnueabihf"
+          )
+          
+          MISSING_PLATFORMS=()
+          
+          for platform in "${EXPECTED_PLATFORMS[@]}"; do
+            if [[ "$platform" == *"windows"* ]]; then
+              FILE="release-assets/iii-${platform}.zip"
+            else
+              FILE="release-assets/iii-${platform}.tar.gz"
+            fi
+            
+            if [ ! -f "$FILE" ]; then
+              echo "❌ Missing: $FILE"
+              MISSING_PLATFORMS+=("$platform")
+            else
+              echo "✅ Found: $FILE"
+              SIZE=$(stat -f%z "$FILE" 2>/dev/null || stat -c%s "$FILE" 2>/dev/null)
+              if [ "$SIZE" -lt 100000 ]; then
+                echo "⚠️  Warning: $FILE is suspiciously small ($SIZE bytes)"
+                MISSING_PLATFORMS+=("$platform (too small)")
+              fi
+            fi
+          done
+          
+          if [ ${#MISSING_PLATFORMS[@]} -gt 0 ]; then
+            echo "validation_failed=true" >> $GITHUB_OUTPUT
+            echo "missing_platforms=${MISSING_PLATFORMS[*]}" >> $GITHUB_OUTPUT
+            echo ""
+            echo "❌ Validation FAILED - Missing or invalid platforms:"
+            printf '%s\n' "${MISSING_PLATFORMS[@]}"
+            exit 1
+          else
+            echo "validation_failed=false" >> $GITHUB_OUTPUT
+            echo ""
+            echo "✅ All platforms validated successfully"
+          fi
+
+      - name: Update Slack - Validation Success
+        if: success() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          update-ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
+          payload: |
+            {
+              "text": "✅ Release ${{ steps.get_tag.outputs.tag }} completed successfully",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Release ${{ steps.get_tag.outputs.tag }}* ✅\n\n✅ Tests passed\n✅ Release created\n✅ Binaries built (9/9)\n✅ Validation passed\n\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "Release completed successfully"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Notify Slack - Validation Success (Fallback)
+        if: success() && steps.get_slack_ts.outputs.has_slack_ts != 'true'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "✅ Release ${{ steps.get_tag.outputs.tag }} validated successfully",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Release Validated* ✅\nVersion: `${{ steps.get_tag.outputs.tag }}`\nAll 9 platform binaries present and valid\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
+                  }
+                }
+              ]
+            }
+
+      - name: Update Slack - Validation Failed
+        if: failure() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          update-ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
+          payload: |
+            {
+              "text": "❌ Release ${{ steps.get_tag.outputs.tag }} failed validation",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Release ${{ steps.get_tag.outputs.tag }}* ❌\n\n✅ Tests passed\n✅ Release created\n⚠️ Binaries built (partial)\n❌ Validation failed\n\nMissing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}\n\n⚠️ *Auto-rollback will be initiated*"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Notify Slack - Validation Failed (Fallback)
+        if: failure() && steps.get_slack_ts.outputs.has_slack_ts != 'true'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "❌ Release validation failed for ${{ steps.get_tag.outputs.tag }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Release Validation Failed* ❌\nVersion: `${{ steps.get_tag.outputs.tag }}`\nMissing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}\n\n⚠️ *Auto-rollback will be initiated*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
+                  }
+                }
+              ]
+            }
+
+      - name: Trigger auto-rollback
+        if: failure() && steps.validate_platforms.outputs.validation_failed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          
+          PREVIOUS_TAG=$(git tag -l "v*" | sort -V | grep -B1 "^${TAG}$" | head -n1)
+          
+          if [ -z "$PREVIOUS_TAG" ] || [ "$PREVIOUS_TAG" == "$TAG" ]; then
+            echo "No previous version found for rollback"
+            exit 1
+          fi
+          
+          echo "Triggering rollback from $TAG to $PREVIOUS_TAG"
+          
+          gh workflow run rollback.yml \
+            -f target_version="$PREVIOUS_TAG" \
+            -f reason="Auto-rollback: Release validation failed - missing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}" \
+            -f delete_bad_release=true
+
+      - name: Summary
+        if: always()
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          echo "### Release Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release:** \`$TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.validate_platforms.outputs.validation_failed }}" == "true" ]; then
+            echo "❌ **Status:** FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Missing Platforms:**" >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.validate_platforms.outputs.missing_platforms }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Auto-rollback has been triggered" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Status:** SUCCESS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All 9 platform binaries validated successfully" >> $GITHUB_STEP_SUMMARY
+          fi
+

@@ -47,6 +47,46 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.generate_token.outputs.token }}
 
+      - name: Pre-flight checks
+        id: preflight
+        run: |
+          echo "Running pre-flight checks..."
+          
+          if [ ! -f "Cargo.toml" ]; then
+            echo "Error: Cargo.toml not found"
+            exit 1
+          fi
+          
+          CURRENT_BRANCH=$(git branch --show-current)
+          if [ "$CURRENT_BRANCH" != "main" ]; then
+            echo "Warning: Not on main branch (current: $CURRENT_BRANCH)"
+          fi
+          
+          git fetch origin main
+          BEHIND=$(git rev-list --count HEAD..origin/main)
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "Error: Local branch is $BEHIND commits behind origin/main"
+            echo "Please pull latest changes first"
+            exit 1
+          fi
+          
+          echo "✅ Pre-flight checks passed"
+
+      - name: Verify tests pass on main
+        run: |
+          echo "Checking latest CI status on main..."
+          
+          LATEST_RUN=$(gh run list --workflow=ci.yml --branch=main --limit=1 --json conclusion --jq '.[0].conclusion')
+          
+          if [ "$LATEST_RUN" != "success" ]; then
+            echo "⚠️  Warning: Latest CI run on main did not succeed (status: $LATEST_RUN)"
+            echo "Proceeding anyway, but tests should be passing before release"
+          else
+            echo "✅ Latest CI run passed"
+          fi
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+
       - name: Get latest tag
         id: get_latest_tag
         run: |
@@ -106,6 +146,18 @@ jobs:
           rm Cargo.toml.bak
           git diff Cargo.toml
 
+      - name: Validate Cargo.toml
+        run: |
+          NEW_VERSION="${{ steps.calc_version.outputs.new_version }}"
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d'"' -f2)
+          
+          if [ "$CARGO_VERSION" != "$NEW_VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match tag version ($NEW_VERSION)"
+            exit 1
+          fi
+          
+          echo "✅ Cargo.toml version matches tag version"
+
       - name: Commit version bump
         run: |
           NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
@@ -114,6 +166,27 @@ jobs:
           git add Cargo.toml
           git commit -m "chore: bump version to $NEW_TAG"
           git push origin main
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+          NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
+          
+          echo "Generating changelog from $LATEST_TAG to HEAD"
+          
+          CHANGELOG=$(git log ${LATEST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges | head -n 20)
+          
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="No changes recorded"
+          fi
+          
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "Changelog preview:"
+          echo "$CHANGELOG"
 
       - name: Create and push tag
         run: |
@@ -134,4 +207,38 @@ jobs:
           echo "The release workflow will now automatically build binaries for all platforms." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "View the release progress: [Actions](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Slack - Tag Created
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "🏷️ New tag ${{ steps.calc_version.outputs.new_tag }} created",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*New Tag Created* 🏷️\n\nVersion: `${{ steps.calc_version.outputs.new_tag }}`\nType: `${{ github.event.inputs.version_type }}`\nCreated by: ${{ github.actor }}\n\nRelease workflow will now build binaries for all platforms."
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Recent Changes:*\n```${{ steps.changelog.outputs.changelog }}```"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions|View Workflow>"
+                    }
+                  ]
+                }
+              ]
+            }
 
