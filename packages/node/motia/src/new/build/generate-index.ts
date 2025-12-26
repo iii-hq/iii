@@ -1,4 +1,3 @@
-import * as esbuild from 'esbuild'
 import { existsSync, readFileSync } from 'fs'
 import { globSync } from 'glob'
 import path from 'path'
