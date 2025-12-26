@@ -24,7 +24,7 @@ use crate::{
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         streams::{
             StreamSocketManager,
-            adapters::{RedisAdapter, StreamAdapter},
+            adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
@@ -181,28 +181,8 @@ impl CoreModule for StreamCoreModule {
 impl ConfigurableModule for StreamCoreModule {
     type Config = StreamModuleConfig;
     type Adapter = dyn StreamAdapter;
+    type AdapterRegistration = super::registry::StreamAdapterRegistration;
     const DEFAULT_ADAPTER_CLASS: &'static str = "modules::streams::adapters::RedisAdapter";
-
-    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
-        let mut registry = HashMap::new();
-
-        registry.insert(
-            StreamCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
-            StreamCoreModule::make_adapter_factory(
-                |_engine: Arc<Engine>, config: Option<Value>| async move {
-                    let redis_url = config
-                        .as_ref()
-                        .and_then(|c| c.get("redis_url"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("redis://localhost:6379")
-                        .to_string();
-                    Ok(Arc::new(RedisAdapter::new(redis_url).await?) as Arc<dyn StreamAdapter>)
-                },
-            ),
-        );
-
-        registry
-    }
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
             Lazy::new(|| SyncRwLock::new(StreamCoreModule::build_registry()));

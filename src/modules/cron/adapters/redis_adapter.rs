@@ -2,9 +2,17 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use redis::{Client, aio::ConnectionManager};
+use serde_json::Value;
 use tokio::time::timeout;
 
 use super::super::structs::CronSchedulerAdapter;
+use crate::{
+    engine::Engine,
+    modules::{
+        cron::registry::{CronAdapterFuture, CronAdapterRegistration},
+        registry::register_adapter,
+    },
+};
 
 /// Default timeout for Redis connection attempts
 const REDIS_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -45,6 +53,20 @@ impl RedisCronLock {
         })
     }
 }
+
+fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> CronAdapterFuture {
+    Box::pin(async move {
+        let redis_url = config
+            .as_ref()
+            .and_then(|c| c.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("redis://localhost:6379")
+            .to_string();
+        Ok(Arc::new(RedisCronLock::new(&redis_url).await?) as Arc<dyn CronSchedulerAdapter>)
+    })
+}
+
+register_adapter!(<CronAdapterRegistration> "modules::cron::RedisCronAdapter", make_adapter);
 
 #[async_trait]
 impl CronSchedulerAdapter for RedisCronLock {

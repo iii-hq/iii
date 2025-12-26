@@ -16,10 +16,7 @@ use super::{EventAdapter, config::EventModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::{
-        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
-        event::adapters::RedisAdapter,
-    },
+    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -157,27 +154,8 @@ impl CoreModule for EventCoreModule {
 impl ConfigurableModule for EventCoreModule {
     type Config = EventModuleConfig;
     type Adapter = dyn EventAdapter;
+    type AdapterRegistration = super::registry::EventAdapterRegistration;
     const DEFAULT_ADAPTER_CLASS: &'static str = "modules::event::RedisAdapter";
-
-    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
-        let mut m = HashMap::new();
-        m.insert(
-            EventCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
-            EventCoreModule::make_adapter_factory(
-                |engine: Arc<Engine>, config: Option<Value>| async move {
-                    let redis_url = config
-                        .as_ref()
-                        .and_then(|v| v.get("redis_url"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "redis://localhost:6379".to_string());
-                    Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?)
-                        as Arc<dyn EventAdapter>)
-                },
-            ),
-        );
-        m
-    }
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn EventAdapter>>>> =

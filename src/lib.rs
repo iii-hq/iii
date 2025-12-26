@@ -13,6 +13,7 @@ pub mod modules {
     pub mod cron;
     pub mod event;
     pub mod observability;
+    pub mod registry;
     pub mod rest_api;
     pub mod shell;
     pub mod streams;

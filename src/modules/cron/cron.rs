@@ -11,7 +11,6 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 
 use super::{
-    adapters::RedisCronLock,
     config::CronModuleConfig,
     structs::{CronAdapter, CronSchedulerAdapter},
 };
@@ -100,29 +99,8 @@ impl TriggerRegistrator for CronCoreModule {
 impl ConfigurableModule for CronCoreModule {
     type Config = CronModuleConfig;
     type Adapter = dyn CronSchedulerAdapter;
+    type AdapterRegistration = super::registry::CronAdapterRegistration;
     const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::RedisCronAdapter";
-
-    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
-        let mut registry = HashMap::new();
-
-        registry.insert(
-            CronCoreModule::DEFAULT_ADAPTER_CLASS.to_string(),
-            CronCoreModule::make_adapter_factory(
-                |_engine: Arc<Engine>, config: Option<Value>| async move {
-                    let redis_url = config
-                        .as_ref()
-                        .and_then(|c| c.get("redis_url"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("redis://localhost:6379")
-                        .to_string();
-
-                    Ok(Arc::new(RedisCronLock::new(&redis_url).await?)
-                        as Arc<dyn CronSchedulerAdapter>)
-                },
-            ),
-        );
-        registry
-    }
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CronSchedulerAdapter>>>> =

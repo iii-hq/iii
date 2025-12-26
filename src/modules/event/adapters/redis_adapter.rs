@@ -12,7 +12,13 @@ use tokio::{
 
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::event::EventAdapter,
+    modules::{
+        event::{
+            EventAdapter,
+            registry::{EventAdapterFuture, EventAdapterRegistration},
+        },
+        registry::register_adapter,
+    },
 };
 
 /// Default timeout for Redis connection attempts
@@ -56,6 +62,20 @@ impl RedisAdapter {
         })
     }
 }
+
+fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+    Box::pin(async move {
+        let redis_url = config
+            .as_ref()
+            .and_then(|v| v.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "redis://localhost:6379".to_string());
+        Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?) as Arc<dyn EventAdapter>)
+    })
+}
+
+register_adapter!(<EventAdapterRegistration> "modules::event::RedisAdapter", make_adapter);
 
 #[async_trait]
 impl EventAdapter for RedisAdapter {

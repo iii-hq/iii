@@ -9,11 +9,18 @@ use tokio::{
     time::timeout,
 };
 
-use crate::modules::streams::{
-    StreamOutboundMessage, StreamWrapperMessage,
-    adapters::{
-        StreamAdapter, StreamConnection,
-        emit::{STREAM_TOPIC, emit_event},
+use crate::{
+    engine::Engine,
+    modules::{
+        registry::register_adapter,
+        streams::{
+            StreamOutboundMessage, StreamWrapperMessage,
+            adapters::{
+                StreamAdapter, StreamConnection,
+                emit::{STREAM_TOPIC, emit_event},
+            },
+            registry::{StreamAdapterFuture, StreamAdapterRegistration},
+        },
     },
 };
 
@@ -50,6 +57,18 @@ impl RedisAdapter {
             connections: Arc::new(RwLock::new(HashMap::new())),
         })
     }
+}
+
+fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
+    Box::pin(async move {
+        let redis_url = config
+            .as_ref()
+            .and_then(|c| c.get("redis_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("redis://localhost:6379")
+            .to_string();
+        Ok(Arc::new(RedisAdapter::new(redis_url).await?) as Arc<dyn StreamAdapter>)
+    })
 }
 
 #[async_trait]
@@ -211,3 +230,5 @@ impl StreamAdapter for RedisAdapter {
         }
     }
 }
+
+register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::RedisAdapter", make_adapter);
