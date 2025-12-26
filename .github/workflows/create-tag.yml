@@ -23,6 +23,7 @@ env:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   create-tag:
@@ -40,7 +41,6 @@ jobs:
           private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-metadata: read
-          permission-actions: read
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -85,8 +85,6 @@ jobs:
           else
             echo "✅ Latest CI run passed"
           fi
-        env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
 
       - name: Get latest tag
         id: get_latest_tag
