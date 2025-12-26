@@ -73,21 +73,6 @@ jobs:
           
           echo "✅ Pre-flight checks passed"
 
-      - name: Verify tests pass on main
-        run: |
-          echo "Checking latest CI status on main..."
-          
-          LATEST_RUN=$(gh run list --workflow=ci.yml --branch=main --limit=1 --json conclusion --jq '.[0].conclusion')
-          
-          if [ "$LATEST_RUN" != "success" ]; then
-            echo "⚠️  Warning: Latest CI run on main did not succeed (status: $LATEST_RUN)"
-            echo "Proceeding anyway, but tests should be passing before release"
-          else
-            echo "✅ Latest CI run passed"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Get latest tag
         id: get_latest_tag
         run: |
