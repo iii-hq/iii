@@ -10,7 +10,7 @@ export const todoSchema = z.object({
   completedAt: z.string().optional(),
 })
 
-export const config: ApiRouteConfig = {
+export const config = {
   type: 'api',
   name: 'CreateTodo',
   description: 'Create a new todo item',
@@ -28,9 +28,9 @@ export const config: ApiRouteConfig = {
   },
   emits: [],
   virtualEmits: ['todo-created'],
-}
+} as const satisfies ApiRouteConfig
 
-export const handler: Handlers['CreateTodo'] = async (req, { logger, streams }) => {
+export const handler: Handlers<typeof config> = async (req, { logger, streams }) => {
   logger.info('Creating new todo', { body: req.body })
 
   const { description, dueDate } = req.body
