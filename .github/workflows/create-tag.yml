@@ -1,0 +1,122 @@
+name: Create Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+        default: patch
+      custom_version:
+        description: 'Custom version (only used if version_type is "custom", e.g., 1.2.3)'
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-tag:
+    name: Create and Push Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: get_latest_tag
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git tag -l "v*" | sort -V | tail -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Latest tag: $LATEST_TAG"
+
+      - name: Calculate new version
+        id: calc_version
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+          VERSION_TYPE="${{ github.event.inputs.version_type }}"
+          CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+          
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r -a VERSION_PARTS <<< "$VERSION"
+          MAJOR="${VERSION_PARTS[0]:-0}"
+          MINOR="${VERSION_PARTS[1]:-0}"
+          PATCH="${VERSION_PARTS[2]:-0}"
+          
+          if [ "$VERSION_TYPE" = "custom" ]; then
+            if [ -z "$CUSTOM_VERSION" ]; then
+              echo "Error: custom_version is required when version_type is 'custom'"
+              exit 1
+            fi
+            NEW_VERSION="$CUSTOM_VERSION"
+          elif [ "$VERSION_TYPE" = "major" ]; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          elif [ "$VERSION_TYPE" = "minor" ]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          elif [ "$VERSION_TYPE" = "patch" ]; then
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          else
+            echo "Error: Invalid version_type: $VERSION_TYPE"
+            exit 1
+          fi
+          
+          NEW_TAG="v${NEW_VERSION}"
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New tag will be: $NEW_TAG"
+
+      - name: Update Cargo.toml version
+        run: |
+          NEW_VERSION="${{ steps.calc_version.outputs.new_version }}"
+          sed -i.bak "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          rm Cargo.toml.bak
+          git diff Cargo.toml
+
+      - name: Commit version bump
+        run: |
+          NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git commit -m "chore: bump version to $NEW_TAG"
+          git push origin main
+
+      - name: Create and push tag
+        run: |
+          NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "Created and pushed tag: $NEW_TAG"
+
+      - name: Summary
+        run: |
+          NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
+          echo "### Tag Created Successfully! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**New Tag:** \`$NEW_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The release workflow will now automatically build binaries for all platforms." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View the release progress: [Actions](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+
