@@ -9,35 +9,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      release_id: ${{ steps.create_release.outputs.id }}
-    steps:
-      - name: Generate token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
-          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-
   build-release:
     name: Build Release Binaries
-    needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +44,7 @@ jobs:
         with:
           app-id: ${{ secrets.MOTIA_CI_APP_ID }}
           private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -89,5 +66,5 @@ jobs:
           target: ${{ matrix.target }}
           tar: unix
           zip: windows
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.generate_token.outputs.token }}
 
