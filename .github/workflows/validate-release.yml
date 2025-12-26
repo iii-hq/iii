@@ -143,7 +143,8 @@ jobs:
         if: success() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           update-ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
           payload: |
             {
@@ -172,7 +173,8 @@ jobs:
         if: success() && steps.get_slack_ts.outputs.has_slack_ts != 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           payload: |
             {
               "text": "✅ Release ${{ steps.get_tag.outputs.tag }} validated successfully",
@@ -191,7 +193,8 @@ jobs:
         if: failure() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           update-ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
           payload: |
             {
@@ -220,7 +223,8 @@ jobs:
         if: failure() && steps.get_slack_ts.outputs.has_slack_ts != 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           payload: |
             {
               "text": "❌ Release validation failed for ${{ steps.get_tag.outputs.tag }}",

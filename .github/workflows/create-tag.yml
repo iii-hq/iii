@@ -197,7 +197,7 @@ jobs:
       - name: Notify Slack - Tag Created
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           payload: |
             {
               "text": "🏷️ New tag ${{ steps.calc_version.outputs.new_tag }} created",

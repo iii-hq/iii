@@ -20,7 +20,8 @@ jobs:
         id: slack
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           payload: |
             {
               "text": "🚀 Release ${{ github.ref_name }} started",
@@ -86,7 +87,8 @@ jobs:
         if: success()
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           update-ts: ${{ needs.notify-start.outputs.slack_ts }}
           payload: |
             {
@@ -115,7 +117,8 @@ jobs:
         if: failure()
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           update-ts: ${{ needs.notify-start.outputs.slack_ts }}
           payload: |
             {
@@ -170,7 +173,8 @@ jobs:
       - name: Update Slack - Release Created
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           update-ts: ${{ needs.notify-start.outputs.slack_ts }}
           payload: |
             {
@@ -279,7 +283,8 @@ jobs:
       - name: Update Slack - Builds Complete
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
           update-ts: ${{ needs.notify-start.outputs.slack_ts }}
           payload: |
             {
