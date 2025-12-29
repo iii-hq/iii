@@ -16,8 +16,12 @@ use super::{EventAdapter, config::EventModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+    modules::{
+        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        registry::ModuleFuture,
+    },
     protocol::ErrorBody,
+    register_module,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -179,3 +183,8 @@ impl ConfigurableModule for EventCoreModule {
         config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
+
+fn make_module(engine: Arc<Engine>, config: Option<Value>) -> ModuleFuture {
+    Box::pin(async move { EventCoreModule::create(engine, config).await })
+}
+register_module!("modules::event::EventModule", make_module, true);
