@@ -7,6 +7,7 @@ mod streams;
 mod trigger;
 mod utils;
 
+pub mod registry;
 mod structs;
 
 pub use self::{

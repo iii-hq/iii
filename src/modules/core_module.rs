@@ -8,7 +8,7 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::engine::Engine;
+use crate::{engine::Engine, modules::registry::AdapterRegistrationEntry};
 
 #[async_trait::async_trait]
 pub trait CoreModule: Send + Sync {
@@ -43,6 +43,7 @@ pub type AdapterFactory<A> = Arc<
 pub trait ConfigurableModule: CoreModule + Sized + 'static {
     type Config: DeserializeOwned + Default + Send;
     type Adapter: Send + Sync + 'static + ?Sized;
+    type AdapterRegistration: AdapterRegistrationEntry<Self::Adapter> + inventory::Collect;
     const DEFAULT_ADAPTER_CLASS: &'static str;
 
     async fn register_adapter(
@@ -54,9 +55,17 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
         reg.insert(name.into(), factory);
     }
 
-    /// Build the registry map with adapter factories.
-    /// This method should be implemented by the client to provide the adapter factories.
-    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>>;
+    /// Build the registry map with adapter factories from the inventory registry.
+    fn build_registry() -> HashMap<String, AdapterFactory<Self::Adapter>> {
+        let mut registry = HashMap::new();
+        for registration in inventory::iter::<Self::AdapterRegistration> {
+            let factory = registration.factory();
+            let adapter_factory: AdapterFactory<Self::Adapter> =
+                Arc::new(move |engine, config| (factory)(engine, config));
+            registry.insert(registration.class().to_string(), adapter_factory);
+        }
+        registry
+    }
 
     /// Get the static registry. This method should be implemented by creating a static Lazy
     /// that calls `Self::build_registry()`. Example:

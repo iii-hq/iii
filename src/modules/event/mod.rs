@@ -2,6 +2,7 @@ mod adapters;
 mod config;
 #[allow(clippy::module_inception)]
 mod event;
+pub mod registry;
 
 use serde_json::Value;
 
