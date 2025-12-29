@@ -173,7 +173,15 @@ jobs:
               - type: "section"
                 text:
                   type: "mrkdwn"
-                  text: "*Release ${{ steps.get_tag.outputs.tag }}* ✅\n\n✅ Tests passed\n✅ Release created\n✅ Binaries built (9/9)\n✅ Validation passed\n\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
+                  text: "*Release ${{ steps.get_tag.outputs.tag }}* ✅\n\n✅ Tests passed\n✅ Release created\n✅ Binaries built (9/9)\n✅ Validation passed"
+              - type: "actions"
+                elements:
+                  - type: "button"
+                    text:
+                      type: "plain_text"
+                      text: "📦 Download Release"
+                    url: "${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}"
+                    style: "primary"
               - type: "context"
                 elements:
                   - type: "mrkdwn"
@@ -192,7 +200,15 @@ jobs:
               - type: "section"
                 text:
                   type: "mrkdwn"
-                  text: "*Release Validated* ✅\nVersion: `${{ steps.get_tag.outputs.tag }}`\nAll 9 platform binaries present and valid\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
+                  text: "*Release Validated* ✅\nVersion: `${{ steps.get_tag.outputs.tag }}`\nAll 9 platform binaries present and valid"
+              - type: "actions"
+                elements:
+                  - type: "button"
+                    text:
+                      type: "plain_text"
+                      text: "📦 Download Release"
+                    url: "${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}"
+                    style: "primary"
 
       - name: Update Slack - Validation Failed
         if: failure() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
