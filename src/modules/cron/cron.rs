@@ -125,3 +125,9 @@ impl ConfigurableModule for CronCoreModule {
         config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
+
+crate::register_module!(
+    "modules::cron::CronModule",
+    <CronCoreModule as CoreModule>::make_module,
+    true
+);

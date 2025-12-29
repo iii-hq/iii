@@ -95,7 +95,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let this = self.clone();
                             let #handler_ident = Handler::new(move |input: Value| {
                                 let this = this.clone();
-                    
+
                                 async move {
                                     let parsed: Result<#input_type, _> = serde_json::from_value(input);
                                     let input = match parsed {
@@ -112,7 +112,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                             });
                                         }
                                     };
-                    
+
                                     this.#method_ident(input).await
                                 }
                             });

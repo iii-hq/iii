@@ -19,25 +19,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-use super::{
-    core_module::CoreModule, cron::CronCoreModule, event::EventCoreModule,
-    observability::LoggerCoreModule, rest_api::RestApiCoreModule, shell::ExecCoreModule,
-    streams::StreamCoreModule,
-};
+use super::{core_module::CoreModule, registry::ModuleRegistration};
 use crate::engine::Engine;
 
 // =============================================================================
 // Constants
 // =============================================================================
-
-/// Default modules to load when no config is provided
-const DEFAULT_MODULES: &[&str] = &[
-    "modules::api::RestApiModule",
-    "modules::event::EventModule",
-    "modules::observability::LoggingModule",
-    "modules::cron::CronModule",
-    "modules::streams::StreamModule",
-];
 
 /// Default address for the engine server
 const DEFAULT_ADDRESS: &str = "127.0.0.1:49134";
@@ -54,13 +41,7 @@ pub struct EngineConfig {
 
 impl EngineConfig {
     pub fn default_modules(self) -> Self {
-        let modules = DEFAULT_MODULES
-            .iter()
-            .map(|class| ModuleEntry {
-                class: class.to_string(),
-                config: None,
-            })
-            .collect();
+        let modules = default_module_entries();
 
         Self { modules }
     }
@@ -113,17 +94,22 @@ impl EngineConfig {
             Err(_) => {
                 tracing::info!("No {} found, using default modules", path);
                 Ok(Self {
-                    modules: DEFAULT_MODULES
-                        .iter()
-                        .map(|class| ModuleEntry {
-                            class: class.to_string(),
-                            config: None,
-                        })
-                        .collect(),
+                    modules: default_module_entries(),
                 })
             }
         }
     }
+}
+
+fn default_module_entries() -> Vec<ModuleEntry> {
+    inventory::iter::<ModuleRegistration>
+        .into_iter()
+        .filter(|registration| registration.is_default)
+        .map(|registration| ModuleEntry {
+            class: registration.class.to_string(),
+            config: None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +150,19 @@ impl ModuleRegistry {
     pub fn new() -> Self {
         Self {
             module_factories: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn register_from_inventory(&self) {
+        for registration in inventory::iter::<ModuleRegistration> {
+            let factory = registration.factory;
+            let info = ModuleInfo {
+                factory: Arc::new(move |engine, config| (factory)(engine, config)),
+            };
+            self.module_factories
+                .write()
+                .expect("RwLock poisoned")
+                .insert(registration.class.to_string(), info);
         }
     }
 
@@ -208,23 +207,16 @@ impl ModuleRegistry {
     // Default Registration
     // =========================================================================
 
-    pub fn with_defaults() -> Self {
+    pub fn with_inventory() -> Self {
         let registry = Self::new();
-        // Register default modules
-        registry.register::<StreamCoreModule>("modules::streams::StreamModule");
-        registry.register::<RestApiCoreModule>("modules::api::RestApiModule");
-        registry.register::<EventCoreModule>("modules::event::EventModule");
-        registry.register::<CronCoreModule>("modules::cron::CronModule");
-        registry.register::<LoggerCoreModule>("modules::observability::LoggingModule");
-        registry.register::<ExecCoreModule>("modules::shell::ExecModule");
-
+        registry.register_from_inventory();
         registry
     }
 }
 
 impl Default for ModuleRegistry {
     fn default() -> Self {
-        Self::with_defaults()
+        Self::with_inventory()
     }
 }
 
@@ -281,7 +273,7 @@ impl EngineBuilder {
             config: None,
             address: DEFAULT_ADDRESS.to_string(),
             engine: Arc::new(Engine::new()),
-            registry: Arc::new(ModuleRegistry::with_defaults()),
+            registry: Arc::new(ModuleRegistry::with_inventory()),
         }
     }
 
