@@ -20,30 +20,20 @@ jobs:
         id: slack
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "🚀 Release ${{ github.ref_name }} started",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ github.ref_name }}* 🚀\n\n⏳ Running tests...\n⬜ Creating release...\n⬜ Building binaries (0/9)\n⬜ Validating release..."
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "🚀 Release ${{ github.ref_name }} started"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ github.ref_name }}* 🚀\n\n⏳ Running tests...\n⬜ Creating release...\n⬜ Building binaries (0/9)\n⬜ Validating release..."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
 
       - name: Save Slack timestamp to artifact
         run: |
@@ -87,61 +77,41 @@ jobs:
         if: success()
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ needs.notify-start.outputs.slack_ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "🚀 Release ${{ github.ref_name }} in progress",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n⏳ Creating release...\n⬜ Building binaries (0/9)\n⬜ Validating release..."
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ needs.notify-start.outputs.slack_ts }}
+            text: "🚀 Release ${{ github.ref_name }} in progress"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n⏳ Creating release...\n⬜ Building binaries (0/9)\n⬜ Validating release..."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
 
       - name: Update Slack - Tests Failed
         if: failure()
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ needs.notify-start.outputs.slack_ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "❌ Release ${{ github.ref_name }} failed",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ github.ref_name }}* ❌\n\n❌ Tests failed\n⬜ Creating release...\n⬜ Building binaries (0/9)\n⬜ Validating release..."
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ needs.notify-start.outputs.slack_ts }}
+            text: "❌ Release ${{ github.ref_name }} failed"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ github.ref_name }}* ❌\n\n❌ Tests failed\n⬜ Creating release...\n⬜ Building binaries (0/9)\n⬜ Validating release..."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
 
   create-release:
     name: Create Release
@@ -173,31 +143,21 @@ jobs:
       - name: Update Slack - Release Created
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ needs.notify-start.outputs.slack_ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "🚀 Release ${{ github.ref_name }} in progress",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n✅ Release created\n⏳ Building binaries (0/9)\n⬜ Validating release..."
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}|View Release>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ needs.notify-start.outputs.slack_ts }}
+            text: "🚀 Release ${{ github.ref_name }} in progress"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n✅ Release created\n⏳ Building binaries (0/9)\n⬜ Validating release..."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}|View Release>"
 
   build-release:
     name: Build Release Binaries
@@ -269,43 +229,35 @@ jobs:
       - name: Check build results
         id: check_builds
         run: |
-          RESULT='${{ toJSON(needs.build-release.result) }}'
+          RESULT='${{ needs.build-release.result }}'
+          echo "Build result: $RESULT"
+          
           if [ "$RESULT" == "success" ]; then
             echo "status=success" >> $GITHUB_OUTPUT
             echo "count=9" >> $GITHUB_OUTPUT
             echo "emoji=✅" >> $GITHUB_OUTPUT
           else
             echo "status=partial" >> $GITHUB_OUTPUT
-            echo "count=?" >> $GITHUB_OUTPUT
+            echo "count=partial" >> $GITHUB_OUTPUT
             echo "emoji=⚠️" >> $GITHUB_OUTPUT
           fi
 
       - name: Update Slack - Builds Complete
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ needs.notify-start.outputs.slack_ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "${{ steps.check_builds.outputs.emoji }} Release ${{ github.ref_name }} builds complete",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n✅ Release created\n${{ steps.check_builds.outputs.emoji }} Binaries built (${{ steps.check_builds.outputs.count }}/9)\n⏳ Validating release..."
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}|View Release>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ needs.notify-start.outputs.slack_ts }}
+            text: "${{ steps.check_builds.outputs.emoji }} Release ${{ github.ref_name }} builds complete"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n✅ Release created\n${{ steps.check_builds.outputs.emoji }} Binaries built (${{ steps.check_builds.outputs.count }}/9)\n⏳ Validating release..."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}|View Release>"
 

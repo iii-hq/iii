@@ -8,9 +8,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   validate:
@@ -19,14 +21,6 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
-          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
-          permission-contents: write
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -44,12 +38,40 @@ jobs:
       - name: Download Slack notification data
         id: download_slack
         continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: slack-notification-data
-          path: slack-data/
-          github-token: ${{ steps.generate_token.outputs.token }}
-          run-id: ${{ github.event.workflow_run.id }}
+        run: |
+          echo "Attempting to download artifact from workflow run ${{ github.event.workflow_run.id }}"
+          
+          # List artifacts for the workflow run
+          ARTIFACTS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/artifacts")
+          
+          echo "Available artifacts:"
+          echo "$ARTIFACTS" | jq -r '.artifacts[] | .name'
+          
+          # Find the slack-notification-data artifact
+          ARTIFACT_ID=$(echo "$ARTIFACTS" | jq -r '.artifacts[] | select(.name=="slack-notification-data") | .id')
+          
+          if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" == "null" ]; then
+            echo "No slack-notification-data artifact found"
+            exit 0
+          fi
+          
+          echo "Found artifact ID: $ARTIFACT_ID"
+          
+          # Download the artifact
+          mkdir -p slack-data
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > artifact.zip
+          
+          # Extract the artifact
+          unzip -q artifact.zip -d slack-data/
+          
+          echo "Artifact downloaded successfully"
+          ls -la slack-data/
 
       - name: Get Slack message timestamp
         id: get_slack_ts
@@ -65,8 +87,6 @@ jobs:
           fi
 
       - name: Download release assets
-        env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
         run: |
           TAG="${{ steps.get_tag.outputs.tag }}"
           if [ -z "$TAG" ]; then
@@ -143,106 +163,74 @@ jobs:
         if: success() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "✅ Release ${{ steps.get_tag.outputs.tag }} completed successfully",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ steps.get_tag.outputs.tag }}* ✅\n\n✅ Tests passed\n✅ Release created\n✅ Binaries built (9/9)\n✅ Validation passed\n\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "Release completed successfully"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
+            text: "✅ Release ${{ steps.get_tag.outputs.tag }} completed successfully"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ steps.get_tag.outputs.tag }}* ✅\n\n✅ Tests passed\n✅ Release created\n✅ Binaries built (9/9)\n✅ Validation passed\n\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Release completed successfully"
 
       - name: Notify Slack - Validation Success (Fallback)
         if: success() && steps.get_slack_ts.outputs.has_slack_ts != 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "✅ Release ${{ steps.get_tag.outputs.tag }} validated successfully",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release Validated* ✅\nVersion: `${{ steps.get_tag.outputs.tag }}`\nAll 9 platform binaries present and valid\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
-                  }
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "✅ Release ${{ steps.get_tag.outputs.tag }} validated successfully"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release Validated* ✅\nVersion: `${{ steps.get_tag.outputs.tag }}`\nAll 9 platform binaries present and valid\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.get_tag.outputs.tag }}|Download Release>"
 
       - name: Update Slack - Validation Failed
         if: failure() && steps.get_slack_ts.outputs.has_slack_ts == 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "❌ Release ${{ steps.get_tag.outputs.tag }} failed validation",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release ${{ steps.get_tag.outputs.tag }}* ❌\n\n✅ Tests passed\n✅ Release created\n⚠️ Binaries built (partial)\n❌ Validation failed\n\nMissing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}\n\n⚠️ *Auto-rollback will be initiated*"
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ steps.get_slack_ts.outputs.slack_ts }}
+            text: "❌ Release ${{ steps.get_tag.outputs.tag }} failed validation"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ steps.get_tag.outputs.tag }}* ❌\n\n✅ Tests passed\n✅ Release created\n⚠️ Binaries built (partial)\n❌ Validation failed\n\nMissing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}\n\n⚠️ *Auto-rollback will be initiated*"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
 
       - name: Notify Slack - Validation Failed (Fallback)
         if: failure() && steps.get_slack_ts.outputs.has_slack_ts != 'true'
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "❌ Release validation failed for ${{ steps.get_tag.outputs.tag }}",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Release Validation Failed* ❌\nVersion: `${{ steps.get_tag.outputs.tag }}`\nMissing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}\n\n⚠️ *Auto-rollback will be initiated*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
-                  }
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "❌ Release validation failed for ${{ steps.get_tag.outputs.tag }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release Validation Failed* ❌\nVersion: `${{ steps.get_tag.outputs.tag }}`\nMissing platforms: ${{ steps.validate_platforms.outputs.missing_platforms }}\n\n⚠️ *Auto-rollback will be initiated*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
 
       - name: Trigger auto-rollback
         if: failure() && steps.validate_platforms.outputs.validation_failed == 'true'
-        env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
         run: |
           TAG="${{ steps.get_tag.outputs.tag }}"
           

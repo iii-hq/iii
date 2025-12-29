@@ -73,21 +73,16 @@ jobs:
         id: slack_start
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "⚠️ Rollback initiated",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Rollback Initiated* ⚠️\n\nFrom: `${{ steps.current.outputs.current_tag }}`\nTo: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}\nInitiated by: ${{ github.actor }}\n\n⏳ Processing rollback..."
-                  }
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "⚠️ Rollback initiated"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Rollback Initiated* ⚠️\n\nFrom: `${{ steps.current.outputs.current_tag }}`\nTo: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}\nInitiated by: ${{ github.actor }}\n\n⏳ Processing rollback..."
 
       - name: Delete bad release
         if: github.event.inputs.delete_bad_release == 'true'
@@ -135,61 +130,41 @@ jobs:
         if: success()
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ steps.slack_start.outputs.ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "✅ Rollback completed successfully",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Rollback Complete* ✅\n\nFrom: `${{ steps.current.outputs.current_tag }}`\nTo: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}\nInitiated by: ${{ github.actor }}"
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "<${{ github.server_url }}/${{ github.repository }}/releases|View Releases>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ steps.slack_start.outputs.ts }}
+            text: "✅ Rollback completed successfully"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Rollback Complete* ✅\n\nFrom: `${{ steps.current.outputs.current_tag }}`\nTo: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}\nInitiated by: ${{ github.actor }}"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}/releases|View Releases>"
 
       - name: Update Slack - Rollback Failed
         if: failure()
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          update-ts: ${{ steps.slack_start.outputs.ts }}
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            {
-              "text": "❌ Rollback failed",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Rollback Failed* ❌\n\nTarget version: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}"
-                  }
-                },
-                {
-                  "type": "context",
-                  "elements": [
-                    {
-                      "type": "mrkdwn",
-                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
-                    }
-                  ]
-                }
-              ]
-            }
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ steps.slack_start.outputs.ts }}
+            text: "❌ Rollback failed"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Rollback Failed* ❌\n\nTarget version: `${{ github.event.inputs.target_version }}`\nReason: ${{ github.event.inputs.reason }}"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
 
       - name: Summary
         if: always()
