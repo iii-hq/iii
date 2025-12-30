@@ -118,3 +118,9 @@ impl CoreModule for LoggerCoreModule {
         Ok(())
     }
 }
+
+crate::register_module!(
+    "modules::observability::LoggingModule",
+    <LoggerCoreModule as CoreModule>::make_module,
+    enabled_by_default = true
+);

@@ -8,7 +8,10 @@ use std::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::{engine::Engine, modules::registry::AdapterRegistrationEntry};
+use crate::{
+    engine::Engine,
+    modules::registry::{AdapterRegistrationEntry, ModuleFuture},
+};
 
 #[async_trait::async_trait]
 pub trait CoreModule: Send + Sync {
@@ -19,6 +22,13 @@ pub trait CoreModule: Send + Sync {
     ) -> anyhow::Result<Box<dyn CoreModule>>
     where
         Self: Sized;
+
+    fn make_module(engine: Arc<Engine>, config: Option<Value>) -> ModuleFuture
+    where
+        Self: Sized + 'static,
+    {
+        Self::create(engine, config)
+    }
 
     /// Initializes the module
     async fn initialize(&self) -> anyhow::Result<()>;

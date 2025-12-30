@@ -179,3 +179,9 @@ impl ConfigurableModule for EventCoreModule {
         config.adapter.as_ref().and_then(|a| a.config.clone())
     }
 }
+
+crate::register_module!(
+    "modules::event::EventModule",
+    <EventCoreModule as CoreModule>::make_module,
+    enabled_by_default = true
+);

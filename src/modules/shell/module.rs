@@ -38,3 +38,9 @@ impl CoreModule for ExecCoreModule {
         Ok(())
     }
 }
+
+crate::register_module!(
+    "modules::shell::ExecModule",
+    <ExecCoreModule as CoreModule>::make_module,
+    enabled_by_default = false
+);

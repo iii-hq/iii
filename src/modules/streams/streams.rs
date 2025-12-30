@@ -266,3 +266,9 @@ impl StreamCoreModule {
         FunctionResult::Success(serde_json::to_value(values).ok())
     }
 }
+
+crate::register_module!(
+    "modules::streams::StreamModule",
+    <StreamCoreModule as CoreModule>::make_module,
+    enabled_by_default = true
+);
