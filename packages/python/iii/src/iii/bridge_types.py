@@ -48,8 +48,8 @@ class TriggerRegistrationResultMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
-    trigger_type: str = Field(alias="triggerType")
-    function_path: str = Field(alias="functionPath")
+    trigger_type: str = Field()
+    function_path: str = Field()
     result: Any = None
     error: Any = None
     type: MessageType = MessageType.TRIGGER_REGISTRATION_RESULT
@@ -61,8 +61,8 @@ class RegisterTriggerMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
-    trigger_type: str = Field(alias="triggerType")
-    function_path: str = Field(alias="functionPath")
+    trigger_type: str = Field()
+    function_path: str = Field()
     config: Any
     type: MessageType = MessageType.REGISTER_TRIGGER
 
@@ -74,7 +74,7 @@ class RegisterServiceMessage(BaseModel):
 
     id: str
     description: str | None = None
-    parent_service_id: str | None = Field(default=None, alias="parentServiceId")
+    parent_service_id: str | None = Field(default=None)
     type: MessageType = MessageType.REGISTER_SERVICE
 
 
@@ -94,10 +94,10 @@ class RegisterFunctionMessage(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    function_path: str = Field(alias="functionPath")
+    function_path: str = Field()
     description: str | None = None
-    request_format: RegisterFunctionFormat | None = Field(default=None, alias="requestFormat")
-    response_format: RegisterFunctionFormat | None = Field(default=None, alias="responseFormat")
+    request_format: RegisterFunctionFormat | None = Field(default=None)
+    response_format: RegisterFunctionFormat | None = Field(default=None)
     type: MessageType = MessageType.REGISTER_FUNCTION
 
 
@@ -106,9 +106,9 @@ class InvokeFunctionMessage(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    function_path: str = Field(alias="functionPath")
+    function_path: str = Field()
     data: Any
-    invocation_id: str | None = Field(default=None, alias="invocationId")
+    invocation_id: str | None = Field(default=None)
     type: MessageType = MessageType.INVOKE_FUNCTION
 
 
@@ -117,8 +117,8 @@ class InvocationResultMessage(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    invocation_id: str = Field(alias="invocationId")
-    function_path: str = Field(alias="functionPath")
+    invocation_id: str = Field()
+    function_path: str = Field()
     result: Any = None
     error: Any = None
     type: MessageType = MessageType.INVOCATION_RESULT

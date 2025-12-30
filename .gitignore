@@ -4,8 +4,8 @@ node_modules
 worker_py/__pycache__/
 .venv
 .vscode/
+.bin/
 dist/
 .DS_Store
 
-packages/node/motia/iii
-packages/node/motia-example/iii
+packages/docker/bun/iii

@@ -16,13 +16,13 @@ import { Bridge } from '@iii-dev/sdk'
  */
 const bridge = new Bridge(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
 
-bridge.registerFunction({ functionPath: 'myFunction' }, (req) => {
+bridge.registerFunction({ function_path: 'myFunction' }, (req) => {
   return { status_code: 200, body: { message: 'Hello, world!' } }
 })
 
 bridge.registerTrigger({
-  triggerType: 'api',
-  functionPath: 'myFunction',
+  trigger_type: 'api',
+  function_path: 'myFunction',
   config: { api_path: 'myApiPath', http_method: 'POST' },
 })
 ```
@@ -32,7 +32,7 @@ bridge.registerTrigger({
 III Allows you to register functions that can be invoked by other services.
 
 ```javascript
-bridge.registerFunction({ functionPath: 'myFunction' }, (req) => {
+bridge.registerFunction({ function_path: 'myFunction' }, (req) => {
   // ... do something
   return { status_code: 200, body: { message: 'Hello, world!' } }
 })
@@ -44,8 +44,8 @@ III Allows you to register triggers that can be invoked by other services.
 
 ```javascript
 bridge.registerTrigger({
-  triggerType: 'api',
-  functionPath: 'myFunction',
+  trigger_type: 'api',
+  function_path: 'myFunction',
   config: { api_path: 'myApiPath', http_method: 'POST' },
 })
 ```
@@ -55,18 +55,18 @@ bridge.registerTrigger({
 Triggers are mostly created by III Core Modules, but you can also create your own triggers
 
 ```javascript
-bridge.registerTriggerType(
+bridge.registerTrigger_type(
   {
     /**
      * This is the id of the trigger type, it's unique.
      * Then, you can register a trigger by calling the registerTrigger method.
      */
-    id: 'myTriggerType',
+    id: 'myTrigger_type',
     description: 'My trigger type',
   },
   {
     /**
-     * Trigger config has: id, functionPath, and config.
+     * Trigger config has: id, function_path, and config.
      * Your logic should know what to do with the config.
      */
     registerTrigger: async (config) => {
