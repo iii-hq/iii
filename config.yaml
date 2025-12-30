@@ -35,7 +35,7 @@ modules:
       #   config:
       #     redis_url: redis://localhost:6379
       adapter:
-        class: modules::observability::adapters::FileAdapter
+        class: modules::observability::adapters::FileLogger
         config:
           file_path: app.log
           save_interval_ms: 5000
