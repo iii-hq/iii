@@ -129,5 +129,5 @@ impl ConfigurableModule for CronCoreModule {
 crate::register_module!(
     "modules::cron::CronModule",
     <CronCoreModule as CoreModule>::make_module,
-    true
+    enabled_by_default = true
 );

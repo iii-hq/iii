@@ -270,5 +270,5 @@ impl StreamCoreModule {
 crate::register_module!(
     "modules::streams::StreamModule",
     <StreamCoreModule as CoreModule>::make_module,
-    true
+    enabled_by_default = true
 );

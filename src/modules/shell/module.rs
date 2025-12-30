@@ -42,5 +42,5 @@ impl CoreModule for ExecCoreModule {
 crate::register_module!(
     "modules::shell::ExecModule",
     <ExecCoreModule as CoreModule>::make_module,
-    false
+    enabled_by_default = false
 );

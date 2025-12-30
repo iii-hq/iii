@@ -385,5 +385,5 @@ impl TriggerRegistrator for RestApiCoreModule {
 crate::register_module!(
     "modules::api::RestApiModule",
     <RestApiCoreModule as CoreModule>::make_module,
-    true
+    enabled_by_default = true
 );
