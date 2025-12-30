@@ -148,15 +148,15 @@ class Bridge:
 
         if msg_type == MessageType.INVOCATION_RESULT.value:
             self._handle_result(
-                data.get("invocationId", ""),
+                data.get("invocation_id", ""),
                 data.get("result"),
                 data.get("error"),
             )
         elif msg_type == MessageType.INVOKE_FUNCTION.value:
             asyncio.create_task(
                 self._handle_invoke(
-                    data.get("invocationId"),
-                    data.get("functionPath", ""),
+                    data.get("invocation_id"),
+                    data.get("function_path", ""),
                     data.get("data"),
                 )
             )
@@ -213,18 +213,18 @@ class Bridge:
             )
 
     async def _handle_trigger_registration(self, data: dict[str, Any]) -> None:
-        trigger_type_id = data.get("triggerType")
+        trigger_type_id = data.get("trigger_type")
         handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
 
         trigger_id = data.get("id", "")
-        function_path = data.get("functionPath", "")
+        function_path = data.get("function_path", "")
         config = data.get("config")
 
         result_base = {
             "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
             "id": trigger_id,
-            "triggerType": trigger_type_id,
-            "functionPath": function_path,
+            "trigger_type": trigger_type_id,
+            "function_path": function_path,
         }
 
         if not handler_data:

@@ -29,8 +29,8 @@ export type UnregisterTriggerMessage = {
 export type TriggerRegistrationResultMessage = {
   type: MessageType.TriggerRegistrationResult
   id: string
-  triggerType: string
-  functionPath: string
+  trigger_type: string
+  function_path: string
   result?: any
   error?: any
 }
@@ -39,13 +39,16 @@ export type RegisterTriggerMessage = {
   type: MessageType.RegisterTrigger
 
   id: string
-  triggerType: string // 'cron', 'event', 'http'
   /**
-   * Entine path for the function, including the service and function name
+   * The type of trigger. Can be 'cron', 'event', 'http', etc.
+   */
+  trigger_type: string
+  /**
+   * Engine path for the function, including the service and function name
    * Example: software.engineering.code.rust
    * Where software, engineering, and code are the service ids
    */
-  functionPath: string
+  function_path: string
   config: any
 }
 
@@ -53,24 +56,51 @@ export type RegisterServiceMessage = {
   type: MessageType.RegisterService
   id: string
   description?: string
-  parentServiceId?: string
+  parent_service_id?: string
 }
 
 export type RegisterFunctionFormat = {
   name: string
+  /**
+   * The description of the parameter
+   */
   description?: string
+  /**
+   * The type of the parameter
+   */
   type: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map'
+  /**
+   * The body of the parameter
+   */
   body?: RegisterFunctionFormat[]
+  /**
+   * The items of the parameter
+   */
   items?: RegisterFunctionFormat
+  /**
+   * Whether the parameter is required
+   */
   required?: boolean
 }
 
 export type RegisterFunctionMessage = {
   type: MessageType.RegisterFunction
-  functionPath: string
+  /**
+   * The path of the function
+   */
+  function_path: string
+  /**
+   * The description of the function
+   */
   description?: string
-  requestFormat?: RegisterFunctionFormat
-  responseFormat?: RegisterFunctionFormat
+  /**
+   * The request format of the function
+   */
+  request_format?: RegisterFunctionFormat
+  /**
+   * The response format of the function
+   */
+  response_format?: RegisterFunctionFormat
 }
 
 export type InvokeFunctionMessage = {
@@ -78,15 +108,27 @@ export type InvokeFunctionMessage = {
   /**
    * This is optional for async invocations
    */
-  invocationId?: string
-  functionPath: string
+  invocation_id?: string
+  /**
+   * The path of the function
+   */
+  function_path: string
+  /**
+   * The data to pass to the function
+   */
   data: any
 }
 
 export type InvocationResultMessage = {
   type: MessageType.InvocationResult
-  invocationId: string
-  functionPath: string
+  /**
+   * The id of the invocation
+   */
+  invocation_id: string
+  /**
+   * The path of the function
+   */
+  function_path: string
   result?: any
   error?: any
 }

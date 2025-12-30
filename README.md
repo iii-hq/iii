@@ -1,18 +1,19 @@
-III Engine
-==========
+# III Engine
 
 III is a WebSocket-based process communication engine. Workers connect over WS, register
 functions and triggers, and the engine routes invocations between workers and core modules.
 Core modules add HTTP APIs, event streams, cron scheduling, and logging.
 
-Quick Start
------------
+## Quick Start
+
 Prerequisites:
+
 - Rust 1.80+ (edition 2024)
 - Redis (only if you enable the event/cron/streams modules; the default config expects Redis at
   `redis://localhost:6379`)
 
 Run the engine:
+
 ```bash
 cargo run
 # or explicitly pass a config
@@ -22,6 +23,7 @@ cargo run -- --config config.yaml
 The engine listens for workers at `ws://127.0.0.1:49134`.
 
 If you want to run without Redis, create a minimal config that only loads modules you need:
+
 ```yaml
 modules:
   - class: modules::api::RestApiModule
@@ -36,32 +38,33 @@ modules:
 
 Config files support environment expansion like `${REDIS_URL:redis://localhost:6379}`.
 
-Connect a Worker
-----------------
+## Connect a Worker
+
 Node.js (SDK in `packages/node/iii`):
+
 ```javascript
 import { Bridge } from '@iii-dev/sdk'
 
 const bridge = new Bridge('ws://127.0.0.1:49134')
 
-bridge.registerFunction({ functionPath: 'math.add' }, async (input) => {
+bridge.registerFunction({ function_path: 'math.add' }, async (input) => {
   return { sum: input.a + input.b }
 })
 ```
 
-Expose an HTTP Endpoint (API trigger)
--------------------------------------
+## Expose an HTTP Endpoint (API trigger)
+
 The REST API module maps HTTP routes to functions via the `api` trigger type. Functions should
 return `{ "status_code": <int>, "body": <json> }`.
 
 ```javascript
-bridge.registerFunction({ functionPath: 'api.echo' }, async (req) => {
+bridge.registerFunction({ function_path: 'api.echo' }, async (req) => {
   return { status_code: 200, body: { ok: true, input: req.body } }
 })
 
 bridge.registerTrigger({
-  triggerType: 'api',
-  functionPath: 'api.echo',
+  trigger_type: 'api',
+  function_path: 'api.echo',
   config: { api_path: 'echo', http_method: 'POST' },
 })
 ```
@@ -69,9 +72,10 @@ bridge.registerTrigger({
 With the default API config, the endpoint will be available at:
 `http://127.0.0.1:3111/echo`.
 
-Modules
--------
+## Modules
+
 Available core modules (registered in `src/modules/config.rs`):
+
 - `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
 - `modules::event::EventModule` – Redis-backed event bus (`event` trigger, `emit` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger).
@@ -83,17 +87,17 @@ Available core modules (registered in `src/modules/config.rs`):
 If `config.yaml` is missing, the engine loads the default module list:
 RestApi, Event, Logging, Cron, Streams. Those defaults expect Redis.
 
-Protocol Summary
-----------------
+## Protocol Summary
+
 The engine speaks JSON messages over WebSocket. Key message types:
-`registerfunction`, `invokefunction`, `invocationresult`, `registertriggertype`,
+`registerfunction`, `invokefunction`, `invocationresult`, `registertrigger_type`,
 `registertrigger`, `unregistertrigger`, `triggerregistrationresult`, `registerservice`,
 `functionsavailable`, `ping`, `pong`.
 
-Invocations can be fire-and-forget by omitting `invocationId`.
+Invocations can be fire-and-forget by omitting `invocation_id`.
 
-Repository Layout
------------------
+## Repository Layout
+
 - `src/main.rs` – CLI entrypoint (`iii` binary).
 - `src/engine/` – Worker management, routing, and invocation lifecycle.
 - `src/protocol.rs` – WebSocket message schema.
@@ -102,7 +106,7 @@ Repository Layout
 - `packages/node/*` and `packages/python/*` – SDKs and higher-level frameworks.
 - `examples/custom_event_adapter.rs` – Example of a custom module + adapter.
 
-Development
------------
+## Development
+
 - Format/lint: `cargo fmt && cargo clippy -- -D warnings`
 - Watch run: `make watch` (or `make watch-debug` for verbose logs)

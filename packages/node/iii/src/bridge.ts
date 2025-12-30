@@ -67,11 +67,11 @@ export class Bridge implements BridgeClient {
 
   registerFunction(message: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler) {
     this.sendMessage(MessageType.RegisterFunction, message, true)
-    this.functions.set(message.functionPath, {
+    this.functions.set(message.function_path, {
       message: { ...message, type: MessageType.RegisterFunction },
       handler: async (input) => {
-        const invoke = (functionPath: string, params: LoggerParams) => this.invokeFunctionAsync(functionPath, params)
-        const logger = new Logger(invoke, crypto.randomUUID(), message.functionPath)
+        const invoke = (function_path: string, params: LoggerParams) => this.invokeFunctionAsync(function_path, params)
+        const logger = new Logger(invoke, crypto.randomUUID(), message.function_path)
         const context = { logger }
 
         return withContext(async () => await handler(input), context)
@@ -84,17 +84,17 @@ export class Bridge implements BridgeClient {
     this.services.set(message.id, { ...message, type: MessageType.RegisterService })
   }
 
-  async invokeFunction<TInput, TOutput>(functionPath: string, data: TInput): Promise<TOutput> {
-    const invocationId = crypto.randomUUID()
+  async invokeFunction<TInput, TOutput>(function_path: string, data: TInput): Promise<TOutput> {
+    const invocation_id = crypto.randomUUID()
 
     return new Promise<TOutput>((resolve, reject) => {
-      this.sendMessage(MessageType.InvokeFunction, { invocationId, functionPath, data })
-      this.invocations.set(invocationId, { resolve, reject })
+      this.sendMessage(MessageType.InvokeFunction, { invocation_id, function_path, data })
+      this.invocations.set(invocation_id, { resolve, reject })
     })
   }
 
-  invokeFunctionAsync<TInput>(functionPath: string, data: TInput): void {
-    this.sendMessage(MessageType.InvokeFunction, { functionPath, data })
+  invokeFunctionAsync<TInput>(function_path: string, data: TInput): void {
+    this.sendMessage(MessageType.InvokeFunction, { function_path, data })
   }
 
   // private methods
@@ -144,28 +144,28 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  private onInvocationResult(invocationId: string, result: any, error: any) {
-    const invocation = this.invocations.get(invocationId)
+  private onInvocationResult(invocation_id: string, result: any, error: any) {
+    const invocation = this.invocations.get(invocation_id)
 
     if (invocation) {
       error ? invocation.reject(error) : invocation.resolve(result)
     }
 
-    this.invocations.delete(invocationId)
+    this.invocations.delete(invocation_id)
   }
 
-  private async onInvokeFunction<TInput>(invocationId: string | undefined, functionPath: string, input: TInput) {
-    const fn = this.functions.get(functionPath)
+  private async onInvokeFunction<TInput>(invocation_id: string | undefined, function_path: string, input: TInput) {
+    const fn = this.functions.get(function_path)
 
     if (fn) {
-      if (!invocationId) {
+      if (!invocation_id) {
         try {
           return fn.handler(input) // no need to wait on anything
         } catch (error) {
           console.error({
             message: 'Error invoking function',
             error: error,
-            functionPath,
+            function_path,
             input,
           })
         }
@@ -173,39 +173,46 @@ export class Bridge implements BridgeClient {
 
       try {
         const result = await fn.handler(input)
-        this.sendMessage(MessageType.InvocationResult, { invocationId, functionPath, result })
+        this.sendMessage(MessageType.InvocationResult, { invocation_id, function_path, result })
       } catch (error) {
         this.sendMessage(MessageType.InvocationResult, {
-          invocationId,
-          functionPath,
+          invocation_id,
+          function_path,
           error: { code: 'invocation_failed', message: (error as Error).message },
         })
       }
     } else {
       this.sendMessage(MessageType.InvocationResult, {
-        invocationId,
-        functionPath,
+        invocation_id,
+        function_path,
         error: { code: 'function_not_found', message: 'Function not found' },
       })
     }
   }
 
   private async onRegisterTrigger(message: RegisterTriggerMessage) {
-    const triggerTypeData = this.triggerTypes.get(message.triggerType)
-    const { id, triggerType, functionPath, config } = message
+    const triggerTypeData = this.triggerTypes.get(message.trigger_type)
+    const { id, trigger_type, function_path, config } = message
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({ id, functionPath, config })
-        this.sendMessage(MessageType.TriggerRegistrationResult, { id, triggerType, functionPath })
+        await triggerTypeData.handler.registerTrigger({ id, function_path, config })
+        this.sendMessage(MessageType.TriggerRegistrationResult, { id, trigger_type, function_path })
       } catch (error) {
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
-          triggerType,
-          functionPath,
+          trigger_type,
+          function_path,
           error: { code: 'trigger_registration_failed', message: (error as Error).message },
         })
       }
+    } else {
+      this.sendMessage(MessageType.TriggerRegistrationResult, {
+        id,
+        trigger_type,
+        function_path,
+        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+      })
     }
   }
 
@@ -213,11 +220,11 @@ export class Bridge implements BridgeClient {
     const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
 
     if (type === MessageType.InvocationResult) {
-      const { invocationId, result, error } = message as InvocationResultMessage
-      this.onInvocationResult(invocationId, result, error)
+      const { invocation_id, result, error } = message as InvocationResultMessage
+      this.onInvocationResult(invocation_id, result, error)
     } else if (type === MessageType.InvokeFunction) {
-      const { invocationId, functionPath, data } = message as InvokeFunctionMessage
-      this.onInvokeFunction(invocationId, functionPath, data)
+      const { invocation_id, function_path, data } = message as InvokeFunctionMessage
+      this.onInvokeFunction(invocation_id, function_path, data)
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
     }

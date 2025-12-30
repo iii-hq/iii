@@ -4,7 +4,7 @@ export type LoggerParams = {
   function_name?: string
   data?: any
 }
-export type LoggerInvoker = (functionPath: string, params: LoggerParams) => Promise<void> | void
+export type LoggerInvoker = (function_path: string, params: LoggerParams) => Promise<void> | void
 
 export class Logger {
   constructor(

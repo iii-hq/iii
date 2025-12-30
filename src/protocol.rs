@@ -11,28 +11,22 @@ pub enum Message {
     },
     RegisterTrigger {
         id: String,
-        #[serde(rename = "triggerType")]
         trigger_type: String,
-        #[serde(rename = "functionPath")]
         function_path: String,
         config: Value,
     },
     TriggerRegistrationResult {
         id: String,
-        #[serde(rename = "triggerType")]
         trigger_type: String,
-        #[serde(rename = "functionPath")]
         function_path: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
     UnregisterTrigger {
         id: String,
-        #[serde(rename = "triggerType")]
         trigger_type: String,
     },
     RegisterFunction {
-        #[serde(rename = "functionPath")]
         function_path: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -40,16 +34,12 @@ pub enum Message {
         response_format: Option<Value>,
     },
     InvokeFunction {
-        #[serde(rename = "invocationId")]
         invocation_id: Option<Uuid>,
-        #[serde(rename = "functionPath")]
         function_path: String,
         data: Value,
     },
     InvocationResult {
-        #[serde(rename = "invocationId")]
         invocation_id: Uuid,
-        #[serde(rename = "functionPath")]
         function_path: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
@@ -71,7 +61,6 @@ pub enum Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionMessage {
-    #[serde(rename = "functionPath")]
     pub function_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
