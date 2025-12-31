@@ -243,6 +243,7 @@ impl CoreModule for CustomEventModule {
                     "data": { "type": "object" }
                 })),
                 response_format: None,
+                metadata: None,
             },
             Box::new(self.clone()),
         );
