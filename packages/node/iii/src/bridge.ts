@@ -1,15 +1,20 @@
-import { WebSocket, type Data } from 'ws'
+import { type Data, WebSocket } from 'ws'
 import {
-  BridgeMessage,
-  InvocationResultMessage,
-  InvokeFunctionMessage,
+  type BridgeMessage,
+  type FunctionMessage,
+  type FunctionsAvailableMessage,
+  type InvocationResultMessage,
+  type InvokeFunctionMessage,
   MessageType,
-  RegisterFunctionMessage,
-  RegisterServiceMessage,
-  RegisterTriggerMessage,
-  RegisterTriggerTypeMessage,
+  type RegisterFunctionMessage,
+  type RegisterServiceMessage,
+  type RegisterTriggerMessage,
+  type RegisterTriggerTypeMessage,
 } from './bridge-types'
-import {
+import { withContext } from './context'
+import { Logger, type LoggerParams } from './logger'
+import type { TriggerHandler } from './triggers'
+import type {
   BridgeClient,
   Invocation,
   RemoteFunctionData,
@@ -17,9 +22,8 @@ import {
   RemoteTriggerTypeData,
   Trigger,
 } from './types'
-import { TriggerHandler } from './triggers'
-import { withContext } from './context'
-import { Logger, LoggerParams } from './logger'
+
+export type FunctionsAvailableCallback = (functions: FunctionMessage[]) => void
 
 export class Bridge implements BridgeClient {
   private ws?: WebSocket
@@ -29,6 +33,7 @@ export class Bridge implements BridgeClient {
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
+  private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
 
   private interval?: NodeJS.Timeout
 
@@ -95,6 +100,20 @@ export class Bridge implements BridgeClient {
 
   invokeFunctionAsync<TInput>(function_path: string, data: TInput): void {
     this.sendMessage(MessageType.InvokeFunction, { function_path, data })
+  }
+
+  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void {
+    this.functionsAvailableCallbacks.push(callback)
+    return () => {
+      const index = this.functionsAvailableCallbacks.indexOf(callback)
+      if (index !== -1) {
+        this.functionsAvailableCallbacks.splice(index, 1)
+      }
+    }
+  }
+
+  listFunctions(): void {
+    this.sendMessage(MessageType.ListFunctions, {})
   }
 
   // private methods
@@ -227,6 +246,9 @@ export class Bridge implements BridgeClient {
       this.onInvokeFunction(invocation_id, function_path, data)
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
+    } else if (type === MessageType.FunctionsAvailable) {
+      const { functions } = message as FunctionsAvailableMessage
+      this.functionsAvailableCallbacks.forEach((callback) => callback(functions))
     }
   }
 }
