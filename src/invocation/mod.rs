@@ -59,7 +59,7 @@ impl InvocationHandler {
         let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
         let invocation = Invocation {
             id: invocation_id,
-            function_path,
+            function_path: function_path.clone(),
             worker_id,
             sender,
         };
@@ -70,19 +70,19 @@ impl InvocationHandler {
 
         match result {
             FunctionResult::Success(result) => {
-                tracing::debug!(invocation_id = %invocation_id, "Function result: {:?}", result);
+                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function result: {:?}", result);
                 let _ = invocation.sender.send(Ok(result));
             }
             FunctionResult::Failure(error) => {
-                tracing::debug!(invocation_id = %invocation_id, "Function error: {:?}", error);
+                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function error: {:?}", error);
                 let _ = invocation.sender.send(Err(error));
             }
             FunctionResult::NoResult => {
-                tracing::debug!(invocation_id = %invocation_id, "Function no result");
+                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function no result");
                 let _ = invocation.sender.send(Ok(None));
             }
             FunctionResult::Deferred => {
-                tracing::debug!(invocation_id = %invocation_id, "Function deferred");
+                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function deferred");
                 // we need to store the invocation because it's a worker invocation
                 self.invocations.insert(invocation_id, invocation);
             }

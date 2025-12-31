@@ -15,14 +15,13 @@ use crate::{
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         streams::{
             StreamOutboundMessage, StreamWrapperMessage,
-            adapters::{
-                StreamAdapter, StreamConnection,
-                emit::{STREAM_TOPIC, emit_event},
-            },
+            adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
     },
 };
+
+const STREAM_TOPIC: &str = "stream::events";
 
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
@@ -73,6 +72,25 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 
 #[async_trait]
 impl StreamAdapter for RedisAdapter {
+    async fn emit_event(&self, message: StreamWrapperMessage) {
+        let mut conn = self.publisher.lock().await;
+        tracing::debug!(msg = ?message, "Emitting event to Redis");
+
+        let event_json = match serde_json::to_string(&message) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to serialize event data");
+                return;
+            }
+        };
+
+        if let Err(e) = conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json).await {
+            tracing::error!(error = %e, "Failed to publish event to Redis");
+        } else {
+            tracing::debug!("Event published to Redis");
+        }
+    }
+
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
         let key: String = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
@@ -95,20 +113,19 @@ impl StreamAdapter for RedisAdapter {
         let event_type = if existed { "update" } else { "create" };
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        emit_event(
-            conn,
-            StreamWrapperMessage {
-                timestamp,
-                stream_name: stream_name.to_string(),
-                group_id: group_id.to_string(),
-                id: Some(item_id.to_string()),
-                event: match event_type {
-                    "update" => StreamOutboundMessage::Update { data },
-                    "create" => StreamOutboundMessage::Create { data },
-                    _ => StreamOutboundMessage::Create { data },
-                },
+        drop(conn); // Release the lock
+
+        self.emit_event(StreamWrapperMessage {
+            timestamp,
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            id: Some(item_id.to_string()),
+            event: match event_type {
+                "update" => StreamOutboundMessage::Update { data },
+                "create" => StreamOutboundMessage::Create { data },
+                _ => StreamOutboundMessage::Create { data },
             },
-        )
+        })
         .await;
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Value set in Redis");
@@ -141,18 +158,17 @@ impl StreamAdapter for RedisAdapter {
             tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Failed to delete value from Redis");
         }
 
-        emit_event(
-            conn,
-            StreamWrapperMessage {
-                timestamp,
-                stream_name: stream_name.to_string(),
-                group_id: group_id.to_string(),
-                id: Some(item_id.to_string()),
-                event: StreamOutboundMessage::Delete {
-                    data: serde_json::json!({ "id": item_id }),
-                },
+        drop(conn); // Release the lock
+
+        self.emit_event(StreamWrapperMessage {
+            timestamp,
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            id: Some(item_id.to_string()),
+            event: StreamOutboundMessage::Delete {
+                data: serde_json::json!({ "id": item_id }),
             },
-        )
+        })
         .await;
     }
 
