@@ -5,13 +5,21 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
     engine::Engine,
     modules::registry::{AdapterRegistrationEntry, ModuleFuture},
 };
+
+// use across modules
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AdapterEntry {
+    pub class: String,
+    #[serde(default)]
+    pub config: Option<Value>,
+}
 
 #[async_trait::async_trait]
 pub trait CoreModule: Send + Sync {

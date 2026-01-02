@@ -135,12 +135,12 @@ impl Engine {
     }
 
     pub async fn notify_new_functions(&self, duration_secs: u64) {
-        let mut current_funcion_hash = self.functions.functions_hash();
+        let mut current_functions_hash = self.functions.functions_hash();
 
         loop {
             tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
-            let new_function_hash = self.functions.functions_hash();
-            if new_function_hash != current_funcion_hash {
+            let new_functions_hash = self.functions.functions_hash();
+            if new_functions_hash != current_functions_hash {
                 tracing::info!("New functions detected, notifying workers");
                 let message: Vec<FunctionMessage> = self
                     .functions
@@ -149,7 +149,7 @@ impl Engine {
                     .collect();
                 let message = Message::FunctionsAvailable { functions: message };
                 self.broadcast_msg(message).await;
-                current_funcion_hash = new_function_hash;
+                current_functions_hash = new_functions_hash;
             }
         }
     }

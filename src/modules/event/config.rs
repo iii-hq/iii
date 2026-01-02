@@ -1,6 +1,6 @@
 use serde::Deserialize;
-use serde_json::Value;
 
+use crate::modules::core_module::AdapterEntry;
 #[allow(dead_code)] // this is used as default value
 fn default_redis_url() -> String {
     "redis://localhost:6379".to_string()
@@ -11,11 +11,4 @@ fn default_redis_url() -> String {
 pub struct EventModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AdapterEntry {
-    pub class: String,
-    #[serde(default)]
-    pub config: Option<Value>,
 }

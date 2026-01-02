@@ -15,7 +15,7 @@ use iii::{
     function::{FunctionHandler, FunctionResult},
     modules::{
         config::EngineBuilder,
-        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        core_module::{AdapterEntry, AdapterFactory, ConfigurableModule, CoreModule},
         registry::{AdapterFuture, AdapterRegistrationEntry},
     },
     protocol::ErrorBody,
@@ -201,13 +201,6 @@ pub struct CustomEventModuleConfig {
     pub adapter: Option<AdapterEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct AdapterEntry {
-    pub class: String,
-    #[serde(default)]
-    pub config: Option<Value>,
-}
-
 // =============================================================================
 // 4. Create your custom Module
 // =============================================================================
@@ -328,7 +321,7 @@ async fn main() -> anyhow::Result<()> {
             "my::CustomEventModule",
             Some(serde_json::json!({
                 "adapter": {
-                    "class": "my::CustomLoggingAdapter",
+                    "class": "my::LoggingEventAdapter",
                     "config": {
                         "inner_adapter": "my::InMemoryEventAdapter"
                     }
@@ -356,6 +349,6 @@ async fn main() -> anyhow::Result<()> {
 //   - class: my::CustomEventModule
 //     config:
 //       adapter:
-//         class: my::CustomLoggingAdapter  # or my::CustomInMemoryAdapter
+//         class: my::LoggingEventAdapter  # or my::InMemoryEventAdapter
 //         config:
 //           inner_adapter: my::InMemoryEventAdapter  # only for LoggingAdapter

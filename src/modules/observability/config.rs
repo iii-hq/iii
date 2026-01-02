@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::modules::core_module::AdapterEntry;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LoggerModuleConfig {
@@ -8,4 +10,5 @@ pub struct LoggerModuleConfig {
 
     #[serde(default)]
     pub format: Option<String>,
+    pub adapter: Option<AdapterEntry>,
 }
