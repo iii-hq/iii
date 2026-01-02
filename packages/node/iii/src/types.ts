@@ -1,10 +1,10 @@
-import {
+import type {
   RegisterFunctionMessage,
   RegisterServiceMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
 } from './bridge-types'
-import { TriggerHandler } from './triggers'
+import type { TriggerHandler } from './triggers'
 
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (data: TInput) => Promise<TOutput>
 export type Invocation<TOutput = any> = { resolve: (data: TOutput) => void; reject: (error: any) => void }
@@ -80,6 +80,13 @@ export interface BridgeClient {
    * @param triggerType - The trigger type to unregister
    */
   unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
+
+  /**
+   * Registers a callback for a specific event.
+   * @param event - The event to register the callback for
+   * @param callback - The callback to register
+   */
+  on(event: string, callback: (arg?: unknown) => void): void
 }
 
 export type Trigger = {

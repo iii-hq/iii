@@ -32,6 +32,8 @@ pub enum Message {
         description: Option<String>,
         request_format: Option<Value>,
         response_format: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     InvokeFunction {
         invocation_id: Option<Uuid>,
@@ -55,6 +57,7 @@ pub enum Message {
     FunctionsAvailable {
         functions: Vec<FunctionMessage>,
     },
+    ListFunctions,
     Ping,
     Pong,
 }
@@ -68,6 +71,8 @@ pub struct FunctionMessage {
     pub request_format: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

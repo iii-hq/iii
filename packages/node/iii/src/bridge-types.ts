@@ -8,6 +8,8 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
+  FunctionsAvailable = 'functionsavailable',
+  ListFunctions = 'listfunctions',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -101,6 +103,7 @@ export type RegisterFunctionMessage = {
    * The response format of the function
    */
   response_format?: RegisterFunctionFormat
+  metadata?: Record<string, unknown>
 }
 
 export type InvokeFunctionMessage = {
@@ -133,6 +136,23 @@ export type InvocationResultMessage = {
   error?: any
 }
 
+export type FunctionMessage = {
+  functionPath: string
+  description?: string
+  requestFormat?: RegisterFunctionFormat
+  responseFormat?: RegisterFunctionFormat
+  metadata?: Record<string, unknown>
+}
+
+export type FunctionsAvailableMessage = {
+  type: MessageType.FunctionsAvailable
+  functions: FunctionMessage[]
+}
+
+export type ListFunctionsMessage = {
+  type: MessageType.ListFunctions
+}
+
 export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage
@@ -143,3 +163,5 @@ export type BridgeMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
+  | FunctionsAvailableMessage
+  | ListFunctionsMessage

@@ -1,7 +1,14 @@
-import { useApi } from './hooks'
+import { useApi, useFunctionsAvailable } from './hooks'
 import { streams } from './streams'
 
-useApi({ name: 'create-todo', api_path: 'todo', http_method: 'POST' }, async (req, { logger }) => {
+
+useFunctionsAvailable((functions) => {
+  console.log('--------------------------------')
+  console.log('Functions available:', functions)
+  console.log('--------------------------------')
+})
+
+useApi({ name: 'create-todo', api_path: 'todo', http_method: 'POST', description: 'Create a new todo', metadata: { tags: ['todo'] } }, async (req, { logger }) => {
   logger.info('Creating new todo', { body: req.body })
 
   const { description, dueDate } = req.body
@@ -23,7 +30,7 @@ useApi({ name: 'create-todo', api_path: 'todo', http_method: 'POST' }, async (re
   return { status_code: 201, body: todo, headers: { 'Content-Type': 'application/json' } }
 })
 
-useApi({ name: 'delete-todo', api_path: 'todo', http_method: 'DELETE' }, async (req, { logger }) => {
+useApi({ name: 'delete-todo', api_path: 'todo', http_method: 'DELETE', description: 'Delete a todo', metadata: { tags: ['todo'] } }, async (req, { logger }) => {
   const { todoId } = req.body
 
   logger.info('Deleting todo', { body: req.body })
@@ -40,7 +47,7 @@ useApi({ name: 'delete-todo', api_path: 'todo', http_method: 'DELETE' }, async (
   return { status_code: 200, body: { success: true }, headers: { 'Content-Type': 'application/json' } }
 })
 
-useApi({ name: 'update-todo', api_path: 'todo', http_method: 'PUT' }, async (req, { logger }) => {
+useApi({ name: 'update-todo', api_path: 'todo', http_method: 'PUT', description: 'Update a todo', metadata: { tags: ['todo2'] } }, async (req, { logger }) => {
   const { todoId } = req.body
   const existingTodo = todoId ? await streams.get('todo', 'inbox', todoId) : undefined
 
