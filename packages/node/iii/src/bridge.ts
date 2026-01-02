@@ -52,6 +52,10 @@ export class Bridge implements BridgeClient {
     })
   }
 
+  on(event: string, callback: (arg?: unknown) => void) {
+    this.ws?.on(event, callback)
+  }
+
   unregisterTriggerType(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>) {
     this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
     this.triggerTypes.delete(triggerType.id)
