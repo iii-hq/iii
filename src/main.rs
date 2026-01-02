@@ -6,11 +6,17 @@ use iii::{EngineBuilder, logging};
 struct Args {
     #[arg(short, long, default_value = "config.yaml")]
     config: String,
+    #[arg(short = 'v', long)]
+    version: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.version {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     logging::init_log(&args.config);
 
     EngineBuilder::new()

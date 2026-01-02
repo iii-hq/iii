@@ -25,6 +25,11 @@ By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` o
 BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
 ```
 
+To check that the binary is on your PATH and see the current version:
+```bash
+command -v iii && iii --version
+```
+
 Run the engine:
 
 ```bash
