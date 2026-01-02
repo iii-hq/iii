@@ -12,6 +12,19 @@ Prerequisites:
 - Redis (only if you enable the event/cron/streams modules; the default config expects Redis at
   `redis://localhost:6379`)
 
+Install (prebuilt binary)
+-------------------------
+This installer currently supports macOS and Linux (not native Windows).
+You can install the latest release binary with:
+```bash
+curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+```
+
+By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` or `PREFIX`:
+```bash
+BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+```
+
 Run the engine:
 
 ```bash
