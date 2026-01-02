@@ -191,7 +191,7 @@ impl RestApiCoreModule {
             let path = Self::build_router_for_axum(&entry.http_path);
 
             let method = entry.http_method.clone();
-            let path_for_extension = path.clone();
+            let path_for_extension = entry.http_path.clone();
             router = match method.as_str() {
                 "GET" => router.route(
                     &path,
