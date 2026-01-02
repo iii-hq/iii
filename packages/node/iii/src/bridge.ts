@@ -54,7 +54,7 @@ export class Bridge implements BridgeClient {
 
   registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type' | 'id'>): Trigger {
     const id = crypto.randomUUID()
-    this.sendMessage(MessageType.RegisterTrigger, trigger, true)
+    this.sendMessage(MessageType.RegisterTrigger, { ...trigger, id }, true)
     this.triggers.set(id, { ...trigger, id, type: MessageType.RegisterTrigger })
 
     return {
