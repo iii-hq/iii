@@ -55,7 +55,7 @@ impl RedisLogger {
 
 #[async_trait]
 impl LoggerAdapter for RedisLogger {
-    async fn load_logs(&self, _file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
+    async fn load_logs_object(&self, _file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
         let mut conn = self.connection_manager.lock().await;
         let log_strings: Vec<String> = conn.lrange("logs", 0, -1).await.unwrap_or_default();
         let mut logs = Vec::new();

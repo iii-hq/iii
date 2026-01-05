@@ -8,12 +8,14 @@ use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait},
+    function::FunctionResult,
     modules::streams::{
-        StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage, Subscription,
-        adapters::{StreamAdapter, StreamConnection},
+        StreamCoreModule, StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage,
+        Subscription,
+        adapters::StreamConnection,
         structs::{
-            StreamAuthContext, StreamIncomingMessageData, StreamJoinLeaveEvent, StreamJoinResult,
-            StreamOutbound,
+            StreamAuthContext, StreamGetGroupInput, StreamGetInput, StreamIncomingMessageData,
+            StreamJoinLeaveEvent, StreamJoinResult, StreamOutbound,
         },
         trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
     },
@@ -24,14 +26,14 @@ pub struct SocketStreamConnection {
     pub sender: mpsc::Sender<StreamOutbound>,
     pub triggers: Arc<StreamTriggers>,
     subscriptions: Arc<RwLock<DashMap<String, Subscription>>>,
-    adapter: Arc<dyn StreamAdapter>,
+    stream_module: Arc<StreamCoreModule>,
     context: Option<StreamAuthContext>,
     engine: Arc<Engine>,
 }
 
 impl SocketStreamConnection {
     pub fn new(
-        adapter: Arc<dyn StreamAdapter>,
+        stream_module: Arc<StreamCoreModule>,
         context: Option<StreamAuthContext>,
         sender: mpsc::Sender<StreamOutbound>,
         engine: Arc<Engine>,
@@ -41,7 +43,7 @@ impl SocketStreamConnection {
             id: Uuid::new_v4().to_string(),
             subscriptions: Arc::new(RwLock::new(DashMap::new())),
             sender,
-            adapter,
+            stream_module,
             context,
             engine,
             triggers,
@@ -170,32 +172,74 @@ impl SocketStreamConnection {
                 );
 
                 if let Some(id) = id {
-                    let data = self.adapter.get(&stream_name, &group_id, &id).await;
+                    let data = self
+                        .stream_module
+                        .get(StreamGetInput {
+                            stream_name: stream_name.clone(),
+                            group_id: group_id.clone(),
+                            item_id: id.clone(),
+                        })
+                        .await;
 
-                    self.sender
-                        .send(StreamOutbound::Stream(StreamWrapperMessage {
-                            timestamp,
-                            stream_name: stream_name.clone(),
-                            group_id: group_id.clone(),
-                            id: Some(id.clone()),
-                            event: StreamOutboundMessage::Sync {
-                                data: data.unwrap_or(Value::Null),
-                            },
-                        }))
-                        .await?;
+                    match data {
+                        FunctionResult::Success(data) => {
+                            self.sender
+                                .send(StreamOutbound::Stream(StreamWrapperMessage {
+                                    timestamp,
+                                    stream_name: stream_name.clone(),
+                                    group_id: group_id.clone(),
+                                    id: Some(id.clone()),
+                                    event: StreamOutboundMessage::Sync {
+                                        data: data.unwrap_or(Value::Null),
+                                    },
+                                }))
+                                .await?;
+                        }
+                        FunctionResult::Failure(error) => {
+                            tracing::error!(error = ?error, "Failed to get data");
+                        }
+                        FunctionResult::Deferred => {
+                            tracing::error!(error = "Deferred result", "Failed to get data");
+                        }
+                        FunctionResult::NoResult => {
+                            tracing::error!("No result");
+                        }
+                    }
+
+                    return Ok(());
                 } else {
-                    let data = self.adapter.get_group(&stream_name, &group_id).await;
-                    self.sender
-                        .send(StreamOutbound::Stream(StreamWrapperMessage {
-                            timestamp,
+                    let data = self
+                        .stream_module
+                        .get_group(StreamGetGroupInput {
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
-                            id: None,
-                            event: StreamOutboundMessage::Sync {
-                                data: serde_json::to_value(data).unwrap_or(Value::Null),
-                            },
-                        }))
-                        .await?;
+                        })
+                        .await;
+
+                    match data {
+                        FunctionResult::Success(data) => {
+                            self.sender
+                                .send(StreamOutbound::Stream(StreamWrapperMessage {
+                                    timestamp,
+                                    stream_name: stream_name.clone(),
+                                    group_id: group_id.clone(),
+                                    id: None,
+                                    event: StreamOutboundMessage::Sync {
+                                        data: serde_json::to_value(data).unwrap_or(Value::Null),
+                                    },
+                                }))
+                                .await?;
+                        }
+                        FunctionResult::Failure(error) => {
+                            tracing::error!(error = ?error, "Failed to get data");
+                        }
+                        FunctionResult::Deferred => {
+                            tracing::error!(error = "Deferred result", "Failed to get data");
+                        }
+                        FunctionResult::NoResult => {
+                            tracing::error!("No result");
+                        }
+                    }
                 }
 
                 Ok(())

@@ -42,9 +42,14 @@ pub trait LoggerAdapter: Send + Sync + 'static {
     where
         Self: Sized;
 
+    async fn load_logs_object(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error>;
+
     async fn load_logs(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error>
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        self.load_logs_object(file_path).await
+    }
 
     async fn include_logs(&self, entry: LogEntry);
 
@@ -154,6 +159,17 @@ pub struct LoggerInput {
 
 #[service(name = "logger")]
 impl LoggerCoreModule {
+    #[function(name = "logger.load_logs", description = "Load logs from file")]
+    pub async fn load_logs(&self, file_path: String) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.adapter.load_logs_object(&file_path).await {
+            Ok(logs) => {
+                let serialized = serde_json::to_value(&logs).unwrap_or(Value::Null);
+                FunctionResult::Success(Some(serialized))
+            }
+            Err(_e) => FunctionResult::NoResult,
+        }
+    }
+
     #[function(name = "logger.info", description = "Log an info message")]
     pub async fn info(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.adapter
@@ -220,7 +236,7 @@ impl ConfigurableModule for LoggerCoreModule {
     type Config = LoggerModuleConfig;
     type Adapter = dyn LoggerAdapter;
     type AdapterRegistration = LoggerAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::observability::adapters::FileAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::observability::adapters::FileLogger";
 
     fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
         config.adapter.as_ref().map(|a| a.class.clone())
