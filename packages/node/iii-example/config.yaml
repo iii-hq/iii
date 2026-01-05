@@ -1,0 +1,38 @@
+modules:
+  - class: modules::streams::StreamModule
+    config:
+      port: 31112
+      host: 127.0.0.1
+      adapter:
+        class: modules::streams::adapters::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+      host: 127.0.0.1
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:5173
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  - class: modules::observability::LoggingModule
+    config:
+      level: info
+      format: default
+
+  - class: modules::shell::ExecModule
+    config:
+      watch:
+        - src/**/*.ts
+      exec:
+        - npm run dev

@@ -13,6 +13,7 @@ import {
 } from './bridge-types'
 import { withContext } from './context'
 import { Logger, type LoggerParams } from './logger'
+import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
   BridgeClient,
@@ -118,6 +119,13 @@ export class Bridge implements BridgeClient {
 
   listFunctions(): void {
     this.sendMessage(MessageType.ListFunctions, {})
+  }
+
+  createStream<TData>(streamName: string, stream: IStream<TData>): void {
+    this.registerFunction({ function_path: `streams.get(${streamName})` }, stream.get.bind(stream))
+    this.registerFunction({ function_path: `streams.set(${streamName})` }, stream.set.bind(stream))
+    this.registerFunction({ function_path: `streams.delete(${streamName})` }, stream.delete.bind(stream))
+    this.registerFunction({ function_path: `streams.getGroup(${streamName})` }, stream.getGroup.bind(stream))
   }
 
   // private methods
