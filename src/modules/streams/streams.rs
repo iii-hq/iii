@@ -240,7 +240,12 @@ impl StreamCoreModule {
                             .and_then(|v| v.get("existed"))
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
-                        let event_type = if existed { "update" } else { "create" };
+
+                        let event = if existed {
+                            StreamOutboundMessage::Update { data }
+                        } else {
+                            StreamOutboundMessage::Create { data }
+                        };
 
                         adapter
                             .emit_event(StreamWrapperMessage {
@@ -248,11 +253,7 @@ impl StreamCoreModule {
                                 timestamp: Utc::now().timestamp_millis(),
                                 stream_name: stream_name.clone(),
                                 group_id: group_id.clone(),
-                                event: match event_type {
-                                    "update" => StreamOutboundMessage::Update { data },
-                                    "create" => StreamOutboundMessage::Create { data },
-                                    _ => StreamOutboundMessage::Create { data },
-                                },
+                                event,
                             })
                             .await;
                     }
