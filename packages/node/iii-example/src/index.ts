@@ -34,7 +34,6 @@ useApi(
 
 useApi(
   {
-    name: 'delete-todo',
     api_path: 'todo',
     http_method: 'DELETE',
     description: 'Delete a todo',
