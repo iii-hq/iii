@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::{
     engine::Engine,
     modules::streams::{
-        StreamIncomingMessage,
+        StreamCoreModule, StreamIncomingMessage,
         adapters::{StreamAdapter, StreamConnection},
         connection::SocketStreamConnection,
         structs::{StreamAuthContext, StreamOutbound},
@@ -19,6 +19,7 @@ pub struct StreamSocketManager {
     pub engine: Arc<Engine>,
     pub auth_function: Option<String>,
     adapter: Arc<dyn StreamAdapter>,
+    stream_module: Arc<StreamCoreModule>,
     triggers: Arc<StreamTriggers>,
 }
 
@@ -26,12 +27,14 @@ impl StreamSocketManager {
     pub fn new(
         engine: Arc<Engine>,
         adapter: Arc<dyn StreamAdapter>,
+        stream_module: Arc<StreamCoreModule>,
         auth_function: Option<String>,
         triggers: Arc<StreamTriggers>,
     ) -> Self {
         Self {
             engine,
             adapter,
+            stream_module,
             auth_function,
             triggers,
         }
@@ -45,7 +48,7 @@ impl StreamSocketManager {
         let (mut ws_tx, mut ws_rx) = socket.split();
         let (tx, mut rx) = mpsc::channel::<StreamOutbound>(64);
         let connection = SocketStreamConnection::new(
-            self.adapter.clone(),
+            self.stream_module.clone(),
             context,
             tx,
             self.engine.clone(),

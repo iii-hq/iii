@@ -11,6 +11,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use chrono::Utc;
 use colored::Colorize;
 use function_macros::{function, service};
 use once_cell::sync::Lazy;
@@ -23,7 +24,7 @@ use crate::{
     modules::{
         core_module::{AdapterFactory, ConfigurableModule, CoreModule},
         streams::{
-            StreamSocketManager,
+            StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
@@ -126,6 +127,7 @@ impl CoreModule for StreamCoreModule {
         let socket_manager = Arc::new(StreamSocketManager::new(
             self.engine.clone(),
             self.adapter.clone(),
+            Arc::new(self.clone()),
             self.config.auth_function.clone(),
             self.triggers.clone(),
         ));
@@ -214,29 +216,92 @@ impl ConfigurableModule for StreamCoreModule {
 impl StreamCoreModule {
     #[function(name = "streams.set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        let adapter = self.adapter.clone();
+        let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
         let data = input.data;
+        let data_clone = data.clone();
 
-        let _ = adapter
-            .set(&stream_name, &group_id, &item_id, data.clone())
-            .await;
+        let function_path = format!("streams.set({})", stream_name);
+        let function = self.engine.functions.get(&function_path);
+        let adapter = self.adapter.clone();
 
-        FunctionResult::Success(Some(data))
+        match function {
+            Some(_) => {
+                tracing::debug!(function_path = %function_path, "Calling custom streams.set function");
+
+                let result = self
+                    .engine
+                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .await;
+
+                match result {
+                    Ok(result) => {
+                        let existed = result
+                            .as_ref()
+                            .and_then(|v| v.get("existed"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        let event = if existed {
+                            StreamOutboundMessage::Update { data }
+                        } else {
+                            StreamOutboundMessage::Create { data }
+                        };
+
+                        adapter
+                            .emit_event(StreamWrapperMessage {
+                                id: Some(item_id.clone()),
+                                timestamp: Utc::now().timestamp_millis(),
+                                stream_name: stream_name.clone(),
+                                group_id: group_id.clone(),
+                                event,
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        return FunctionResult::Failure(error);
+                    }
+                }
+            }
+            None => {
+                let _ = adapter
+                    .set(&stream_name, &group_id, &item_id, data.clone())
+                    .await;
+            }
+        }
+
+        FunctionResult::Success(Some(data_clone))
     }
 
     #[function(name = "streams.get", description = "Get a value from a stream")]
     pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
 
+        let function_path = format!("streams.get({})", stream_name);
+        let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
-        let data = adapter.get(&stream_name, &group_id, &item_id).await;
 
-        FunctionResult::Success(data)
+        match function {
+            Some(_) => {
+                tracing::debug!(function_path = %function_path, "Calling custom streams.get function");
+
+                let result = self
+                    .engine
+                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .await;
+
+                match result {
+                    Ok(result) => FunctionResult::Success(result),
+                    Err(error) => FunctionResult::Failure(error),
+                }
+            }
+            None => FunctionResult::Success(adapter.get(&stream_name, &group_id, &item_id).await),
+        }
     }
 
     #[function(name = "streams.delete", description = "Delete a value from a stream")]
@@ -244,15 +309,56 @@ impl StreamCoreModule {
         &self,
         input: StreamDeleteInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
+        let data = self
+            .get(StreamGetInput {
+                stream_name: stream_name.clone(),
+                group_id: group_id.clone(),
+                item_id: item_id.clone(),
+            })
+            .await;
 
+        let function_path = format!("streams.delete({})", stream_name);
+        let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
-        let data = adapter.get(&stream_name, &group_id, &item_id).await;
-        let _ = adapter.delete(&stream_name, &group_id, &item_id).await;
 
-        FunctionResult::Success(data)
+        match function {
+            Some(_) => {
+                tracing::debug!(function_path = %function_path, "Calling custom streams.delete function");
+
+                let result = self
+                    .engine
+                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .await;
+
+                match result {
+                    Ok(_) => {
+                        adapter
+                            .emit_event(StreamWrapperMessage {
+                                id: Some(item_id.clone()),
+                                timestamp: Utc::now().timestamp_millis(),
+                                stream_name: stream_name.clone(),
+                                group_id: group_id.clone(),
+                                event: StreamOutboundMessage::Delete {
+                                    data: serde_json::json!({ "id": item_id }),
+                                },
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        return FunctionResult::Failure(error);
+                    }
+                }
+            }
+            None => {
+                let _ = adapter.delete(&stream_name, &group_id, &item_id).await;
+            }
+        }
+
+        data
     }
 
     #[function(name = "streams.getGroup", description = "Get a group from a stream")]
@@ -260,13 +366,33 @@ impl StreamCoreModule {
         &self,
         input: StreamGetGroupInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
+        let function_path = format!("streams.getGroup({})", stream_name);
+        let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
-        let values = adapter.get_group(&stream_name, &group_id).await;
 
-        FunctionResult::Success(serde_json::to_value(values).ok())
+        match function {
+            Some(_) => {
+                tracing::debug!(function_path = %function_path, "Calling custom streams.getGroup function");
+
+                let result = self
+                    .engine
+                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .await;
+
+                match result {
+                    Ok(result) => FunctionResult::Success(result),
+                    Err(error) => FunctionResult::Failure(error),
+                }
+            }
+            None => {
+                let values = adapter.get_group(&stream_name, &group_id).await;
+                FunctionResult::Success(serde_json::to_value(values).ok())
+            }
+        }
     }
 }
 

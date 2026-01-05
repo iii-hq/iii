@@ -268,56 +268,68 @@ impl Engine {
                     "InvokeFunction"
                 );
 
-                let result = self
-                    .remember_invocation(worker, *invocation_id, function_path, data.clone())
-                    .await;
+                let engine = self.clone();
+                let worker = worker.clone();
+                let invocation_id = *invocation_id;
+                let function_path = function_path.to_string();
+                let data = data.clone();
 
-                if let Some(invocation_id) = invocation_id {
-                    match result {
-                        Ok(result) => match result {
-                            Ok(result) => {
-                                self.send_msg(
-                                    worker,
-                                    Message::InvocationResult {
-                                        invocation_id: *invocation_id,
-                                        function_path: function_path.to_string(),
-                                        result: result.clone(),
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
+                tokio::spawn(async move {
+                    let result = engine
+                        .remember_invocation(&worker, invocation_id, &function_path, data)
+                        .await;
+
+                    if let Some(invocation_id) = invocation_id {
+                        match result {
+                            Ok(result) => match result {
+                                Ok(result) => {
+                                    engine
+                                        .send_msg(
+                                            &worker,
+                                            Message::InvocationResult {
+                                                invocation_id,
+                                                function_path: function_path.clone(),
+                                                result: result.clone(),
+                                                error: None,
+                                            },
+                                        )
+                                        .await;
+                                }
+                                Err(err) => {
+                                    engine
+                                        .send_msg(
+                                            &worker,
+                                            Message::InvocationResult {
+                                                invocation_id,
+                                                function_path: function_path.clone(),
+                                                result: None,
+                                                error: Some(err.clone()),
+                                            },
+                                        )
+                                        .await;
+                                }
+                            },
                             Err(err) => {
-                                self.send_msg(
-                                    worker,
-                                    Message::InvocationResult {
-                                        invocation_id: *invocation_id,
-                                        function_path: function_path.to_string(),
-                                        result: None,
-                                        error: Some(err.clone()),
-                                    },
-                                )
-                                .await;
+                                tracing::error!(error = ?err, "Error remembering invocation");
+                                engine
+                                    .send_msg(
+                                        &worker,
+                                        Message::InvocationResult {
+                                            invocation_id,
+                                            function_path: function_path.clone(),
+                                            result: None,
+                                            error: Some(ErrorBody {
+                                                code: "invocation_error".into(),
+                                                message: err.to_string(),
+                                            }),
+                                        },
+                                    )
+                                    .await;
                             }
-                        },
-                        Err(err) => {
-                            tracing::error!(error = ?err, "Error remembering invocation");
-                            self.send_msg(
-                                worker,
-                                Message::InvocationResult {
-                                    invocation_id: *invocation_id,
-                                    function_path: function_path.to_string(),
-                                    result: None,
-                                    error: Some(ErrorBody {
-                                        code: "invocation_error".into(),
-                                        message: err.to_string(),
-                                    }),
-                                },
-                            )
-                            .await;
                         }
                     }
-                }
+                });
+
                 Ok(())
             }
             Message::InvocationResult {

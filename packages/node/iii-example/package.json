@@ -4,15 +4,13 @@
   "main": "index.js",
   "author": "III",
   "scripts": {
-    "dev": "nodemon --config nodemon.json"
+    "dev": "bun src/index.ts"
   },
   "dependencies": {
     "@iii-dev/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
-    "esbuild": "^0.27.0",
-    "nodemon": "^3.1.10",
     "typescript": "^5.9.3"
   }
 }

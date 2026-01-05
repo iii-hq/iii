@@ -22,3 +22,39 @@ export interface StreamJoinLeaveEvent {
 export interface StreamJoinResult {
   unauthorized: boolean
 }
+
+export type StreamGetInput = {
+  stream_name: string
+  group_id: string
+  item_id: string
+}
+
+export type StreamSetInput = {
+  stream_name: string
+  group_id: string
+  item_id: string
+  data: any
+}
+
+export type StreamDeleteInput = {
+  stream_name: string
+  group_id: string
+  item_id: string
+}
+
+export type StreamGetGroupInput = {
+  stream_name: string
+  group_id: string
+}
+
+export type StreamSetResult<TData> = {
+  existed: boolean
+  data?: TData
+}
+
+export interface IStream<TData> {
+  get(input: StreamGetInput): Promise<TData | null>
+  set(input: StreamSetInput): Promise<StreamSetResult<TData> | null>
+  delete(input: StreamDeleteInput): Promise<void>
+  getGroup(input: StreamGetGroupInput): Promise<TData[]>
+}
