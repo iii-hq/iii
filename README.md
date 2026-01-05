@@ -20,6 +20,15 @@ You can install the latest release binary with:
 curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
 ```
 
+To install a specific version, pass it as the first argument (the leading `v` is optional):
+```bash
+curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh -s -- v0.2.1
+```
+Or set `VERSION` explicitly:
+```bash
+VERSION=0.2.1 curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+```
+
 By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` or `PREFIX`:
 ```bash
 BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
