@@ -166,7 +166,7 @@ impl LoggerAdapter for FileLogger {
     async fn include_logs(&self, entry: LogEntry) {
         self.logs.write().await.push(entry);
     }
-    async fn load_logs(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
+    async fn load_logs_object(&self, file_path: &str) -> Result<Vec<LogEntry>, std::io::Error> {
         let mut file = tokio::fs::File::open(file_path).await?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).await?;
