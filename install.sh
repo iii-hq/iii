@@ -3,6 +3,7 @@ set -eu
 
 REPO="${REPO:-MotiaDev/iii-engine}"
 BIN_NAME="${BIN_NAME:-iii}"
+VERSION="${VERSION:-${1:-}}"
 
 err() {
   echo "error: $*" >&2
@@ -46,12 +47,30 @@ else
   target="$arch-$os"
 fi
 
-api_url="https://api.github.com/repos/$REPO/releases/latest"
 api_headers="-H Accept:application/vnd.github+json -H X-GitHub-Api-Version:2022-11-28"
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  json=$(curl -fsSL $api_headers -H "Authorization: Bearer $GITHUB_TOKEN" "$api_url")
+github_api() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -fsSL $api_headers -H "Authorization: Bearer $GITHUB_TOKEN" "$1"
+  else
+    curl -fsSL $api_headers "$1"
+  fi
+}
+
+if [ -n "$VERSION" ]; then
+  echo "installing version: $VERSION"
+  api_url="https://api.github.com/repos/$REPO/releases/tags/$VERSION"
+  json=$(github_api "$api_url") || {
+    if [ "${VERSION#v}" = "$VERSION" ]; then
+      api_url="https://api.github.com/repos/$REPO/releases/tags/v$VERSION"
+      json=$(github_api "$api_url") || err "release tag not found: $VERSION"
+    else
+      err "release tag not found: $VERSION"
+    fi
+  }
 else
-  json=$(curl -fsSL $api_headers "$api_url")
+  echo "installing latest version"
+  api_url="https://api.github.com/repos/$REPO/releases/latest"
+  json=$(github_api "$api_url")
 fi
 
 if command -v jq >/dev/null 2>&1; then
