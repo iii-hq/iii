@@ -135,22 +135,34 @@ impl Engine {
         }
     }
 
-    pub async fn notify_new_functions(&self, duration_secs: u64) {
+    pub async fn notify_new_functions(
+        &self,
+        duration_secs: u64,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
         let mut current_functions_hash = self.functions.functions_hash();
 
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
-            let new_functions_hash = self.functions.functions_hash();
-            if new_functions_hash != current_functions_hash {
-                tracing::info!("New functions detected, notifying workers");
-                let message: Vec<FunctionMessage> = self
-                    .functions
-                    .iter()
-                    .map(|entry| FunctionMessage::from(entry.value()))
-                    .collect();
-                let message = Message::FunctionsAvailable { functions: message };
-                self.broadcast_msg(message).await;
-                current_functions_hash = new_functions_hash;
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)) => {
+                    let new_functions_hash = self.functions.functions_hash();
+                    if new_functions_hash != current_functions_hash {
+                        tracing::info!("New functions detected, notifying workers");
+                        let message: Vec<FunctionMessage> = self
+                            .functions
+                            .iter()
+                            .map(|entry| FunctionMessage::from(entry.value()))
+                            .collect();
+                        let message = Message::FunctionsAvailable { functions: message };
+                        self.broadcast_msg(message).await;
+                        current_functions_hash = new_functions_hash;
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
             }
         }
     }

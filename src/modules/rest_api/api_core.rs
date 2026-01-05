@@ -55,6 +55,9 @@ pub struct RestApiCoreModule {
 
 #[async_trait::async_trait]
 impl CoreModule for RestApiCoreModule {
+    fn name(&self) -> &'static str {
+        "RestApiCoreModule"
+    }
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,

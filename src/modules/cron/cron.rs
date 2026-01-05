@@ -29,6 +29,10 @@ pub struct CronCoreModule {
 
 #[async_trait]
 impl CoreModule for CronCoreModule {
+    fn name(&self) -> &'static str {
+        "CronModule"
+    }
+
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,
