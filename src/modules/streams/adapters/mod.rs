@@ -1,4 +1,3 @@
-pub mod emit;
 pub mod redis_adapter;
 
 use std::sync::Arc;
@@ -14,6 +13,8 @@ pub trait StreamAdapter: Send + Sync {
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value>;
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str);
     async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value>;
+
+    async fn emit_event(&self, message: StreamWrapperMessage);
 
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>);
     async fn unsubscribe(&self, id: String);

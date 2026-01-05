@@ -5,6 +5,7 @@ import type {
   RegisterTriggerTypeMessage,
 } from './bridge-types'
 import type { TriggerHandler } from './triggers'
+import type { IStream } from './streams'
 
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (data: TInput) => Promise<TOutput>
 export type Invocation<TOutput = any> = { resolve: (data: TOutput) => void; reject: (error: any) => void }
@@ -87,6 +88,16 @@ export interface BridgeClient {
    * @param callback - The callback to register
    */
   on(event: string, callback: (arg?: unknown) => void): void
+
+  /**
+   * Creates a new stream implementation.
+   *
+   * This overrides the default stream implementation.
+   *
+   * @param streamName - The name of the stream
+   * @param stream - The stream implementation
+   */
+  createStream<TData>(streamName: string, stream: IStream<TData>): void
 }
 
 export type Trigger = {
