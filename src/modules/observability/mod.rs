@@ -220,7 +220,7 @@ impl ConfigurableModule for LoggerCoreModule {
     type Config = LoggerModuleConfig;
     type Adapter = dyn LoggerAdapter;
     type AdapterRegistration = LoggerAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::observability::adapters::FileAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::observability::adapters::FileLogger";
 
     fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
         config.adapter.as_ref().map(|a| a.class.clone())

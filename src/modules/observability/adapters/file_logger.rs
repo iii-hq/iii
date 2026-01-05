@@ -29,10 +29,11 @@ pub struct FileLogger {
 
 impl FileLogger {
     pub fn new(config: Option<Value>) -> Self {
+        let five_seconds_ms = 5 * 1000;
         let save_interval_ms = config
             .as_ref()
             .and_then(|c| c.get("save_interval_ms").and_then(|v| v.as_u64()))
-            .unwrap_or(60);
+            .unwrap_or(five_seconds_ms);
         let file_path = config
             .as_ref()
             .and_then(|c| c.get("file_path").and_then(|v| v.as_str()))
@@ -149,7 +150,6 @@ impl LoggerAdapter for FileLogger {
             interval.tick().await;
             let drained = self.drain_logs().await;
             if drained.is_empty() {
-                tracing::debug!("No logs to save.");
                 continue;
             }
 
