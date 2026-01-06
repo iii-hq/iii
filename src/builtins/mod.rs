@@ -306,3 +306,74 @@ impl BuiltInPubSubAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::modules::streams::StreamOutboundMessage;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_pub_sub() {
+        let adapter = BuiltInPubSubAdapter::new(None);
+
+        let stream_name = "test_stream".to_string();
+        let group_id = "test_group".to_string();
+
+        let event = StreamOutboundMessage::Create {
+            data: serde_json::json!({"key": "value"}),
+        };
+        let message = StreamWrapperMessage {
+            stream_name: stream_name.clone(),
+            group_id: group_id.clone(),
+            id: Some("item1".to_string()),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            event: event.clone(),
+        };
+
+        let mut rx = adapter.events_tx.subscribe();
+        adapter.send_msg(message.clone());
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for message")
+            .expect("Should receive message");
+
+        assert_eq!(received.stream_name, stream_name);
+        assert_eq!(received.group_id, group_id);
+        assert_eq!(received.id, Some("item1".to_string()));
+        assert_eq!(received.event, event);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_set_get_delete() {
+        let kv_store = BuiltinKvStore::new(None);
+
+        let stream_name = "test_stream";
+        let group_id = "test_group";
+        let item_id = "item1";
+        let data = serde_json::json!({"key": "value"});
+
+        // Test set
+        kv_store
+            .set(stream_name, group_id, item_id, data.clone())
+            .await;
+
+        // Test get
+        let retrieved = kv_store
+            .get(stream_name, group_id, item_id)
+            .await
+            .expect("Item should exist");
+        assert_eq!(retrieved, data);
+
+        // Test delete
+        let deleted = kv_store
+            .delete(stream_name, group_id, item_id)
+            .await
+            .expect("Item should exist for deletion");
+        assert_eq!(deleted, data);
+
+        // Ensure item is deleted
+        let should_be_none = kv_store.get(stream_name, group_id, item_id).await;
+        assert!(should_be_none.is_none());
+    }
+}
