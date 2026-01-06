@@ -12,6 +12,18 @@ modules:
         # config:
         #   redis_url: redis://localhost:6379
 
+  - class: modules::management::ManagementModule
+    config:
+      port: 9001
+      host: 0.0.0.0
+      enabled: true
+      cors:
+        allowed_origins:
+          - "*"
+        allowed_methods:
+          - GET
+          - POST
+
   - class: modules::api::RestApiModule
     config:
       port: 3111
@@ -33,16 +45,10 @@ modules:
     config:
       level: debug
       format: default
-
-      # # adapter:
-      # #   class: modules::observability::adapters::RedisLogger
-      # #   config:
-      # #     redis_url: redis://localhost:6379
-      # adapter:
-      #   class: modules::observability::adapters::FileLogger
-      #   config:
-      #     file_path: app.log
-      #     save_interval_ms: 5000
+      adapter:
+        class: modules::observability::adapters::RedisLogger
+        config:
+          redis_url: redis://localhost:6379
 
   - class: modules::event::EventModule
     config:
@@ -57,3 +63,14 @@ modules:
         class: modules::cron::RedisCronAdapter
         config:
           redis_url: redis://localhost:6379
+
+  # DevTools Module - Backend for iii Developer Console
+  # Uses iii's own REST API, events, streams, and cron capabilities
+  - class: modules::devtools::DevToolsModule
+    config:
+      enabled: true
+      api_prefix: _console
+      metrics_enabled: true
+      metrics_interval: 30
+      state_stream: iii:devtools:state
+      event_topic: iii:devtools:events

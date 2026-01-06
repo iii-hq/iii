@@ -1,5 +1,6 @@
 target/
-node_modules
+**/node_modules/
+node_modules/
 .mypy_cache
 worker_py/__pycache__/
 .venv
@@ -7,5 +8,9 @@ worker_py/__pycache__/
 .bin/
 dist/
 .DS_Store
+.next/
+*.log
+.env
+.env.local
 
 packages/docker/bun/iii
