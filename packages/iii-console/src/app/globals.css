@@ -1,0 +1,201 @@
+@import "tailwindcss";
+
+/* iii Brand Color Palette */
+:root {
+  /* Core Palette */
+  --light-gray: #F4F4F4;
+  --medium-gray: #5B5B5B;
+  --dark-gray: #1D1D1D;
+  --black: #000000;
+  --yellow: #F3F724;
+  --white: #FFFFFF;
+  
+  /* Semantic Colors */
+  --background: #000000;
+  --foreground: #F4F4F4;
+  --sidebar: #0A0A0A;
+  --border: #2D2D2D;
+  --muted: #9CA3AF;
+  --accent: #F3F724;
+  
+  /* Status Colors */
+  --success: #22C55E;
+  --warning: #F3F724;
+  --error: #EF4444;
+  --info: #5B5B5B;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-light-gray: var(--light-gray);
+  --color-dark-gray: var(--dark-gray);
+  --color-yellow: var(--yellow);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+}
+
+html {
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono), 'JetBrains Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* JetBrains Mono font weights */
+.font-semibold {
+  font-weight: 600;
+}
+
+.font-regular {
+  font-weight: 400;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dark-gray);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--medium-gray);
+}
+
+/* iii Logo animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.logo-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.logo-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.logo-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Button styles */
+.btn-primary {
+  background: var(--white);
+  color: var(--black);
+  padding: 8px 16px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: all 0.15s ease;
+}
+
+.btn-primary:hover {
+  background: var(--light-gray);
+}
+
+.btn-accent {
+  background: var(--yellow);
+  color: var(--black);
+  padding: 8px 16px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: all 0.15s ease;
+}
+
+.btn-accent:hover {
+  filter: brightness(0.9);
+}
+
+.btn-outline {
+  background: transparent;
+  color: var(--foreground);
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: all 0.15s ease;
+}
+
+.btn-outline:hover {
+  background: var(--dark-gray);
+  border-color: var(--medium-gray);
+}
+
+/* Status indicators */
+.status-online {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.status-offline {
+  background: var(--error);
+}
+
+.status-pending {
+  background: var(--yellow);
+}
+
+/* Card hover effects */
+.card-interactive {
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.card-interactive:hover {
+  border-color: var(--medium-gray);
+  transform: translateY(-1px);
+}
+
+/* Table styles */
+.table-row {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+
+.table-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Code/monospace blocks */
+.code-block {
+  background: var(--dark-gray);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 16px;
+  font-family: var(--font-mono), 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Selection styling */
+::selection {
+  background: var(--yellow);
+  color: var(--black);
+}

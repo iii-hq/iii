@@ -16,7 +16,16 @@ useApi(
     const todoId = `todo-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
 
     if (!description) {
+      logger.error('Missing required field: description')
       return { status_code: 400, body: { error: 'Description is required' } }
+    }
+
+    if (description.length < 5) {
+      logger.warn('Todo description is very short', { length: description.length })
+    }
+
+    if (!dueDate) {
+      logger.warn('No due date specified for todo', { todoId })
     }
 
     const newTodo = {

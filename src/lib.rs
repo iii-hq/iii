@@ -11,7 +11,9 @@ pub mod modules {
     pub mod config;
     pub mod core_module;
     pub mod cron;
+    pub mod devtools;
     pub mod event;
+    pub mod management;
     pub mod observability;
     pub mod redis;
     pub mod registry;
