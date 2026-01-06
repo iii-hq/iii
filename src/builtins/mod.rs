@@ -309,9 +309,160 @@ impl BuiltInPubSubAdapter {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::modules::streams::StreamOutboundMessage;
+    use async_trait::async_trait;
+    use mockall::mock;
 
+    use super::*;
+    use crate::modules::streams::{
+        StreamOutboundMessage, adapters::StreamConnection as StreamConnectionTrait,
+    };
+
+    mock! {
+        pub StreamConnection {}
+        #[async_trait]
+        impl StreamConnectionTrait for StreamConnection {
+            async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
+            async fn cleanup(&self);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_storage_default() {
+        let storage = Storage::default();
+        assert!(storage.0.is_empty(), "Default storage should be empty");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_storage_load_storage() {
+        // Test loading from a non-existent file
+        let storage = Storage::load_storage("non_existent_file.db");
+        assert!(
+            storage.0.is_empty(),
+            "Storage should be empty for non-existent file"
+        );
+        // Test with existing file
+        let test_storage = Storage::new();
+        let test_file_path = "test_storage.db";
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&test_storage).unwrap();
+        std::fs::write(test_file_path, bytes).unwrap();
+        let loaded_storage = Storage::load_storage(test_file_path);
+        assert_eq!(loaded_storage.0.len(), 0);
+        std::fs::remove_file(test_file_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_storage_snapshot_to_storage_and_back() {
+        let mut original_store: HashMap<StoreKey, ItemsData> = HashMap::new();
+        let key = ("test_stream".to_string(), "test_group".to_string());
+        let mut items: ItemsData = HashMap::new();
+        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
+        original_store.insert(key.clone(), items.clone());
+        let storage = Storage::snapshot_to_storage(&original_store);
+        let restored_store = storage.storage_to_store();
+        assert_eq!(restored_store.len(), original_store.len());
+        assert_eq!(restored_store.get(&key).unwrap().len(), items.len());
+        assert_eq!(
+            restored_store.get(&key).unwrap().get("item1").unwrap(),
+            &serde_json::json!({"key": "value"})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_storage_save_loop_when_dirty_flag_is_true() {
+        let mut store: HashMap<StoreKey, ItemsData> = HashMap::new();
+        let key = ("test_stream".to_string(), "test_group".to_string());
+        let mut items: ItemsData = HashMap::new();
+        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
+        store.insert(key.clone(), items.clone());
+
+        let storage = Arc::new(RwLock::new(store));
+        let dirty = Arc::new(AtomicBool::new(true));
+        let test_file_path = "test_save_loop_storage.db";
+
+        let save_handle = tokio::spawn(async move {
+            BuiltinKvStore::save_loop(storage.clone(), 100, test_file_path, dirty.clone()).await;
+        });
+
+        // Wait some time to allow the save loop to run
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Check if the file was created
+        assert!(std::path::Path::new(test_file_path).exists());
+
+        // Clean up
+        save_handle.abort();
+        std::fs::remove_file(test_file_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_unsubscribe() {
+        let adapter = BuiltInPubSubAdapter::new(None);
+        let connection: Arc<dyn StreamConnection> = Arc::new(MockStreamConnection::new());
+        let topic_id = "test_topic".to_string();
+
+        adapter
+            .subscribe(topic_id.clone(), connection.clone())
+            .await;
+        {
+            let subscribers = adapter.subscribers.read().await;
+            assert!(subscribers.contains_key(&topic_id));
+            assert_eq!(subscribers.get(&topic_id).unwrap().len(), 1);
+        }
+
+        adapter.unsubscribe(topic_id.clone()).await;
+        {
+            let subscribers = adapter.subscribers.read().await;
+            assert!(!subscribers.contains_key(&topic_id));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_storage_save_in_disk_and_load() {
+        let mut store: HashMap<StoreKey, ItemsData> = HashMap::new();
+        let key = ("test_stream".to_string(), "test_group".to_string());
+        let mut items: ItemsData = HashMap::new();
+        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
+        store.insert(key.clone(), items.clone());
+
+        let storage = Arc::new(RwLock::new(store));
+        let test_file_path = "test_save_storage.db";
+
+        BuiltinKvStore::save_in_disk(storage.clone(), test_file_path)
+            .await
+            .expect("Failed to save storage to disk");
+
+        let loaded_storage = Storage::load_storage(test_file_path);
+        let restored_store = loaded_storage.storage_to_store();
+        assert_eq!(restored_store.len(), 1);
+        assert_eq!(restored_store.get(&key).unwrap().len(), items.len());
+        assert_eq!(
+            restored_store.get(&key).unwrap().get("item1").unwrap(),
+            &serde_json::json!({"key": "value"})
+        );
+
+        std::fs::remove_file(test_file_path).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_invalid_store_method() {
+        // when this happens it should default to in_memory
+        let config = serde_json::json!({
+            "store_method": "unknown_method"
+        });
+        let kv_store = BuiltinKvStore::new(Some(config));
+        assert!(kv_store.store.read().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_with_config() {
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": "test_kv_store.db",
+            "save_interval_ms": 1000
+        });
+        let kv_store = BuiltinKvStore::new(Some(config));
+        assert!(kv_store.store.read().await.is_empty());
+    }
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_pub_sub() {
         let adapter = BuiltInPubSubAdapter::new(None);
