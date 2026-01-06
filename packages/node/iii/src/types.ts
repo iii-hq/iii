@@ -104,6 +104,66 @@ export type Trigger = {
   unregister(): void
 }
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS' | 'HEAD'
+
+export type TriggerInfo = {
+  type: string
+  index: number
+}
+
+export type TriggerMetadata = {
+  type: 'api' | 'event' | 'cron'
+  index: number
+
+  path?: string
+  method?: string
+
+  topic?: string
+
+  expression?: string
+}
+
+export type TriggerInput<TBody = any> = {
+  trigger: TriggerMetadata
+  request: ApiRequest<TBody> | null
+  data: TBody | null
+}
+
+export type TriggerCondition<TInput = any> = (
+  input: TriggerInput<TInput>,
+  ctx: any,
+  trigger: TriggerInfo
+) => boolean | Promise<boolean>
+
+export type EventTrigger = {
+  type: 'event'
+  subscribes: string[]
+  conditions?: TriggerCondition[]
+}
+
+export type ApiTrigger = {
+  type: 'api'
+  path: string
+  method: HttpMethod
+  conditions?: TriggerCondition[]
+}
+
+export type CronTrigger = {
+  type: 'cron'
+  expression: string
+  conditions?: TriggerCondition[]
+}
+
+export type TriggerConfig = EventTrigger | ApiTrigger | CronTrigger
+
+export type StepConfig = {
+  name: string
+  triggers: TriggerConfig[]
+  emits?: string[]
+  description?: string
+  flows?: string[]
+}
+
 export type ApiRequest<TBody = unknown> = {
   path_params: Record<string, string>
   query_params: Record<string, string | string[]>

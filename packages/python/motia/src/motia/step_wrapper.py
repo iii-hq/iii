@@ -1,5 +1,7 @@
 """Step wrapper for registering steps with the bridge."""
 
+import asyncio
+import inspect
 import logging
 import uuid
 from typing import Any, Awaitable, Callable
@@ -7,10 +9,22 @@ from typing import Any, Awaitable, Callable
 from iii import get_context
 
 from .bridge import bridge
-from .guards import is_api_step, is_cron_step, is_event_step
 from .state import StateManager
 from .streams import Stream
-from .types import ApiRequest, ApiResponse, FlowContext, Step, StepConfig
+from .types import (
+    ApiRequest,
+    ApiResponse,
+    ApiTrigger,
+    CronTrigger,
+    EventTrigger,
+    FlowContext,
+    Step,
+    StepConfig,
+    TriggerCondition,
+    TriggerConfig,
+    TriggerInput,
+    TriggerMetadata,
+)
 from .types_stream import StreamConfig
 
 log = logging.getLogger("motia.step")
@@ -40,6 +54,40 @@ def _compose_middleware(
     return composed
 
 
+async def _evaluate_conditions(
+    conditions: list[TriggerCondition] | None,
+    trigger_input: TriggerInput[Any],
+    ctx: FlowContext[Any],
+    trigger_info: dict[str, Any],
+) -> bool:
+    """Evaluate all conditions. Returns True if all pass, False otherwise."""
+    if not conditions:
+        return True
+
+    for condition in conditions:
+        result = condition(trigger_input, ctx, trigger_info)
+        if inspect.iscoroutine(result):
+            result = await result
+        if not result:
+            return False
+
+    return True
+
+
+def _trigger_to_engine_config(trigger: TriggerConfig) -> dict[str, Any]:
+    """Convert trigger config to engine config format."""
+    if isinstance(trigger, EventTrigger):
+        return {"topic": trigger.subscribes[0] if trigger.subscribes else ""}
+    elif isinstance(trigger, ApiTrigger):
+        api_path = trigger.path
+        if api_path.startswith("/"):
+            api_path = api_path[1:]
+        return {"api_path": api_path, "http_method": trigger.method}
+    elif isinstance(trigger, CronTrigger):
+        return {"expression": trigger.expression}
+    return {}
+
+
 def step_wrapper(
     config: StepConfig,
     step_path: str,
@@ -48,92 +96,147 @@ def step_wrapper(
 ) -> None:
     """Register a step with the bridge."""
     step = Step(file_path=step_path, version="", config=config)
-    function_path = f"steps.{step.config.name}"
     state = StateManager()
     streams = streams or {}
 
     log.info(f"Step registered: {step.config.name}")
 
-    if is_api_step(step):
+    for trigger_index, trigger in enumerate(config.triggers):
+        function_path = f"steps.{step.config.name}:trigger:{trigger_index}"
+        trigger_info = {"type": trigger.type, "index": trigger_index}
+        
+        is_api_trigger = isinstance(trigger, ApiTrigger)
 
-        async def api_handler(req: dict[str, Any]) -> dict[str, Any]:
-            context_data = get_context()
+        if is_api_trigger:
 
-            async def emit(event: Any) -> None:
-                await bridge.invoke_function("emit", {"event": event})
+            async def api_handler(
+                req: dict[str, Any],
+                _trigger=trigger,
+                _trigger_index=trigger_index,
+            ) -> dict[str, Any]:
+                context_data = get_context()
 
-            context = FlowContext(
-                emit=emit,
-                trace_id=str(uuid.uuid4()),
-                state=state,
-                logger=context_data.logger,
-                streams=streams,
-            )
+                async def emit(event: Any) -> None:
+                    await bridge.invoke_function("emit", {"event": event})
 
-            motia_req = ApiRequest(
-                path_params=req.get("path_params", {}),
-                query_params=req.get("query_params", {}),
-                body=req.get("body"),
-                headers=req.get("headers", {}),
-            )
+                context = FlowContext(
+                    emit=emit,
+                    trace_id=str(uuid.uuid4()),
+                    state=state,
+                    logger=context_data.logger,
+                    streams=streams,
+                )
 
-            middlewares = getattr(step.config, "middleware", None) or []
+                motia_req = ApiRequest(
+                    path_params=req.get("path_params", {}),
+                    query_params=req.get("query_params", {}),
+                    body=req.get("body"),
+                    headers=req.get("headers", {}),
+                )
 
-            if middlewares:
-                composed = _compose_middleware(middlewares)
-                response: ApiResponse[Any] = await composed(motia_req, context, lambda: handler(motia_req, context))
-            else:
-                response = await handler(motia_req, context)
+                trigger_input = TriggerInput(
+                    trigger=TriggerMetadata(
+                        type="api",
+                        index=_trigger_index,
+                        path=_trigger.path,
+                        method=_trigger.method,
+                    ),
+                    request=motia_req,
+                    data=motia_req.body,
+                )
 
-            return {
-                "status_code": response.status,
-                "headers": response.headers,
-                "body": response.body,
-            }
+                if _trigger.conditions:
+                    passed = await _evaluate_conditions(
+                        _trigger.conditions, trigger_input, context, trigger_info
+                    )
+                    if not passed:
+                        return {
+                            "status_code": 200,
+                            "headers": {},
+                            "body": {"skipped": True, "reason": "conditions_not_met"},
+                        }
 
-        bridge.register_function(function_path, api_handler)
-    else:
+                middlewares = getattr(step.config, "middleware", None) or []
 
-        async def event_handler(req: Any) -> Any:
-            context_data = get_context()
+                if middlewares:
+                    composed = _compose_middleware(middlewares)
+                    response: ApiResponse[Any] = await composed(
+                        trigger_input, context, lambda: handler(trigger_input, context)
+                    )
+                else:
+                    response = await handler(trigger_input, context)
 
-            async def emit(event: Any) -> None:
-                await bridge.invoke_function("emit", {"event": event})
+                return {
+                    "status_code": response.status,
+                    "headers": response.headers,
+                    "body": response.body,
+                }
 
-            context = FlowContext(
-                emit=emit,
-                trace_id=str(uuid.uuid4()),
-                state=state,
-                logger=context_data.logger,
-                streams=streams,
-            )
+            bridge.register_function(function_path, api_handler)
+        else:
 
-            return await handler(req, context)
+            async def event_handler(
+                req: Any, _trigger=trigger, _trigger_index=trigger_index
+            ) -> Any:
+                context_data = get_context()
 
-        bridge.register_function(function_path, event_handler)
+                async def emit(event: Any) -> None:
+                    await bridge.invoke_function("emit", {"event": event})
 
-    # Register triggers
-    if is_api_step(step):
-        api_path = step.config.path
-        if api_path.startswith("/"):
-            api_path = api_path[1:]
+                context = FlowContext(
+                    emit=emit,
+                    trace_id=str(uuid.uuid4()),
+                    state=state,
+                    logger=context_data.logger,
+                    streams=streams,
+                )
 
+                if isinstance(_trigger, EventTrigger):
+                    trigger_input = TriggerInput(
+                        trigger=TriggerMetadata(
+                            type="event",
+                            index=_trigger_index,
+                            topic=_trigger.subscribes[0] if _trigger.subscribes else None,
+                        ),
+                        request=None,
+                        data=req,
+                    )
+                elif isinstance(_trigger, CronTrigger):
+                    trigger_input = TriggerInput(
+                        trigger=TriggerMetadata(
+                            type="cron",
+                            index=_trigger_index,
+                            expression=_trigger.expression,
+                        ),
+                        request=None,
+                        data={},
+                    )
+                else:
+                    trigger_input = TriggerInput(
+                        trigger=TriggerMetadata(
+                            type="event",
+                            index=_trigger_index,
+                        ),
+                        request=None,
+                        data=req,
+                    )
+
+                if _trigger.conditions:
+                    passed = await _evaluate_conditions(
+                        _trigger.conditions, trigger_input, context, trigger_info
+                    )
+                    if not passed:
+                        return None
+
+                return await handler(trigger_input, context)
+
+            bridge.register_function(function_path, event_handler)
+
+        engine_config = _trigger_to_engine_config(trigger)
         bridge.register_trigger(
-            trigger_type="api",
+            trigger_type=trigger.type,
             function_path=function_path,
-            config={"api_path": api_path, "http_method": step.config.method},
-        )
-    elif is_event_step(step):
-        bridge.register_trigger(
-            trigger_type="event",
-            function_path=function_path,
-            config={"topic": step.config.subscribes[0]},
-        )
-    elif is_cron_step(step):
-        bridge.register_trigger(
-            trigger_type="cron",
-            function_path=function_path,
-            config={"cron": step.config.cron},
+            config=engine_config,
         )
 
 
