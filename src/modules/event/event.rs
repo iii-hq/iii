@@ -123,6 +123,9 @@ impl TriggerRegistrator for EventCoreModule {
 
 #[async_trait]
 impl CoreModule for EventCoreModule {
+    fn name(&self) -> &'static str {
+        "EventModule"
+    }
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,
