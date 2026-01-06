@@ -23,7 +23,7 @@ pub struct AdapterEntry {
 
 #[async_trait::async_trait]
 pub trait CoreModule: Send + Sync {
-    /// Creates a module instance
+    fn name(&self) -> &'static str;
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,
@@ -40,6 +40,11 @@ pub trait CoreModule: Send + Sync {
 
     /// Initializes the module
     async fn initialize(&self) -> anyhow::Result<()>;
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::info!("Destroying module: {}", self.name());
+        Ok(())
+    }
 
     /// Registers functions to the engine
     #[allow(unused_variables)]

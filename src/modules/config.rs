@@ -112,6 +112,29 @@ fn default_module_entries() -> Vec<ModuleEntry> {
         .collect()
 }
 
+async fn shutdown_signal() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ModuleEntry {
     pub class: String,
@@ -264,6 +287,7 @@ pub struct EngineBuilder {
     address: String,
     engine: Arc<Engine>,
     registry: Arc<ModuleRegistry>,
+    modules: Vec<Arc<dyn CoreModule>>,
 }
 
 impl EngineBuilder {
@@ -274,6 +298,7 @@ impl EngineBuilder {
             address: DEFAULT_ADDRESS.to_string(),
             engine: Arc::new(Engine::new()),
             registry: Arc::new(ModuleRegistry::with_inventory()),
+            modules: Vec::new(),
         }
     }
 
@@ -331,19 +356,29 @@ impl EngineBuilder {
             tracing::debug!("Initializing module: {}", entry.class);
             module.initialize().await?;
             module.register_functions(self.engine.clone());
+            self.modules.push(Arc::from(module));
         }
 
         Ok(self)
+    }
+
+    pub async fn destroy(self) -> anyhow::Result<()> {
+        let destroy_futures = self.modules.iter().rev().map(|module| module.destroy());
+        futures::future::join_all(destroy_futures).await;
+        Ok(())
     }
 
     /// Starts the engine server
     pub async fn serve(self) -> anyhow::Result<()> {
         let engine = self.engine.clone();
 
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
         // Start function notification task
         let engine_clone = engine.clone();
+        let notify_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            engine_clone.notify_new_functions(5).await;
+            engine_clone.notify_new_functions(5, notify_shutdown).await;
         });
 
         // Setup router
@@ -353,12 +388,19 @@ impl EngineBuilder {
         let listener = TcpListener::bind(&self.address).await?;
         tracing::info!("Engine listening on address: {}", self.address.purple());
 
+        let shutdown = async move {
+            let _ = shutdown_signal().await;
+            let _ = shutdown_tx.send(true);
+        };
+
         axum::serve(
             listener,
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
+        .with_graceful_shutdown(shutdown)
         .await?;
 
+        self.destroy().await?;
         Ok(())
     }
 }
@@ -368,7 +410,6 @@ impl Default for EngineBuilder {
         Self::new()
     }
 }
-
 // =============================================================================
 // WebSocket Handler
 // =============================================================================

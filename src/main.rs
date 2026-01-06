@@ -25,5 +25,6 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .await?
         .serve()
-        .await
+        .await?;
+    Ok(())
 }

@@ -214,6 +214,9 @@ pub struct CustomEventModule {
 
 #[async_trait]
 impl CoreModule for CustomEventModule {
+    fn name(&self) -> &'static str {
+        "CustomEventModule"
+    }
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn create(
