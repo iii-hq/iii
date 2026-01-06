@@ -226,6 +226,7 @@ impl BuiltinKvStore {
         let key = (stream_name.to_string(), group_id.to_string());
         let mut store = self.store.write().await;
         if let Some(group) = store.get_mut(&key) {
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
             group.remove(item_id)
         } else {
             None

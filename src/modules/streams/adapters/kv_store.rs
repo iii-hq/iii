@@ -43,14 +43,14 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         self.pub_sub.send_msg(message);
     }
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
-        self.storage
-            .set(stream_name, group_id, item_id, data.clone())
-            .await;
         let exist = self
             .storage
             .get(stream_name, group_id, item_id)
             .await
             .is_some();
+        self.storage
+            .set(stream_name, group_id, item_id, data.clone())
+            .await;
         let event = if exist {
             StreamOutboundMessage::Update { data }
         } else {
@@ -72,6 +72,16 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
         self.storage.delete(stream_name, group_id, item_id).await;
+        self.emit_event(StreamWrapperMessage {
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            id: Some(item_id.to_string()),
+            event: StreamOutboundMessage::Delete {
+                data: serde_json::json!({ "id": item_id }),
+            },
+        })
+        .await;
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
