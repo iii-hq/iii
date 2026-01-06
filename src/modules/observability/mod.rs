@@ -215,6 +215,9 @@ impl LoggerCoreModule {
 
 #[async_trait]
 impl CoreModule for LoggerCoreModule {
+    fn name(&self) -> &'static str {
+        "LoggerModule"
+    }
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,

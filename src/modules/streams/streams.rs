@@ -107,6 +107,9 @@ async fn ws_handler(
 
 #[async_trait::async_trait]
 impl CoreModule for StreamCoreModule {
+    fn name(&self) -> &'static str {
+        "StreamCoreModule"
+    }
     async fn create(
         engine: Arc<Engine>,
         config: Option<Value>,

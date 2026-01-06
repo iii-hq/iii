@@ -13,6 +13,9 @@ pub struct ExecCoreModule {
 
 #[async_trait::async_trait]
 impl CoreModule for ExecCoreModule {
+    fn name(&self) -> &'static str {
+        "ExecModule"
+    }
     async fn create(
         _engine: Arc<Engine>,
         config: Option<Value>,
