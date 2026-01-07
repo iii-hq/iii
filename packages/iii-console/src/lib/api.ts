@@ -2,7 +2,7 @@
 
 const DEVTOOLS_API = 'http://localhost:3111/_console';
 
-const MANAGEMENT_API = 'http://localhost:9001/_/api';
+const MANAGEMENT_API = 'http://localhost:3111/_console';
 
 
 export interface SystemStatus {

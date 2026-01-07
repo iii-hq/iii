@@ -38,7 +38,7 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-error: var(--error);
-}
+  }
 
 html {
   font-feature-settings: "liga" 1, "calt" 1;

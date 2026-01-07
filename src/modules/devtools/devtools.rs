@@ -53,6 +53,32 @@ pub struct GetMetricsHistoryInput {
     pub limit: Option<usize>,
 }
 
+#[derive(Deserialize)]
+pub struct StreamGroupInput {
+    #[serde(default)]
+    pub body: StreamGroupBody,
+}
+
+#[derive(Deserialize, Default)]
+pub struct StreamGroupBody {
+    #[serde(default)]
+    pub stream_name: String,
+    #[serde(default)]
+    pub group_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct StreamNameInput {
+    #[serde(default)]
+    pub body: StreamNameBody,
+}
+
+#[derive(Deserialize, Default)]
+pub struct StreamNameBody {
+    #[serde(default)]
+    pub stream_name: String,
+}
+
 #[derive(Serialize, Clone)]
 pub struct StatusResponse {
     pub status: String,
@@ -452,24 +478,52 @@ impl DevToolsModule {
         let mut streams = Vec::new();
         let mut seen_streams: std::collections::HashSet<String> = std::collections::HashSet::new();
         
-        for entry in self.engine.functions.iter() {
-            let path = entry.value()._function_path.clone();
-            if path.starts_with("streams.") && path.contains("(") && path.contains(")") {
-                if let Some(start) = path.find('(') {
-                    if let Some(end) = path.find(')') {
-                        let stream_name = &path[start + 1..end];
-                        if !stream_name.is_empty() && !seen_streams.contains(stream_name) {
-                            seen_streams.insert(stream_name.to_string());
-                            let internal = stream_name.starts_with("iii:");
-                            streams.push(json!({
-                                "id": stream_name,
-                                "type": "state",
-                                "description": format!("User stream: {}", stream_name),
-                                "groups": ["data"],
-                                "status": "active",
-                                "internal": internal
-                            }));
+        if let Ok(Some(result)) = self.engine.invoke_function("streams.listStreams", json!({})).await {
+            if let Some(stream_names) = result.get("streams").and_then(|s| s.as_array()) {
+                for stream_name_value in stream_names {
+                    if let Some(stream_name) = stream_name_value.as_str() {
+                        if seen_streams.contains(stream_name) {
+                            continue;
                         }
+                        seen_streams.insert(stream_name.to_string());
+                        
+                        let internal = stream_name == "iii" || stream_name.starts_with("iii:") || stream_name.starts_with("iii.");
+                        
+                        let mut group_ids = Vec::new();
+                        let mut total_count: usize = 0;
+                        let stream_type = if stream_name == "iii.logs" { "logs" } else { "state" };
+                        
+                        if let Ok(Some(groups_result)) = self.engine.invoke_function("streams.listGroups", json!({"stream_name": stream_name})).await {
+                            if let Some(groups) = groups_result.get("groups").and_then(|g| g.as_array()) {
+                                for g in groups {
+                                    if let Some(id) = g.get("id").and_then(|id| id.as_str()) {
+                                        group_ids.push(id.to_string());
+                                    }
+                                    if let Some(count) = g.get("count").and_then(|c| c.as_u64()) {
+                                        total_count += count as usize;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        let description = if internal {
+                            if stream_name == "iii.logs" {
+                                format!("Application logs ({} entries)", total_count)
+                            } else {
+                                format!("System stream: {}", stream_name)
+                            }
+                        } else {
+                            format!("User stream ({} items)", total_count)
+                        };
+                        
+                        streams.push(json!({
+                            "id": stream_name,
+                            "type": stream_type,
+                            "description": description,
+                            "groups": group_ids,
+                            "status": "active",
+                            "internal": internal
+                        }));
                     }
                 }
             }
@@ -502,6 +556,81 @@ impl DevToolsModule {
             "count": streams.len(),
             "websocket_port": 31112
         }))))
+    }
+
+    #[function(name = "devtools.stream_group", description = "Get contents of a stream group")]
+    pub async fn get_stream_group(&self, input: StreamGroupInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        let stream_name = input.body.stream_name;
+        let group_id = input.body.group_id;
+
+        let invoke_input = json!({
+            "stream_name": stream_name,
+            "group_id": group_id
+        });
+
+        match self.engine.invoke_function("streams.getGroup", invoke_input).await {
+            Ok(Some(result)) => {
+                let items: Vec<Value> = if let Ok(items) = serde_json::from_value(result.clone()) {
+                    items
+                } else {
+                    vec![result]
+                };
+                
+                FunctionResult::Success(Some(api_response(json!({
+                    "stream_name": stream_name,
+                    "group_id": group_id,
+                    "items": items,
+                    "count": items.len()
+                }))))
+            }
+            Ok(None) => {
+                FunctionResult::Success(Some(api_response(json!({
+                    "stream_name": stream_name,
+                    "group_id": group_id,
+                    "items": [],
+                    "count": 0
+                }))))
+            }
+            Err(e) => {
+                FunctionResult::Success(Some(api_response(json!({
+                    "stream_name": stream_name,
+                    "group_id": group_id,
+                    "items": [],
+                    "count": 0,
+                    "error": format!("{:?}", e)
+                }))))
+            }
+        }
+    }
+
+    #[function(name = "devtools.stream_groups", description = "List all groups in a stream")]
+    pub async fn list_stream_groups(&self, input: StreamNameInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        let stream_name = input.body.stream_name;
+        
+        let invoke_input = json!({
+            "stream_name": stream_name
+        });
+        
+        match self.engine.invoke_function("streams.listGroups", invoke_input).await {
+            Ok(Some(result)) => {
+                FunctionResult::Success(Some(api_response(result)))
+            }
+            Ok(None) => {
+                FunctionResult::Success(Some(api_response(json!({
+                    "stream_name": stream_name,
+                    "groups": [],
+                    "count": 0
+                }))))
+            }
+            Err(e) => {
+                FunctionResult::Success(Some(api_response(json!({
+                    "stream_name": stream_name,
+                    "groups": [],
+                    "count": 0,
+                    "error": format!("{:?}", e)
+                }))))
+            }
+        }
     }
 
     
@@ -713,6 +842,8 @@ impl DevToolsModule {
             ("GET", "metrics/history", "devtools.metrics_history"),
             ("GET", "events", "devtools.events_info"),
             ("GET", "streams", "devtools.streams"),
+            ("POST", "streams/group", "devtools.stream_group"),
+            ("POST", "streams/groups", "devtools.stream_groups"),
             ("GET", "logs", "devtools.logs"),
             ("GET", "adapters", "devtools.adapters"),
         ];

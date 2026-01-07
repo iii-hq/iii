@@ -14,6 +14,10 @@ use axum::{
 use chrono::Utc;
 use colored::Colorize;
 use function_macros::{function, service};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+pub struct EmptyInput {}
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -29,7 +33,7 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamSetInput,
+                StreamGetInput, StreamListGroupsInput, StreamSetInput,
             },
             trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
             utils::{headers_to_map, query_to_multi_map},
@@ -393,6 +397,41 @@ impl StreamCoreModule {
                 FunctionResult::Success(serde_json::to_value(values).ok())
             }
         }
+    }
+
+    #[function(name = "streams.listGroups", description = "List all groups in a stream")]
+    pub async fn list_groups(
+        &self,
+        input: StreamListGroupsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let stream_name = input.stream_name;
+        let adapter = self.adapter.clone();
+
+        let groups = adapter.list_groups(&stream_name).await;
+        let groups_json: Vec<Value> = groups
+            .into_iter()
+            .map(|(id, count)| serde_json::json!({ "id": id, "count": count }))
+            .collect();
+
+        FunctionResult::Success(Some(serde_json::json!({
+            "stream_name": stream_name,
+            "groups": groups_json,
+            "count": groups_json.len()
+        })))
+    }
+
+    #[function(name = "streams.listStreams", description = "List all streams")]
+    pub async fn list_streams(
+        &self,
+        _input: EmptyInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let adapter = self.adapter.clone();
+        let stream_names = adapter.list_streams().await;
+
+        FunctionResult::Success(Some(serde_json::json!({
+            "streams": stream_names,
+            "count": stream_names.len()
+        })))
     }
 }
 

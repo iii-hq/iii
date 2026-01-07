@@ -53,7 +53,7 @@ export function Sidebar() {
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const res = await fetch('http://localhost:9001/_/api/status');
+        const res = await fetch('http://localhost:3111/_console/health');
         setIsOnline(res.ok);
       } catch {
         setIsOnline(false);
@@ -123,7 +123,7 @@ export function Sidebar() {
           </div>
         </div>
         <div className="mt-3 text-[9px] text-muted/60 tracking-wide font-mono">
-          v0.0.0 • localhost:9001
+          v0.0.0 • localhost:3111
         </div>
       </div>
     </div>

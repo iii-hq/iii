@@ -188,6 +188,78 @@ impl StreamAdapter for RedisAdapter {
         }
     }
 
+    async fn list_groups(&self, stream_name: &str) -> Vec<(String, usize)> {
+        let pattern = format!("stream:{}:*", stream_name);
+        let mut conn = self.publisher.lock().await;
+
+        let keys: Vec<String> = match redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(&mut *conn)
+            .await
+        {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::error!(error = %e, stream_name = %stream_name, "Failed to list stream groups from Redis");
+                return Vec::new();
+            }
+        };
+
+        if keys.is_empty() {
+            return Vec::new();
+        }
+
+        let prefix = format!("stream:{}:", stream_name);
+        let mut pipe = redis::pipe();
+        let mut group_ids: Vec<String> = Vec::new();
+
+        for key in &keys {
+            if let Some(group_id) = key.strip_prefix(&prefix) {
+                pipe.hlen(key);
+                group_ids.push(group_id.to_string());
+            }
+        }
+
+        let counts: Vec<usize> = match pipe.query_async(&mut *conn).await {
+            Ok(counts) => counts,
+            Err(_) => vec![0; group_ids.len()],
+        };
+
+        let mut groups: Vec<(String, usize)> = group_ids
+            .into_iter()
+            .zip(counts)
+            .collect();
+
+        groups.sort_by(|a, b| b.1.cmp(&a.1));
+        groups
+    }
+
+    async fn list_streams(&self) -> Vec<String> {
+        let mut conn = self.publisher.lock().await;
+        let keys: Vec<String> = match redis::cmd("KEYS")
+            .arg("stream:*")
+            .query_async(&mut *conn)
+            .await
+        {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to list streams from Redis");
+                return Vec::new();
+            }
+        };
+
+        let mut stream_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for key in keys {
+            if let Some(rest) = key.strip_prefix("stream:") {
+                if let Some(colon_pos) = rest.find(':') {
+                    let stream_name = &rest[..colon_pos];
+                    stream_names.insert(stream_name.to_string());
+                }
+            }
+        }
+
+        stream_names.into_iter().collect()
+    }
+
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
         let mut connections = self.connections.write().await;
         connections.insert(id, connection.clone());

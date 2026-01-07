@@ -1,5 +1,4 @@
 import { bridge } from './bridge'
-import { Todo } from './types'
 
 export const streams = {
   get: async (stream_name: string, group_id: string, item_id: string): Promise<any | null> => {
@@ -16,32 +15,21 @@ export const streams = {
   },
 }
 
-let todoState: Todo[] = []
+export const emit = async (topic: string, data: any): Promise<void> => {
+  return bridge.invokeFunction('emit', { topic, data })
+}
 
-bridge.createStream('todo', {
-  get: async (input) => todoState.find((todo) => todo.id === input.item_id),
-  set: async (input) => {
-    const existingTodo = todoState.find((todo) => todo.id === input.item_id)
-
-    if (existingTodo) {
-      todoState = todoState.map((todo) => (todo.id === input.item_id ? { ...todo, ...input.data } : todo))
-      return { existed: true, data: existingTodo }
-    }
-
-    const newTodo = {
-      id: input.item_id,
-      groupId: input.group_id,
-      description: input.data.description,
-      dueDate: input.data.dueDate,
-      completedAt: null,
-    }
-
-    todoState.push(newTodo)
-
-    return { existed: false, data: newTodo }
+export const logger = {
+  info: (message: string, context?: Record<string, any>): void => {
+    bridge.invokeFunctionAsync('logger.info', { message, function_name: 'todo-app', data: context || {}, trace_id: 'app' })
   },
-  delete: async (input) => {
-    todoState = todoState.filter((todo) => todo.id !== input.item_id)
+  warn: (message: string, context?: Record<string, any>): void => {
+    bridge.invokeFunctionAsync('logger.warn', { message, function_name: 'todo-app', data: context || {}, trace_id: 'app' })
   },
-  getGroup: async (input) => todoState.filter((todo) => todo.groupId === input.group_id),
-})
+  error: (message: string, context?: Record<string, any>): void => {
+    bridge.invokeFunctionAsync('logger.error', { message, function_name: 'todo-app', data: context || {}, trace_id: 'app' })
+  },
+  debug: (message: string, context?: Record<string, any>): void => {
+    bridge.invokeFunctionAsync('logger.debug', { message, function_name: 'todo-app', data: context || {}, trace_id: 'app' })
+  },
+}

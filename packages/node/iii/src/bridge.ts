@@ -11,8 +11,6 @@ import {
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
 } from './bridge-types'
-import { withContext } from './context'
-import { Logger, type LoggerParams } from './logger'
 import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
@@ -79,13 +77,7 @@ export class Bridge implements BridgeClient {
     this.sendMessage(MessageType.RegisterFunction, message, true)
     this.functions.set(message.function_path, {
       message: { ...message, type: MessageType.RegisterFunction },
-      handler: async (input) => {
-        const invoke = (function_path: string, params: LoggerParams) => this.invokeFunctionAsync(function_path, params)
-        const logger = new Logger(invoke, crypto.randomUUID(), message.function_path)
-        const context = { logger }
-
-        return withContext(async () => await handler(input), context)
-      },
+      handler: async (input) => handler(input),
     })
   }
 
@@ -100,6 +92,13 @@ export class Bridge implements BridgeClient {
     return new Promise<TOutput>((resolve, reject) => {
       this.sendMessage(MessageType.InvokeFunction, { invocation_id, function_path, data })
       this.invocations.set(invocation_id, { resolve, reject })
+      
+      setTimeout(() => {
+        if (this.invocations.has(invocation_id)) {
+          this.invocations.delete(invocation_id)
+          reject(new Error(`Function invocation timeout: ${function_path}`))
+        }
+      }, 30000)
     })
   }
 
