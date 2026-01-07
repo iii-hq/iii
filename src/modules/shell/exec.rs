@@ -2,10 +2,6 @@ use std::{path::Path, process::Stdio, sync::Arc};
 
 use anyhow::Result;
 use colored::Colorize;
-use nix::{
-    sys::signal::{Signal, kill},
-    unistd::Pid,
-};
 use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode},
@@ -152,7 +148,6 @@ impl Exec {
 
             // On Windows, create a new process group for easier termination of child process
             unsafe {
-                use std::os::windows::process::CommandExt;
                 c.creation_flags(winapi::um::winbase::CREATE_NEW_PROCESS_GROUP);
             }
             c
@@ -189,13 +184,51 @@ impl Exec {
 
     pub async fn stop_process(&self) {
         if let Some(mut child) = self.child.lock().await.take() {
-            let pid = match child.id() {
-                Some(id) => Pid::from_raw(id as i32),
-                None => return,
-            };
+            #[cfg(not(windows))]
+            {
+                use nix::{
+                    sys::signal::{Signal, kill},
+                    unistd::Pid,
+                };
 
-            // 1️⃣ Ask politely
-            let _ = kill(pid, Signal::SIGTERM);
+                let pid = match child.id() {
+                    Some(id) => Pid::from_raw(id as i32),
+                    None => return,
+                };
+
+                // 1️⃣ Ask politely
+                let _ = kill(pid, Signal::SIGTERM);
+            }
+
+            #[cfg(windows)]
+            {
+                use winapi::{
+                    shared::minwindef::{FALSE, TRUE},
+                    um::wincon::{
+                        AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
+                        SetConsoleCtrlHandler,
+                    },
+                };
+
+                // 1️⃣ Ask politely - send CTRL_BREAK_EVENT to the process group
+                if let Some(pid) = child.id() {
+                    unsafe {
+                        // Attach to the child's console to send the signal
+                        if AttachConsole(pid) != 0 {
+                            // Disable our own Ctrl+C handler temporarily to avoid killing ourselves
+                            SetConsoleCtrlHandler(None, TRUE);
+
+                            // Send CTRL_BREAK_EVENT to the process group (0 = current process group)
+                            // This is the Windows equivalent of SIGTERM
+                            GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+
+                            // Re-enable our handler and detach
+                            SetConsoleCtrlHandler(None, FALSE);
+                            FreeConsole();
+                        }
+                    }
+                }
+            }
 
             // 2️⃣ Wait a bit
             let exited = timeout(Duration::from_secs(3), child.wait()).await;
