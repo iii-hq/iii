@@ -1,10 +1,96 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, StatCard, Badge, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/card";
-import { Activity, Zap, Server, Clock, ArrowRight, Users, Wifi, WifiOff, Globe, Calendar, MessageSquare, Database, Radio, ChevronRight } from "lucide-react";
-import { fetchStatus, fetchTriggers, fetchFunctions, fetchStreams, getConnectionStatus, subscribeToMetricsStream, SystemStatus, TriggerInfo, FunctionInfo, StreamInfo, MetricsSnapshot } from "@/lib/api";
+import { Activity, Zap, Server, Clock, ArrowRight, Users, Wifi, WifiOff, Globe, Calendar, MessageSquare, Database, Radio, ChevronRight, TrendingUp, BarChart3 } from "lucide-react";
+import { fetchStatus, fetchTriggers, fetchFunctions, fetchStreams, fetchMetricsHistory, getConnectionStatus, subscribeToMetricsStream, SystemStatus, TriggerInfo, FunctionInfo, StreamInfo, MetricsSnapshot } from "@/lib/api";
 import Link from 'next/link';
+
+interface MiniChartProps {
+  data: number[];
+  color: string;
+  height?: number;
+}
+
+function MiniChart({ data, color, height = 40 }: MiniChartProps) {
+  if (data.length < 2) {
+    return (
+      <div className="flex items-center justify-center h-10 text-[10px] text-muted">
+        Collecting data...
+      </div>
+    );
+  }
+
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+
+  const points = data.map((value, i) => {
+    const x = (i / (data.length - 1)) * 100;
+    const y = ((max - value) / range) * height;
+    return `${x},${y}`;
+  }).join(' ');
+
+  const areaPoints = `0,${height} ${points} 100,${height}`;
+
+  return (
+    <svg viewBox={`0 0 100 ${height}`} className="w-full h-full" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id={`gradient-${color}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polygon
+        points={areaPoints}
+        fill={`url(#gradient-${color})`}
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  );
+}
+
+interface MetricsChartProps {
+  title: string;
+  value: number | string;
+  data: number[];
+  color: string;
+  icon: React.ElementType;
+  trend?: number;
+}
+
+function MetricsChart({ title, value, data, color, icon: Icon, trend }: MetricsChartProps) {
+  return (
+    <div className="bg-dark-gray/40 rounded-xl border border-border p-4 hover:border-muted/40 transition-colors">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded-md" style={{ backgroundColor: `${color}20` }}>
+            <Icon className="w-4 h-4" style={{ color }} />
+          </div>
+          <span className="text-xs font-medium text-muted uppercase tracking-wider">{title}</span>
+        </div>
+        {trend !== undefined && trend !== 0 && (
+          <div className={`flex items-center gap-1 text-[10px] font-medium ${trend > 0 ? 'text-green-400' : 'text-red-400'}`}>
+            <TrendingUp className={`w-3 h-3 ${trend < 0 ? 'rotate-180' : ''}`} />
+            {Math.abs(trend)}%
+          </div>
+        )}
+      </div>
+      <div className="text-2xl font-bold mb-3">{value}</div>
+      <div className="h-10">
+        <MiniChart data={data} color={color} />
+      </div>
+    </div>
+  );
+}
 
 export default function Dashboard() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
@@ -15,9 +101,15 @@ export default function Dashboard() {
   const [apiSource, setApiSource] = useState<'devtools' | 'management' | null>(null);
   const [streamConnected, setStreamConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [metricsHistory, setMetricsHistory] = useState<MetricsSnapshot[]>([]);
 
   const handleMetricsUpdate = useCallback((metrics: MetricsSnapshot) => {
     setLastUpdate(new Date());
+    
+    setMetricsHistory(prev => {
+      const updated = [...prev, metrics];
+      return updated;
+    });
     
     setStatus(prev => prev ? {
       ...prev,
@@ -44,17 +136,21 @@ export default function Dashboard() {
         const connectionStatus = await getConnectionStatus();
         setApiSource(connectionStatus.devtools ? 'devtools' : connectionStatus.management ? 'management' : null);
 
-        const [statusData, triggersData, functionsData, streamsData] = await Promise.all([
+        const [statusData, triggersData, functionsData, streamsData, historyData] = await Promise.all([
           fetchStatus().catch(() => null),
           fetchTriggers().catch(() => ({ triggers: [], count: 0 })),
           fetchFunctions().catch(() => ({ functions: [], count: 0 })),
-          fetchStreams().catch(() => ({ streams: [], count: 0 }))
+          fetchStreams().catch(() => ({ streams: [], count: 0 })),
+          fetchMetricsHistory().catch(() => ({ history: [], count: 0 }))
         ]);
 
         setStatus(statusData);
         setTriggers(triggersData?.triggers || []);
         setFunctions(functionsData?.functions || []);
         setStreams(streamsData?.streams || []);
+        if (historyData?.history) {
+          setMetricsHistory(historyData.history);
+        }
       } catch {
       } finally {
         setLoading(false);
@@ -69,12 +165,23 @@ export default function Dashboard() {
       handleMetricsUpdate,
       (allMetrics) => {
         if (allMetrics.length > 0) {
+          setMetricsHistory(allMetrics);
           const latest = allMetrics.sort((a, b) => b.timestamp - a.timestamp)[0];
-          handleMetricsUpdate(latest);
+          if (latest) {
+            setStatus(prev => prev ? {
+              ...prev,
+              functions: latest.functions_count,
+              triggers: latest.triggers_count,
+              workers: latest.workers_count,
+              uptime_seconds: latest.uptime_seconds,
+              uptime_formatted: formatUptime(latest.uptime_seconds),
+              timestamp: latest.timestamp,
+            } : prev);
+            setLastUpdate(new Date());
+          }
         }
       },
-      () => {
-      },
+      () => {},
       () => {
         setStreamConnected(true);
       },
@@ -93,9 +200,39 @@ export default function Dashboard() {
   const userTriggers = triggers.filter(t => !t.internal);
   const userFunctions = functions.filter(f => !f.internal);
 
+  const functionsData = useMemo(() => 
+    metricsHistory.map(m => m.functions_count), 
+    [metricsHistory]
+  );
+  
+  const triggersData = useMemo(() => 
+    metricsHistory.map(m => m.triggers_count), 
+    [metricsHistory]
+  );
+  
+  const workersData = useMemo(() => 
+    metricsHistory.map(m => m.workers_count), 
+    [metricsHistory]
+  );
+  
+  const uptimeData = useMemo(() => 
+    metricsHistory.map(m => m.uptime_seconds), 
+    [metricsHistory]
+  );
+
+  const calculateTrend = (data: number[]): number => {
+    if (data.length < 2) return 0;
+    const recent = data.slice(-5);
+    const older = data.slice(0, 5);
+    if (older.length === 0 || recent.length === 0) return 0;
+    const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+    if (olderAvg === 0) return 0;
+    return Math.round(((recentAvg - olderAvg) / olderAvg) * 100);
+  };
+
   return (
     <div className="p-6 space-y-6">
-      {}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
@@ -147,37 +284,65 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
-        <StatCard 
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+        <MetricsChart
           title="Functions"
           value={loading ? '—' : userFunctions.length}
-          subtitle="Your functions"
+          data={functionsData}
+          color="#22C55E"
           icon={Activity}
+          trend={calculateTrend(functionsData)}
         />
-        <StatCard 
-          title="Workers"
-          value={loading ? '—' : (status?.workers ?? 0)}
-          subtitle="Active"
-          icon={Users}
-        />
-        <StatCard 
+        <MetricsChart
           title="Triggers"
           value={loading ? '—' : userTriggers.length}
-          subtitle="Your triggers"
+          data={triggersData}
+          color="#F3F724"
           icon={Zap}
+          trend={calculateTrend(triggersData)}
         />
-        <StatCard 
+        <MetricsChart
+          title="Workers"
+          value={loading ? '—' : (status?.workers ?? 0)}
+          data={workersData}
+          color="#06B6D4"
+          icon={Users}
+          trend={calculateTrend(workersData)}
+        />
+        <MetricsChart
           title="Uptime"
           value={loading ? '—' : (status?.uptime_formatted ?? '—')}
-          subtitle="Since start"
+          data={uptimeData}
+          color="#A855F7"
           icon={Clock}
         />
+      </div>
+
+      <div className="grid gap-4 grid-cols-2">
         <StatCard 
           title="Version"
           value={loading ? '—' : (status?.version ?? '—')}
           subtitle="Engine"
           icon={Server}
         />
+        <div className="bg-dark-gray/40 rounded-xl border border-border p-4 flex items-center gap-4">
+          <div className="p-2 rounded-lg bg-primary/10">
+            <BarChart3 className="w-5 h-5 text-primary" />
+          </div>
+          <div className="flex-1">
+            <div className="text-xs text-muted uppercase tracking-wider mb-1">Metrics History</div>
+            <div className="flex items-baseline gap-2">
+              <div className="text-lg font-bold">{metricsHistory.length}</div>
+              <span className="text-xs text-muted">data points</span>
+            </div>
+          </div>
+          {streamConnected && (
+            <div className="flex items-center gap-1.5 text-xs text-green-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              Live
+            </div>
+          )}
+        </div>
       </div>
 
       <Card>
@@ -196,7 +361,6 @@ export default function Dashboard() {
           ) : (
             <div className="relative overflow-hidden">
               <div className="flex items-stretch justify-between gap-2 py-4">
-                {/* Entry Points Column */}
                 <div className="flex-1 min-w-0">
                   <div className="text-[11px] font-bold text-muted uppercase tracking-[0.2em] mb-4 text-center">Entry Points</div>
                   <div className="space-y-3">
@@ -254,7 +418,6 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                {/* Invoke Arrow */}
                 <div className="flex-shrink-0 flex items-center justify-center w-16">
                   <div className="flex flex-col items-center gap-3 opacity-60 group hover:opacity-100 transition-all duration-300">
                     <div className="text-[8px] text-muted font-bold uppercase tracking-[0.2em] bg-dark-gray px-1.5 py-0.5 rounded border border-border/60 shadow-sm group-hover:text-foreground transition-colors">
@@ -270,7 +433,6 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                {/* Functions Column */}
                 <div className="flex-1 min-w-0">
                   <div className="text-[11px] font-bold text-muted uppercase tracking-[0.2em] mb-4 text-center">Functions</div>
                   <div className="bg-dark-gray/40 border border-border/60 rounded-xl p-4 shadow-sm h-full max-h-[350px] flex flex-col">
@@ -288,7 +450,6 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                {/* Read/Write Arrow */}
                 <div className="flex-shrink-0 flex items-center justify-center w-16">
                   <div className="flex flex-col items-center gap-3 opacity-60 group hover:opacity-100 transition-all duration-300">
                     <div className="text-[8px] text-muted font-bold uppercase tracking-[0.2em] bg-dark-gray px-1.5 py-0.5 rounded border border-border/60 shadow-sm group-hover:text-foreground transition-colors">
@@ -304,7 +465,6 @@ export default function Dashboard() {
                   </div>
                 </div>
                 
-                {/* State & Streams Column */}
                 <div className="flex-1 min-w-0">
                   <div className="text-[11px] font-bold text-muted uppercase tracking-[0.2em] mb-4 text-center">State & Streams</div>
                   <div className="space-y-3">
@@ -465,7 +625,7 @@ export default function Dashboard() {
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-[10px] text-muted uppercase tracking-wider">Management</span>
-                <span className="text-xs font-mono">:9001</span>
+                <span className="text-xs font-mono">:3111</span>
               </div>
               {lastUpdate && (
                 <div className="flex justify-between items-center pt-2 border-t border-border">

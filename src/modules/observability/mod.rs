@@ -14,6 +14,7 @@ use once_cell::sync::Lazy;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -146,6 +147,7 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct LoggerCoreModule {
     adapter: Arc<dyn LoggerAdapter>,
+    engine: Arc<Engine>,
     _config: LoggerModuleConfig,
 }
 
@@ -181,6 +183,7 @@ impl LoggerCoreModule {
             )
             .await;
 
+        self.emit_log_to_stream(&input, "info").await;
         FunctionResult::NoResult
     }
 
@@ -195,6 +198,7 @@ impl LoggerCoreModule {
             )
             .await;
 
+        self.emit_log_to_stream(&input, "warn").await;
         FunctionResult::NoResult
     }
 
@@ -209,7 +213,34 @@ impl LoggerCoreModule {
             )
             .await;
 
+        self.emit_log_to_stream(&input, "error").await;
         FunctionResult::NoResult
+    }
+
+    async fn emit_log_to_stream(&self, input: &LoggerInput, level: &str) {
+        let log_id = Uuid::new_v4().to_string();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let log_data = serde_json::json!({
+            "id": log_id,
+            "traceId": input.trace_id,
+            "step": input.function_name,
+            "input": input.data,
+            "level": level,
+            "time": timestamp,
+            "msg": input.message,
+        });
+        let _ = self
+            .engine
+            .invoke_function(
+                "streams.set",
+                serde_json::json!({
+                    "stream_name": "iii.logs",
+                    "group_id": "all",
+                    "item_id": log_id,
+                    "data": log_data
+                }),
+            )
+            .await;
     }
 }
 
@@ -255,9 +286,10 @@ impl ConfigurableModule for LoggerCoreModule {
         &REGISTRY
     }
 
-    fn build(_engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
         Self {
             adapter,
+            engine,
             _config: config,
         }
     }

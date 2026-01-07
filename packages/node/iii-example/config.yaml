@@ -29,10 +29,35 @@ modules:
     config:
       level: info
       format: default
+      adapter:
+        class: modules::observability::adapters::RedisLogger
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::event::EventModule
+    config:
+      adapter:
+        class: modules::event::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::RedisCronAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::devtools::DevToolsModule
+    config:
+      enabled: true
+      api_prefix: _console
+      metrics_enabled: true
+      metrics_interval: 30
 
   - class: modules::shell::ExecModule
     config:
       watch:
         - src/**/*.ts
       exec:
-        - npm run dev
+        - bun src/index.ts
