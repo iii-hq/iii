@@ -4,16 +4,20 @@ mod registry;
 use std::sync::RwLock;
 mod config;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashSet, pin::Pin, sync::Arc};
+use std::collections::HashMap;
 
 pub use adapters::{FileLogger, RedisLogger};
 use async_trait::async_trait;
+use colored::Colorize;
 pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
+use futures::Future;
 use once_cell::sync::Lazy;
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::RwLock as TokioRwLock;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -23,7 +27,22 @@ use crate::{
         observability::registry::LoggerAdapterRegistration,
     },
     protocol::ErrorBody,
+    trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
+
+pub const LOG_TRIGGER_TYPE: &str = "onLog";
+
+pub struct LogTriggers {
+    pub triggers: Arc<TokioRwLock<HashSet<Trigger>>>,
+}
+
+impl LogTriggers {
+    pub fn new() -> Self {
+        Self {
+            triggers: Arc::new(TokioRwLock::new(HashSet::new())),
+        }
+    }
+}
 
 #[derive(Clone, Archive, RkyvSerialize, RkyvDeserialize, Debug, Serialize, Deserialize)]
 #[rkyv(compare(PartialEq), derive(Debug))]
@@ -147,6 +166,8 @@ pub trait LoggerAdapter: Send + Sync + 'static {
 pub struct LoggerCoreModule {
     adapter: Arc<dyn LoggerAdapter>,
     _config: LoggerModuleConfig,
+    triggers: Arc<LogTriggers>,
+    engine: Arc<Engine>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -181,6 +202,8 @@ impl LoggerCoreModule {
             )
             .await;
 
+        self.invoke_log_triggers(&input, "info").await;
+
         FunctionResult::NoResult
     }
 
@@ -194,6 +217,8 @@ impl LoggerCoreModule {
                 &input.data,
             )
             .await;
+
+        self.invoke_log_triggers(&input, "warn").await;
 
         FunctionResult::NoResult
     }
@@ -209,7 +234,81 @@ impl LoggerCoreModule {
             )
             .await;
 
+        self.invoke_log_triggers(&input, "error").await;
+
         FunctionResult::NoResult
+    }
+    async fn invoke_log_triggers(&self, input: &LoggerInput, level: &str) {
+        let triggers = self.triggers.triggers.read().await;
+        let id = uuid::Uuid::new_v4();
+
+        for trigger in triggers.iter() {
+            let trigger_level = trigger
+                .config
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("all");
+
+            if trigger_level == "all" || trigger_level == level {
+                let log_data = serde_json::json!({
+                    "id": id,
+                    "trace_id": input.trace_id.as_deref(),
+                    "function_name": input.function_name.as_str(),
+                    "data": input.data,
+                    "level": level,
+                    "message": input.message,
+                    "time": chrono::Utc::now().timestamp_millis(),
+                });
+
+                let engine = self.engine.clone();
+                let function_path = trigger.function_path.clone();
+
+                tokio::spawn(async move {
+                    let _ = engine.invoke_function(&function_path, log_data).await;
+                });
+            }
+        }
+    }
+}
+
+impl TriggerRegistrator for LoggerCoreModule {
+    fn register_trigger(
+        &self,
+        trigger: Trigger,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let triggers = &self.triggers.triggers;
+        let level = trigger
+            .config
+            .get("level")
+            .and_then(|v| v.as_str())
+            .unwrap_or("all")
+            .to_string();
+
+        tracing::info!(
+            "{} onLog trigger {} (level: {}) → {}",
+            "[REGISTERED]".green(),
+            trigger.id.purple(),
+            level.cyan(),
+            trigger.function_path.cyan()
+        );
+
+        Box::pin(async move {
+            triggers.write().await.insert(trigger);
+            Ok(())
+        })
+    }
+
+    fn unregister_trigger(
+        &self,
+        trigger: Trigger,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let triggers = &self.triggers.triggers;
+
+        Box::pin(async move {
+            tracing::debug!(trigger_id = %trigger.id, "Unregistering onLog trigger");
+            triggers.write().await.remove(&trigger);
+            Ok(())
+        })
     }
 }
 
@@ -230,6 +329,19 @@ impl CoreModule for LoggerCoreModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        tracing::info!("Initializing LoggerModule");
+
+        let trigger_type = TriggerType {
+            id: LOG_TRIGGER_TYPE.to_string(),
+            _description: "Log event trigger".to_string(),
+            registrator: Box::new(self.clone()),
+            worker_id: None,
+        };
+
+        let _ = self.engine.register_trigger_type(trigger_type).await;
+
+        tracing::info!("{} onLog trigger type initialized", "[READY]".green());
+
         Ok(())
     }
 }
@@ -255,10 +367,12 @@ impl ConfigurableModule for LoggerCoreModule {
         &REGISTRY
     }
 
-    fn build(_engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+    fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
         Self {
             adapter,
             _config: config,
+            triggers: Arc::new(LogTriggers::new()),
+            engine,
         }
     }
 }

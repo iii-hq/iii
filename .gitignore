@@ -7,5 +7,7 @@ worker_py/__pycache__/
 .bin/
 dist/
 .DS_Store
+.idea/
+.cursor/
 
 packages/docker/bun/iii

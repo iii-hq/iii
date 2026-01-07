@@ -23,3 +23,31 @@ export const useApi = (
 export const useFunctionsAvailable = (callback: (functions: FunctionMessage[]) => void): (() => void) => {
   return bridge.onFunctionsAvailable(callback)
 }
+
+export type LogEvent = {
+  id: string
+  data: Record<string, unknown>
+  function_name: string
+  message: string
+  time: number
+  trace_id: string
+  level: 'info' | 'warn' | 'error'
+}
+
+export type LogLevel = 'info' | 'warn' | 'error' | 'all'
+
+export const useOnLog = (
+  config: { level: LogLevel; description?: string },
+  handler: (log: LogEvent, context: Context) => Promise<void>,
+) => {
+  const function_path = `onLog.${config.level}.${Date.now()}`
+
+  bridge.registerFunction({ function_path, metadata: {} }, (log) => handler(log, getContext()))
+  bridge.registerTrigger({
+    trigger_type: 'onLog',
+    function_path,
+    config: {
+      level: config.level,
+    },
+  })
+}
