@@ -1,19 +1,10 @@
+use axum::{Json, Router, extract::Extension, response::IntoResponse, routing::get};
+use serde_json::{Value, json};
 use std::sync::Arc;
-use axum::{
-    Router,
-    extract::Extension,
-    response::IntoResponse,
-    routing::get,
-    Json,
-};
-use serde_json::{json, Value};
 use tokio::net::TcpListener;
-use tower_http::cors::{CorsLayer, Any};
+use tower_http::cors::{Any, CorsLayer};
 
-use crate::{
-    engine::Engine,
-    modules::core_module::CoreModule,
-};
+use crate::{engine::Engine, modules::core_module::CoreModule};
 
 use super::config::ManagementConfig;
 
@@ -38,10 +29,7 @@ impl CoreModule for ManagementModule {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(Box::new(Self {
-            engine,
-            config,
-        }))
+        Ok(Box::new(Self { engine, config }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -84,10 +72,10 @@ impl CoreModule for ManagementModule {
 async fn get_status(Extension(engine): Extension<Arc<Engine>>) -> impl IntoResponse {
     let worker_count = engine.worker_registry.workers.read().await.len();
     let function_count = engine.functions.iter().count();
-    
+
     Json(json!({
         "status": "ok",
-        "uptime": "TODO", 
+        "uptime": "TODO",
         "workers": worker_count,
         "functions": function_count,
         "version": env!("CARGO_PKG_VERSION")
@@ -103,17 +91,20 @@ async fn get_config(Extension(config): Extension<ManagementConfig>) -> impl Into
 
 async fn get_triggers(Extension(engine): Extension<Arc<Engine>>) -> impl IntoResponse {
     let triggers = engine.trigger_registry.triggers.read().await;
-    let list: Vec<Value> = triggers.iter().map(|pair| {
-        let t = pair.value();
-        json!({
-            "id": t.id,
-            "type": t.trigger_type,
-            "function_path": t.function_path,
-            "config": t.config,
-            "worker_id": t.worker_id
+    let list: Vec<Value> = triggers
+        .iter()
+        .map(|pair| {
+            let t = pair.value();
+            json!({
+                "id": t.id,
+                "type": t.trigger_type,
+                "function_path": t.function_path,
+                "config": t.config,
+                "worker_id": t.worker_id
+            })
         })
-    }).collect();
-    
+        .collect();
+
     Json(json!({ "triggers": list }))
 }
 

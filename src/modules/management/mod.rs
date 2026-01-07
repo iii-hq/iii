@@ -8,4 +8,3 @@ crate::register_module!(
     <ManagementModule as crate::modules::core_module::CoreModule>::make_module,
     enabled_by_default = true
 );
-

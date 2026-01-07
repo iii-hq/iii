@@ -25,4 +25,3 @@ impl Default for ManagementConfig {
         }
     }
 }
-
