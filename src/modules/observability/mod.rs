@@ -36,6 +36,12 @@ pub struct LogTriggers {
     pub triggers: Arc<TokioRwLock<HashSet<Trigger>>>,
 }
 
+impl Default for LogTriggers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogTriggers {
     pub fn new() -> Self {
         Self {
