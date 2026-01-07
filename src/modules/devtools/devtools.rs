@@ -557,13 +557,9 @@ impl DevToolsModule {
 
                     if let Ok(Some(groups_result)) = self
                         .engine
-                        .invoke_function(
-                            "streams.listGroups",
-                            json!({"stream_name": stream_name}),
-                        )
+                        .invoke_function("streams.listGroups", json!({"stream_name": stream_name}))
                         .await
-                        && let Some(groups) =
-                            groups_result.get("groups").and_then(|g| g.as_array())
+                        && let Some(groups) = groups_result.get("groups").and_then(|g| g.as_array())
                     {
                         for g in groups {
                             if let Some(id) = g.get("id").and_then(|id| id.as_str()) {
