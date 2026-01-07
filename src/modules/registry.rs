@@ -58,20 +58,20 @@ pub struct ModuleRegistration {
 
 #[macro_export]
 macro_rules! register_module {
-    ($class:expr, $factory:expr, enabled_by_default = $enabled_by_default:expr) => {
+    ($class:expr, $module:ty, enabled_by_default = $enabled_by_default:expr) => {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
-                factory: $factory,
+                factory: < $module as crate::modules::core_module::CoreModule >::make_module,
                 is_default: $enabled_by_default,
             }
         }
     };
-    ($class:expr, $factory:expr) => {
+    ($class:expr, $module:ty) => {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
-                factory: $factory,
+                factory: < $module as crate::modules::core::CoreModule >::make_module,
                 is_default: false,
             }
         }

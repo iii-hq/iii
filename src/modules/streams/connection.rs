@@ -96,10 +96,14 @@ impl SocketStreamConnection {
             if trigger.trigger_type == event_type {
                 let trigger = trigger.clone();
 
+                tracing::debug!(function_path = %trigger.function_path, event_type = ?event_type, "Invoking trigger");
+
                 let call_result = self
                     .engine
                     .invoke_function(&trigger.function_path, event_value.clone())
                     .await;
+
+                tracing::debug!(call_result = ?call_result, "Call result");
 
                 match call_result {
                     Ok(Some(call_result)) => {
@@ -263,6 +267,9 @@ impl StreamConnection for SocketStreamConnection {
 
         for subscription in subscriptions.iter() {
             let subscription = subscription.value();
+
+            tracing::info!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
+
             let _ = self
                 .handle_join_leave(&StreamIncomingMessage::Leave {
                     data: StreamIncomingMessageData {

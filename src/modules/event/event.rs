@@ -185,6 +185,6 @@ impl ConfigurableModule for EventCoreModule {
 
 crate::register_module!(
     "modules::event::EventModule",
-    <EventCoreModule as CoreModule>::make_module,
+    EventCoreModule,
     enabled_by_default = true
 );

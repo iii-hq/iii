@@ -233,6 +233,22 @@ impl StreamAdapter for RedisAdapter {
             }
         }
     }
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::debug!("Destroying RedisAdapter");
+
+        let mut writer = self.connections.write().await;
+        let connections = writer.values().collect::<Vec<_>>();
+
+        for connection in connections {
+            tracing::info!("Cleaning up connection");
+            connection.cleanup().await;
+        }
+
+        writer.clear();
+
+        Ok(())
+    }
 }
 
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
