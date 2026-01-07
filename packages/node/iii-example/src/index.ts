@@ -155,7 +155,7 @@ useApi(
       }
     }
     logger.warn('Complete todo failed - not found', { todoId })
-    return { status_code: 404, body: { error: 'Todo not found' } }
+      return { status_code: 404, body: { error: 'Todo not found' } }
   },
 )
 

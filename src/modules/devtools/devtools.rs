@@ -133,6 +133,7 @@ fn api_response(body: Value) -> Value {
     })
 }
 
+#[allow(dead_code)]
 fn api_error(code: u16, message: &str) -> Value {
     json!({
         "status_code": code,
@@ -533,68 +534,65 @@ impl DevToolsModule {
             .engine
             .invoke_function("streams.listStreams", json!({}))
             .await
+            && let Some(stream_names) = result.get("streams").and_then(|s| s.as_array())
         {
-            if let Some(stream_names) = result.get("streams").and_then(|s| s.as_array()) {
-                for stream_name_value in stream_names {
-                    if let Some(stream_name) = stream_name_value.as_str() {
-                        if seen_streams.contains(stream_name) {
-                            continue;
-                        }
-                        seen_streams.insert(stream_name.to_string());
-
-                        let internal = stream_name == "iii"
-                            || stream_name.starts_with("iii:")
-                            || stream_name.starts_with("iii.");
-
-                        let mut group_ids = Vec::new();
-                        let mut total_count: usize = 0;
-                        let stream_type = if stream_name == "iii.logs" {
-                            "logs"
-                        } else {
-                            "state"
-                        };
-
-                        if let Ok(Some(groups_result)) = self
-                            .engine
-                            .invoke_function(
-                                "streams.listGroups",
-                                json!({"stream_name": stream_name}),
-                            )
-                            .await
-                        {
-                            if let Some(groups) =
-                                groups_result.get("groups").and_then(|g| g.as_array())
-                            {
-                                for g in groups {
-                                    if let Some(id) = g.get("id").and_then(|id| id.as_str()) {
-                                        group_ids.push(id.to_string());
-                                    }
-                                    if let Some(count) = g.get("count").and_then(|c| c.as_u64()) {
-                                        total_count += count as usize;
-                                    }
-                                }
-                            }
-                        }
-
-                        let description = if internal {
-                            if stream_name == "iii.logs" {
-                                format!("Application logs ({} entries)", total_count)
-                            } else {
-                                format!("System stream: {}", stream_name)
-                            }
-                        } else {
-                            format!("User stream ({} items)", total_count)
-                        };
-
-                        streams.push(json!({
-                            "id": stream_name,
-                            "type": stream_type,
-                            "description": description,
-                            "groups": group_ids,
-                            "status": "active",
-                            "internal": internal
-                        }));
+            for stream_name_value in stream_names {
+                if let Some(stream_name) = stream_name_value.as_str() {
+                    if seen_streams.contains(stream_name) {
+                        continue;
                     }
+                    seen_streams.insert(stream_name.to_string());
+
+                    let internal = stream_name == "iii"
+                        || stream_name.starts_with("iii:")
+                        || stream_name.starts_with("iii.");
+
+                    let mut group_ids = Vec::new();
+                    let mut total_count: usize = 0;
+                    let stream_type = if stream_name == "iii.logs" {
+                        "logs"
+                    } else {
+                        "state"
+                    };
+
+                    if let Ok(Some(groups_result)) = self
+                        .engine
+                        .invoke_function(
+                            "streams.listGroups",
+                            json!({"stream_name": stream_name}),
+                        )
+                        .await
+                        && let Some(groups) =
+                            groups_result.get("groups").and_then(|g| g.as_array())
+                    {
+                        for g in groups {
+                            if let Some(id) = g.get("id").and_then(|id| id.as_str()) {
+                                group_ids.push(id.to_string());
+                            }
+                            if let Some(count) = g.get("count").and_then(|c| c.as_u64()) {
+                                total_count += count as usize;
+                            }
+                        }
+                    }
+
+                    let description = if internal {
+                        if stream_name == "iii.logs" {
+                            format!("Application logs ({} entries)", total_count)
+                        } else {
+                            format!("System stream: {}", stream_name)
+                        }
+                    } else {
+                        format!("User stream ({} items)", total_count)
+                    };
+
+                    streams.push(json!({
+                        "id": stream_name,
+                        "type": stream_type,
+                        "description": description,
+                        "groups": group_ids,
+                        "status": "active",
+                        "internal": internal
+                    }));
                 }
             }
         }
@@ -731,12 +729,11 @@ impl DevToolsModule {
             let mut logs: Vec<Value> = Vec::new();
             for log_str in log_strings.iter().rev() {
                 if let Ok(entry) = serde_json::from_str::<Value>(log_str) {
-                    if level != "all" {
-                        if let Some(log_level) = entry.get("level").and_then(|l| l.as_str()) {
-                            if log_level != level {
-                                continue;
-                            }
-                        }
+                    if level != "all"
+                        && let Some(log_level) = entry.get("level").and_then(|l| l.as_str())
+                        && log_level != level
+                    {
+                        continue;
                     }
                     logs.push(entry);
                 }
@@ -963,7 +960,7 @@ impl DevToolsModule {
 
     async fn register_metrics_cron(&self) -> anyhow::Result<()> {
         let interval = self.config.metrics_interval;
-        let cron_expr = format!("*/{} * * * * *", interval.min(59).max(1));
+        let cron_expr = format!("*/{} * * * * *", interval.clamp(1, 59));
 
         let trigger = Trigger {
             id: "devtools-metrics-cron".to_string(),

@@ -234,11 +234,11 @@ impl StreamAdapter for RedisAdapter {
 
         let mut stream_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for key in keys {
-            if let Some(rest) = key.strip_prefix("stream:") {
-                if let Some(colon_pos) = rest.find(':') {
-                    let stream_name = &rest[..colon_pos];
-                    stream_names.insert(stream_name.to_string());
-                }
+            if let Some(rest) = key.strip_prefix("stream:")
+                && let Some(colon_pos) = rest.find(':')
+            {
+                let stream_name = &rest[..colon_pos];
+                stream_names.insert(stream_name.to_string());
             }
         }
 
