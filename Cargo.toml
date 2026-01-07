@@ -44,3 +44,6 @@ regex = "1"
 notify = "8.2.0"
 inventory = "0.3"
 rkyv = "0.8.12"
+
+[dev-dependencies]
+mockall = "0.13"

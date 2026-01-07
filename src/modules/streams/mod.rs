@@ -1,4 +1,4 @@
-mod adapters;
+pub mod adapters;
 mod config;
 mod connection;
 mod socket;

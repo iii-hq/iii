@@ -29,14 +29,14 @@ pub enum StreamIncomingMessage {
     Leave { data: StreamIncomingMessageData },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventData {
     #[serde(rename = "type")]
     pub event_type: String,
     pub data: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamOutboundMessage {
     Unauthorized {},

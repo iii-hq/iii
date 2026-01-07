@@ -1,3 +1,4 @@
+pub mod kv_store;
 pub mod redis_adapter;
 
 use std::sync::Arc;
