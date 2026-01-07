@@ -406,7 +406,10 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(name = "streams.listGroups", description = "List all groups in a stream")]
+    #[function(
+        name = "streams.listGroups",
+        description = "List all groups in a stream"
+    )]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,

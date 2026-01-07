@@ -212,10 +212,7 @@ impl StreamAdapter for RedisAdapter {
             Err(_) => vec![0; group_ids.len()],
         };
 
-        let mut groups: Vec<(String, usize)> = group_ids
-            .into_iter()
-            .zip(counts)
-            .collect();
+        let mut groups: Vec<(String, usize)> = group_ids.into_iter().zip(counts).collect();
 
         groups.sort_by(|a, b| b.1.cmp(&a.1));
         groups
