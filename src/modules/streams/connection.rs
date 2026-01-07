@@ -268,7 +268,7 @@ impl StreamConnection for SocketStreamConnection {
         for subscription in subscriptions.iter() {
             let subscription = subscription.value();
 
-            tracing::info!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
+            tracing::debug!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
 
             let _ = self
                 .handle_join_leave(&StreamIncomingMessage::Leave {
