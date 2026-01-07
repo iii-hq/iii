@@ -100,7 +100,7 @@ impl Exec {
 
     async fn run_pipeline(&self) -> Result<()> {
         for cmd in &self.exec {
-            let spawned = self.spawn_single(cmd).await?;
+            let spawned = self.spawn_single(cmd)?;
             *self.child.lock().await = Some(spawned);
 
             // Check if this is the last command in the pipeline
@@ -123,7 +123,7 @@ impl Exec {
         Ok(())
     }
 
-    async fn spawn_single(&self, command: &str) -> Result<Child> {
+    fn spawn_single(&self, command: &str) -> Result<Child> {
         tracing::info!("Starting process: {}", command.purple());
 
         #[cfg(not(windows))]
@@ -136,12 +136,8 @@ impl Exec {
             // To coordinate process termination properly
             unsafe {
                 c.pre_exec(|| {
-                    nix::unistd::setsid().map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("setsid failed: {e}"),
-                        )
-                    })?;
+                    nix::unistd::setsid()
+                        .map_err(|e| std::io::Error::other(format!("setsid failed: {e}")))?;
                     Ok(())
                 });
             }

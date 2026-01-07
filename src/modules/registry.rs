@@ -62,7 +62,7 @@ macro_rules! register_module {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
-                factory: < $module as crate::modules::core_module::CoreModule >::make_module,
+                factory: < $module as $crate::modules::core_module::CoreModule >::make_module,
                 is_default: $enabled_by_default,
             }
         }
@@ -71,7 +71,7 @@ macro_rules! register_module {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
-                factory: < $module as crate::modules::core::CoreModule >::make_module,
+                factory: < $module as $crate::modules::core_module::CoreModule >::make_module,
                 is_default: false,
             }
         }
