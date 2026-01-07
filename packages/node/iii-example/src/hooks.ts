@@ -35,19 +35,22 @@ export type LogEvent = {
 }
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'all'
+type LogTriggerConfig = { level: LogLevel; description?: string }
+type LogTriggerHandler = (log: LogEvent, context: Context) => Promise<void>
 
 export const useOnLog = (
-  config: { level: LogLevel; description?: string },
-  handler: (log: LogEvent, context: Context) => Promise<void>,
+  config: LogTriggerConfig,
+  handler: LogTriggerHandler,
 ) => {
   const function_path = `onLog.${config.level}.${Date.now()}`
 
-  bridge.registerFunction({ function_path, metadata: {} }, (log) => handler(log, getContext()))
+  bridge.registerFunction({ function_path, description: config.description, metadata: {} }, (log) => handler(log, getContext()))
   bridge.registerTrigger({
     trigger_type: 'onLog',
     function_path,
     config: {
       level: config.level,
+      description: config.description,
     },
   })
 }
