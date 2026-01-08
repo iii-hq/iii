@@ -30,7 +30,7 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
-pub const LOG_TRIGGER_TYPE: &str = "onLog";
+pub const LOG_TRIGGER_TYPE: &str = "log";
 
 pub struct LogTriggers {
     pub triggers: Arc<TokioRwLock<HashSet<Trigger>>>,
@@ -291,7 +291,7 @@ impl TriggerRegistrator for LoggerCoreModule {
             .to_string();
 
         tracing::info!(
-            "{} onLog trigger {} (level: {}) → {}",
+            "{} log trigger {} (level: {}) → {}",
             "[REGISTERED]".green(),
             trigger.id.purple(),
             level.cyan(),
@@ -311,7 +311,7 @@ impl TriggerRegistrator for LoggerCoreModule {
         let triggers = &self.triggers.triggers;
 
         Box::pin(async move {
-            tracing::debug!(trigger_id = %trigger.id, "Unregistering onLog trigger");
+            tracing::debug!(trigger_id = %trigger.id, "Unregistering log trigger");
             triggers.write().await.remove(&trigger);
             Ok(())
         })
@@ -346,7 +346,7 @@ impl CoreModule for LoggerCoreModule {
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 
-        tracing::info!("{} onLog trigger type initialized", "[READY]".green());
+        tracing::info!("{} log trigger type initialized", "[READY]".green());
 
         Ok(())
     }
