@@ -316,28 +316,25 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_snapshot_to_storage_and_back() {
-        let mut original_store: HashMap<StoreKey, ItemsData> = HashMap::new();
-        let key = ("test_stream".to_string(), "test_group".to_string());
-        let mut items: ItemsData = HashMap::new();
-        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
-        original_store.insert(key.clone(), items.clone());
-        let storage = Storage::snapshot_to_storage(&original_store);
-        let restored_store = storage.storage_to_store();
+        let mut original_store: HashMap<String, Value> = HashMap::new();
+        let key = "test_stream::test_group::item1".to_string();
+        original_store.insert(key.clone(), serde_json::json!({"key": "value"}));
+
+        let storage = Storage::from_store_to_disk(&original_store);
+        let restored_store = storage.from_disk_to_store();
+
         assert_eq!(restored_store.len(), original_store.len());
-        assert_eq!(restored_store.get(&key).unwrap().len(), items.len());
         assert_eq!(
-            restored_store.get(&key).unwrap().get("item1").unwrap(),
+            restored_store.get(&key).unwrap(),
             &serde_json::json!({"key": "value"})
         );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_save_loop_when_dirty_flag_is_true() {
-        let mut store: HashMap<StoreKey, ItemsData> = HashMap::new();
-        let key = ("test_stream".to_string(), "test_group".to_string());
-        let mut items: ItemsData = HashMap::new();
-        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
-        store.insert(key.clone(), items.clone());
+        let mut store: HashMap<String, Value> = HashMap::new();
+        let key = "test_stream::test_group::item1".to_string();
+        store.insert(key, serde_json::json!({"key": "value"}));
 
         let storage = Arc::new(RwLock::new(store));
         let dirty = Arc::new(AtomicBool::new(true));
@@ -382,11 +379,9 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_save_in_disk_and_load() {
-        let mut store: HashMap<StoreKey, ItemsData> = HashMap::new();
-        let key = ("test_stream".to_string(), "test_group".to_string());
-        let mut items: ItemsData = HashMap::new();
-        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
-        store.insert(key.clone(), items.clone());
+        let mut store: HashMap<String, Value> = HashMap::new();
+        let key = "test_stream::test_group::item1".to_string();
+        store.insert(key.clone(), serde_json::json!({"key": "value"}));
 
         let storage = Arc::new(RwLock::new(store));
         let test_file_path = "test_save_storage.db";
@@ -398,9 +393,8 @@ mod test {
         let loaded_storage = Storage::load_storage(test_file_path);
         let restored_store = loaded_storage.from_disk_to_store();
         assert_eq!(restored_store.len(), 1);
-        assert_eq!(restored_store.get(&key).unwrap().len(), items.len());
         assert_eq!(
-            restored_store.get(&key).unwrap().get("item1").unwrap(),
+            restored_store.get(&key).unwrap(),
             &serde_json::json!({"key": "value"})
         );
 

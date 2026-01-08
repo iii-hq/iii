@@ -61,7 +61,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         } else {
             let mut topic = HashMap::new();
             topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&data).unwrap();
+            let data = serde_json::to_value(&topic).unwrap();
             self.storage.set(key, data).await;
         }
 
