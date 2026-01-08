@@ -35,6 +35,10 @@ impl BuiltinKvStoreAdapter {
         let pub_sub = BuiltInPubSubAdapter::new(config);
         Self { storage, pub_sub }
     }
+
+    fn gen_key(&self, stream_name: &str, group_id: &str) -> String {
+        format!("{}::{}", stream_name, group_id)
+    }
 }
 
 #[async_trait]
@@ -42,15 +46,25 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     async fn emit_event(&self, message: StreamWrapperMessage) {
         self.pub_sub.send_msg(message);
     }
+
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
-        let exist = self
-            .storage
-            .get(stream_name, group_id, item_id)
-            .await
-            .is_some();
-        self.storage
-            .set(stream_name, group_id, item_id, data.clone())
-            .await;
+        //let key = (stream_name.to_string(), group_id.to_string());
+        let key = self.gen_key(stream_name, group_id);
+        let mut exist = false;
+        if let Some(value) = self.storage.get(key.clone()).await {
+            let mut topic: HashMap<String, Value> =
+                serde_json::from_value(value).unwrap_or_default();
+            exist = topic.contains_key(item_id);
+            topic.insert(item_id.to_string(), data.clone());
+            let data = serde_json::to_value(&topic).unwrap();
+            self.storage.set(key, data).await;
+        } else {
+            let mut topic = HashMap::new();
+            topic.insert(item_id.to_string(), data.clone());
+            let data = serde_json::to_value(&data).unwrap();
+            self.storage.set(key, data).await;
+        }
+
         let event = if exist {
             StreamOutboundMessage::Update { data }
         } else {
@@ -67,25 +81,45 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
-        self.storage.get(stream_name, group_id, item_id).await
+        let key = self.gen_key(stream_name, group_id);
+        let value = self.storage.get(key).await;
+        match value {
+            Some(v) => {
+                let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
+                topic.get(item_id).cloned()
+            }
+            None => None,
+        }
     }
 
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
-        self.storage.delete(stream_name, group_id, item_id).await;
-        self.emit_event(StreamWrapperMessage {
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            stream_name: stream_name.to_string(),
-            group_id: group_id.to_string(),
-            id: Some(item_id.to_string()),
-            event: StreamOutboundMessage::Delete {
-                data: serde_json::json!({ "id": item_id }),
-            },
-        })
-        .await;
+        let key = self.gen_key(stream_name, group_id);
+        let value = self.storage.get(key.clone()).await;
+        if let Some(v) = value {
+            let mut topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
+            if topic.remove(item_id).is_some() {
+                let data = serde_json::to_value(&topic).unwrap();
+                self.storage.set(key, data).await;
+                self.emit_event(StreamWrapperMessage {
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    stream_name: stream_name.to_string(),
+                    group_id: group_id.to_string(),
+                    id: Some(item_id.to_string()),
+                    event: StreamOutboundMessage::Delete {
+                        data: serde_json::json!({ "id": item_id }),
+                    },
+                })
+                .await;
+            }
+        }
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
-        self.storage.get_group(stream_name, group_id).await
+        let key = self.gen_key(stream_name, group_id);
+        self.storage.get(key).await.map_or(vec![], |v| {
+            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
+            topic.values().cloned().collect()
+        })
     }
 
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
