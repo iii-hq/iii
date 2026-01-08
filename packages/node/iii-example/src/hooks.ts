@@ -46,7 +46,7 @@ export const useOnLog = (
 
   bridge.registerFunction({ function_path, description: config.description, metadata: {} }, (log) => handler(log, getContext()))
   bridge.registerTrigger({
-    trigger_type: 'onLog',
+    trigger_type: 'log',
     function_path,
     config: {
       level: config.level,
