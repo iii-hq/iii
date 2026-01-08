@@ -860,11 +860,8 @@ dependencies = [
  "futures",
  "futures-util",
  "inventory",
-<<<<<<< HEAD
  "mockall",
-=======
  "nix",
->>>>>>> 329dd05 (feat: streams close)
  "notify",
  "once_cell",
  "redis",
