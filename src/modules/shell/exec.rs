@@ -147,9 +147,8 @@ impl Exec {
             c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
             // On Windows, create a new process group for easier termination of child process
-            unsafe {
-                c.creation_flags(winapi::um::winbase::CREATE_NEW_PROCESS_GROUP);
-            }
+            c.creation_flags(winapi::um::winbase::CREATE_NEW_PROCESS_GROUP);
+
             c
         };
 
@@ -204,9 +203,11 @@ impl Exec {
             {
                 use winapi::{
                     shared::minwindef::{FALSE, TRUE},
-                    um::wincon::{
-                        AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
-                        SetConsoleCtrlHandler,
+                    um::{
+                        consoleapi::SetConsoleCtrlHandler,
+                        wincon::{
+                            AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
+                        },
                     },
                 };
 
