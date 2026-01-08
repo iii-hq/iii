@@ -46,7 +46,7 @@ impl Storage {
         }
     }
 
-    fn from_disk_to_store(self) -> HashMap<String, Value> {
+    fn disk_to_store(self) -> HashMap<String, Value> {
         self.0
             .into_iter()
             .map(|(key, item)| {
@@ -56,7 +56,7 @@ impl Storage {
             .collect::<HashMap<String, Value>>()
     }
 
-    fn from_store_to_disk(value: &HashMap<String, Value>) -> Storage {
+    fn store_to_disk(value: &HashMap<String, Value>) -> Storage {
         let mut storage = Storage::new();
         storage.0 = value
             .iter()
@@ -113,7 +113,7 @@ impl BuiltinKvStore {
                 Storage::new()
             }
         };
-        let data_from_disk = storage.from_disk_to_store();
+        let data_from_disk = storage.disk_to_store();
         let store = Arc::new(RwLock::new(data_from_disk));
         let storage_clone = store.clone();
 
@@ -166,7 +166,7 @@ impl BuiltinKvStore {
         };
         let file_path = file_path.to_string();
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            let storage = Storage::from_store_to_disk(&snapshot);
+            let storage = Storage::store_to_disk(&snapshot);
             let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage)?;
             let humanized_size = bytes.len();
             tracing::info!("Saving storage to disk, size {:?}", humanized_size);
@@ -195,7 +195,7 @@ impl BuiltinKvStore {
     pub async fn get(&self, key: String) -> Option<Value> {
         let store = self.store.read().await;
         let results = store.get(&key);
-        results.map(|value| value.clone())
+        results.cloned()
     }
 
     pub async fn delete(&self, key: String) -> Option<Value> {
@@ -320,8 +320,8 @@ mod test {
         let key = "test_stream::test_group::item1".to_string();
         original_store.insert(key.clone(), serde_json::json!({"key": "value"}));
 
-        let storage = Storage::from_store_to_disk(&original_store);
-        let restored_store = storage.from_disk_to_store();
+        let storage = Storage::store_to_disk(&original_store);
+        let restored_store = storage.disk_to_store();
 
         assert_eq!(restored_store.len(), original_store.len());
         assert_eq!(
@@ -391,7 +391,7 @@ mod test {
             .expect("Failed to save storage to disk");
 
         let loaded_storage = Storage::load_storage(test_file_path);
-        let restored_store = loaded_storage.from_disk_to_store();
+        let restored_store = loaded_storage.disk_to_store();
         assert_eq!(restored_store.len(), 1);
         assert_eq!(
             restored_store.get(&key).unwrap(),
