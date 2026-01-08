@@ -13,6 +13,7 @@ pub mod modules {
     pub mod core_module;
     pub mod cron;
     pub mod event;
+    pub mod kv_server;
     pub mod observability;
     pub mod redis;
     pub mod registry;
