@@ -2,28 +2,25 @@
 
 from typing import Any
 
-from motia import ApiRequest, ApiResponse, ApiRouteConfig, FlowContext, Stream, step_wrapper
+from motia import ApiResponse, ApiTrigger, FlowContext, StepConfig, Stream, TriggerInput, step_wrapper
 
-
-# Create stream instance
 todo_stream: Stream[dict[str, Any]] = Stream("todo")
 
 
-config = ApiRouteConfig(
-    type="api",
+config = StepConfig(
     name="UpdateTodo",
     description="Update an existing todo item",
     flows=["todo-app"],
-    method="PUT",
-    path="/todo",
+    triggers=[
+        ApiTrigger(path="/todo", method="PUT"),
+    ],
     emits=[],
-    virtual_emits=["todo-updated"],
 )
 
 
-async def handler(req: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def handler(input: TriggerInput[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle update todo request."""
-    body = req.body or {}
+    body = input.data or {}
     todo_id = body.get("todo_id")
 
     ctx.logger.info("Updating todo", body)
