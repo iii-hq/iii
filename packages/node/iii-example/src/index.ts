@@ -1,10 +1,14 @@
-import { useApi, useFunctionsAvailable } from './hooks'
+import { useApi, useFunctionsAvailable, useOnLog } from './hooks'
 import { streams } from './streams'
 
 useFunctionsAvailable((functions) => {
   console.log('--------------------------------')
   console.log('Functions available:', functions)
   console.log('--------------------------------')
+})
+
+useOnLog({ level: 'all', description: 'Monitor error logs' }, async (log) => {
+  console.log('[Log Event]', log)
 })
 
 useApi(

@@ -60,7 +60,7 @@ impl APIresponse {
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect::<Vec<String>>()
             })
-            .unwrap_or(vec![]);
+            .unwrap_or_default();
         let body = value.get("body").cloned().unwrap_or(json!({}));
         APIresponse {
             status_code,
