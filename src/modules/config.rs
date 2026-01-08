@@ -363,8 +363,10 @@ impl EngineBuilder {
     }
 
     pub async fn destroy(self) -> anyhow::Result<()> {
-        let destroy_futures = self.modules.iter().rev().map(|module| module.destroy());
-        futures::future::join_all(destroy_futures).await;
+        for module in self.modules.iter() {
+            tracing::debug!("Destroying module: {}", module.name());
+            module.destroy().await?;
+        }
         Ok(())
     }
 

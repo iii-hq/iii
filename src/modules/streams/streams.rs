@@ -121,6 +121,12 @@ impl CoreModule for StreamCoreModule {
         self.register_functions(engine);
     }
 
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::info!("Destroying StreamCoreModule");
+        let _ = self.adapter.destroy().await;
+        Ok(())
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StreamCoreModule");
 
@@ -399,6 +405,6 @@ impl StreamCoreModule {
 
 crate::register_module!(
     "modules::streams::StreamModule",
-    <StreamCoreModule as CoreModule>::make_module,
+    StreamCoreModule,
     enabled_by_default = true
 );

@@ -327,6 +327,8 @@ impl Engine {
                                     .await;
                             }
                         }
+
+                        worker.remove_invocation(&invocation_id).await;
                     }
                 });
 

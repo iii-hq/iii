@@ -7,8 +7,9 @@ use notify::{
     event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode},
 };
 use tokio::{
-    process::Command,
+    process::{Child, Command},
     sync::{Mutex, mpsc},
+    time::{Duration, timeout},
 };
 
 use crate::modules::shell::{config::ExecConfig, glob_exec::GlobExec};
@@ -17,6 +18,7 @@ use crate::modules::shell::{config::ExecConfig, glob_exec::GlobExec};
 pub struct Exec {
     exec: Vec<String>,
     glob_exec: Option<GlobExec>,
+    child: Arc<Mutex<Option<Child>>>,
 }
 
 const MAX_WATCH_EVENTS: usize = 100;
@@ -28,6 +30,7 @@ impl Exec {
         Self {
             glob_exec: config.watch.map(GlobExec::new),
             exec: config.exec,
+            child: Arc::new(Mutex::new(None::<Child>)),
         }
     }
 
@@ -59,11 +62,10 @@ impl Exec {
             }
         }
 
-        let child = Arc::new(Mutex::new(None::<tokio::process::Child>));
         let cwd = std::env::current_dir().unwrap_or_default();
 
         // 🔥 start pipeline
-        self.run_pipeline(child.clone()).await?;
+        self.run_pipeline().await?;
 
         while let Some(event) = rx.recv().await {
             if !self.should_restart(&event) {
@@ -85,24 +87,24 @@ impl Exec {
                     .purple()
             );
 
-            self.kill_process(child.clone()).await;
-            self.run_pipeline(child.clone()).await?;
+            self.kill_process().await;
+            self.run_pipeline().await?;
         }
 
         Ok(())
     }
 
-    async fn run_pipeline(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) -> Result<()> {
+    async fn run_pipeline(&self) -> Result<()> {
         for cmd in &self.exec {
-            let spawned = self.spawn_single(cmd).await?;
-            *child.lock().await = Some(spawned);
+            let spawned = self.spawn_single(cmd)?;
+            *self.child.lock().await = Some(spawned);
 
             // Check if this is the last command in the pipeline
             let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
 
             if !is_last {
                 // ⏳ wait for command to finish
-                let status = child.lock().await.as_mut().unwrap().wait().await?;
+                let status = self.child.lock().await.as_mut().unwrap().wait().await?;
 
                 if !status.success() {
                     tracing::error!("Pipeline step failed, aborting pipeline");
@@ -110,14 +112,14 @@ impl Exec {
                 }
 
                 // clear child before next step
-                *child.lock().await = None;
+                *self.child.lock().await = None;
             }
         }
 
         Ok(())
     }
 
-    async fn spawn_single(&self, command: &str) -> Result<tokio::process::Child> {
+    fn spawn_single(&self, command: &str) -> Result<Child> {
         tracing::info!("Starting process: {}", command.purple());
 
         #[cfg(not(windows))]
@@ -126,6 +128,15 @@ impl Exec {
             c.arg("-c").arg(command);
             c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
 
+            // We need to detach from the current process
+            // To coordinate process termination properly
+            unsafe {
+                c.pre_exec(|| {
+                    nix::unistd::setsid()
+                        .map_err(|e| std::io::Error::other(format!("setsid failed: {e}")))?;
+                    Ok(())
+                });
+            }
             c
         };
 
@@ -134,6 +145,9 @@ impl Exec {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(command);
             c.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+
+            // On Windows, create a new process group for easier termination of child process
+            c.creation_flags(winapi::um::winbase::CREATE_NEW_PROCESS_GROUP);
 
             c
         };
@@ -167,8 +181,69 @@ impl Exec {
         false
     }
 
-    async fn kill_process(&self, child: Arc<Mutex<Option<tokio::process::Child>>>) {
-        if let Some(mut proc) = child.lock().await.take() {
+    pub async fn stop_process(&self) {
+        if let Some(mut child) = self.child.lock().await.take() {
+            #[cfg(not(windows))]
+            {
+                use nix::{
+                    sys::signal::{Signal, kill},
+                    unistd::Pid,
+                };
+
+                let pid = match child.id() {
+                    Some(id) => Pid::from_raw(id as i32),
+                    None => return,
+                };
+
+                // 1️⃣ Ask politely
+                let _ = kill(pid, Signal::SIGTERM);
+            }
+
+            #[cfg(windows)]
+            {
+                use winapi::{
+                    shared::minwindef::{FALSE, TRUE},
+                    um::{
+                        consoleapi::SetConsoleCtrlHandler,
+                        wincon::{
+                            AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
+                        },
+                    },
+                };
+
+                // 1️⃣ Ask politely - send CTRL_BREAK_EVENT to the process group
+                if let Some(pid) = child.id() {
+                    unsafe {
+                        // Attach to the child's console to send the signal
+                        if AttachConsole(pid) != 0 {
+                            // Disable our own Ctrl+C handler temporarily to avoid killing ourselves
+                            SetConsoleCtrlHandler(None, TRUE);
+
+                            // Send CTRL_BREAK_EVENT to the process group (0 = current process group)
+                            // This is the Windows equivalent of SIGTERM
+                            GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+
+                            // Re-enable our handler and detach
+                            SetConsoleCtrlHandler(None, FALSE);
+                            FreeConsole();
+                        }
+                    }
+                }
+            }
+
+            // 2️⃣ Wait a bit
+            let exited = timeout(Duration::from_secs(3), child.wait()).await;
+
+            if exited.is_err() {
+                // 3️⃣ Force kill
+                tracing::warn!("Process did not exit gracefully, killing");
+                let _ = child.kill().await;
+            }
+        }
+    }
+
+    async fn kill_process(&self) {
+        if let Some(mut proc) = self.child.lock().await.take() {
             if let Err(err) = proc.kill().await {
                 tracing::error!("Failed to kill process: {:?}", err);
             } else {

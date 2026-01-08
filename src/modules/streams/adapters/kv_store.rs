@@ -39,6 +39,10 @@ impl BuiltinKvStoreAdapter {
 
 #[async_trait]
 impl StreamAdapter for BuiltinKvStoreAdapter {
+    async fn destroy(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn emit_event(&self, message: StreamWrapperMessage) {
         self.pub_sub.send_msg(message);
     }

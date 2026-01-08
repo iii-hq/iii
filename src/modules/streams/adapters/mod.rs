@@ -20,6 +20,8 @@ pub trait StreamAdapter: Send + Sync {
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>);
     async fn unsubscribe(&self, id: String);
     async fn watch_events(&self);
+
+    async fn destroy(&self) -> anyhow::Result<()>;
 }
 
 #[async_trait]
