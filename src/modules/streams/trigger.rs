@@ -14,6 +14,12 @@ pub struct StreamTriggers {
     pub leave_triggers: Arc<RwLock<HashSet<Trigger>>>,
 }
 
+impl Default for StreamTriggers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamTriggers {
     pub fn new() -> Self {
         Self {

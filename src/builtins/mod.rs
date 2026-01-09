@@ -12,14 +12,9 @@ use crate::modules::streams::{StreamWrapperMessage, adapters::StreamConnection};
 
 type Subscribers = Vec<Arc<dyn StreamConnection>>;
 type TopicName = String;
-type GroupId = String;
-type ItemId = String;
-type ItemsData = HashMap<ItemId, Value>;
-type ItemsDataAsString = HashMap<ItemId, String>;
-type StoreKey = (TopicName, GroupId);
 
 #[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
-pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
+pub struct Storage(HashMap<String, String>);
 
 impl Default for Storage {
     fn default() -> Self {
@@ -51,39 +46,31 @@ impl Storage {
         }
     }
 
-    fn storage_to_store(self) -> HashMap<StoreKey, ItemsData> {
+    fn disk_to_store(self) -> HashMap<String, Value> {
         self.0
             .into_iter()
-            .map(|(key, items)| {
-                let items: ItemsData = items
-                    .into_iter()
-                    .filter_map(|(item_id, data_str)| {
-                        serde_json::from_str::<Value>(&data_str)
-                            .ok()
-                            .map(|value| (item_id, value))
-                    })
-                    .collect();
-                (key, items)
+            .map(|(key, item)| {
+                let item = serde_json::from_str::<Value>(&item).unwrap_or_default();
+                (key, item)
             })
-            .collect()
+            .collect::<HashMap<String, Value>>()
     }
 
-    fn snapshot_to_storage(value: &HashMap<StoreKey, ItemsData>) -> Storage {
+    fn store_to_disk(value: &HashMap<String, Value>) -> Storage {
         let mut storage = Storage::new();
-        for (key, items) in value.iter() {
-            let mut items_as_string = HashMap::new();
-            for (item_id, data) in items.iter() {
-                let data_as_string = serde_json::to_string(data).unwrap_or_default();
-                items_as_string.insert(item_id.clone(), data_as_string);
-            }
-            storage.0.insert(key.clone(), items_as_string);
-        }
+        storage.0 = value
+            .iter()
+            .map(|(key, item)| {
+                let item_as_string = serde_json::to_string(item).unwrap_or_default();
+                (key.clone(), item_as_string)
+            })
+            .collect::<HashMap<String, String>>();
         storage
     }
 }
 
 pub struct BuiltinKvStore {
-    store: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
+    store: Arc<RwLock<HashMap<String, Value>>>,
     #[allow(
         dead_code,
         reason = "Going to be used in the future for graceful shutdown"
@@ -126,7 +113,8 @@ impl BuiltinKvStore {
                 Storage::new()
             }
         };
-        let store = Arc::new(RwLock::new(storage.storage_to_store()));
+        let data_from_disk = storage.disk_to_store();
+        let store = Arc::new(RwLock::new(data_from_disk));
         let storage_clone = store.clone();
 
         let dirty = Arc::new(AtomicBool::new(false));
@@ -145,7 +133,7 @@ impl BuiltinKvStore {
     }
 
     async fn save_loop(
-        storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
+        storage: Arc<RwLock<HashMap<String, Value>>>,
         polling_interval: u64,
         file_path: &str,
         dirty: Arc<AtomicBool>,
@@ -169,7 +157,7 @@ impl BuiltinKvStore {
     }
 
     async fn save_in_disk(
-        storage: Arc<RwLock<HashMap<StoreKey, ItemsData>>>,
+        storage: Arc<RwLock<HashMap<String, Value>>>,
         file_path: &str,
     ) -> anyhow::Result<()> {
         let snapshot = {
@@ -178,7 +166,7 @@ impl BuiltinKvStore {
         };
         let file_path = file_path.to_string();
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            let storage = Storage::snapshot_to_storage(&snapshot);
+            let storage = Storage::store_to_disk(&snapshot);
             let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage)?;
             let humanized_size = bytes.len();
             tracing::info!("Saving storage to disk, size {:?}", humanized_size);
@@ -198,49 +186,25 @@ impl BuiltinKvStore {
         }
     }
 
-    pub async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
-        let key = (stream_name.to_string(), group_id.to_string());
+    pub async fn set(&self, key: String, data: Value) {
         let mut store = self.store.write().await;
-        if let Some(topic) = store.get_mut(&key) {
-            topic.insert(item_id.to_string(), data.clone());
-        } else {
-            let mut topic = HashMap::new();
-            topic.insert(item_id.to_string(), data.clone());
-            store.insert(key, topic);
-        }
+        store.insert(key, data);
         self.dirty.store(true, std::sync::atomic::Ordering::Release);
     }
 
-    pub async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
-        let key = (stream_name.to_string(), group_id.to_string());
+    pub async fn get(&self, key: String) -> Option<Value> {
         let store = self.store.read().await;
-        let topic = store.get(&key);
-        if let Some(group) = topic {
-            group.get(item_id).cloned()
-        } else {
-            None
-        }
+        let results = store.get(&key);
+        results.cloned()
     }
 
-    pub async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
-        let key = (stream_name.to_string(), group_id.to_string());
+    pub async fn delete(&self, key: String) -> Option<Value> {
         let mut store = self.store.write().await;
-        if let Some(group) = store.get_mut(&key) {
+        let result = store.remove(&key);
+        if result.is_some() {
             self.dirty.store(true, std::sync::atomic::Ordering::Release);
-            group.remove(item_id)
-        } else {
-            None
         }
-    }
-
-    pub async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
-        let key = (stream_name.to_string(), group_id.to_string());
-        let store = self.store.read().await;
-        if let Some(topic) = store.get(&key) {
-            topic.values().cloned().collect()
-        } else {
-            Vec::new()
-        }
+        result
     }
 
     pub async fn list_groups(&self, stream_name: &str) -> Vec<(String, usize)> {
@@ -380,28 +344,25 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_snapshot_to_storage_and_back() {
-        let mut original_store: HashMap<StoreKey, ItemsData> = HashMap::new();
-        let key = ("test_stream".to_string(), "test_group".to_string());
-        let mut items: ItemsData = HashMap::new();
-        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
-        original_store.insert(key.clone(), items.clone());
-        let storage = Storage::snapshot_to_storage(&original_store);
-        let restored_store = storage.storage_to_store();
+        let mut original_store: HashMap<String, Value> = HashMap::new();
+        let key = "test_stream::test_group::item1".to_string();
+        original_store.insert(key.clone(), serde_json::json!({"key": "value"}));
+
+        let storage = Storage::store_to_disk(&original_store);
+        let restored_store = storage.disk_to_store();
+
         assert_eq!(restored_store.len(), original_store.len());
-        assert_eq!(restored_store.get(&key).unwrap().len(), items.len());
         assert_eq!(
-            restored_store.get(&key).unwrap().get("item1").unwrap(),
+            restored_store.get(&key).unwrap(),
             &serde_json::json!({"key": "value"})
         );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_save_loop_when_dirty_flag_is_true() {
-        let mut store: HashMap<StoreKey, ItemsData> = HashMap::new();
-        let key = ("test_stream".to_string(), "test_group".to_string());
-        let mut items: ItemsData = HashMap::new();
-        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
-        store.insert(key.clone(), items.clone());
+        let mut store: HashMap<String, Value> = HashMap::new();
+        let key = "test_stream::test_group::item1".to_string();
+        store.insert(key, serde_json::json!({"key": "value"}));
 
         let storage = Arc::new(RwLock::new(store));
         let dirty = Arc::new(AtomicBool::new(true));
@@ -446,11 +407,9 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_save_in_disk_and_load() {
-        let mut store: HashMap<StoreKey, ItemsData> = HashMap::new();
-        let key = ("test_stream".to_string(), "test_group".to_string());
-        let mut items: ItemsData = HashMap::new();
-        items.insert("item1".to_string(), serde_json::json!({"key": "value"}));
-        store.insert(key.clone(), items.clone());
+        let mut store: HashMap<String, Value> = HashMap::new();
+        let key = "test_stream::test_group::item1".to_string();
+        store.insert(key.clone(), serde_json::json!({"key": "value"}));
 
         let storage = Arc::new(RwLock::new(store));
         let test_file_path = "test_save_storage.db";
@@ -460,11 +419,10 @@ mod test {
             .expect("Failed to save storage to disk");
 
         let loaded_storage = Storage::load_storage(test_file_path);
-        let restored_store = loaded_storage.storage_to_store();
+        let restored_store = loaded_storage.disk_to_store();
         assert_eq!(restored_store.len(), 1);
-        assert_eq!(restored_store.get(&key).unwrap().len(), items.len());
         assert_eq!(
-            restored_store.get(&key).unwrap().get("item1").unwrap(),
+            restored_store.get(&key).unwrap(),
             &serde_json::json!({"key": "value"})
         );
 
@@ -532,27 +490,23 @@ mod test {
         let item_id = "item1";
         let data = serde_json::json!({"key": "value"});
 
+        let key = format!("{}::{}::{}", stream_name, group_id, item_id);
         // Test set
-        kv_store
-            .set(stream_name, group_id, item_id, data.clone())
-            .await;
+        kv_store.set(key.clone(), data.clone()).await;
 
         // Test get
-        let retrieved = kv_store
-            .get(stream_name, group_id, item_id)
-            .await
-            .expect("Item should exist");
+        let retrieved = kv_store.get(key.clone()).await.expect("Item should exist");
         assert_eq!(retrieved, data);
 
         // Test delete
         let deleted = kv_store
-            .delete(stream_name, group_id, item_id)
+            .delete(key.clone())
             .await
             .expect("Item should exist for deletion");
         assert_eq!(deleted, data);
 
         // Ensure item is deleted
-        let should_be_none = kv_store.get(stream_name, group_id, item_id).await;
+        let should_be_none = kv_store.get(key).await;
         assert!(should_be_none.is_none());
     }
 }

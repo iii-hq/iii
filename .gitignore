@@ -12,5 +12,7 @@ dist/
 *.log
 .env
 .env.local
+.idea/
+.cursor/
 
 packages/docker/bun/iii

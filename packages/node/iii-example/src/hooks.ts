@@ -97,3 +97,34 @@ export const useOnLeave = (
 export const useFunctionsAvailable = (callback: (functions: FunctionMessage[]) => void): (() => void) => {
   return bridge.onFunctionsAvailable(callback)
 }
+
+export type LogEvent = {
+  id: string
+  data: Record<string, unknown>
+  function_name: string
+  message: string
+  time: number
+  trace_id: string
+  level: 'info' | 'warn' | 'error'
+}
+
+export type LogLevel = 'info' | 'warn' | 'error' | 'all'
+type LogTriggerConfig = { level: LogLevel; description?: string }
+type LogTriggerHandler = (log: LogEvent, context: Context) => Promise<void>
+
+export const useOnLog = (
+  config: LogTriggerConfig,
+  handler: LogTriggerHandler,
+) => {
+  const function_path = `onLog.${config.level}.${Date.now()}`
+
+  bridge.registerFunction({ function_path, description: config.description, metadata: {} }, (log) => handler(log, getContext()))
+  bridge.registerTrigger({
+    trigger_type: 'log',
+    function_path,
+    config: {
+      level: config.level,
+      description: config.description,
+    },
+  })
+}
