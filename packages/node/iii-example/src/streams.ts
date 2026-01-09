@@ -47,5 +47,5 @@ bridge.createStream('todo', {
     todoState = todoState.filter((todo) => todo.id !== input.item_id)
   },
   getGroup: async (input) => todoState.filter((todo) => todo.groupId === input.group_id),
-  listGroups: async () => todoState.map((todo) => todo.groupId),
+  listGroups: async () => [...new Set(todoState.map((todo) => todo.groupId))],
 })
