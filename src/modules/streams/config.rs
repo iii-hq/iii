@@ -19,7 +19,7 @@ pub struct StreamModuleConfig {
 }
 
 fn default_port() -> u16 {
-    31112
+    3112
 }
 
 fn default_host() -> String {

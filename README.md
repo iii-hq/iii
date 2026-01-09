@@ -106,7 +106,7 @@ Available core modules (registered in `src/modules/config.rs`):
 - `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
 - `modules::event::EventModule` – Redis-backed event bus (`event` trigger, `emit` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger).
-- `modules::streams::StreamModule` – Stream WebSocket API (default `127.0.0.1:31112`) and
+- `modules::streams::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
   `streams.set/get/delete/getGroup` functions (Redis-backed by default).
 - `modules::observability::LoggingModule` – `logger.info/warn/error` functions.
 - `modules::shell::ExecModule` – File watcher that runs commands (only when configured).

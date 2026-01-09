@@ -1,7 +1,7 @@
 modules:
   - class: modules::streams::StreamModule
     config:
-      port: 31112
+      port: 3112
       host: 127.0.0.1
       adapter:
         class: modules::streams::adapters::RedisAdapter
