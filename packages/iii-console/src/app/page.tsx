@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, StatCard, Badge, Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/card";
-import { Activity, Zap, Server, Clock, ArrowRight, Users, Wifi, WifiOff, Globe, Calendar, MessageSquare, Database, Radio, ChevronRight, TrendingUp, BarChart3 } from "lucide-react";
+import { Activity, Zap, Server, Clock, ArrowRight, Users, Wifi, WifiOff, Globe, Calendar, MessageSquare, Database, Radio, ChevronRight, TrendingUp, BarChart3, Layers } from "lucide-react";
 import { fetchStatus, fetchTriggers, fetchFunctions, fetchStreams, fetchMetricsHistory, getConnectionStatus, subscribeToMetricsStream, SystemStatus, TriggerInfo, FunctionInfo, StreamInfo, MetricsSnapshot } from "@/lib/api";
 import Link from 'next/link';
 
@@ -232,23 +232,23 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1800px] mx-auto">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-xs text-muted mt-1 tracking-wide">
-            System overview and metrics
+          <h1 className="text-lg md:text-xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-[10px] md:text-xs text-muted mt-1 tracking-wide">
+            System overview
             {apiSource && (
-              <span className="ml-2 text-[#F3F724]">• {apiSource === 'devtools' ? 'DevTools API' : 'Management API'}</span>
+              <span className="ml-2 text-[#F3F724]">• {apiSource === 'devtools' ? 'DevTools' : 'Management'}</span>
             )}
             {streamConnected && (
-              <span className="ml-2 text-[#22C55E]">• Real-time</span>
+              <span className="ml-2 text-[#22C55E]">• Live</span>
             )}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <div className={`
-            flex items-center gap-2 px-3 py-1.5 rounded-full border
+            flex items-center gap-1.5 px-2 py-1 md:px-3 md:py-1.5 rounded-full border
             ${streamConnected 
               ? 'border-[#F3F724]/40' 
               : 'border-border'
@@ -259,12 +259,12 @@ export default function Dashboard() {
             ) : (
               <WifiOff className="w-3 h-3 text-muted" />
             )}
-            <span className="text-[10px] tracking-[0.1em] uppercase text-muted">
+            <span className="text-[9px] md:text-[10px] tracking-[0.1em] uppercase text-muted hidden sm:inline">
               {streamConnected ? 'Live' : 'Connecting'}
             </span>
           </div>
           <div className={`
-            flex items-center gap-2 px-4 py-2 rounded-full border
+            flex items-center gap-1.5 px-2 py-1 md:px-4 md:py-2 rounded-full border
             ${isOnline 
               ? 'border-[#22C55E]/40' 
               : 'border-[#EF4444]/40'
@@ -277,14 +277,14 @@ export default function Dashboard() {
                 : 'bg-[#EF4444] shadow-[0_0_8px_#EF4444]'
               }
             `} />
-            <span className="text-[11px] tracking-[0.1em] uppercase text-foreground">
+            <span className="text-[10px] md:text-[11px] tracking-[0.1em] uppercase text-foreground">
               {isOnline ? 'Online' : 'Offline'}
             </span>
           </div>
         </div>
       </div>
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 md:gap-4 grid-cols-2 xl:grid-cols-4">
         <MetricsChart
           title="Functions"
           value={loading ? '—' : userFunctions.length}
@@ -318,26 +318,26 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="grid gap-4 grid-cols-2">
+      <div className="grid gap-3 md:gap-4 grid-cols-1 sm:grid-cols-2">
         <StatCard 
           title="Version"
           value={loading ? '—' : (status?.version ?? '—')}
           subtitle="Engine"
           icon={Server}
         />
-        <div className="bg-dark-gray/40 rounded-xl border border-border p-4 flex items-center gap-4">
+        <div className="bg-dark-gray/40 rounded-xl border border-border p-3 md:p-4 flex items-center gap-3 md:gap-4">
           <div className="p-2 rounded-lg bg-primary/10">
-            <BarChart3 className="w-5 h-5 text-primary" />
+            <BarChart3 className="w-4 h-4 md:w-5 md:h-5 text-primary" />
           </div>
-          <div className="flex-1">
-            <div className="text-xs text-muted uppercase tracking-wider mb-1">Metrics History</div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] md:text-xs text-muted uppercase tracking-wider mb-1">Metrics</div>
             <div className="flex items-baseline gap-2">
-              <div className="text-lg font-bold">{metricsHistory.length}</div>
-              <span className="text-xs text-muted">data points</span>
+              <div className="text-base md:text-lg font-bold">{metricsHistory.length}</div>
+              <span className="text-[10px] md:text-xs text-muted">points</span>
             </div>
           </div>
           {streamConnected && (
-            <div className="flex items-center gap-1.5 text-xs text-green-400">
+            <div className="flex items-center gap-1.5 text-[10px] md:text-xs text-green-400">
               <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
               Live
             </div>
@@ -346,11 +346,11 @@ export default function Dashboard() {
       </div>
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Application Flow</CardTitle>
-          <div className="text-[10px] text-muted">How your triggers, functions, and streams connect</div>
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <CardTitle className="text-sm md:text-base">Application Flow</CardTitle>
+          <div className="text-[9px] md:text-[10px] text-muted">How triggers, functions, and streams connect</div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="p-3 md:p-6">
           {loading ? (
             <div className="text-xs text-muted py-8 text-center">Loading...</div>
           ) : userTriggers.length === 0 && userFunctions.length === 0 ? (
@@ -360,27 +360,28 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="relative overflow-hidden">
-              <div className="flex items-stretch justify-between gap-2 py-4">
+              {/* Mobile: vertical stack, Desktop: horizontal flow */}
+              <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 lg:gap-2 py-2 md:py-4">
                 <div className="flex-1 min-w-0">
-                  <div className="text-[11px] font-bold text-muted uppercase tracking-[0.2em] mb-4 text-center">Entry Points</div>
-                  <div className="space-y-3">
+                  <div className="text-[10px] md:text-[11px] font-bold text-muted uppercase tracking-[0.15em] md:tracking-[0.2em] mb-3 md:mb-4 text-center">Triggers</div>
+                  <div className="space-y-2 md:space-y-3">
                     {userTriggers.filter(t => t.trigger_type === 'api').length > 0 && (
-                      <div className="bg-cyan-500/15 border border-cyan-500/40 rounded-xl p-4 shadow-[0_0_15px_rgba(6,182,212,0.05)]">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Globe className="w-4 h-4 text-cyan-400" />
-                          <span className="text-xs font-bold text-cyan-400 tracking-wider uppercase">REST API</span>
+                      <div className="bg-cyan-500/15 border border-cyan-500/40 rounded-lg md:rounded-xl p-3 md:p-4 shadow-[0_0_15px_rgba(6,182,212,0.05)]">
+                        <div className="flex items-center gap-2 mb-2 md:mb-3">
+                          <Globe className="w-3.5 h-3.5 md:w-4 md:h-4 text-cyan-400" />
+                          <span className="text-[10px] md:text-xs font-bold text-cyan-400 tracking-wider uppercase">REST API</span>
                         </div>
-                        <div className="space-y-2">
-                          {userTriggers.filter(t => t.trigger_type === 'api').slice(0, 4).map(t => (
-                            <div key={t.id} className="text-[11px] font-mono text-foreground/90 flex items-center gap-2 bg-black/40 px-2 py-1.5 rounded border border-cyan-500/10 overflow-hidden">
+                        <div className="space-y-1.5 md:space-y-2">
+                          {userTriggers.filter(t => t.trigger_type === 'api').slice(0, 3).map(t => (
+                            <div key={t.id} className="text-[10px] md:text-[11px] font-mono text-foreground/90 flex items-center gap-1.5 md:gap-2 bg-black/40 px-1.5 md:px-2 py-1 md:py-1.5 rounded border border-cyan-500/10 overflow-hidden">
                               <span className="text-cyan-400/80 flex-shrink-0">→</span>
                               <span className="text-cyan-300/90 flex-shrink-0">{(t.config as { http_method?: string })?.http_method || 'GET'}</span>
                               <span className="truncate">/{(t.config as { api_path?: string })?.api_path || t.function_path?.replace(/^api\./, '').replace(/\./g, '/')}</span>
                             </div>
                           ))}
-                          {userTriggers.filter(t => t.trigger_type === 'api').length > 4 && (
-                            <div className="text-[10px] text-cyan-400/60 font-medium pl-2 italic">
-                              +{userTriggers.filter(t => t.trigger_type === 'api').length - 4} more
+                          {userTriggers.filter(t => t.trigger_type === 'api').length > 3 && (
+                            <div className="text-[9px] md:text-[10px] text-cyan-400/60 font-medium pl-2 italic">
+                              +{userTriggers.filter(t => t.trigger_type === 'api').length - 3} more
                             </div>
                           )}
                         </div>
@@ -388,139 +389,179 @@ export default function Dashboard() {
                     )}
                     
                     {userTriggers.filter(t => t.trigger_type === 'cron').length > 0 && (
-                      <div className="bg-yellow/15 border border-yellow/40 rounded-xl p-4 shadow-[0_0_15px_rgba(243,247,36,0.05)]">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Calendar className="w-4 h-4 text-yellow" />
-                          <span className="text-xs font-bold text-yellow tracking-wider uppercase">Scheduled Jobs</span>
+                      <div className="bg-orange-500/15 border border-orange-500/40 rounded-lg md:rounded-xl p-3 md:p-4 shadow-[0_0_15px_rgba(249,115,22,0.05)]">
+                        <div className="flex items-center gap-2 mb-2 md:mb-3">
+                          <Calendar className="w-3.5 h-3.5 md:w-4 md:h-4 text-orange-400" />
+                          <span className="text-[10px] md:text-xs font-bold text-orange-400 tracking-wider uppercase">Scheduled</span>
                         </div>
-                        <div className="space-y-2">
-                          {userTriggers.filter(t => t.trigger_type === 'cron').slice(0, 3).map(t => (
-                            <div key={t.id} className="text-[11px] font-mono text-foreground/90 bg-black/40 px-2 py-1.5 rounded border border-yellow/10 truncate">
-                              <span className="text-yellow/80 pr-1">⏱</span>
+                        <div className="space-y-1.5 md:space-y-2">
+                          {userTriggers.filter(t => t.trigger_type === 'cron').slice(0, 2).map(t => (
+                            <div key={t.id} className="text-[10px] md:text-[11px] font-mono text-foreground/90 bg-black/40 px-1.5 md:px-2 py-1 md:py-1.5 rounded border border-orange-500/10 truncate">
+                              <span className="text-orange-400/80 pr-1">⏱</span>
                               {(t.config as { schedule?: string })?.schedule || 'scheduled'}
                             </div>
                           ))}
+                          {userTriggers.filter(t => t.trigger_type === 'cron').length > 2 && (
+                            <div className="text-[9px] md:text-[10px] text-orange-400/60 font-medium pl-2 italic">
+                              +{userTriggers.filter(t => t.trigger_type === 'cron').length - 2} more
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
                     
                     {userTriggers.filter(t => t.trigger_type === 'event').length > 0 && (
-                      <div className="bg-purple-500/15 border border-purple-500/40 rounded-xl p-4 shadow-[0_0_15px_rgba(168,85,247,0.05)]">
-                        <div className="flex items-center gap-2 mb-2">
-                          <MessageSquare className="w-4 h-4 text-purple-400" />
-                          <span className="text-xs font-bold text-purple-400 tracking-wider uppercase">Events</span>
+                      <div className="bg-purple-500/15 border border-purple-500/40 rounded-lg md:rounded-xl p-3 md:p-4 shadow-[0_0_15px_rgba(168,85,247,0.05)]">
+                        <div className="flex items-center gap-2 mb-1.5 md:mb-2">
+                          <MessageSquare className="w-3.5 h-3.5 md:w-4 md:h-4 text-purple-400" />
+                          <span className="text-[10px] md:text-xs font-bold text-purple-400 tracking-wider uppercase">Events</span>
                         </div>
-                        <div className="text-[11px] text-foreground/80 pl-1 font-medium italic">
-                          {userTriggers.filter(t => t.trigger_type === 'event').length} active listeners
+                        <div className="text-[10px] md:text-[11px] text-foreground/80 pl-1 font-medium italic">
+                          {userTriggers.filter(t => t.trigger_type === 'event').length} listeners
                         </div>
                       </div>
                     )}
                   </div>
                 </div>
                 
-                <div className="flex-shrink-0 flex items-center justify-center w-16">
-                  <div className="flex flex-col items-center gap-3 opacity-60 group hover:opacity-100 transition-all duration-300">
-                    <div className="text-[8px] text-muted font-bold uppercase tracking-[0.2em] bg-dark-gray px-1.5 py-0.5 rounded border border-border/60 shadow-sm group-hover:text-foreground transition-colors">
+                {/* Connector - hidden on mobile */}
+                <div className="hidden lg:flex flex-shrink-0 items-center justify-center w-12 xl:w-16">
+                  <div className="flex flex-col items-center gap-2 opacity-60 group hover:opacity-100 transition-all duration-300">
+                    <div className="text-[7px] xl:text-[8px] text-muted font-bold uppercase tracking-[0.15em] bg-dark-gray px-1 py-0.5 rounded border border-border/60 shadow-sm">
                       invoke
                     </div>
                     <div className="flex items-center justify-center w-full">
-                      <div className="h-[1px] w-4 bg-gradient-to-r from-transparent to-muted/40" />
-                      <div className="w-6 h-6 rounded-full border border-border/80 bg-black flex items-center justify-center shadow-lg group-hover:border-muted/60 transition-colors">
-                        <ChevronRight className="w-3 h-3 text-muted group-hover:text-foreground" />
+                      <div className="h-[1px] w-2 xl:w-4 bg-gradient-to-r from-transparent to-muted/40" />
+                      <div className="w-5 h-5 xl:w-6 xl:h-6 rounded-full border border-border/80 bg-black flex items-center justify-center shadow-lg">
+                        <ChevronRight className="w-2.5 h-2.5 xl:w-3 xl:h-3 text-muted" />
                       </div>
-                      <div className="h-[1px] w-4 bg-gradient-to-r from-muted/40 to-transparent" />
+                      <div className="h-[1px] w-2 xl:w-4 bg-gradient-to-r from-muted/40 to-transparent" />
                     </div>
                   </div>
                 </div>
                 
                 <div className="flex-1 min-w-0">
-                  <div className="text-[11px] font-bold text-muted uppercase tracking-[0.2em] mb-4 text-center">Functions</div>
-                  <div className="bg-dark-gray/40 border border-border/60 rounded-xl p-4 shadow-sm h-full max-h-[350px] flex flex-col">
-                    <div className="flex items-center gap-2 mb-4 border-b border-border/30 pb-3">
-                      <Activity className="w-4 h-4 text-foreground" />
-                      <span className="text-xs font-bold tracking-wide uppercase">{userFunctions.length} Active Functions</span>
+                  <div className="text-[10px] md:text-[11px] font-bold text-muted uppercase tracking-[0.15em] md:tracking-[0.2em] mb-3 md:mb-4 text-center">Functions</div>
+                  <div className="bg-dark-gray/40 border border-border/60 rounded-lg md:rounded-xl p-3 md:p-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-3 md:mb-4 border-b border-border/30 pb-2 md:pb-3">
+                      <Activity className="w-3.5 h-3.5 md:w-4 md:h-4 text-foreground" />
+                      <span className="text-[10px] md:text-xs font-bold tracking-wide uppercase">{userFunctions.length} Functions</span>
                     </div>
-                    <div className="space-y-2 overflow-y-auto flex-1 custom-scrollbar pr-1">
-                      {userFunctions.map(f => (
-                        <div key={f.path} className="text-[11px] font-mono text-foreground/90 bg-black/30 px-3 py-2 rounded border border-border/20 truncate hover:border-muted/40 transition-all hover:translate-x-0.5">
+                    <div className="space-y-1.5 md:space-y-2 max-h-[200px] md:max-h-[280px] overflow-y-auto custom-scrollbar pr-1">
+                      {userFunctions.slice(0, 6).map(f => (
+                        <div key={f.path} className="text-[10px] md:text-[11px] font-mono text-foreground/90 bg-black/30 px-2 md:px-3 py-1.5 md:py-2 rounded border border-border/20 truncate">
                           {f.path}
                         </div>
                       ))}
+                      {userFunctions.length > 6 && (
+                        <div className="text-[9px] md:text-[10px] text-muted font-medium pl-2 italic">
+                          +{userFunctions.length - 6} more
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
                 
-                <div className="flex-shrink-0 flex items-center justify-center w-16">
-                  <div className="flex flex-col items-center gap-3 opacity-60 group hover:opacity-100 transition-all duration-300">
-                    <div className="text-[8px] text-muted font-bold uppercase tracking-[0.2em] bg-dark-gray px-1.5 py-0.5 rounded border border-border/60 shadow-sm group-hover:text-foreground transition-colors">
+                {/* Connector - hidden on mobile */}
+                <div className="hidden lg:flex flex-shrink-0 items-center justify-center w-12 xl:w-16">
+                  <div className="flex flex-col items-center gap-2 opacity-60 group hover:opacity-100 transition-all duration-300">
+                    <div className="text-[7px] xl:text-[8px] text-muted font-bold uppercase tracking-[0.15em] bg-dark-gray px-1 py-0.5 rounded border border-border/60 shadow-sm">
                       r/w
                     </div>
                     <div className="flex items-center justify-center w-full">
-                      <div className="h-[1px] w-4 bg-gradient-to-r from-transparent to-muted/40" />
-                      <div className="w-6 h-6 rounded-full border border-border/80 bg-black flex items-center justify-center shadow-lg group-hover:border-muted/60 transition-colors">
-                        <ChevronRight className="w-3 h-3 text-muted group-hover:text-foreground" />
+                      <div className="h-[1px] w-2 xl:w-4 bg-gradient-to-r from-transparent to-muted/40" />
+                      <div className="w-5 h-5 xl:w-6 xl:h-6 rounded-full border border-border/80 bg-black flex items-center justify-center shadow-lg">
+                        <ChevronRight className="w-2.5 h-2.5 xl:w-3 xl:h-3 text-muted" />
                       </div>
-                      <div className="h-[1px] w-4 bg-gradient-to-r from-muted/40 to-transparent" />
+                      <div className="h-[1px] w-2 xl:w-4 bg-gradient-to-r from-muted/40 to-transparent" />
                     </div>
                   </div>
                 </div>
                 
+                {/* States Column */}
                 <div className="flex-1 min-w-0">
-                  <div className="text-[11px] font-bold text-muted uppercase tracking-[0.2em] mb-4 text-center">State & Streams</div>
-                  <div className="space-y-3">
-                    {streams.filter(s => !s.internal).length > 0 ? (
-                      <div className="bg-green-500/15 border border-green-500/40 rounded-xl p-4 shadow-[0_0_15px_rgba(34,197,94,0.05)]">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Database className="w-4 h-4 text-green-400" />
-                          <span className="text-xs font-bold text-green-400 tracking-wider uppercase">Streams</span>
-                        </div>
-                        <div className="space-y-2">
-                          {streams.filter(s => !s.internal).slice(0, 5).map(s => (
-                            <div key={s.id} className="text-[11px] font-mono text-foreground/90 bg-black/40 px-2 py-1.5 rounded border border-green-500/10 truncate">
-                              <span className="text-green-400/60 pr-1 font-bold">#</span>
-                              {s.id}
-                            </div>
-                          ))}
-                        </div>
+                  <div className="text-[10px] md:text-[11px] font-bold text-muted uppercase tracking-[0.15em] md:tracking-[0.2em] mb-3 md:mb-4 text-center">States</div>
+                  {streams.filter(s => !s.internal).length > 0 ? (
+                    <div className="bg-blue-500/15 border border-blue-500/40 rounded-lg md:rounded-xl p-3 md:p-4 shadow-[0_0_15px_rgba(59,130,246,0.05)]">
+                      <div className="flex items-center gap-2 mb-2 md:mb-3">
+                        <Database className="w-3.5 h-3.5 md:w-4 md:h-4 text-blue-400" />
+                        <span className="text-[10px] md:text-xs font-bold text-blue-400 tracking-wider uppercase">KV Store</span>
                       </div>
-                    ) : (
-                      <div className="bg-dark-gray/30 border border-dashed border-border/60 rounded-xl p-4 text-center">
-                        <Database className="w-5 h-5 text-muted/40 mx-auto mb-2" />
-                        <div className="text-[10px] font-bold text-muted/60 uppercase tracking-widest">No Streams</div>
-                      </div>
-                    )}
-                    
-                    <div className="bg-dark-gray/40 border border-border/60 rounded-xl p-4 hover:border-muted/40 transition-colors overflow-hidden">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-muted/10 p-1.5 rounded flex-shrink-0">
-                            <Radio className="w-4 h-4 text-muted" />
+                      <div className="space-y-1.5 md:space-y-2">
+                        {streams.filter(s => !s.internal).slice(0, 4).map(s => (
+                          <div key={s.id} className="text-[10px] md:text-[11px] font-mono text-foreground/90 bg-black/40 px-1.5 md:px-2 py-1 md:py-1.5 rounded border border-blue-500/10 truncate">
+                            <span className="text-blue-400/60 pr-1 font-bold">⚡</span>
+                            {s.id}
                           </div>
-                          <span className="text-xs font-bold text-muted tracking-wide uppercase truncate">Events</span>
+                        ))}
+                        {streams.filter(s => !s.internal).length > 4 && (
+                          <div className="text-[9px] md:text-[10px] text-blue-400/60 font-medium pl-2 italic">
+                            +{streams.filter(s => !s.internal).length - 4} more
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-dark-gray/30 border border-dashed border-border/60 rounded-lg md:rounded-xl p-3 md:p-4 text-center">
+                      <Database className="w-4 h-4 md:w-5 md:h-5 text-muted/40 mb-1.5 md:mb-2 mx-auto" />
+                      <div className="text-[9px] md:text-[10px] font-bold text-muted/60 uppercase tracking-widest">No States</div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Separator - hidden on mobile, visible on desktop */}
+                <div className="hidden lg:flex flex-shrink-0 items-center justify-center w-2 xl:w-4 self-stretch">
+                  <div className="w-[1px] h-full bg-gradient-to-b from-transparent via-border/40 to-transparent" />
+                </div>
+
+                {/* Streams Column */}
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] md:text-[11px] font-bold text-muted uppercase tracking-[0.15em] md:tracking-[0.2em] mb-3 md:mb-4 text-center">Streams</div>
+                  <div className="bg-green-500/15 border border-green-500/40 rounded-lg md:rounded-xl p-3 md:p-4 shadow-[0_0_15px_rgba(34,197,94,0.05)]">
+                    <div className="flex items-center gap-2 mb-2 md:mb-3">
+                      <Wifi className="w-3.5 h-3.5 md:w-4 md:h-4 text-green-400" />
+                      <span className="text-[10px] md:text-xs font-bold text-green-400 tracking-wider uppercase">WebSocket</span>
+                    </div>
+                    <div className="space-y-1.5 md:space-y-2">
+                      <div className="text-[10px] md:text-[11px] text-foreground/90 bg-black/40 px-1.5 md:px-2 py-1 md:py-1.5 rounded border border-green-500/10">
+                        <div className="flex items-center gap-1.5 md:gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                          <span className="font-medium">Real-time</span>
                         </div>
-                        <div className="w-1.5 h-1.5 rounded-full bg-muted/30 flex-shrink-0" />
+                      </div>
+                      <div className="text-[10px] md:text-[11px] font-mono text-foreground/80 bg-black/40 px-1.5 md:px-2 py-1 md:py-1.5 rounded border border-green-500/10 truncate">
+                        <span className="text-green-400/60 pr-1">ws://</span>:31112
+                      </div>
+                      <div className="flex items-center gap-2 md:gap-3 text-[9px] md:text-[10px] text-green-400/80 pt-0.5 md:pt-1">
+                        <span className="flex items-center gap-1">↓ In</span>
+                        <span className="flex items-center gap-1">↑ Out</span>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
               
-              <div className="flex items-center gap-8 mt-6 pt-6 border-t border-border/40 justify-center">
-                <div className="flex items-center gap-2 group cursor-default">
-                  <div className="w-3 h-3 rounded-sm bg-cyan-500/40 border border-cyan-500/60 group-hover:bg-cyan-500/60 transition-colors" />
-                  <span className="text-[10px] font-bold text-muted group-hover:text-foreground transition-colors uppercase tracking-[0.15em]">HTTP Endpoints</span>
+              {/* Legend - responsive grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 md:gap-4 mt-4 md:mt-6 pt-4 md:pt-6 border-t border-border/40">
+                <div className="flex items-center gap-1.5 md:gap-2 group cursor-default">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-sm bg-cyan-500/40 border border-cyan-500/60" />
+                  <span className="text-[8px] md:text-[10px] font-bold text-muted uppercase tracking-wider">API</span>
                 </div>
-                <div className="flex items-center gap-2 group cursor-default">
-                  <div className="w-3 h-3 rounded-sm bg-yellow/40 border border-yellow/60 group-hover:bg-yellow/60 transition-colors" />
-                  <span className="text-[10px] font-bold text-muted group-hover:text-foreground transition-colors uppercase tracking-[0.15em]">Cron Jobs</span>
+                <div className="flex items-center gap-1.5 md:gap-2 group cursor-default">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-sm bg-orange-500/40 border border-orange-500/60" />
+                  <span className="text-[8px] md:text-[10px] font-bold text-muted uppercase tracking-wider">Cron</span>
                 </div>
-                <div className="flex items-center gap-2 group cursor-default">
-                  <div className="w-3 h-3 rounded-sm bg-purple-500/40 border border-purple-500/60 group-hover:bg-purple-500/60 transition-colors" />
-                  <span className="text-[10px] font-bold text-muted group-hover:text-foreground transition-colors uppercase tracking-[0.15em]">Event Listeners</span>
+                <div className="flex items-center gap-1.5 md:gap-2 group cursor-default">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-sm bg-purple-500/40 border border-purple-500/60" />
+                  <span className="text-[8px] md:text-[10px] font-bold text-muted uppercase tracking-wider">Events</span>
                 </div>
-                <div className="flex items-center gap-2 group cursor-default">
-                  <div className="w-3 h-3 rounded-sm bg-green-500/40 border border-green-500/60 group-hover:bg-green-500/60 transition-colors" />
-                  <span className="text-[10px] font-bold text-muted group-hover:text-foreground transition-colors uppercase tracking-[0.15em]">Data Streams</span>
+                <div className="flex items-center gap-1.5 md:gap-2 group cursor-default">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-sm bg-blue-500/40 border border-blue-500/60" />
+                  <span className="text-[8px] md:text-[10px] font-bold text-muted uppercase tracking-wider">States</span>
+                </div>
+                <div className="flex items-center gap-1.5 md:gap-2 group cursor-default">
+                  <div className="w-2.5 h-2.5 md:w-3 md:h-3 rounded-sm bg-green-500/40 border border-green-500/60" />
+                  <span className="text-[8px] md:text-[10px] font-bold text-muted uppercase tracking-wider">Streams</span>
                 </div>
               </div>
             </div>
@@ -528,19 +569,20 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 lg:grid-cols-3">
+      <div className="grid gap-4 md:gap-6 grid-cols-1 lg:grid-cols-3 items-start">
+        {/* Triggers table - full width on mobile, 2/3 on desktop */}
         <Card className="lg:col-span-2">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Registered Triggers</CardTitle>
-            <Link href="/triggers" className="text-[10px] tracking-wider uppercase text-[#5B5B5B] hover:text-[#F3F724] transition-colors flex items-center gap-1 group">
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 md:p-6">
+            <CardTitle className="text-sm md:text-base">Registered Triggers</CardTitle>
+            <Link href="/handlers" className="text-[9px] md:text-[10px] tracking-wider uppercase text-[#5B5B5B] hover:text-[#F3F724] transition-colors flex items-center gap-1 group">
               View All <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
             </Link>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-3 md:p-6 pt-0 md:pt-0">
             {loading ? (
-              <div className="text-xs text-[#5B5B5B] py-8 text-center">Loading...</div>
+              <div className="text-xs text-[#5B5B5B] py-6 md:py-8 text-center">Loading...</div>
             ) : userTriggers.length === 0 ? (
-              <div className="text-xs text-[#5B5B5B] py-8 text-center border border-dashed border-[#1D1D1D] rounded">
+              <div className="text-xs text-[#5B5B5B] py-6 md:py-8 text-center border border-dashed border-[#1D1D1D] rounded">
                 No user triggers registered
                 {triggers.length > 0 && (
                   <div className="text-[9px] text-muted mt-1">
@@ -549,88 +591,97 @@ export default function Dashboard() {
                 )}
               </div>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Type</TableHead>
-                    <TableHead>ID</TableHead>
-                    <TableHead>Function</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {userTriggers.slice(0, 5).map((trigger) => (
-                    <TableRow key={trigger.id}>
-                      <TableCell>
-                        <Badge variant="outline">{trigger.trigger_type}</Badge>
-                      </TableCell>
-                      <TableCell className="font-mono text-[#5B5B5B]">
-                        {trigger.id.length > 20 ? `${trigger.id.slice(0, 20)}...` : trigger.id}
-                      </TableCell>
-                      <TableCell className="font-mono">{trigger.function_path || '—'}</TableCell>
-                      <TableCell>
-                        <Badge variant="success">Active</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="border-b border-[#1D1D1D]">
+                    <tr className="border-b border-[#1D1D1D]">
+                      <th className="text-left py-2 md:py-3 px-3 md:px-4 text-[10px] md:text-xs font-medium tracking-wider uppercase text-[#5B5B5B]">Type</th>
+                      <th className="text-left py-2 md:py-3 px-3 md:px-4 text-[10px] md:text-xs font-medium tracking-wider uppercase text-[#5B5B5B] hidden sm:table-cell">ID</th>
+                      <th className="text-left py-2 md:py-3 px-3 md:px-4 text-[10px] md:text-xs font-medium tracking-wider uppercase text-[#5B5B5B]">Function</th>
+                      <th className="text-left py-2 md:py-3 px-3 md:px-4 text-[10px] md:text-xs font-medium tracking-wider uppercase text-[#5B5B5B]">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {userTriggers.slice(0, 4).map((trigger) => (
+                      <tr key={trigger.id} className="border-b border-[#1D1D1D] transition-colors hover:bg-white/[0.02]">
+                        <td className="py-2 md:py-3 px-3 md:px-4 text-[#F4F4F4]">
+                          <Badge variant="outline" className="text-[9px] md:text-[10px]">{trigger.trigger_type}</Badge>
+                        </td>
+                        <td className="py-2 md:py-3 px-3 md:px-4 text-[#F4F4F4] font-mono text-[9px] md:text-[10px] text-[#5B5B5B] hidden sm:table-cell">
+                          {trigger.id.length > 16 ? `${trigger.id.slice(0, 16)}...` : trigger.id}
+                        </td>
+                        <td className="py-2 md:py-3 px-3 md:px-4 text-[#F4F4F4] font-mono text-[9px] md:text-[10px] max-w-[100px] md:max-w-none truncate">{trigger.function_path || '—'}</td>
+                        <td className="py-2 md:py-3 px-3 md:px-4 text-[#F4F4F4]">
+                          <Badge variant="success" className="text-[9px] md:text-[10px]">Active</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </CardContent>
         </Card>
 
-        <div className="space-y-4">
+        {/* Quick Actions & System Info - side column */}
+        <div className="space-y-3 md:space-y-4">
+          {/* Quick Actions - horizontal scroll on mobile, vertical on desktop */}
           <Card>
-            <CardHeader>
-              <CardTitle>Quick Actions</CardTitle>
+            <CardHeader className="p-3 md:p-6 pb-2 md:pb-4">
+              <CardTitle className="text-sm md:text-base">Quick Actions</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2">
-              <Link href="/streams" className="block group">
-                <div className="p-3 rounded border border-[#1D1D1D] group-hover:border-[#F3F724]/40 transition-colors cursor-pointer">
-                  <div className="text-xs font-medium group-hover:text-[#F3F724] transition-colors">View Streams</div>
-                  <div className="text-[10px] text-[#5B5B5B] mt-0.5">Manage queues and messages</div>
-                </div>
-              </Link>
-              <Link href="/logs" className="block group">
-                <div className="p-3 rounded border border-[#1D1D1D] group-hover:border-[#F3F724]/40 transition-colors cursor-pointer">
-                  <div className="text-xs font-medium group-hover:text-[#F3F724] transition-colors">View Logs</div>
-                  <div className="text-[10px] text-[#5B5B5B] mt-0.5">Debug system events</div>
-                </div>
-              </Link>
-              <Link href="/config" className="block group">
-                <div className="p-3 rounded border border-[#1D1D1D] group-hover:border-[#F3F724]/40 transition-colors cursor-pointer">
-                  <div className="text-xs font-medium group-hover:text-[#F3F724] transition-colors">Configuration</div>
-                  <div className="text-[10px] text-[#5B5B5B] mt-0.5">View environment settings</div>
-                </div>
-              </Link>
+            <CardContent className="p-3 md:p-6 pt-0 md:pt-0">
+              <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+                <Link href="/states" className="block group">
+                  <div className="p-2 md:p-3 rounded border border-[#1D1D1D] group-hover:border-blue-500/40 transition-colors cursor-pointer">
+                    <div className="text-[10px] md:text-xs font-medium group-hover:text-blue-400 transition-colors">States</div>
+                    <div className="text-[8px] md:text-[10px] text-[#5B5B5B] mt-0.5 hidden md:block">Key-value store</div>
+                  </div>
+                </Link>
+                <Link href="/streams" className="block group">
+                  <div className="p-2 md:p-3 rounded border border-[#1D1D1D] group-hover:border-green-500/40 transition-colors cursor-pointer">
+                    <div className="text-[10px] md:text-xs font-medium group-hover:text-green-400 transition-colors">Streams</div>
+                    <div className="text-[8px] md:text-[10px] text-[#5B5B5B] mt-0.5 hidden md:block">WebSocket flow</div>
+                  </div>
+                </Link>
+                <Link href="/logs" className="block group">
+                  <div className="p-2 md:p-3 rounded border border-[#1D1D1D] group-hover:border-[#F3F724]/40 transition-colors cursor-pointer">
+                    <div className="text-[10px] md:text-xs font-medium group-hover:text-[#F3F724] transition-colors">Logs</div>
+                    <div className="text-[8px] md:text-[10px] text-[#5B5B5B] mt-0.5 hidden md:block">Debug events</div>
+                  </div>
+                </Link>
+                <Link href="/config" className="block group">
+                  <div className="p-2 md:p-3 rounded border border-[#1D1D1D] group-hover:border-[#F3F724]/40 transition-colors cursor-pointer">
+                    <div className="text-[10px] md:text-xs font-medium group-hover:text-[#F3F724] transition-colors">Config</div>
+                    <div className="text-[8px] md:text-[10px] text-[#5B5B5B] mt-0.5 hidden md:block">Settings</div>
+                  </div>
+                </Link>
+              </div>
             </CardContent>
           </Card>
 
+          {/* System Info - compact on mobile */}
           <Card>
-            <CardHeader>
-              <CardTitle>System Info</CardTitle>
+            <CardHeader className="p-3 md:p-6 pb-2 md:pb-4">
+              <CardTitle className="text-sm md:text-base">System Info</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="p-3 md:p-6 pt-0 md:pt-0 space-y-2 md:space-y-3">
               <div className="flex justify-between items-center">
-                <span className="text-[10px] text-muted uppercase tracking-wider">Uptime</span>
-                <span className="text-xs font-mono">{status?.uptime_formatted || '—'}</span>
+                <span className="text-[9px] md:text-[10px] text-muted uppercase tracking-wider">Uptime</span>
+                <span className="text-[10px] md:text-xs font-mono">{status?.uptime_formatted || '—'}</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-[10px] text-muted uppercase tracking-wider">REST API</span>
-                <span className="text-xs font-mono">:3111</span>
+                <span className="text-[9px] md:text-[10px] text-muted uppercase tracking-wider">API</span>
+                <span className="text-[10px] md:text-xs font-mono">:3111</span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-[10px] text-muted uppercase tracking-wider">Streams</span>
-                <span className="text-xs font-mono">:31112</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] text-muted uppercase tracking-wider">Management</span>
-                <span className="text-xs font-mono">:3111</span>
+                <span className="text-[9px] md:text-[10px] text-muted uppercase tracking-wider">WS</span>
+                <span className="text-[10px] md:text-xs font-mono">:31112</span>
               </div>
               {lastUpdate && (
                 <div className="flex justify-between items-center pt-2 border-t border-border">
-                  <span className="text-[10px] text-muted uppercase tracking-wider">Last Update</span>
-                  <span className="text-xs font-mono text-[#F3F724]">
+                  <span className="text-[9px] md:text-[10px] text-muted uppercase tracking-wider">Updated</span>
+                  <span className="text-[10px] md:text-xs font-mono text-[#F3F724]">
                     {lastUpdate.toLocaleTimeString()}
                   </span>
                 </div>

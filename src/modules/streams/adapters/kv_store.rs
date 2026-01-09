@@ -92,6 +92,14 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         self.storage.get_group(stream_name, group_id).await
     }
 
+    async fn list_groups(&self, stream_name: &str) -> Vec<(String, usize)> {
+        self.storage.list_groups(stream_name).await
+    }
+
+    async fn list_streams(&self) -> Vec<String> {
+        self.storage.list_streams().await
+    }
+
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
         self.pub_sub.subscribe(id, connection).await;
     }

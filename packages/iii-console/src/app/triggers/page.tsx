@@ -26,6 +26,15 @@ interface Trigger {
   lastError?: string;
 }
 
+// Consistent color scheme for trigger types
+const TRIGGER_TYPE_CONFIG: Record<string, { icon: typeof Zap; color: string; bg: string; label: string }> = {
+  'api': { icon: Globe, color: 'text-cyan-400', bg: 'bg-cyan-500/10 border-cyan-500/30', label: 'API' },
+  'cron': { icon: Calendar, color: 'text-orange-400', bg: 'bg-orange-500/10 border-orange-500/30', label: 'CRON' },
+  'event': { icon: MessageSquare, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/30', label: 'EVENT' },
+  'streams:join': { icon: Play, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30', label: 'STREAM JOIN' },
+  'streams:leave': { icon: Pause, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30', label: 'STREAM LEAVE' },
+};
+
 const TRIGGER_ICONS: Record<string, typeof Zap> = {
   'api': Globe,
   'cron': Calendar,
@@ -35,8 +44,8 @@ const TRIGGER_ICONS: Record<string, typeof Zap> = {
 };
 
 const STATUS_CONFIG: Record<string, { color: string; icon: typeof Clock; label: string }> = {
-  idle: { color: 'text-cyan-400', icon: Clock, label: 'Idle' },
-  running: { color: 'text-yellow', icon: Loader2, label: 'Running' },
+  idle: { color: 'text-muted', icon: Clock, label: 'Idle' },
+  running: { color: 'text-orange-400', icon: Loader2, label: 'Running' },
   completed: { color: 'text-success', icon: CheckCircle, label: 'Completed' },
   failed: { color: 'text-error', icon: AlertCircle, label: 'Failed' },
 };
@@ -98,9 +107,22 @@ export default function TriggersPage() {
   const [showSystem, setShowSystem] = useState(false);
   const [expandedTriggers, setExpandedTriggers] = useState<Set<string>>(new Set());
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [showSearch, setShowSearch] = useState(false);
   const [selectedTriggerId, setSelectedTriggerId] = useState<string | null>(null);
   const [isConnected] = useState(true);
+  
+  // API Testing state
+  const [pathParams, setPathParams] = useState<Record<string, string>>({});
+  const [queryParams, setQueryParams] = useState<Record<string, string>>({});
+  const [requestBody, setRequestBody] = useState('{}');
+  const [httpMethod, setHttpMethod] = useState('GET');
+  const [invoking, setInvoking] = useState(false);
+  const [invocationResult, setInvocationResult] = useState<{
+    success: boolean;
+    status?: number;
+    duration?: number;
+    data?: unknown;
+    error?: string;
+  } | null>(null);
 
   useEffect(() => {
     loadTriggers();
@@ -129,6 +151,109 @@ export default function TriggersPage() {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleSelectTrigger = (trigger: Trigger) => {
+    if (selectedTriggerId === trigger.id) {
+      setSelectedTriggerId(null);
+      return;
+    }
+    
+    setSelectedTriggerId(trigger.id);
+    setInvocationResult(null);
+    
+    if (trigger.trigger_type === 'api') {
+      const config = trigger.config as { api_path?: string; http_method?: string };
+      const path = config.api_path || '';
+      const method = config.http_method || 'GET';
+      setHttpMethod(method);
+      
+      // Extract path parameters
+      const matches = path.match(/:([a-zA-Z_]+)/g);
+      if (matches) {
+        const params: Record<string, string> = {};
+        matches.forEach(m => params[m.slice(1)] = '');
+        setPathParams(params);
+      } else {
+        setPathParams({});
+      }
+      
+      setQueryParams({});
+      setRequestBody(method === 'POST' || method === 'PUT' ? '{\n  \n}' : '{}');
+    }
+  };
+
+  const invokeTrigger = async (trigger: Trigger) => {
+    if (trigger.trigger_type !== 'api') return;
+    
+    setInvoking(true);
+    setInvocationResult(null);
+    const startTime = Date.now();
+
+    try {
+      const config = trigger.config as { api_path?: string; http_method?: string };
+      let path = config.api_path || '';
+      const method = httpMethod;
+      
+      // Replace path parameters
+      const pathParamMatches = path.match(/:([a-zA-Z_]+)/g);
+      if (pathParamMatches) {
+        for (const match of pathParamMatches) {
+          const paramName = match.slice(1);
+          const value = pathParams[paramName];
+          if (!value) {
+            setInvocationResult({ success: false, error: `Missing path parameter: ${paramName}` });
+            setInvoking(false);
+            return;
+          }
+          path = path.replace(match, encodeURIComponent(value));
+        }
+      }
+      
+      // Build query string
+      const queryEntries = Object.entries(queryParams).filter(([_, v]) => v);
+      const queryString = queryEntries.length > 0
+        ? '?' + queryEntries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+        : '';
+      
+      const fetchOptions: RequestInit = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+      };
+
+      if (method !== 'GET' && method !== 'HEAD') {
+        try {
+          JSON.parse(requestBody);
+          fetchOptions.body = requestBody;
+        } catch {
+          setInvocationResult({ success: false, error: 'Invalid JSON in request body' });
+          setInvoking(false);
+          return;
+        }
+      }
+
+      const fullUrl = `http://localhost:3111/${path}${queryString}`;
+      const response = await fetch(fullUrl, fetchOptions);
+      const duration = Date.now() - startTime;
+      
+      let data;
+      const contentType = response.headers.get('content-type');
+      if (contentType?.includes('application/json')) {
+        data = await response.json();
+      } else {
+        data = await response.text();
+      }
+
+      setInvocationResult({ success: response.ok, status: response.status, duration, data });
+    } catch (err) {
+      setInvocationResult({
+        success: false,
+        duration: Date.now() - startTime,
+        error: err instanceof Error ? err.message : 'Invocation failed'
+      });
+    } finally {
+      setInvoking(false);
+    }
   };
 
   const stats = useMemo(() => {
@@ -199,53 +324,14 @@ export default function TriggersPage() {
         </div>
         
         <div className="flex items-center gap-2">
-          {showSearch ? (
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
-                <Input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search triggers..."
-                  className="w-48 h-7 pl-8 text-xs"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      setShowSearch(false);
-                      setSearchQuery('');
-                    }
-                  }}
-                />
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => { setShowSearch(false); setSearchQuery(''); }}
-                className="h-7 w-7 p-0"
-              >
-                <X className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowSearch(true)}
-              className="h-7 w-7 p-0 text-muted hover:text-foreground"
-            >
-              <Search className="w-3.5 h-3.5" />
-            </Button>
-          )}
-          
           <Button 
             variant={showSystem ? "accent" : "ghost"} 
             size="sm" 
             onClick={() => setShowSystem(!showSystem)}
             className="h-7 text-xs"
           >
-            {showSystem ? <EyeOff className="w-3 h-3 mr-1.5" /> : <Eye className="w-3 h-3 mr-1.5" />}
-            System
+            {showSystem ? <Eye className="w-3 h-3 mr-1.5" /> : <EyeOff className="w-3 h-3 mr-1.5" />}
+            <span className={showSystem ? '' : 'line-through opacity-60'}>System</span>
           </Button>
           
           <Button 
@@ -261,68 +347,83 @@ export default function TriggersPage() {
         </div>
       </div>
 
-      <div className="px-5 py-3 bg-dark-gray/20 border-b border-border/50">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-3">
-            <span className="text-[11px] font-medium text-muted uppercase tracking-wide">Type</span>
-            <Select 
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="h-7 text-xs min-w-[100px]"
+      {/* Search Bar Row - Consistent with Logs/Traces */}
+      <div className="flex items-center gap-2 p-2 border-b border-border bg-dark-gray/20">
+        <div className="flex-1 relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
+          <Input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9 pr-9 h-9"
+            placeholder="Search..."
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-foreground"
             >
-              <option value="all">All</option>
-              {triggerTypes.map(type => (
-                <option key={type} value={type}>{type}</option>
-              ))}
-            </Select>
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+        
+        <div className="flex items-center gap-3 px-2 border-l border-border">
+          <span className="text-[11px] font-medium text-muted uppercase tracking-wide">Type</span>
+          <Select 
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="h-7 text-xs min-w-[100px]"
+          >
+            <option value="all">All</option>
+            {triggerTypes.map(type => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </Select>
+        </div>
+
+        <div className="flex items-center gap-4 px-2 text-xs border-l border-border">
+          <div className="flex items-center gap-1.5 text-muted">
+            <Hash className="w-3 h-3" />
+            <span className="font-medium text-foreground tabular-nums">{stats.total}</span>
+            triggers
           </div>
 
-          <div className="w-px h-6 bg-border" />
-
-          <div className="flex items-center gap-4 text-xs">
-            <div className="flex items-center gap-1.5 text-muted">
-              <Hash className="w-3 h-3" />
-              <span className="font-medium text-foreground tabular-nums">{stats.total}</span>
-              triggers
-            </div>
-
-            <div className="flex items-center gap-1.5 text-muted">
-              <Globe className="w-3 h-3 text-cyan-400" />
-              <span className="font-medium text-foreground tabular-nums">{stats.api}</span>
-              API
-            </div>
-
-            <div className="flex items-center gap-1.5 text-muted">
-              <Calendar className="w-3 h-3 text-yellow" />
-              <span className="font-medium text-foreground tabular-nums">{stats.cron}</span>
-              cron
-            </div>
-
-            {stats.running > 0 && (
-              <div className="flex items-center gap-1.5 text-yellow">
-                <Activity className="w-3 h-3" />
-                <span className="font-medium tabular-nums">{stats.running}</span>
-                running
-              </div>
-            )}
-
-            {stats.failed > 0 && (
-              <div className="flex items-center gap-1.5 text-error">
-                <AlertCircle className="w-3 h-3" />
-                <span className="font-medium tabular-nums">{stats.failed}</span>
-                failed
-              </div>
-            )}
-
-            {stats.nextScheduled && (
-              <div className="flex items-center gap-1.5 text-muted">
-                <Timer className="w-3 h-3 text-success" />
-                <span className="font-medium text-foreground tabular-nums">
-                  {formatRelativeTime(stats.nextScheduled.nextRunAt)}
-                </span>
-              </div>
-            )}
+          <div className="flex items-center gap-1.5 text-muted">
+            <Globe className="w-3 h-3 text-cyan-400" />
+            <span className="font-medium text-foreground tabular-nums">{stats.api}</span>
+            API
           </div>
+
+          <div className="flex items-center gap-1.5 text-muted">
+            <Calendar className="w-3 h-3 text-orange-400" />
+            <span className="font-medium text-foreground tabular-nums">{stats.cron}</span>
+            cron
+          </div>
+
+          {stats.running > 0 && (
+            <div className="flex items-center gap-1.5 text-orange-400">
+              <Activity className="w-3 h-3" />
+              <span className="font-medium tabular-nums">{stats.running}</span>
+              running
+            </div>
+          )}
+
+          {stats.failed > 0 && (
+            <div className="flex items-center gap-1.5 text-error">
+              <AlertCircle className="w-3 h-3" />
+              <span className="font-medium tabular-nums">{stats.failed}</span>
+              failed
+            </div>
+          )}
+
+          {stats.nextScheduled && (
+            <div className="flex items-center gap-1.5 text-muted">
+              <Timer className="w-3 h-3 text-success" />
+              <span className="font-medium text-foreground tabular-nums">
+                {formatRelativeTime(stats.nextScheduled.nextRunAt)}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -365,7 +466,7 @@ export default function TriggersPage() {
                     }
                     ${trigger.enabled === false ? 'opacity-60' : ''}
                   `}
-                  onClick={() => setSelectedTriggerId(isSelected ? null : trigger.id)}
+                  onClick={() => handleSelectTrigger(trigger)}
                 >
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -374,9 +475,14 @@ export default function TriggersPage() {
                           <h3 className="font-medium text-foreground truncate">
                             {trigger.function_path || trigger.id}
                           </h3>
-                          <Badge variant="outline" className="shrink-0 gap-1">
-                            <Icon className="w-3 h-3" />
-                            {trigger.trigger_type.toUpperCase()}
+                          <Badge 
+                            variant="outline" 
+                            className={`shrink-0 gap-1 border ${TRIGGER_TYPE_CONFIG[trigger.trigger_type]?.bg || 'bg-muted/10 border-border'}`}
+                          >
+                            <Icon className={`w-3 h-3 ${TRIGGER_TYPE_CONFIG[trigger.trigger_type]?.color || 'text-muted'}`} />
+                            <span className={TRIGGER_TYPE_CONFIG[trigger.trigger_type]?.color || 'text-muted'}>
+                              {TRIGGER_TYPE_CONFIG[trigger.trigger_type]?.label || trigger.trigger_type.toUpperCase()}
+                            </span>
                           </Badge>
                           {trigger.status && (
                             <Badge 
@@ -398,7 +504,7 @@ export default function TriggersPage() {
                         
                         {cronSchedule && (
                           <div className="mt-2 flex items-center gap-2">
-                            <code className="px-2 py-1 rounded bg-black/40 text-xs font-mono text-yellow">
+                            <code className="px-2 py-1 rounded bg-orange-500/10 border border-orange-500/20 text-xs font-mono text-orange-400">
                               {cronSchedule}
                             </code>
                             <span className="text-xs text-muted">{parseCronExpression(cronSchedule)}</span>
@@ -480,7 +586,7 @@ export default function TriggersPage() {
         </div>
 
         {selectedTrigger && (
-          <div className="w-80 border-l border-border bg-dark-gray/20 overflow-y-auto">
+          <div className="w-[480px] shrink-0 border-l border-border bg-dark-gray/20 overflow-y-auto">
             <div className="p-4 border-b border-border">
               <div className="flex items-center justify-between">
                 <h2 className="font-medium text-sm">Trigger Details</h2>
@@ -521,27 +627,196 @@ export default function TriggersPage() {
               </div>
 
               {selectedTrigger.trigger_type === 'api' && (
-                <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Endpoint</div>
-                  <div className="flex items-center gap-2">
-                    <code className="text-xs font-mono bg-cyan-500/10 text-cyan-400 px-2 py-1 rounded border border-cyan-500/30">
-                      {getApiEndpoint(selectedTrigger)}
-                    </code>
-                    <a 
-                      href={`http://localhost:3111/${(selectedTrigger.config as { api_path?: string }).api_path || ''}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-1 hover:bg-dark-gray rounded text-muted hover:text-foreground"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                <>
+                  <div>
+                    <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Endpoint</div>
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs font-mono bg-cyan-500/10 text-cyan-400 px-2 py-1 rounded border border-cyan-500/30 flex-1 truncate">
+                        {getApiEndpoint(selectedTrigger)}
+                      </code>
+                      <a 
+                        href={`http://localhost:3111/${(selectedTrigger.config as { api_path?: string }).api_path || ''}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 hover:bg-dark-gray rounded text-muted hover:text-foreground"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
                   </div>
-                </div>
+
+                  {/* API Testing Section */}
+                  <div className="border-t border-border pt-4">
+                    <div className="text-[10px] text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                      <Play className="w-3 h-3" />
+                      Test API
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={httpMethod}
+                          onChange={(e) => setHttpMethod(e.target.value)}
+                          className="w-24 h-8 text-xs"
+                        >
+                          <option value="GET">GET</option>
+                          <option value="POST">POST</option>
+                          <option value="PUT">PUT</option>
+                          <option value="PATCH">PATCH</option>
+                          <option value="DELETE">DELETE</option>
+                        </Select>
+                        <code className="flex-1 text-xs font-mono text-muted bg-black/30 px-2 py-1.5 rounded truncate">
+                          /{(selectedTrigger.config as { api_path?: string }).api_path || ''}
+                        </code>
+                      </div>
+
+                      {/* Path Parameters */}
+                      {Object.keys(pathParams).length > 0 && (
+                        <div className="space-y-2">
+                          <div className="text-[10px] text-muted uppercase tracking-wider">Path Parameters</div>
+                          {Object.keys(pathParams).map(param => (
+                            <div key={param} className="flex items-center gap-2">
+                              <label className="text-xs font-mono text-orange-400 w-16 shrink-0">:{param}</label>
+                              <Input
+                                value={pathParams[param]}
+                                onChange={(e) => setPathParams(prev => ({ ...prev, [param]: e.target.value }))}
+                                placeholder={`Enter ${param}`}
+                                className="h-7 text-xs font-mono"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Query Parameters */}
+                      {httpMethod === 'GET' && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="text-[10px] text-muted uppercase tracking-wider">Query Parameters</div>
+                            <button
+                              onClick={() => setQueryParams(prev => ({ ...prev, [`param${Object.keys(prev).length + 1}`]: '' }))}
+                              className="text-[10px] text-cyan-400 hover:text-cyan-300"
+                            >
+                              + Add
+                            </button>
+                          </div>
+                          {Object.keys(queryParams).length === 0 ? (
+                            <div className="text-[10px] text-muted italic">No query parameters</div>
+                          ) : (
+                            Object.entries(queryParams).map(([key, value], idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <Input
+                                  value={key}
+                                  onChange={(e) => {
+                                    const newParams = { ...queryParams };
+                                    delete newParams[key];
+                                    newParams[e.target.value] = value;
+                                    setQueryParams(newParams);
+                                  }}
+                                  placeholder="key"
+                                  className="h-7 text-xs font-mono w-20"
+                                />
+                                <span className="text-muted">=</span>
+                                <Input
+                                  value={value}
+                                  onChange={(e) => setQueryParams(prev => ({ ...prev, [key]: e.target.value }))}
+                                  placeholder="value"
+                                  className="h-7 text-xs font-mono flex-1"
+                                />
+                                <button
+                                  onClick={() => {
+                                    const newParams = { ...queryParams };
+                                    delete newParams[key];
+                                    setQueryParams(newParams);
+                                  }}
+                                  className="p-1 text-muted hover:text-error"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+
+                      {/* Request Body */}
+                      {(httpMethod === 'POST' || httpMethod === 'PUT' || httpMethod === 'PATCH') && (
+                        <div>
+                          <div className="text-[10px] text-muted uppercase tracking-wider mb-1.5">Request Body</div>
+                          <textarea
+                            value={requestBody}
+                            onChange={(e) => setRequestBody(e.target.value)}
+                            className="w-full h-20 text-xs font-mono bg-black/40 text-foreground px-3 py-2 rounded border border-border focus:border-primary focus:outline-none resize-none"
+                            placeholder='{"key": "value"}'
+                          />
+                        </div>
+                      )}
+
+                      <Button
+                        onClick={() => invokeTrigger(selectedTrigger)}
+                        disabled={invoking}
+                        className="w-full h-8"
+                      >
+                        {invoking ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                            Sending...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3.5 h-3.5 mr-2" />
+                            Send Request
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Response */}
+                  {invocationResult && (
+                    <div className={`border rounded-lg overflow-hidden ${
+                      invocationResult.success 
+                        ? 'border-success/30 bg-success/5' 
+                        : 'border-error/30 bg-error/5'
+                    }`}>
+                      <div className={`flex items-center justify-between px-3 py-2 border-b ${
+                        invocationResult.success ? 'border-success/20' : 'border-error/20'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          {invocationResult.success ? (
+                            <CheckCircle className="w-3.5 h-3.5 text-success" />
+                          ) : (
+                            <AlertCircle className="w-3.5 h-3.5 text-error" />
+                          )}
+                          <span className={`text-xs font-medium ${
+                            invocationResult.success ? 'text-success' : 'text-error'
+                          }`}>
+                            {invocationResult.status || 'Error'}
+                          </span>
+                        </div>
+                        {invocationResult.duration && (
+                          <span className="text-[10px] text-muted">{invocationResult.duration}ms</span>
+                        )}
+                      </div>
+                      <div className="p-3 max-h-48 overflow-auto">
+                        {invocationResult.error ? (
+                          <p className="text-xs text-error">{invocationResult.error}</p>
+                        ) : (
+                          <pre className="text-[10px] font-mono text-foreground whitespace-pre-wrap">
+                            {typeof invocationResult.data === 'string' 
+                              ? invocationResult.data 
+                              : JSON.stringify(invocationResult.data, null, 2)}
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
 
               <div>
                 <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Configuration</div>
-                <pre className="text-[10px] font-mono bg-black/40 px-3 py-2 rounded overflow-x-auto text-muted max-h-48">
+                <pre className="text-[10px] font-mono bg-black/40 px-3 py-2 rounded overflow-x-auto text-muted max-h-32">
                   {JSON.stringify(selectedTrigger.config, null, 2)}
                 </pre>
               </div>

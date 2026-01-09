@@ -13,6 +13,15 @@ export class Logger {
     private readonly functionName?: string,
   ) {}
 
+  debug(message: string, data?: any) {
+    this.invoker?.('logger.debug', {
+      message,
+      data,
+      trace_id: this.traceId,
+      function_name: this.functionName,
+    })
+  }
+
   info(message: string, data?: any) {
     this.invoker?.('logger.info', {
       message,

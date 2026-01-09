@@ -7,6 +7,7 @@ import {
   Eye, EyeOff, AlertCircle, ExternalLink, ChevronDown, ChevronRight,
   X, Activity, Wifi, WifiOff, Timer, Database, Radio, FileText, Hash
 } from "lucide-react";
+import { JsonViewer } from "@/components/ui/json-viewer";
 
 interface TraceEvent {
   id: string;
@@ -75,8 +76,17 @@ export default function TracesPage() {
   const loadTraces = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('http://localhost:3111/_console/traces');
-      if (response.ok) {
+      // First check if the engine is available
+      const statusResponse = await fetch('http://localhost:3111/_console/status').catch(() => null);
+      if (!statusResponse?.ok) {
+        setHasOtelConfigured(false);
+        setIsLoading(false);
+        return;
+      }
+      
+      // Try to load traces - this endpoint may not exist yet
+      const response = await fetch('http://localhost:3111/_console/traces').catch(() => null);
+      if (response?.ok) {
         const data = await response.json();
         if (data.traces && data.traces.length > 0) {
           setTraceGroups(data.traces);
@@ -84,6 +94,9 @@ export default function TracesPage() {
         } else {
           setHasOtelConfigured(false);
         }
+      } else {
+        // Traces endpoint not available - that's ok, show empty state
+        setHasOtelConfigured(false);
       }
     } catch {
       setHasOtelConfigured(false);
@@ -94,7 +107,8 @@ export default function TracesPage() {
 
   useEffect(() => {
     loadTraces();
-    const interval = setInterval(loadTraces, 5000);
+    // Poll less frequently to reduce network noise
+    const interval = setInterval(loadTraces, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -130,30 +144,30 @@ export default function TracesPage() {
 
   return (
     <div className="flex flex-col h-full bg-background text-foreground">
-      <div className="flex items-center justify-between px-5 py-3 bg-dark-gray/30 border-b border-border">
-        <div className="flex items-center gap-4">
-          <h1 className="text-base font-semibold flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-2 md:py-3 bg-dark-gray/30 border-b border-border">
+        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
+          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
             <GitBranch className="w-4 h-4 text-cyan-400" />
             Traces
           </h1>
-          <Badge 
+          <Badge
             variant={isConnected ? 'success' : 'error'}
-            className="gap-1.5"
+            className="gap-1 text-[10px] md:text-xs"
           >
-            {isConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
-            {isConnected ? 'Live' : 'Offline'}
+            {isConnected ? <Wifi className="w-2.5 h-2.5 md:w-3 md:h-3" /> : <WifiOff className="w-2.5 h-2.5 md:w-3 md:h-3" />}
+            <span className="hidden sm:inline">{isConnected ? 'Live' : 'Offline'}</span>
           </Badge>
         </div>
-        
-        <div className="flex items-center gap-2">
-          <Button 
-            variant={showSystem ? "accent" : "ghost"} 
-            size="sm" 
+
+        <div className="flex items-center gap-1.5 md:gap-2">
+          <Button
+            variant={showSystem ? "accent" : "ghost"}
+            size="sm"
             onClick={() => setShowSystem(!showSystem)}
-            className="h-7 text-xs"
+            className="h-6 md:h-7 text-[10px] md:text-xs px-2"
           >
-            {showSystem ? <EyeOff className="w-3 h-3 mr-1.5" /> : <Eye className="w-3 h-3 mr-1.5" />}
-            System
+            {showSystem ? <Eye className="w-3 h-3 md:mr-1.5" /> : <EyeOff className="w-3 h-3 md:mr-1.5" />}
+            <span className={`hidden md:inline ${showSystem ? '' : 'line-through opacity-60'}`}>System</span>
           </Button>
           <Button 
             variant="ghost" 
@@ -236,7 +250,7 @@ export default function TracesPage() {
       )}
 
       {hasOtelConfigured && (
-        <div className={`flex-1 grid overflow-hidden ${selectedTraceId ? 'grid-cols-[300px_1fr]' : 'grid-cols-1'}`}>
+        <div className={`flex-1 grid overflow-hidden ${selectedTraceId ? 'grid-cols-1 md:grid-cols-[260px_1fr] lg:grid-cols-[300px_1fr]' : 'grid-cols-1'}`}>
           <div className="flex flex-col h-full overflow-hidden border-r border-border bg-dark-gray/20">
             <div className="flex-1 overflow-y-auto">
               {isLoading && filteredGroups.length === 0 ? (
@@ -436,9 +450,9 @@ export default function TracesPage() {
                           </button>
                           
                           {isExpanded && event.data && (
-                            <pre className="ml-9 mt-1 p-3 bg-black/40 rounded text-[10px] font-mono overflow-x-auto">
-                              {JSON.stringify(event.data, null, 2)}
-                            </pre>
+                            <div className="ml-9 mt-1 p-3 bg-black/40 rounded overflow-x-auto max-h-64 overflow-y-auto">
+                              <JsonViewer data={event.data} collapsed={false} maxDepth={4} />
+                            </div>
                           )}
                         </div>
                       );

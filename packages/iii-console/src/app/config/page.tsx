@@ -7,7 +7,7 @@ import {
   Play, CheckCircle, XCircle, Clock, Database, Globe, Cpu, 
   Activity, Box, ChevronDown, ChevronRight, Download,
   Users, Layers, Radio, FileText, Wifi, WifiOff, Terminal, 
-  AlertCircle, Calendar, Hash, Timer, Search, X, Inbox
+  AlertCircle, Calendar, Hash, Timer, X, Inbox, Code, Plug
 } from "lucide-react";
 import { fetchConfig, fetchTriggerTypes, fetchAdapters, fetchStatus, fetchFunctions, fetchTriggers, fetchStreams } from "@/lib/api";
 
@@ -41,7 +41,6 @@ export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState<string | null>(null);
   const [showSystem, setShowSystem] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [devtoolsConfig, setDevtoolsConfig] = useState<Record<string, unknown> | null>(null);
   const [triggerTypes, setTriggerTypes] = useState<TriggerType[]>([]);
   const [adapters, setAdapters] = useState<ModuleInfo[]>([]);
@@ -50,6 +49,7 @@ export default function ConfigPage() {
   const [functionCount, setFunctionCount] = useState(0);
   const [triggerCount, setTriggerCount] = useState(0);
   const [streamCount, setStreamCount] = useState(0);
+  const [showConfigModal, setShowConfigModal] = useState(false);
   const [endpoints, setEndpoints] = useState<EndpointStatus[]>([
     { url: 'http://localhost:3111', name: 'iii Engine', icon: <Terminal className="w-4 h-4" />, status: 'checking', description: 'REST API & DevTools' },
     { url: 'ws://localhost:31112', name: 'Streams', icon: <Activity className="w-4 h-4" />, status: 'checking', description: 'WebSocket streams' },
@@ -74,9 +74,13 @@ export default function ConfigPage() {
       setTriggerTypes(triggerData.trigger_types || []);
       setAdapters(adapterData.adapters || []);
       setStatus(statusData);
-      setFunctionCount((funcData.functions || []).filter((f: { internal?: boolean }) => !f.internal).length);
-      setTriggerCount((trigData.triggers || []).filter((t: { internal?: boolean }) => !t.internal).length);
-      setStreamCount((streamData.streams || []).filter((s: { internal?: boolean }) => !s.internal).length);
+      // Store both total and user counts
+      const allFunctions = funcData.functions || [];
+      const allTriggers = trigData.triggers || [];
+      const allStreams = streamData.streams || [];
+      setFunctionCount(allFunctions.length);
+      setTriggerCount(allTriggers.length);
+      setStreamCount(allStreams.filter((s: { internal?: boolean }) => !s.internal).length);
     } catch (err) {
       setError('Failed to load configuration');
       console.error(err);
@@ -124,10 +128,8 @@ export default function ConfigPage() {
   };
 
   const modules = useMemo(() => {
-    return adapters
-      .filter(a => a.type === 'module' && (showSystem || !a.internal))
-      .filter(a => !searchQuery || a.id.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [adapters, showSystem, searchQuery]);
+    return adapters.filter(a => a.type === 'module' && (showSystem || !a.internal));
+  }, [adapters, showSystem]);
 
   const workers = useMemo(() => {
     return adapters.filter(a => a.type === 'worker_pool');
@@ -169,31 +171,36 @@ ${modules.map(m => `  - class: ${m.id}
 
   return (
     <div className="flex flex-col h-full bg-background text-foreground">
-      <div className="flex items-center justify-between px-5 py-3 bg-dark-gray/30 border-b border-border">
-        <div className="flex items-center gap-4">
-          <h1 className="text-base font-semibold flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-2 md:py-3 bg-dark-gray/30 border-b border-border">
+        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
+          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
             <Settings className="w-4 h-4" />
-            Configuration
+            <span className="hidden sm:inline">Configuration</span>
+            <span className="sm:hidden">Config</span>
           </h1>
-          <Badge variant={stats.healthy === stats.modules ? 'success' : 'warning'} className="gap-1.5">
-            <CheckCircle className="w-3 h-3" />
-            {stats.healthy}/{stats.modules} healthy
+          <Badge variant={stats.healthy === stats.modules ? 'success' : 'warning'} className="gap-1 text-[10px] md:text-xs">
+            <CheckCircle className="w-2.5 h-2.5 md:w-3 md:h-3" />
+            {stats.healthy}/{stats.modules}
           </Badge>
         </div>
-        
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={exportConfig} className="h-7 text-xs">
-            <Download className="w-3 h-3 mr-1.5" />
-            Export
+
+        <div className="flex items-center gap-1.5 md:gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setShowConfigModal(true)} className="h-6 md:h-7 text-[10px] md:text-xs px-2">
+            <Code className="w-3 h-3 md:mr-1.5" />
+            <span className="hidden md:inline">View Config</span>
           </Button>
-          <Button 
-            variant={showSystem ? "accent" : "ghost"} 
-            size="sm" 
+          <Button variant="ghost" size="sm" onClick={exportConfig} className="h-6 md:h-7 text-[10px] md:text-xs px-2">
+            <Download className="w-3 h-3 md:mr-1.5" />
+            <span className="hidden md:inline">Export</span>
+          </Button>
+          <Button
+            variant={showSystem ? "accent" : "ghost"}
+            size="sm"
             onClick={() => setShowSystem(!showSystem)}
-            className="h-7 text-xs"
+            className="h-6 md:h-7 text-[10px] md:text-xs px-2"
           >
-            {showSystem ? <EyeOff className="w-3 h-3 mr-1.5" /> : <Eye className="w-3 h-3 mr-1.5" />}
-            System
+            {showSystem ? <Eye className="w-3 h-3 md:mr-1.5" /> : <EyeOff className="w-3 h-3 md:mr-1.5" />}
+            <span className={`hidden md:inline ${showSystem ? '' : 'line-through opacity-60'}`}>System</span>
           </Button>
           <Button 
             variant="ghost" 
@@ -307,26 +314,6 @@ ${modules.map(m => `  - class: ${m.id}
 
       <div className={`flex-1 grid overflow-hidden ${selectedModule ? 'grid-cols-[1fr_320px]' : 'grid-cols-1'}`}>
         <div className="flex flex-col h-full overflow-hidden">
-          <div className="p-3 border-b border-border bg-dark-gray/20">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted" />
-              <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search modules..."
-                className="pl-8 h-8 text-xs"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted hover:text-foreground"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-
           <div className="flex-1 overflow-y-auto p-4">
             {loading ? (
               <div className="flex items-center justify-center h-32">
@@ -334,6 +321,50 @@ ${modules.map(m => `  - class: ${m.id}
               </div>
             ) : (
               <div className="space-y-6">
+                {/* Trigger Types - Moved to top */}
+                <div>
+                  <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <Zap className="w-3.5 h-3.5 text-yellow" />
+                    Trigger Types ({triggerTypes.length})
+                  </h3>
+                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+                    {triggerTypes.map((tt) => (
+                      <div 
+                        key={tt.id}
+                        className="p-3 rounded-lg border border-border bg-dark-gray/30 hover:border-yellow/30 transition-colors group"
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          {tt.id === 'api' && <Globe className="w-3.5 h-3.5 text-cyan" />}
+                          {tt.id === 'cron' && <Calendar className="w-3.5 h-3.5 text-orange-400" />}
+                          {tt.id === 'event' && <Radio className="w-3.5 h-3.5 text-green-400" />}
+                          {tt.id.includes('streams') && <Database className="w-3.5 h-3.5 text-purple-400" />}
+                          {!['api', 'cron', 'event'].includes(tt.id) && !tt.id.includes('streams') && (
+                            <Zap className="w-3.5 h-3.5 text-muted" />
+                          )}
+                          <span className="font-medium text-sm">{tt.id}</span>
+                        </div>
+                        <div className="text-[10px] text-muted line-clamp-1 mb-2">{tt.description}</div>
+                        <div className="flex items-center gap-1">
+                          <code className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-muted font-mono flex-1 truncate">
+                            "{tt.id}"
+                          </code>
+                          <button 
+                            onClick={() => copyToClipboard(tt.id, `tt-${tt.id}`)}
+                            className="p-1 hover:bg-dark-gray rounded transition-colors opacity-0 group-hover:opacity-100"
+                          >
+                            {copied === `tt-${tt.id}` ? (
+                              <Check className="w-3 h-3 text-success" />
+                            ) : (
+                              <Copy className="w-3 h-3 text-muted" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Active Modules */}
                 <div>
                   <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
                     <Layers className="w-3.5 h-3.5" />
@@ -370,6 +401,47 @@ ${modules.map(m => `  - class: ${m.id}
                     ))}
                   </div>
                 </div>
+
+                {/* Adapters Section - Previously separate tab, now merged */}
+                {adapters.filter(a => a.type !== 'module' && a.type !== 'worker_pool' && a.type !== 'trigger').length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                      <Plug className="w-3.5 h-3.5 text-purple-400" />
+                      Adapters ({adapters.filter(a => a.type !== 'module' && a.type !== 'worker_pool' && a.type !== 'trigger').length})
+                    </h3>
+                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                      {adapters.filter(a => a.type !== 'module' && a.type !== 'worker_pool' && a.type !== 'trigger').map((adapter) => (
+                        <div 
+                          key={adapter.id}
+                          className={`p-3 rounded-lg border ${
+                            adapter.health === 'healthy' 
+                              ? 'border-purple-400/30 bg-purple-400/5' 
+                              : 'border-error/30 bg-error/5'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            {adapter.health === 'healthy' ? (
+                              <CheckCircle className="w-3.5 h-3.5 text-purple-400" />
+                            ) : (
+                              <XCircle className="w-3.5 h-3.5 text-error" />
+                            )}
+                            <span className="font-medium text-sm truncate">{adapter.id.split('::').pop()}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-400/20 text-purple-400">
+                              {adapter.type}
+                            </span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                              adapter.status === 'active' ? 'bg-success/20 text-success' : 'bg-muted/20 text-muted'
+                            }`}>
+                              {adapter.status}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {triggerHandlers.length > 0 && (
                   <div>
@@ -425,48 +497,6 @@ ${modules.map(m => `  - class: ${m.id}
                     </div>
                   </div>
                 )}
-
-                <div>
-                  <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                    <Radio className="w-3.5 h-3.5 text-green-400" />
-                    Trigger Types ({triggerTypes.length})
-                  </h3>
-                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-                    {triggerTypes.map((tt) => (
-                      <div 
-                        key={tt.id}
-                        className="p-3 rounded-lg border border-border bg-dark-gray/30 hover:border-green-400/30 transition-colors group"
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          {tt.id === 'api' && <Globe className="w-3.5 h-3.5 text-cyan" />}
-                          {tt.id === 'cron' && <Calendar className="w-3.5 h-3.5 text-yellow" />}
-                          {tt.id === 'event' && <Radio className="w-3.5 h-3.5 text-green-400" />}
-                          {tt.id.includes('streams') && <Database className="w-3.5 h-3.5 text-purple-400" />}
-                          {!['api', 'cron', 'event'].includes(tt.id) && !tt.id.includes('streams') && (
-                            <Zap className="w-3.5 h-3.5 text-muted" />
-                          )}
-                          <span className="font-medium text-sm">{tt.id}</span>
-                        </div>
-                        <div className="text-[10px] text-muted line-clamp-1 mb-2">{tt.description}</div>
-                        <div className="flex items-center gap-1">
-                          <code className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-muted font-mono flex-1 truncate">
-                            "{tt.id}"
-                          </code>
-                          <button 
-                            onClick={() => copyToClipboard(tt.id, `tt-${tt.id}`)}
-                            className="p-1 hover:bg-dark-gray rounded transition-colors opacity-0 group-hover:opacity-100"
-                          >
-                            {copied === `tt-${tt.id}` ? (
-                              <Check className="w-3 h-3 text-success" />
-                            ) : (
-                              <Copy className="w-3 h-3 text-muted" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             )}
           </div>
@@ -558,6 +588,215 @@ ${modules.map(m => `  - class: ${m.id}
           </div>
         )}
       </div>
+
+      {/* Config File Modal */}
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <div className="flex items-center gap-2">
+                <Code className="w-4 h-4 text-cyan-400" />
+                <h3 className="font-semibold">Runtime Configuration</h3>
+                <span className="text-[10px] text-success bg-success/10 px-2 py-0.5 rounded">Live</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const configYaml = generateConfigYaml();
+                    copyToClipboard(configYaml, 'config-yaml');
+                  }}
+                  className="h-7 text-xs gap-1.5"
+                >
+                  {copied === 'config-yaml' ? (
+                    <Check className="w-3 h-3 text-success" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  Copy
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={exportConfig}
+                  className="h-7 text-xs gap-1.5"
+                >
+                  <Download className="w-3 h-3" />
+                  Download
+                </Button>
+                <button
+                  onClick={() => setShowConfigModal(false)}
+                  className="p-1 rounded hover:bg-dark-gray"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              <pre className="text-xs font-mono bg-dark-gray p-4 rounded-lg overflow-x-auto whitespace-pre text-foreground">
+                {generateConfigYaml()}
+              </pre>
+            </div>
+
+            <div className="px-4 py-3 border-t border-border text-xs text-muted">
+              <span className="flex items-center gap-1.5">
+                <FileText className="w-3 h-3" />
+                Generated from detected runtime state • Module configs inferred from API responses
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+
+  function generateConfigYaml(): string {
+    // Generate config based on actual detected runtime data
+    const detectedModules = adapters.filter(a => a.type === 'module');
+    const detectedTriggerHandlers = adapters.filter(a => a.type === 'trigger');
+    const workerPools = adapters.filter(a => a.type === 'worker_pool');
+    
+    // Get ports from endpoints
+    const apiPort = endpoints.find(e => e.name === 'iii Engine')?.url?.match(/:(\d+)/)?.[1] || '3111';
+    const streamsPort = endpoints.find(e => e.name === 'Streams')?.url?.match(/:(\d+)/)?.[1] || '31112';
+    const sdkPort = endpoints.find(e => e.name === 'SDK Bridge')?.url?.match(/:(\d+)/)?.[1] || '49134';
+
+    // Build modules section based on what's detected
+    let modulesYaml = '';
+    
+    // Check for streams module
+    if (detectedModules.some(m => m.id === 'streams') || detectedTriggerHandlers.some(t => t.id.includes('streams'))) {
+      modulesYaml += `  - class: modules::streams::StreamModule
+    config:
+      port: ${streamsPort}
+      host: 127.0.0.1
+      adapter:
+        class: modules::streams::adapters::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+`;
+    }
+
+    // REST API is always present (how we're communicating)
+    modulesYaml += `  - class: modules::rest_api::RestApiModule
+    config:
+      port: ${apiPort}
+      host: 127.0.0.1
+      default_timeout: 30000
+
+`;
+
+    // Check for cron triggers
+    if (detectedTriggerHandlers.some(t => t.id === 'cron')) {
+      modulesYaml += `  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::adapters::RedisCronAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+`;
+    }
+
+    // Check for event triggers
+    if (detectedTriggerHandlers.some(t => t.id === 'event')) {
+      modulesYaml += `  - class: modules::event::EventModule
+    config:
+      adapter:
+        class: modules::event::adapters::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+`;
+    }
+
+    // DevTools module (detected via API)
+    if (devtoolsConfig) {
+      const dtConfig = devtoolsConfig as { enabled?: boolean; api_prefix?: string; metrics_enabled?: boolean; metrics_interval?: number };
+      modulesYaml += `  - class: modules::devtools::DevToolsModule
+    config:
+      enabled: ${dtConfig.enabled ?? true}
+      api_prefix: ${dtConfig.api_prefix ?? '_console'}
+      metrics_enabled: ${dtConfig.metrics_enabled ?? true}
+      metrics_interval: ${dtConfig.metrics_interval ?? 30}
+
+`;
+    }
+
+    return `# iii Engine Runtime Configuration
+# Generated from Developer Console at ${new Date().toISOString()}
+# Based on detected runtime state from the engine API
+
+# ═══════════════════════════════════════════════════════════════
+# DETECTED MODULES
+# ═══════════════════════════════════════════════════════════════
+
+modules:
+${modulesYaml}
+# ═══════════════════════════════════════════════════════════════
+# RUNTIME STATUS
+# ═══════════════════════════════════════════════════════════════
+
+# Engine:
+#   Version: ${status?.version ?? '0.0.0'}
+#   Uptime: ${status?.uptime_formatted ?? 'unknown'}
+
+# Connections:
+#   REST API: http://localhost:${apiPort}
+#   Streams WebSocket: ws://localhost:${streamsPort}
+#   SDK Bridge: ws://localhost:${sdkPort}
+
+# Statistics:
+#   Workers: ${stats.workers}
+#   Functions: ${stats.functions}
+#   Triggers: ${stats.triggers}
+#   Streams: ${stats.streams}
+
+# ═══════════════════════════════════════════════════════════════
+# DETECTED TRIGGER TYPES
+# ═══════════════════════════════════════════════════════════════
+${triggerTypes.map(t => `# - ${t.id}: ${t.description || 'No description'}`).join('\n')}
+
+# ═══════════════════════════════════════════════════════════════
+# ACTIVE MODULES & ADAPTERS
+# ═══════════════════════════════════════════════════════════════
+${detectedModules.map(m => `# [${m.health?.toUpperCase() || 'UNKNOWN'}] ${m.id} - ${m.description || 'No description'}`).join('\n')}
+
+# ═══════════════════════════════════════════════════════════════
+# TRIGGER HANDLERS
+# ═══════════════════════════════════════════════════════════════
+${detectedTriggerHandlers.map(t => `# [${t.status?.toUpperCase() || 'ACTIVE'}] ${t.id} - ${t.description || 'No description'}`).join('\n')}
+
+# ═══════════════════════════════════════════════════════════════
+# WORKER POOLS
+# ═══════════════════════════════════════════════════════════════
+${workerPools.map(w => `# ${w.id}: ${w.count || 0} connected`).join('\n')}
+`;
+  }
+  
+  function formatConfigValue(value: unknown): string {
+    if (typeof value === 'string') return `"${value}"`;
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'number') return String(value);
+    if (Array.isArray(value)) {
+      return `\n${value.map(v => `        - ${formatConfigValue(v)}`).join('\n')}`;
+    }
+    return JSON.stringify(value);
+  }
+  
+  function formatNestedConfig(obj: Record<string, unknown>, indent: number): string {
+    const spaces = ' '.repeat(indent);
+    return Object.entries(obj).map(([k, v]) => {
+      if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+        return `${spaces}${k}:\n${formatNestedConfig(v as Record<string, unknown>, indent + 2)}`;
+      }
+      if (Array.isArray(v)) {
+        return `${spaces}${k}:\n${v.map(item => `${spaces}  - ${formatConfigValue(item)}`).join('\n')}`;
+      }
+      return `${spaces}${k}: ${formatConfigValue(v)}`;
+    }).join('\n');
+  }
 }

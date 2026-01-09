@@ -9,6 +9,8 @@ import {
   Zap, ArrowUpRight, CornerDownRight
 } from "lucide-react";
 import { fetchLogs } from "@/lib/api";
+import { Pagination } from "@/components/ui/pagination";
+import { JsonViewer } from "@/components/ui/json-viewer";
 
 interface LogEntry {
   id: string;
@@ -86,6 +88,9 @@ export default function LogsPage() {
   const [isConnected, setIsConnected] = useState(true);
   const [copied, setCopied] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [fullscreenLogId, setFullscreenLogId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const lastLogCountRef = useRef(0);
 
@@ -148,12 +153,24 @@ export default function LogsPage() {
     return () => clearInterval(interval);
   }, [loadLogs]);
 
+  // Handle Escape key to close fullscreen modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && fullscreenLogId) {
+        setFullscreenLogId(null);
+      }
+    };
+    
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [fullscreenLogId]);
+
   const filteredLogs = useMemo(() => {
     return logs.filter(log => {
       if (activeLevelFilters.size > 0 && !activeLevelFilters.has(log.level)) {
         return false;
       }
-      
+
       if (searchQuery) {
         const searchLower = searchQuery.toLowerCase();
         return (
@@ -162,14 +179,30 @@ export default function LogsPage() {
           log.source?.toLowerCase().includes(searchLower)
         );
       }
-      
+
       return true;
     });
   }, [logs, searchQuery, activeLevelFilters]);
 
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / pageSize));
+  const paginatedLogs = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredLogs.slice(start, start + pageSize);
+  }, [filteredLogs, currentPage, pageSize]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, activeLevelFilters, pageSize]);
+
   const selectedLog = useMemo(() => {
     return selectedLogId ? logs.find(log => log.id === selectedLogId) : undefined;
   }, [logs, selectedLogId]);
+
+  const fullscreenLog = useMemo(() => {
+    return fullscreenLogId ? logs.find(log => log.id === fullscreenLogId) : undefined;
+  }, [logs, fullscreenLogId]);
 
   const clearLogs = () => {
     setLogs([]);
@@ -236,70 +269,70 @@ export default function LogsPage() {
 
   return (
     <div className="flex flex-col h-full bg-background text-foreground">
-      <div className="flex items-center justify-between px-5 py-3 bg-dark-gray/30 border-b border-border">
-        <div className="flex items-center gap-4">
-          <h1 className="text-base font-semibold flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-2 md:py-3 bg-dark-gray/30 border-b border-border">
+        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
+          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
             <Terminal className="w-4 h-4" />
             Logs
           </h1>
           <Badge 
             variant={isConnected && !isPaused ? 'success' : isPaused ? 'warning' : 'error'}
-            className="gap-1.5"
+            className="gap-1 text-[10px] md:text-xs"
           >
             {isPaused ? (
               <>
-                <Pause className="w-3 h-3" />
-                Paused
+                <Pause className="w-2.5 h-2.5 md:w-3 md:h-3" />
+                <span className="hidden sm:inline">Paused</span>
               </>
             ) : isConnected ? (
               <>
-                <Wifi className="w-3 h-3" />
-                Live
+                <Wifi className="w-2.5 h-2.5 md:w-3 md:h-3" />
+                <span className="hidden sm:inline">Live</span>
               </>
             ) : (
               <>
-                <WifiOff className="w-3 h-3" />
-                Offline
+                <WifiOff className="w-2.5 h-2.5 md:w-3 md:h-3" />
+                <span className="hidden sm:inline">Offline</span>
               </>
             )}
           </Badge>
           {logs.length > 0 && (
-            <span className="text-xs text-muted">
-              {filteredLogs.length} of {logs.length} entries
+            <span className="text-[10px] md:text-xs text-muted">
+              {filteredLogs.length}/{logs.length}
             </span>
           )}
         </div>
         
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 md:gap-2">
           <Button 
             variant={isPaused ? 'accent' : 'ghost'} 
             size="sm" 
             onClick={() => setIsPaused(!isPaused)}
             disabled={!hasLoggingAdapter}
-            className="h-7 text-xs"
+            className="h-6 md:h-7 text-[10px] md:text-xs px-2"
           >
-            {isPaused ? <Play className="w-3 h-3 mr-1.5" /> : <Pause className="w-3 h-3 mr-1.5" />}
-            {isPaused ? 'Resume' : 'Pause'}
+            {isPaused ? <Play className="w-3 h-3 md:mr-1.5" /> : <Pause className="w-3 h-3 md:mr-1.5" />}
+            <span className="hidden md:inline">{isPaused ? 'Resume' : 'Pause'}</span>
           </Button>
           <Button 
             variant="ghost" 
             size="sm" 
             onClick={exportLogs}
             disabled={filteredLogs.length === 0}
-            className="h-7 text-xs"
+            className="h-6 md:h-7 text-[10px] md:text-xs px-2"
           >
-            <Download className="w-3 h-3 mr-1.5" />
-            Export
+            <Download className="w-3 h-3 md:mr-1.5" />
+            <span className="hidden md:inline">Export</span>
           </Button>
           <Button 
             variant="ghost" 
             size="sm" 
             onClick={clearLogs} 
             disabled={logs.length === 0}
-            className="h-7 text-xs"
+            className="h-6 md:h-7 text-[10px] md:text-xs px-2"
           >
-            <Trash2 className="w-3 h-3 mr-1.5" />
-            Clear
+            <Trash2 className="w-3 h-3 md:mr-1.5" />
+            <span className="hidden md:inline">Clear</span>
           </Button>
         </div>
       </div>
@@ -393,91 +426,110 @@ export default function LogsPage() {
           </div>
 
           <div className="flex-1 flex overflow-hidden">
-            <div ref={logContainerRef} className="flex-1 overflow-auto">
-              <div className="relative w-full">
-                {filteredLogs.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-64 text-muted">
-                    <Terminal className="w-8 h-8 mb-3 opacity-30" />
-                    <span className="text-sm">
-                      {searchQuery || activeLevelFilters.size > 0 
-                        ? 'No logs match your filters' 
-                        : 'No logs to display'}
-                    </span>
-                    {(searchQuery || activeLevelFilters.size > 0) && (
-                      <button
-                        onClick={() => {
-                          setSearchQuery('');
-                          setActiveLevelFilters(new Set());
-                        }}
-                        className="mt-2 text-xs text-primary hover:underline"
-                      >
-                        Clear all filters
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  filteredLogs.map((log) => {
-                    const config = LEVEL_CONFIG[log.level] || LEVEL_CONFIG.info;
-                    const isSelected = selectedLogId === log.id;
-                    
-                    return (
-                      <div
-                        key={log.id}
-                        role="row"
-                        tabIndex={0}
-                        className={`flex items-center font-mono cursor-pointer text-[13px] h-9 px-3 border-b border-border/20 transition-colors
-                          ${isSelected ? 'bg-primary/10 border-l-2 border-l-primary' : `${config.bg} border-l-2 border-l-transparent`}
-                        `}
-                        onClick={() => setSelectedLogId(isSelected ? undefined : log.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            setSelectedLogId(isSelected ? undefined : log.id);
-                          }
-                        }}
-                      >
-                        <div className="flex items-center gap-2 text-muted shrink-0 w-[100px]">
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${config.dot}`} />
-                          <span className="text-xs">{formatTimestamp(log.time)}</span>
-                        </div>
-                        
-                        {log.traceId && (
-                          <div className="flex items-center shrink-0 ml-2">
-                            <span className="text-muted font-mono text-[11px] bg-black/30 px-1.5 py-0.5 rounded">
-                              {log.traceId.slice(0, 8)}
-                            </span>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                filterByTrace(log.traceId!);
-                              }}
-                              className="p-1 rounded hover:bg-dark-gray/50 text-muted hover:text-primary transition-colors ml-0.5"
-                              title={`Filter by trace ${log.traceId}`}
-                            >
-                              <Filter className="w-3 h-3" />
-                            </button>
+            <div className="flex flex-col flex-1 overflow-hidden">
+              <div ref={logContainerRef} className="flex-1 overflow-auto">
+                <div className="relative w-full">
+                  {filteredLogs.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-muted">
+                      <Terminal className="w-8 h-8 mb-3 opacity-30" />
+                      <span className="text-sm">
+                        {searchQuery || activeLevelFilters.size > 0 
+                          ? 'No logs match your filters' 
+                          : 'No logs to display'}
+                      </span>
+                      {(searchQuery || activeLevelFilters.size > 0) && (
+                        <button
+                          onClick={() => {
+                            setSearchQuery('');
+                            setActiveLevelFilters(new Set());
+                          }}
+                          className="mt-2 text-xs text-primary hover:underline"
+                        >
+                          Clear all filters
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    paginatedLogs.map((log) => {
+                      const config = LEVEL_CONFIG[log.level] || LEVEL_CONFIG.info;
+                      const isSelected = selectedLogId === log.id;
+                      
+                      return (
+                        <div
+                          key={log.id}
+                          role="row"
+                          tabIndex={0}
+                          className={`flex items-center font-mono cursor-pointer text-[13px] h-9 px-3 border-b border-border/20 transition-colors
+                            ${isSelected ? 'bg-primary/10 border-l-2 border-l-primary' : `${config.bg} border-l-2 border-l-transparent`}
+                          `}
+                          onClick={() => setSelectedLogId(isSelected ? undefined : log.id)}
+                          onDoubleClick={() => setFullscreenLogId(log.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              setSelectedLogId(isSelected ? undefined : log.id);
+                            }
+                          }}
+                          title="Click to select, double-click for fullscreen"
+                        >
+                          <div className="flex items-center gap-2 text-muted shrink-0 w-[100px]">
+                            <span className={`w-2 h-2 rounded-full shrink-0 ${config.dot}`} />
+                            <span className="text-xs">{formatTimestamp(log.time)}</span>
                           </div>
-                        )}
-                        
-                        <div className="text-muted shrink-0 ml-3 px-2 py-0.5 bg-dark-gray/50 rounded text-[11px] max-w-[180px] truncate">
-                          {log.source}
-                        </div>
-                        
-                        <div className={`ml-3 flex-1 truncate ${config.text}`}>
-                          {log.message}
-                        </div>
-                        
-                        {log.context && Object.keys(log.context).length > 0 && (
-                          <div className="shrink-0 ml-2">
-                            <span className="text-[10px] text-muted bg-dark-gray/50 px-1.5 py-0.5 rounded">
-                              +{Object.keys(log.context).length}
-                            </span>
+                          
+                          {log.traceId && (
+                            <div className="flex items-center shrink-0 ml-2">
+                              <span className="text-muted font-mono text-[11px] bg-black/30 px-1.5 py-0.5 rounded">
+                                {log.traceId.slice(0, 8)}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  filterByTrace(log.traceId!);
+                                }}
+                                className="p-1 rounded hover:bg-dark-gray/50 text-muted hover:text-primary transition-colors ml-0.5"
+                                title={`Filter by trace ${log.traceId}`}
+                              >
+                                <Filter className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+                          
+                          <div className="text-muted shrink-0 ml-3 px-2 py-0.5 bg-dark-gray/50 rounded text-[11px] max-w-[180px] truncate">
+                            {log.source}
                           </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
+                          
+                          <div className={`ml-3 flex-1 truncate ${config.text}`}>
+                            {log.message}
+                          </div>
+                          
+                          {log.context && Object.keys(log.context).length > 0 && (
+                            <div className="shrink-0 ml-2">
+                              <span className="text-[10px] text-muted bg-dark-gray/50 px-1.5 py-0.5 rounded">
+                                +{Object.keys(log.context).length}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </div>
+              
+              {/* Pagination - Fixed at bottom */}
+              {filteredLogs.length > 0 && (
+                <div className="flex-shrink-0 bg-background/95 backdrop-blur border-t border-border px-3 py-2">
+                  <Pagination
+                    currentPage={currentPage}
+                    totalPages={totalPages}
+                    totalItems={filteredLogs.length}
+                    pageSize={pageSize}
+                    onPageChange={setCurrentPage}
+                    onPageSizeChange={setPageSize}
+                    pageSizeOptions={[25, 50, 100, 250, 500]}
+                  />
+                </div>
+              )}
             </div>
 
             {selectedLog && (
@@ -593,9 +645,9 @@ export default function LogsPage() {
                           )}
                         </button>
                       </div>
-                      <pre className="text-[11px] font-mono bg-black/40 px-3 py-2 rounded overflow-x-auto max-h-64 leading-relaxed">
-                        {JSON.stringify(selectedLog.context, null, 2)}
-                      </pre>
+                      <div className="bg-black/40 px-3 py-2 rounded overflow-x-auto max-h-64 overflow-y-auto">
+                        <JsonViewer data={selectedLog.context} collapsed={false} maxDepth={4} />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -619,6 +671,165 @@ export default function LogsPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Fullscreen Log Modal */}
+      {fullscreenLog && (
+        <div 
+          className="fixed inset-0 bg-background/95 backdrop-blur-sm flex items-center justify-center z-50 p-8"
+          onClick={() => setFullscreenLogId(null)}
+        >
+          <div 
+            className="bg-background border border-border rounded-lg shadow-xl w-full max-w-5xl max-h-full flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-dark-gray/30">
+              <div className="flex items-center gap-4">
+                <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${LEVEL_CONFIG[fullscreenLog.level]?.badge}`}>
+                  {fullscreenLog.level}
+                </span>
+                <div className="flex items-center gap-2 text-sm text-muted font-mono">
+                  <Clock className="w-4 h-4" />
+                  {formatFullTimestamp(fullscreenLog.time)}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => copyToClipboard(JSON.stringify({
+                    timestamp: fullscreenLog.timestamp,
+                    level: fullscreenLog.level,
+                    source: fullscreenLog.source,
+                    message: fullscreenLog.message,
+                    traceId: fullscreenLog.traceId,
+                    context: fullscreenLog.context
+                  }, null, 2), 'fullscreen-log')}
+                  className="h-8 text-xs gap-1.5"
+                >
+                  {copied === 'fullscreen-log' ? (
+                    <Check className="w-3 h-3 text-success" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  Copy JSON
+                </Button>
+                <button
+                  onClick={() => setFullscreenLogId(null)}
+                  className="p-2 rounded hover:bg-dark-gray transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-auto p-6">
+              <div className="space-y-6">
+                {/* Message */}
+                <div>
+                  <div className="text-xs text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <Terminal className="w-4 h-4" />
+                    Message
+                  </div>
+                  <div className={`text-lg font-medium leading-relaxed p-4 rounded-lg bg-dark-gray/30 border border-border ${LEVEL_CONFIG[fullscreenLog.level]?.text}`}>
+                    {fullscreenLog.message}
+                  </div>
+                </div>
+
+                {/* Metadata Grid */}
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Source */}
+                  <div className="p-4 rounded-lg bg-dark-gray/30 border border-border">
+                    <div className="text-xs text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                      <Zap className="w-3.5 h-3.5" />
+                      Source Function
+                    </div>
+                    <code className="text-sm font-mono text-cyan-400">{fullscreenLog.source}</code>
+                  </div>
+
+                  {/* Trace ID */}
+                  {fullscreenLog.traceId && (
+                    <div className="p-4 rounded-lg bg-dark-gray/30 border border-border">
+                      <div className="text-xs text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Trace ID
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code className="text-sm font-mono break-all">{fullscreenLog.traceId}</code>
+                        <button
+                          onClick={() => {
+                            filterByTrace(fullscreenLog.traceId!);
+                            setFullscreenLogId(null);
+                          }}
+                          className="p-1.5 rounded bg-primary/20 hover:bg-primary/30 text-primary transition-colors shrink-0"
+                          title="Filter by this trace"
+                        >
+                          <Filter className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Timestamps */}
+                <div className="p-4 rounded-lg bg-dark-gray/30 border border-border">
+                  <div className="text-xs text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <Clock className="w-3.5 h-3.5" />
+                    Timestamps
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-[10px] text-muted mb-1">ISO 8601</div>
+                      <code className="text-xs font-mono">{fullscreenLog.timestamp}</code>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted mb-1">Unix (ms)</div>
+                      <code className="text-xs font-mono">{fullscreenLog.time}</code>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-muted mb-1">Local</div>
+                      <code className="text-xs font-mono">{new Date(fullscreenLog.time).toLocaleString()}</code>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Context Data */}
+                {fullscreenLog.context && Object.keys(fullscreenLog.context).length > 0 && (
+                  <div>
+                    <div className="text-xs text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                      <CornerDownRight className="w-3.5 h-3.5" />
+                      Context Data
+                      <span className="text-[10px] bg-dark-gray px-2 py-0.5 rounded">
+                        {Object.keys(fullscreenLog.context).length} fields
+                      </span>
+                      <button
+                        onClick={() => copyToClipboard(JSON.stringify(fullscreenLog.context, null, 2), 'fullscreen-context')}
+                        className="p-1 rounded hover:bg-dark-gray/50 transition-colors ml-auto"
+                      >
+                        {copied === 'fullscreen-context' ? (
+                          <Check className="w-3.5 h-3.5 text-success" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+                    <div className="bg-dark-gray p-4 rounded-lg overflow-x-auto max-h-[400px] overflow-y-auto border border-border">
+                      <JsonViewer data={fullscreenLog.context} collapsed={false} maxDepth={6} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 border-t border-border text-xs text-muted flex items-center justify-between">
+              <span>Press Escape or click outside to close</span>
+              <span>Log ID: {fullscreenLog.id}</span>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

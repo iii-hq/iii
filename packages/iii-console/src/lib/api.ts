@@ -100,6 +100,27 @@ export interface AdapterInfo {
   internal?: boolean;  // True for system/devtools adapters
 }
 
+export interface StateItem {
+  streamName: string;
+  groupId: string;
+  key: string;
+  value: unknown;
+  type: string;
+  timestamp?: number;
+}
+
+export interface StateGroup {
+  id: string;
+  count: number;
+}
+
+export interface StateMetrics {
+  totalReads: number;
+  totalWrites: number;
+  totalDeletes: number;
+  activeGroups: number;
+}
+
 
 interface WrappedResponse<T> {
   status_code: number;
@@ -267,7 +288,131 @@ export async function fetchAdapters(): Promise<{ adapters: AdapterInfo[]; count:
   return unwrapResponse(res);
 }
 
+// State API functions - State is the KV store (reads/writes), separate from Streams (WebSocket data flow)
+export async function fetchStateItems(streamName: string, groupId: string): Promise<{ items: StateItem[]; count: number }> {
+  const res = await fetch(`${DEVTOOLS_API}/streams/group`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stream_name: streamName, group_id: groupId })
+  });
+  if (!res.ok) throw new Error('Failed to fetch state items');
+  const data = await unwrapResponse<{ items: unknown[] }>(res);
+  const items: StateItem[] = (data.items || []).map((item: unknown, index: number) => {
+    const typedItem = item as Record<string, unknown>;
+    return {
+      streamName,
+      groupId,
+      key: (typedItem.id as string) || `item-${index}`,
+      value: item,
+      type: typeof item === 'object' ? 'object' : typeof item,
+      timestamp: Date.now()
+    };
+  });
+  return { items, count: items.length };
+}
 
+export async function fetchStateGroups(streamName: string): Promise<{ groups: StateGroup[]; count: number }> {
+  const res = await fetch(`${DEVTOOLS_API}/streams/groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stream_name: streamName })
+  });
+  if (!res.ok) throw new Error('Failed to fetch state groups');
+  const data = await unwrapResponse<{ groups: StateGroup[] }>(res);
+  return { groups: data.groups || [], count: (data.groups || []).length };
+}
+
+export async function setStateItem(streamName: string, groupId: string, key: string, value: unknown): Promise<void> {
+  const res = await fetch(`${DEVTOOLS_API}/streams/${encodeURIComponent(streamName)}/group/${encodeURIComponent(groupId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value })
+  });
+  if (!res.ok) throw new Error('Failed to set state item');
+}
+
+export async function deleteStateItem(streamName: string, groupId: string, key: string): Promise<void> {
+  const res = await fetch(`${DEVTOOLS_API}/streams/${encodeURIComponent(streamName)}/group/${encodeURIComponent(groupId)}/${encodeURIComponent(key)}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) throw new Error('Failed to delete state item');
+}
+
+
+
+// Invoke a function by its function path
+export async function invokeFunction(functionPath: string, input?: unknown): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  try {
+    // The function path may be like "cron.x/15_*_*_*_*" - we need to find the trigger to get its details
+    // For now, we'll try to invoke via the console API (if available) or return an error
+    const res = await fetch(`http://localhost:3111/_console/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ function_path: functionPath, input: input || {} })
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      return { success: true, data };
+    } else {
+      const error = await res.text();
+      return { success: false, error: error || 'Invocation failed' };
+    }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+// Emit an event to a topic - uses the engine's internal emit function
+export async function emitEvent(topic: string, data: unknown): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Try to emit via the console API endpoint
+    const res = await fetch(`http://localhost:3111/_console/emit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic, data })
+    });
+    
+    if (res.ok) {
+      return { success: true };
+    } else {
+      // Fallback: the endpoint might not exist yet
+      const error = await res.text();
+      if (res.status === 404) {
+        return { success: false, error: 'Event emit endpoint not available. Add /_console/emit to DevTools module.' };
+      }
+      return { success: false, error: error || 'Emit failed' };
+    }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
+
+// Trigger a cron job manually by calling its function directly
+export async function triggerCron(triggerId: string, functionPath?: string): Promise<{ success: boolean; data?: unknown; error?: string }> {
+  try {
+    // Try the console API endpoint first
+    const res = await fetch(`http://localhost:3111/_console/cron/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trigger_id: triggerId, function_path: functionPath })
+    });
+    
+    if (res.ok) {
+      const data = await res.json();
+      return { success: true, data };
+    } else {
+      // Fallback: the endpoint might not exist yet
+      if (res.status === 404) {
+        return { success: false, error: 'Cron trigger endpoint not available. Add /_console/cron/trigger to DevTools module.' };
+      }
+      const error = await res.text();
+      return { success: false, error: error || 'Trigger failed' };
+    }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+}
 
 export async function isDevToolsAvailable(): Promise<boolean> {
   try {

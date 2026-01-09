@@ -4,6 +4,7 @@
   "main": "index.js",
   "author": "III",
   "scripts": {
+    "start": "tsx src/index.ts",
     "dev": "bun src/index.ts"
   },
   "dependencies": {
@@ -11,6 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   }
 }

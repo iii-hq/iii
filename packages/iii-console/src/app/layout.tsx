@@ -25,8 +25,9 @@ export default function RootLayout({
         className={`${jetbrainsMono.variable} font-mono antialiased flex h-screen overflow-hidden bg-background text-foreground`}
       >
         <Sidebar />
-        <main className="flex-1 overflow-y-auto ml-56">
-        {children}
+        {/* Main content - offset for mobile header (pt-14) and sidebar on desktop (lg:ml-56) */}
+        <main className="flex-1 overflow-y-auto pt-14 lg:pt-0 lg:ml-56">
+          {children}
         </main>
       </body>
     </html>

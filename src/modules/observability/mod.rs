@@ -63,6 +63,32 @@ pub trait LoggerAdapter: Send + Sync + 'static {
             None => "{}".to_string(),
         }
     }
+    async fn debug(
+        &self,
+        trace_id: Option<&str>,
+        function_name: &str,
+        message: &str,
+        args: &Option<Value>,
+    ) {
+        let args_entry = args.as_ref().map(|v| v.clone().to_string());
+        let log_entry = LogEntry {
+            trace_id: trace_id.map(|s| s.to_string()),
+            message: message.to_string(),
+            args: args_entry,
+            level: "debug".to_string(),
+            function_name: function_name.to_string(),
+            date: chrono::Utc::now().to_rfc3339(),
+        };
+        self.include_logs(log_entry).await;
+        match (trace_id, self.get_args(args)) {
+            (Some(tid), data) => {
+                tracing::debug!(function = %function_name, trace_id = %tid, data = %data, "{}", message);
+            }
+            (None, data) => {
+                tracing::debug!(function = %function_name, data = %data, "{}", message);
+            }
+        }
+    }
     async fn info(
         &self,
         trace_id: Option<&str>,
@@ -170,6 +196,21 @@ impl LoggerCoreModule {
             }
             Err(_e) => FunctionResult::NoResult,
         }
+    }
+
+    #[function(name = "logger.debug", description = "Log a debug message")]
+    pub async fn debug(&self, input: LoggerInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        self.adapter
+            .debug(
+                input.trace_id.as_deref(),
+                input.function_name.as_str(),
+                input.message.as_str(),
+                &input.data,
+            )
+            .await;
+
+        self.emit_log_to_stream(&input, "debug").await;
+        FunctionResult::NoResult
     }
 
     #[function(name = "logger.info", description = "Log an info message")]

@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use chrono::Utc;
 use colored::Colorize;
+use cron::Schedule;
 use function_macros::{function, service};
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
@@ -331,7 +333,7 @@ impl DevToolsModule {
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         let triggers_guard = self.engine.trigger_registry.triggers.read().await;
 
-        let triggers: Vec<TriggerInfo> = triggers_guard
+        let triggers: Vec<Value> = triggers_guard
             .iter()
             .filter(|entry| {
                 if let Some(ref filter_type) = input.trigger_type {
@@ -346,14 +348,36 @@ impl DevToolsModule {
                     || t.function_path.starts_with("iii.")
                     || t.function_path.starts_with("streams.")
                     || t.id.starts_with("devtools-");
-                TriggerInfo {
-                    id: t.id.clone(),
-                    trigger_type: t.trigger_type.clone(),
-                    function_path: t.function_path.clone(),
-                    config: t.config.clone(),
-                    worker_id: t.worker_id.map(|id| id.to_string()),
-                    internal,
+                
+                // Calculate nextRunAt for cron triggers
+                let next_run_at = if t.trigger_type == "cron" {
+                    t.config.get("expression")
+                        .or_else(|| t.config.get("schedule"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|expression| expression.parse::<Schedule>().ok())
+                        .and_then(|schedule| schedule.upcoming(Utc).next())
+                        .map(|next| next.timestamp_millis())
+                } else {
+                    None
+                };
+
+                let mut trigger_json = json!({
+                    "id": t.id.clone(),
+                    "trigger_type": t.trigger_type.clone(),
+                    "function_path": t.function_path.clone(),
+                    "config": t.config.clone(),
+                    "worker_id": t.worker_id.map(|id| id.to_string()),
+                    "internal": internal,
+                });
+
+                // Add nextRunAt if available
+                if let Some(next_run) = next_run_at {
+                    if let Some(obj) = trigger_json.as_object_mut() {
+                        obj.insert("nextRunAt".to_string(), json!(next_run));
+                    }
                 }
+
+                trigger_json
             })
             .collect();
 
@@ -1006,6 +1030,6 @@ fn format_uptime(seconds: u64) -> String {
 
 crate::register_module!(
     "modules::devtools::DevToolsModule",
-    <DevToolsModule as CoreModule>::make_module,
+    DevToolsModule,
     enabled_by_default = true
 );

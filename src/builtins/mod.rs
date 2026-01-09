@@ -242,6 +242,34 @@ impl BuiltinKvStore {
             Vec::new()
         }
     }
+
+    pub async fn list_groups(&self, stream_name: &str) -> Vec<(String, usize)> {
+        let store = self.store.read().await;
+        let mut groups: Vec<(String, usize)> = store
+            .iter()
+            .filter_map(|((s, g), items)| {
+                if s == stream_name {
+                    Some((g.clone(), items.len()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        
+        // Sort by count (descending)
+        groups.sort_by(|a, b| b.1.cmp(&a.1));
+        groups
+    }
+
+    pub async fn list_streams(&self) -> Vec<String> {
+        let store = self.store.read().await;
+        let stream_names: std::collections::HashSet<String> = store
+            .keys()
+            .map(|(stream_name, _)| stream_name.clone())
+            .collect();
+        
+        stream_names.into_iter().collect()
+    }
 }
 
 pub struct BuiltInPubSubAdapter {

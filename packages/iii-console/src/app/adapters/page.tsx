@@ -74,9 +74,10 @@ export default function AdaptersPage() {
             variant={showSystem ? "accent" : "ghost"} 
             size="sm" 
             onClick={() => setShowSystem(!showSystem)}
+            className="h-7 text-xs"
           >
-            {showSystem ? <EyeOff className="w-3 h-3 mr-2" /> : <Eye className="w-3 h-3 mr-2" />}
-            {showSystem ? "Hide System" : "Show System"}
+            {showSystem ? <Eye className="w-3 h-3 mr-1.5" /> : <EyeOff className="w-3 h-3 mr-1.5" />}
+            <span className={showSystem ? '' : 'line-through opacity-60'}>System</span>
           </Button>
           <Button variant="outline" size="sm" onClick={loadData} disabled={loading}>
             <RefreshCw className={`w-3 h-3 mr-2 ${loading ? 'animate-spin' : ''}`} />

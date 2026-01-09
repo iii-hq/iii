@@ -5,6 +5,6 @@ pub use api::ManagementModule;
 
 crate::register_module!(
     "modules::management::ManagementModule",
-    <ManagementModule as crate::modules::core_module::CoreModule>::make_module,
+    ManagementModule,
     enabled_by_default = true
 );
