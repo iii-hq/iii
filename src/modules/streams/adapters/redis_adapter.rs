@@ -176,6 +176,23 @@ impl StreamAdapter for RedisAdapter {
         }
     }
 
+    async fn list_groups(&self, stream_name: &str) -> Vec<String> {
+        let mut conn = self.publisher.lock().await;
+        let pattern = format!("stream:{}:*", stream_name);
+        let prefix = format!("stream:{}:", stream_name);
+
+        match conn.keys::<_, Vec<String>>(pattern).await {
+            Ok(keys) => keys
+                .into_iter()
+                .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
+                .collect(),
+            Err(e) => {
+                tracing::error!(error = %e, stream_name = %stream_name, "Failed to list groups from Redis");
+                Vec::new()
+            }
+        }
+    }
+
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
         let mut connections = self.connections.write().await;
         connections.insert(id, connection.clone());

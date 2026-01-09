@@ -93,6 +93,11 @@ pub struct StreamGetGroupInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamListGroupsInput {
+    pub stream_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAuthInput {
     pub headers: HashMap<String, String>,
     pub path: String,
