@@ -24,6 +24,18 @@ modules:
           - GET
           - POST
 
+  - class: modules::management::ManagementModule
+    config:
+      port: 9001
+      host: 0.0.0.0
+      enabled: true
+      cors:
+        allowed_origins:
+          - "*"
+        allowed_methods:
+          - GET
+          - POST
+
   - class: modules::api::RestApiModule
     config:
       port: 3111
