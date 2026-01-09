@@ -1,4 +1,5 @@
 use std::sync::Arc;
+pub mod adapters;
 
 use async_trait::async_trait;
 use function_macros::{function, service};
@@ -9,13 +10,13 @@ use crate::{
     builtins::BuiltinKvStore,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::CoreModule,
+    modules::{core_module::CoreModule, kv_server::adapters::KVStoreAdapter},
     protocol::ErrorBody,
 };
 
 #[derive(Clone)]
 pub struct KvServer {
-    storage: Arc<BuiltinKvStore>,
+    storage: Arc<dyn KVStoreAdapter>,
 }
 
 #[async_trait]
@@ -33,7 +34,9 @@ impl CoreModule for KvServer {
         Ok(Box::new(KvServer { storage }))
     }
 
-    fn register_functions(&self, _engine: Arc<Engine>) {}
+    fn register_functions(&self, engine: Arc<Engine>) {
+        self.register_functions(engine);
+    }
 
     async fn initialize(&self) -> anyhow::Result<()> {
         Ok(())
@@ -53,7 +56,7 @@ impl KvServer {
         description = "Get a value by key from the KV store"
     )]
     pub async fn get(&self, key: String) -> FunctionResult<Option<Value>, ErrorBody> {
-        let result = self.storage.get(key).await;
+        let result = self.storage.get(key, None).await;
         FunctionResult::Success(result)
     }
 
@@ -62,7 +65,7 @@ impl KvServer {
         description = "Set a value by key in the KV store"
     )]
     pub async fn set(&self, data: KvSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.storage.set(data.key, data.value).await;
+        self.storage.set(data.key, data.value, None).await;
         FunctionResult::NoResult
     }
 
@@ -81,5 +84,5 @@ impl KvServer {
 crate::register_module!(
     "modules::kv_server::KvServer",
     KvServer,
-    enabled_by_default = false
+    enabled_by_default = true
 );
