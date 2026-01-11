@@ -25,7 +25,17 @@ export type RemoteTriggerTypeData = {
   handler: TriggerHandler<any>
 }
 
-export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'type' | 'id'>
+export type TriggerConfigInput = {
+  trigger_type: string
+  config: Record<string, any>
+  conditions?: TriggerCondition[]
+}
+
+export type RegisterTriggerInput = {
+  function_path: string
+  triggers: TriggerConfigInput[]
+}
+
 export type RegisterServiceInput = Omit<RegisterServiceMessage, 'type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'type'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'type'>
@@ -134,35 +144,6 @@ export type TriggerCondition<TInput = any> = (
   ctx: any,
   trigger: TriggerInfo
 ) => boolean | Promise<boolean>
-
-export type EventTrigger = {
-  type: 'event'
-  subscribes: string[]
-  conditions?: TriggerCondition[]
-}
-
-export type ApiTrigger = {
-  type: 'api'
-  path: string
-  method: HttpMethod
-  conditions?: TriggerCondition[]
-}
-
-export type CronTrigger = {
-  type: 'cron'
-  expression: string
-  conditions?: TriggerCondition[]
-}
-
-export type TriggerConfig = EventTrigger | ApiTrigger | CronTrigger
-
-export type StepConfig = {
-  name: string
-  triggers: TriggerConfig[]
-  emits?: string[]
-  description?: string
-  flows?: string[]
-}
 
 export type ApiRequest<TBody = unknown> = {
   path_params: Record<string, string>

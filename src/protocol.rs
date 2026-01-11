@@ -3,6 +3,14 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerConfig {
+    pub trigger_type: String,
+    pub config: Value,
+    #[serde(default)]
+    pub has_conditions: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
     RegisterTriggerType {
@@ -11,9 +19,8 @@ pub enum Message {
     },
     RegisterTrigger {
         id: String,
-        trigger_type: String,
         function_path: String,
-        config: Value,
+        triggers: Vec<TriggerConfig>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -25,6 +32,16 @@ pub enum Message {
     UnregisterTrigger {
         id: String,
         trigger_type: String,
+    },
+    EvaluateCondition {
+        condition_id: String,
+        trigger_id: String,
+        trigger_metadata: Value,
+        input_data: Value,
+    },
+    ConditionResult {
+        condition_id: String,
+        passed: bool,
     },
     RegisterFunction {
         function_path: String,

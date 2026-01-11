@@ -10,6 +10,8 @@ export enum MessageType {
   TriggerRegistrationResult = 'triggerregistrationresult',
   FunctionsAvailable = 'functionsavailable',
   ListFunctions = 'listfunctions',
+  EvaluateCondition = 'evaluatecondition',
+  ConditionResult = 'conditionresult',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -37,21 +39,22 @@ export type TriggerRegistrationResultMessage = {
   error?: any
 }
 
+export type TriggerConfig = {
+  trigger_type: string
+  config: any
+  has_conditions?: boolean
+}
+
 export type RegisterTriggerMessage = {
   type: MessageType.RegisterTrigger
-
   id: string
-  /**
-   * The type of trigger. Can be 'cron', 'event', 'http', etc.
-   */
-  trigger_type: string
   /**
    * Engine path for the function, including the service and function name
    * Example: software.engineering.code.rust
    * Where software, engineering, and code are the service ids
    */
   function_path: string
-  config: any
+  triggers: TriggerConfig[]
 }
 
 export type RegisterServiceMessage = {
@@ -153,6 +156,20 @@ export type ListFunctionsMessage = {
   type: MessageType.ListFunctions
 }
 
+export type EvaluateConditionMessage = {
+  type: MessageType.EvaluateCondition
+  condition_id: string
+  trigger_id: string
+  trigger_metadata: any
+  input_data: any
+}
+
+export type ConditionResultMessage = {
+  type: MessageType.ConditionResult
+  condition_id: string
+  passed: boolean
+}
+
 export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage
@@ -165,3 +182,5 @@ export type BridgeMessage =
   | TriggerRegistrationResultMessage
   | FunctionsAvailableMessage
   | ListFunctionsMessage
+  | EvaluateConditionMessage
+  | ConditionResultMessage

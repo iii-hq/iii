@@ -10,6 +10,8 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .bridge_types import (
+    ConditionResultMessage,
+    EvaluateConditionMessage,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
@@ -17,6 +19,7 @@ from .bridge_types import (
     RegisterServiceMessage,
     RegisterTriggerMessage,
     RegisterTriggerTypeMessage,
+    TriggerConfig as BridgeTriggerConfig,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
 )
@@ -41,6 +44,7 @@ class Bridge:
         self._pending: dict[str, asyncio.Future[Any]] = {}
         self._triggers: dict[str, RegisterTriggerMessage] = {}
         self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
+        self._trigger_conditions: dict[str, list[Callable[[Any, Any, Any], Awaitable[bool]]]] = {}
         self._queue: list[dict[str, Any]] = []
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
@@ -162,6 +166,8 @@ class Bridge:
             )
         elif msg_type == MessageType.REGISTER_TRIGGER.value:
             asyncio.create_task(self._handle_trigger_registration(data))
+        elif msg_type == MessageType.EVALUATE_CONDITION.value:
+            asyncio.create_task(self._handle_evaluate_condition(data))
 
     def _handle_result(self, invocation_id: str, result: Any, error: Any) -> None:
         future = self._pending.pop(invocation_id, None)
@@ -213,31 +219,63 @@ class Bridge:
             )
 
     async def _handle_trigger_registration(self, data: dict[str, Any]) -> None:
-        trigger_type_id = data.get("trigger_type")
-        handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
-
         trigger_id = data.get("id", "")
         function_path = data.get("function_path", "")
-        config = data.get("config")
+        triggers = data.get("triggers", [])
 
-        result_base = {
-            "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
-            "id": trigger_id,
-            "trigger_type": trigger_type_id,
-            "function_path": function_path,
-        }
+        for trigger_config in triggers:
+            trigger_type_id = trigger_config.get("trigger_type")
+            handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
+            config = trigger_config.get("config")
 
-        if not handler_data:
-            return
+            result_base = {
+                "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
+                "id": trigger_id,
+                "trigger_type": trigger_type_id,
+                "function_path": function_path,
+            }
 
-        try:
-            await handler_data.handler.register_trigger(
-                TriggerConfig(id=trigger_id, function_path=function_path, config=config)
-            )
-            await self._send(result_base)
-        except Exception as e:
-            log.exception(f"Error registering trigger {trigger_id}")
-            await self._send({**result_base, "error": {"code": "trigger_registration_failed", "message": str(e)}})
+            if not handler_data:
+                continue
+
+            try:
+                await handler_data.handler.register_trigger(
+                    TriggerConfig(id=trigger_id, function_path=function_path, config=config)
+                )
+                await self._send(result_base)
+            except Exception as e:
+                log.exception(f"Error registering trigger {trigger_id}")
+                await self._send({**result_base, "error": {"code": "trigger_registration_failed", "message": str(e)}})
+
+    async def _handle_evaluate_condition(self, data: dict[str, Any]) -> None:
+        condition_id = data.get("condition_id", "")
+        trigger_id = data.get("trigger_id", "")
+        trigger_metadata = data.get("trigger_metadata", {})
+        input_data = data.get("input_data", {})
+
+        conditions = self._trigger_conditions.get(trigger_id, [])
+        passed = True
+
+        if conditions:
+            try:
+                for condition in conditions:
+                    result = await condition(
+                        {
+                            "trigger": trigger_metadata,
+                            "request": input_data.get("request"),
+                            "data": input_data.get("data"),
+                        },
+                        {},
+                        {"type": trigger_metadata.get("type"), "index": trigger_metadata.get("index", 0)},
+                    )
+                    if not result:
+                        passed = False
+                        break
+            except Exception as e:
+                log.exception(f"Error evaluating condition {condition_id}")
+                passed = False
+
+        await self._send(ConditionResultMessage(condition_id=condition_id, passed=passed))
 
     # Public API
 
@@ -250,13 +288,35 @@ class Bridge:
         self._enqueue(UnregisterTriggerTypeMessage(id=id))
         self._trigger_types.pop(id, None)
 
-    def register_trigger(self, trigger_type: str, function_path: str, config: Any) -> Trigger:
+    def register_trigger(
+        self,
+        function_path: str,
+        triggers: list[dict[str, Any]],
+    ) -> Trigger:
         trigger_id = str(uuid.uuid4())
+
+        trigger_configs = []
+        for t in triggers:
+            trigger_type = t.get("trigger_type", "")
+            config = t.get("config", {})
+            conditions = t.get("conditions", [])
+            has_conditions = len(conditions) > 0
+
+            if has_conditions:
+                self._trigger_conditions[f"{trigger_id}:{trigger_type}"] = conditions
+
+            trigger_configs.append(
+                BridgeTriggerConfig(
+                    trigger_type=trigger_type,
+                    config=config,
+                    has_conditions=has_conditions,
+                )
+            )
+
         msg = RegisterTriggerMessage(
             id=trigger_id,
-            trigger_type=trigger_type,
             function_path=function_path,
-            config=config,
+            triggers=trigger_configs,
         )
         self._enqueue(msg)
         self._triggers[trigger_id] = msg
@@ -264,6 +324,9 @@ class Bridge:
         def unregister() -> None:
             self._enqueue(UnregisterTriggerMessage(id=trigger_id))
             self._triggers.pop(trigger_id, None)
+            for t in triggers:
+                trigger_type = t.get("trigger_type", "")
+                self._trigger_conditions.pop(f"{trigger_id}:{trigger_type}", None)
 
         return Trigger(unregister)
 

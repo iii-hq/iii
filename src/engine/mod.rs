@@ -215,28 +215,36 @@ impl Engine {
             }
             Message::RegisterTrigger {
                 id,
-                trigger_type,
                 function_path,
-                config,
+                triggers,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
-                    trigger_type = %trigger_type,
                     function_path = %function_path,
-                    config = ?config,
+                    triggers_count = triggers.len(),
                     "RegisterTrigger"
                 );
 
-                let _ = self
-                    .trigger_registry
-                    .register_trigger(Trigger {
-                        id: id.clone(),
-                        trigger_type: trigger_type.clone(),
-                        function_path: function_path.clone(),
-                        config: config.clone(),
-                        worker_id: Some(worker.id),
-                    })
-                    .await;
+                for (index, trigger_config) in triggers.iter().enumerate() {
+                    let trigger_id = if triggers.len() == 1 {
+                        id.clone()
+                    } else {
+                        format!("{}:{}", id, index)
+                    };
+
+                    let _ = self
+                        .trigger_registry
+                        .register_trigger(Trigger {
+                            id: trigger_id,
+                            trigger_type: trigger_config.trigger_type.clone(),
+                            function_path: function_path.clone(),
+                            config: trigger_config.config.clone(),
+                            worker_id: Some(worker.id),
+                            has_conditions: trigger_config.has_conditions,
+                            trigger_index: index,
+                        })
+                        .await;
+                }
 
                 Ok(())
             }
@@ -434,6 +442,30 @@ impl Engine {
                 Ok(())
             }
             Message::Pong => Ok(()),
+            Message::EvaluateCondition {
+                condition_id,
+                trigger_id,
+                trigger_metadata: _,
+                input_data: _,
+            } => {
+                tracing::debug!(
+                    condition_id = %condition_id,
+                    trigger_id = %trigger_id,
+                    "EvaluateCondition"
+                );
+                Ok(())
+            }
+            Message::ConditionResult {
+                condition_id,
+                passed,
+            } => {
+                tracing::debug!(
+                    condition_id = %condition_id,
+                    passed = %passed,
+                    "ConditionResult"
+                );
+                Ok(())
+            }
         }
     }
 

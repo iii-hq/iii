@@ -1,6 +1,7 @@
 import { type Data, WebSocket } from 'ws'
 import {
   type BridgeMessage,
+  type EvaluateConditionMessage,
   type FunctionMessage,
   type FunctionsAvailableMessage,
   type InvocationResultMessage,
@@ -10,6 +11,7 @@ import {
   type RegisterServiceMessage,
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
+  type TriggerConfig,
 } from './bridge-types'
 import { withContext } from './context'
 import { Logger, type LoggerParams } from './logger'
@@ -18,10 +20,12 @@ import type { TriggerHandler } from './triggers'
 import type {
   BridgeClient,
   Invocation,
+  RegisterTriggerInput,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
   Trigger,
+  TriggerCondition,
 } from './types'
 
 export type FunctionsAvailableCallback = (functions: FunctionMessage[]) => void
@@ -33,6 +37,7 @@ export class Bridge implements BridgeClient {
   private invocations = new Map<string, Invocation>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
+  private triggerConditions = new Map<string, TriggerCondition[]>()
   private messagesToSend: BridgeMessage[] = []
   private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
 
@@ -62,15 +67,38 @@ export class Bridge implements BridgeClient {
     this.triggerTypes.delete(triggerType.id)
   }
 
-  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type' | 'id'>): Trigger {
+  registerTrigger(input: RegisterTriggerInput): Trigger {
     const id = crypto.randomUUID()
-    this.sendMessage(MessageType.RegisterTrigger, { ...trigger, id }, true)
-    this.triggers.set(id, { ...trigger, id, type: MessageType.RegisterTrigger })
+  
+    const triggersConfig: TriggerConfig[] = input.triggers.map((trigger) => ({
+      trigger_type: trigger.trigger_type,
+      config: trigger.config,
+      has_conditions: Boolean(trigger.conditions?.length),
+    }))
+  
+    const message: Omit<RegisterTriggerMessage, 'type'> = {
+      id,
+      function_path: input.function_path,
+      triggers: triggersConfig,
+    }
+  
+    this.sendMessage(MessageType.RegisterTrigger, message, true)
+  
+    this.triggers.set(id, { ...message, type: MessageType.RegisterTrigger })
+  
+    input.triggers
+      .filter((trigger) => trigger.conditions?.length)
+      .map((trigger) => this.triggerConditions.set(`${id}:${trigger.trigger_type}`, trigger.conditions!))
+  
 
     return {
       unregister: () => {
         this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
         this.triggers.delete(id)
+  
+        input.triggers.forEach(t => {
+          this.triggerConditions.delete(JSON.stringify([id, t.trigger_type]))
+        })
       },
     }
   }
@@ -223,29 +251,60 @@ export class Bridge implements BridgeClient {
   }
 
   private async onRegisterTrigger(message: RegisterTriggerMessage) {
-    const triggerTypeData = this.triggerTypes.get(message.trigger_type)
-    const { id, trigger_type, function_path, config } = message
+    const { id, function_path, triggers } = message
 
-    if (triggerTypeData) {
-      try {
-        await triggerTypeData.handler.registerTrigger({ id, function_path, config })
-        this.sendMessage(MessageType.TriggerRegistrationResult, { id, trigger_type, function_path })
-      } catch (error) {
+    for (const triggerConfig of triggers) {
+      const triggerTypeData = this.triggerTypes.get(triggerConfig.trigger_type)
+
+      if (triggerTypeData) {
+        try {
+          await triggerTypeData.handler.registerTrigger({
+            id,
+            function_path,
+            config: triggerConfig.config,
+          })
+          this.sendMessage(MessageType.TriggerRegistrationResult, {
+            id,
+            trigger_type: triggerConfig.trigger_type,
+            function_path,
+          })
+        } catch (error) {
+          this.sendMessage(MessageType.TriggerRegistrationResult, {
+            id,
+            trigger_type: triggerConfig.trigger_type,
+            function_path,
+            error: { code: 'trigger_registration_failed', message: (error as Error).message },
+          })
+        }
+      } else {
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
-          trigger_type,
+          trigger_type: triggerConfig.trigger_type,
           function_path,
-          error: { code: 'trigger_registration_failed', message: (error as Error).message },
+          error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
         })
       }
-    } else {
-      this.sendMessage(MessageType.TriggerRegistrationResult, {
-        id,
-        trigger_type,
-        function_path,
-        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
-      })
     }
+  }
+
+  private async onEvaluateCondition(message: EvaluateConditionMessage) {
+    const { condition_id, trigger_id, trigger_metadata, input_data } = message
+    const conditions = this.triggerConditions.get(trigger_id) || []
+
+    const results = await Promise.all(conditions.map(async (condition: TriggerCondition) => {
+      return condition(
+        {
+          trigger: trigger_metadata,
+          request: input_data.request || null,
+          data: input_data.data || null,
+        },
+        {},
+        { type: trigger_metadata.type, index: trigger_metadata.index || 0 }
+      )
+    }))
+    const passed = results.every((result) => result)
+
+    this.sendMessage(MessageType.ConditionResult, { condition_id, passed })
   }
 
   private onMessage(socketMessage: Data) {
@@ -262,6 +321,8 @@ export class Bridge implements BridgeClient {
     } else if (type === MessageType.FunctionsAvailable) {
       const { functions } = message as FunctionsAvailableMessage
       this.functionsAvailableCallbacks.forEach((callback) => callback(functions))
+    } else if (type === MessageType.EvaluateCondition) {
+      this.onEvaluateCondition(message as EvaluateConditionMessage)
     }
   }
 }
