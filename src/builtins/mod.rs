@@ -206,6 +206,15 @@ impl BuiltinKvStore {
         }
         result
     }
+
+    pub async fn list_keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let store = self.store.read().await;
+        store
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
 }
 
 pub struct BuiltInPubSubAdapter {

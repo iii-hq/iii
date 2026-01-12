@@ -14,6 +14,9 @@ export const streams = {
   getGroup: async (stream_name: string, group_id: string): Promise<any[]> => {
     return bridge.invokeFunction('streams.getGroup', { stream_name, group_id })
   },
+  listGroups: async (stream_name: string): Promise<string[]> => {
+    return bridge.invokeFunction('streams.listGroups', { stream_name })
+  },
 }
 
 let todoState: Todo[] = []
@@ -44,4 +47,5 @@ bridge.createStream('todo', {
     todoState = todoState.filter((todo) => todo.id !== input.item_id)
   },
   getGroup: async (input) => todoState.filter((todo) => todo.groupId === input.group_id),
+  listGroups: async () => [...new Set(todoState.map((todo) => todo.groupId))],
 })

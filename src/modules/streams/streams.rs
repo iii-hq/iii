@@ -29,7 +29,7 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamSetInput,
+                StreamGetInput, StreamListGroupsInput, StreamSetInput,
             },
             trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
             utils::{headers_to_map, query_to_multi_map},
@@ -398,6 +398,42 @@ impl StreamCoreModule {
             None => {
                 let values = adapter.get_group(&stream_name, &group_id).await;
                 FunctionResult::Success(serde_json::to_value(values).ok())
+            }
+        }
+    }
+
+    #[function(
+        name = "streams.listGroups",
+        description = "List all groups in a stream"
+    )]
+    pub async fn list_groups(
+        &self,
+        input: StreamListGroupsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let cloned_input = input.clone();
+        let stream_name = input.stream_name;
+
+        let function_path = format!("streams.listGroups({})", stream_name);
+        let function = self.engine.functions.get(&function_path);
+        let adapter = self.adapter.clone();
+
+        match function {
+            Some(_) => {
+                tracing::debug!(function_path = %function_path, "Calling custom streams.listGroups function");
+
+                let result = self
+                    .engine
+                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .await;
+
+                match result {
+                    Ok(result) => FunctionResult::Success(result),
+                    Err(error) => FunctionResult::Failure(error),
+                }
+            }
+            None => {
+                let groups = adapter.list_groups(&stream_name).await;
+                FunctionResult::Success(serde_json::to_value(groups).ok())
             }
         }
     }
