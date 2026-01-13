@@ -92,13 +92,6 @@ export class Bridge implements BridgeClient {
     return new Promise<TOutput>((resolve, reject) => {
       this.sendMessage(MessageType.InvokeFunction, { invocation_id, function_path, data })
       this.invocations.set(invocation_id, { resolve, reject })
-      
-      setTimeout(() => {
-        if (this.invocations.has(invocation_id)) {
-          this.invocations.delete(invocation_id)
-          reject(new Error(`Function invocation timeout: ${function_path}`))
-        }
-      }, 30000)
     })
   }
 
