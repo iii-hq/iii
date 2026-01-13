@@ -77,7 +77,7 @@ impl CoreModule for BridgeClientModule {
             .or_else(|| std::env::var("III_BRIDGE_URL").ok())
             .unwrap_or_else(|| "ws://127.0.0.1:49134".to_string());
 
-        let bridge = iii_sdk::Bridge::new(url);
+        let bridge = iii_sdk::Bridge::new(&url);
 
         Ok(Box::new(Self {
             engine,

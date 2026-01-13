@@ -12,8 +12,8 @@ struct KeyValueData {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bridge = Bridge::new("ws://127.0.0.1:49134");
-    //let bridge = Bridge::new("ws://192.168.1.200:49134");
+    let iii_bridge_url = std::env::var("III_BRIDGE_URL").unwrap_or("ws://127.0.0.1:49134".into());
+    let bridge = Bridge::new(&iii_bridge_url);
     bridge.connect().await?;
 
     bridge.register_function("example.echo", |input| async move {

@@ -73,7 +73,7 @@ impl FunctionsAvailableSubscription {
 }
 
 impl Bridge {
-    pub fn new(address: impl Into<String>) -> Self {
+    pub fn new(address: &str) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = BridgeInner {
             address: address.into(),
