@@ -372,8 +372,7 @@ impl Bridge {
 
         self.send_message(Message::ListFunctions)?;
 
-        let timeout = Duration::from_secs(10);
-        let result = match tokio::time::timeout(timeout, rx).await {
+        let result = match tokio::time::timeout(DEFAULT_TIMEOUT, rx).await {
             Ok(Ok(funcs)) => Ok(funcs),
             Ok(Err(_)) => Err(BridgeError::NotConnected),
             Err(_) => Err(BridgeError::Timeout),
