@@ -497,15 +497,13 @@ fn collect_registrations(inner: &BridgeInner) -> Vec<Message> {
     messages
 }
 
-async fn flush_queue(
-    ws_tx: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        WsMessage,
-    >,
-    queue: &mut Vec<Message>,
-) -> Result<(), BridgeError> {
+// WebSocket transmitter type alias
+type WsTx = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    WsMessage,
+>;
+
+async fn flush_queue(ws_tx: &mut WsTx, queue: &mut Vec<Message>) -> Result<(), BridgeError> {
     let mut drained = Vec::new();
     std::mem::swap(queue, &mut drained);
 
@@ -521,15 +519,7 @@ async fn flush_queue(
     Ok(())
 }
 
-async fn send_ws(
-    ws_tx: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        WsMessage,
-    >,
-    message: &Message,
-) -> Result<(), BridgeError> {
+async fn send_ws(ws_tx: &mut WsTx, message: &Message) -> Result<(), BridgeError> {
     let payload = serde_json::to_string(message)?;
     ws_tx.send(WsMessage::Text(payload)).await?;
     Ok(())
