@@ -11,7 +11,7 @@ use crate::{
     protocol::ErrorBody,
 };
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct BridgeClientConfig {
     #[serde(default)]
     pub url: Option<String>,
@@ -23,18 +23,6 @@ pub struct BridgeClientConfig {
     pub expose: Vec<ExposeFunctionConfig>,
     #[serde(default)]
     pub forward: Vec<ForwardFunctionConfig>,
-}
-
-impl Default for BridgeClientConfig {
-    fn default() -> Self {
-        Self {
-            url: None,
-            service_id: None,
-            service_name: None,
-            expose: Vec::new(),
-            forward: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

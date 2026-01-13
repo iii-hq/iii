@@ -4,8 +4,11 @@ mod registry;
 use std::sync::RwLock;
 mod config;
 
-use std::collections::HashMap;
-use std::{collections::HashSet, pin::Pin, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    pin::Pin,
+    sync::Arc,
+};
 
 pub use adapters::{FileLogger, RedisLogger};
 use async_trait::async_trait;

@@ -140,6 +140,7 @@ impl CoreModule for StreamCoreModule {
         let addr = format!("{}:{}", self.config.host, self.config.port)
             .parse::<SocketAddr>()
             .unwrap();
+        tracing::info!("Starting StreamCoreModule on {}", addr.to_string().purple());
         let listener = TcpListener::bind(addr).await.unwrap();
         let app = Router::new()
             .route("/", get(ws_handler))

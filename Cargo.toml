@@ -17,6 +17,7 @@ path = "examples/custom_event_adapter.rs"
 
 [dependencies]
 function-macros = { path = "function-macros" }
+iii-sdk = { path = "packages/rust/iii" }
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal" ] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
