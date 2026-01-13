@@ -1,0 +1,140 @@
+name: WIP Release Node SDK
+
+permissions:
+  contents: write
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'NPM distribution tag (e.g. beta, alpha, next)'
+        required: true
+        default: 'next'
+      branch:
+        description: 'Branch containing the WIP changes (you can specify any branch name)'
+        required: true
+        default: 'main'
+
+jobs:
+  wip-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/node/iii
+
+    steps:
+      - name: Warning
+        run: |
+          echo "⚠️  WARNING: WIP Release bypasses the approval gate"
+          echo "This workflow should only be used for testing purposes"
+          echo "For production releases, use the Create Tag workflow instead"
+          echo ""
+          echo "Publishing to NPM tag: ${{ github.event.inputs.tag }}"
+          echo "From branch: ${{ github.event.inputs.branch }}"
+
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
+          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 8
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        working-directory: .
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Setup Git
+        working-directory: .
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Get current version
+        id: current_version
+        run: |
+          current_version=$(node -p "require('./package.json').version")
+          echo "Current version: $current_version"
+          echo "version=$current_version" >> $GITHUB_OUTPUT
+
+      - name: Bump version with timestamp
+        id: version
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          current_version=$(node -p "require('./package.json').version")
+          
+          base_version=$(echo $current_version | cut -d'-' -f1)
+          
+          IFS='.' read -r major minor patch <<< "$base_version"
+          
+          timestamp=$(date +%Y%m%d%H%M%S)
+          new_version="${major}.${minor}.${patch}-${tag}.${timestamp}"
+          
+          echo "Setting version to: $new_version"
+          pnpm version $new_version --no-git-tag-version
+          
+          echo "version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Show version information
+        working-directory: .
+        run: |
+          echo "### Version Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package:** @iii-dev/sdk" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current version:** ${{ steps.current_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **New version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **NPM distribution tag:** ${{ github.event.inputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.event.inputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "npm install @iii-dev/sdk@${{ github.event.inputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "npm install @iii-dev/sdk@${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Build SDK
+        run: pnpm run build
+
+      - name: Setup NPM authentication
+        working-directory: .
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
+
+      - name: Publish package with custom tag
+        working-directory: .
+        run: |
+          pnpm publish -r --filter @iii-dev/sdk --no-git-checks --tag ${{ github.event.inputs.tag }}
