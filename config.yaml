@@ -12,6 +12,8 @@ modules:
         # config:
         #   redis_url: redis://localhost:6379
 
+  #- class: modules::kv_server::KvServer
+
   - class: modules::api::RestApiModule
     config:
       port: 3111
@@ -63,10 +65,19 @@ modules:
       url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
       service_id: bridge-client
       service_name: bridge-client
-      expose:
-        - local_function: kv_server.get
-          remote_function: kv_server.get
+      # expose:
+      #   - local_function: logger.info
+      #     remote_function: logger.info
+
       forward:
         - local_function: remote.kv.get
           remote_function: kv_server.get
+          timeout_ms: 5000
+
+        - local_function: remote.kv.set
+          remote_function: kv_server.set
+          timeout_ms: 5000
+
+        - local_function: remote.kv.delete
+          remote_function: kv_server.delete
           timeout_ms: 5000

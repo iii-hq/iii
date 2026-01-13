@@ -1,32 +1,33 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use futures_util::{SinkExt, StreamExt};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::sleep;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::sleep,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use uuid::Uuid;
 
-use crate::context::{Context, with_context};
-use crate::error::BridgeError;
-use crate::logger::{Logger, LoggerInvoker};
-use crate::protocol::{
-    ErrorBody,
-    FunctionMessage,
-    Message,
-    RegisterFunctionMessage,
-    RegisterServiceMessage,
-    RegisterTriggerMessage,
-    RegisterTriggerTypeMessage,
-    UnregisterTriggerMessage,
+use crate::{
+    context::{Context, with_context},
+    error::BridgeError,
+    logger::{Logger, LoggerInvoker},
+    protocol::{
+        ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterServiceMessage,
+        RegisterTriggerMessage, RegisterTriggerTypeMessage, UnregisterTriggerMessage,
+    },
+    triggers::{Trigger, TriggerConfig, TriggerHandler},
+    types::{RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
 };
-use crate::triggers::{Trigger, TriggerConfig, TriggerHandler};
-use crate::types::{RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -138,8 +139,7 @@ impl Bridge {
         function_path: impl Into<String>,
         description: impl Into<String>,
         handler: F,
-    )
-    where
+    ) where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Value, BridgeError>> + Send + 'static,
     {
@@ -234,8 +234,12 @@ impl Bridge {
         let _ = self.send_message(message.to_message());
     }
 
-    pub fn register_trigger_type<H>(&self, id: impl Into<String>, description: impl Into<String>, handler: H)
-    where
+    pub fn register_trigger_type<H>(
+        &self,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        handler: H,
+    ) where
         H: TriggerHandler + 'static,
     {
         let message = RegisterTriggerTypeMessage {
@@ -320,11 +324,7 @@ impl Bridge {
         let invocation_id = Uuid::new_v4();
         let (tx, rx) = oneshot::channel();
 
-        self.inner
-            .pending
-            .lock()
-            .unwrap()
-            .insert(invocation_id, tx);
+        self.inner.pending.lock().unwrap().insert(invocation_id, tx);
 
         self.send_message(Message::InvokeFunction {
             invocation_id: Some(invocation_id),
@@ -342,7 +342,11 @@ impl Bridge {
         }
     }
 
-    pub fn invoke_function_async<TInput>(&self, function_path: &str, data: TInput) -> Result<(), BridgeError>
+    pub fn invoke_function_async<TInput>(
+        &self,
+        function_path: &str,
+        data: TInput,
+    ) -> Result<(), BridgeError>
     where
         TInput: Serialize,
     {
@@ -354,8 +358,29 @@ impl Bridge {
         })
     }
 
-    pub fn list_functions(&self) {
-        let _ = self.send_message(Message::ListFunctions);
+    pub async fn list_functions(&self) -> Result<Vec<FunctionMessage>, BridgeError> {
+        let (tx, rx) = oneshot::channel();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+        let sub = self.on_functions_available({
+            let tx = tx.clone();
+            move |funcs| {
+                if let Some(sender) = tx.lock().unwrap().take() {
+                    let _ = sender.send(funcs);
+                }
+            }
+        });
+
+        self.send_message(Message::ListFunctions)?;
+
+        let timeout = Duration::from_secs(10);
+        let result = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(funcs)) => Ok(funcs),
+            Ok(Err(_)) => Err(BridgeError::NotConnected),
+            Err(_) => Err(BridgeError::Timeout),
+        };
+
+        sub.unsubscribe();
+        result
     }
 
     pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableSubscription
@@ -363,7 +388,11 @@ impl Bridge {
         F: Fn(Vec<FunctionMessage>) + Send + Sync + 'static,
     {
         let id = self.inner.next_callback_id.fetch_add(1, Ordering::SeqCst);
-        self.inner.callbacks.lock().unwrap().insert(id, Arc::new(callback));
+        self.inner
+            .callbacks
+            .lock()
+            .unwrap()
+            .insert(id, Arc::new(callback));
         FunctionsAvailableSubscription {
             id,
             inner: self.inner.clone(),
@@ -471,7 +500,9 @@ fn collect_registrations(inner: &BridgeInner) -> Vec<Message> {
 
 async fn flush_queue(
     ws_tx: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         WsMessage,
     >,
     queue: &mut Vec<Message>,
@@ -493,7 +524,9 @@ async fn flush_queue(
 
 async fn send_ws(
     ws_tx: &mut futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         WsMessage,
     >,
     message: &Message,
@@ -542,7 +575,13 @@ fn handle_message(inner: &Arc<BridgeInner>, payload: &str) -> Result<(), BridgeE
             handle_register_trigger(inner.clone(), id, trigger_type, function_path, config);
         }
         Message::FunctionsAvailable { functions } => {
-            let callbacks = inner.callbacks.lock().unwrap().values().cloned().collect::<Vec<_>>();
+            let callbacks = inner
+                .callbacks
+                .lock()
+                .unwrap()
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
             for callback in callbacks {
                 callback(functions.clone());
             }
@@ -594,12 +633,14 @@ fn handle_invoke_function(
                 code: "function_not_found".to_string(),
                 message: "Function not found".to_string(),
             };
-            let _ = inner.outbound.send(Outbound::Message(Message::InvocationResult {
-                invocation_id,
-                function_path,
-                result: None,
-                error: Some(error),
-            }));
+            let _ = inner
+                .outbound
+                .send(Outbound::Message(Message::InvocationResult {
+                    invocation_id,
+                    function_path,
+                    result: None,
+                    error: Some(error),
+                }));
         }
         return;
     };
