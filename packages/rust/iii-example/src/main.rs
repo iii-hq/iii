@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(json!({ "echo": input }))
     });
 
-    let result: serde_json::Value = bridge
+    let result = bridge
         .invoke_function("example.echo", json!({ "message": "hello" }))
         .await?;
 
@@ -33,15 +33,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         value: "new_value".to_string(),
     };
     // Set a key-value pair
-    let _: serde_json::Value = bridge.invoke_function("remote.kv.set", data).await?;
+    let _ = bridge.invoke_function("remote.kv.set", data).await?;
 
     // Get the value by key
-    let item: serde_json::Value = bridge
+    let item = bridge
         .invoke_function("remote.kv.get", "my_key".to_string())
         .await?;
     println!("got item: {item}");
 
-    let deleted_item: serde_json::Value = bridge
+    let deleted_item = bridge
         .invoke_function("remote.kv.delete", "my_key".to_string())
         .await?;
 

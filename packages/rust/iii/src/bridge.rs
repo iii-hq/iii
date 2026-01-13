@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -299,20 +299,17 @@ impl Bridge {
         Trigger::new(unregister_fn)
     }
 
-    pub async fn invoke_function<TInput, TOutput>(
+    pub async fn invoke_function<TInput>(
         &self,
         function_path: &str,
         data: TInput,
-    ) -> Result<TOutput, BridgeError>
+    ) -> Result<Value, BridgeError>
     where
         TInput: Serialize,
-        TOutput: DeserializeOwned,
     {
         let value = serde_json::to_value(data)?;
-        let result = self
-            .invoke_function_with_timeout(function_path, value, DEFAULT_TIMEOUT)
-            .await?;
-        Ok(serde_json::from_value(result)?)
+        self.invoke_function_with_timeout(function_path, value, DEFAULT_TIMEOUT)
+            .await
     }
 
     pub async fn invoke_function_with_timeout(
