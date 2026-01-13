@@ -12,7 +12,7 @@ struct KeyValueData {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii_bridge_url = std::env::var("III_BRIDGE_URL").unwrap_or("ws://127.0.0.1:49134".into());
+    let iii_bridge_url = std::env::var("REMOTE_III_URL").unwrap_or("ws://127.0.0.1:49134".into());
     let bridge = Bridge::new(&iii_bridge_url);
     bridge.connect().await?;
 
