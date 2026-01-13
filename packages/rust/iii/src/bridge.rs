@@ -39,6 +39,12 @@ enum Outbound {
 type PendingInvocation = oneshot::Sender<Result<Value, BridgeError>>;
 type FunctionsAvailableCallback = Arc<dyn Fn(Vec<FunctionMessage>) + Send + Sync>;
 
+// WebSocket transmitter type alias
+type WsTx = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    WsMessage,
+>;
+
 struct BridgeInner {
     address: String,
     outbound: mpsc::UnboundedSender<Outbound>,
@@ -105,9 +111,9 @@ impl Bridge {
         };
 
         self.inner.running.store(true, Ordering::SeqCst);
-        let inner = self.inner.clone();
+        let bridge = self.clone();
         tokio::spawn(async move {
-            run_connection(inner, rx).await;
+            bridge.run_connection(rx).await;
         });
 
         Ok(())
@@ -401,320 +407,322 @@ impl Bridge {
             .send(Outbound::Message(message))
             .map_err(|_| BridgeError::NotConnected)
     }
-}
 
-async fn run_connection(inner: Arc<BridgeInner>, mut rx: mpsc::UnboundedReceiver<Outbound>) {
-    let mut queue: Vec<Message> = Vec::new();
+    async fn run_connection(&self, mut rx: mpsc::UnboundedReceiver<Outbound>) {
+        let mut queue: Vec<Message> = Vec::new();
 
-    while inner.running.load(Ordering::SeqCst) {
-        match connect_async(&inner.address).await {
-            Ok((stream, _)) => {
-                tracing::info!(address = %inner.address, "bridge connected");
-                let (mut ws_tx, mut ws_rx) = stream.split();
+        while self.inner.running.load(Ordering::SeqCst) {
+            match connect_async(&self.inner.address).await {
+                Ok((stream, _)) => {
+                    tracing::info!(address = %self.inner.address, "bridge connected");
+                    let (mut ws_tx, mut ws_rx) = stream.split();
 
-                queue.extend(collect_registrations(&inner));
-                if let Err(err) = flush_queue(&mut ws_tx, &mut queue).await {
-                    tracing::warn!(error = %err, "failed to flush queue");
-                    sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
+                    queue.extend(self.collect_registrations());
+                    if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
+                        tracing::warn!(error = %err, "failed to flush queue");
+                        sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
 
-                let mut should_reconnect = false;
+                    let mut should_reconnect = false;
 
-                while inner.running.load(Ordering::SeqCst) && !should_reconnect {
-                    tokio::select! {
-                        outgoing = rx.recv() => {
-                            match outgoing {
-                                Some(Outbound::Message(message)) => {
-                                    if let Err(err) = send_ws(&mut ws_tx, &message).await {
-                                        tracing::warn!(error = %err, "send failed; reconnecting");
-                                        queue.push(message);
-                                        should_reconnect = true;
+                    while self.inner.running.load(Ordering::SeqCst) && !should_reconnect {
+                        tokio::select! {
+                            outgoing = rx.recv() => {
+                                match outgoing {
+                                    Some(Outbound::Message(message)) => {
+                                        if let Err(err) = self.send_ws(&mut ws_tx, &message).await {
+                                            tracing::warn!(error = %err, "send failed; reconnecting");
+                                            queue.push(message);
+                                            should_reconnect = true;
+                                        }
                                     }
-                                }
-                                Some(Outbound::Shutdown) => {
-                                    inner.running.store(false, Ordering::SeqCst);
-                                    return;
-                                }
-                                None => {
-                                    inner.running.store(false, Ordering::SeqCst);
-                                    return;
+                                    Some(Outbound::Shutdown) => {
+                                        self.inner.running.store(false, Ordering::SeqCst);
+                                        return;
+                                    }
+                                    None => {
+                                        self.inner.running.store(false, Ordering::SeqCst);
+                                        return;
+                                    }
                                 }
                             }
-                        }
-                        incoming = ws_rx.next() => {
-                            match incoming {
-                                Some(Ok(frame)) => {
-                                    if let Err(err) = handle_frame(&inner, frame) {
-                                        tracing::warn!(error = %err, "failed to handle frame");
+                            incoming = ws_rx.next() => {
+                                match incoming {
+                                    Some(Ok(frame)) => {
+                                        if let Err(err) = self.handle_frame(frame) {
+                                            tracing::warn!(error = %err, "failed to handle frame");
+                                        }
                                     }
-                                }
-                                Some(Err(err)) => {
-                                    tracing::warn!(error = %err, "websocket receive error");
-                                    should_reconnect = true;
-                                }
-                                None => {
-                                    should_reconnect = true;
+                                    Some(Err(err)) => {
+                                        tracing::warn!(error = %err, "websocket receive error");
+                                        should_reconnect = true;
+                                    }
+                                    None => {
+                                        should_reconnect = true;
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to connect; retrying");
+                }
             }
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to connect; retrying");
-            }
-        }
 
-        if inner.running.load(Ordering::SeqCst) {
-            sleep(Duration::from_secs(2)).await;
-        }
-    }
-}
-
-fn collect_registrations(inner: &BridgeInner) -> Vec<Message> {
-    let mut messages = Vec::new();
-
-    for trigger_type in inner.trigger_types.lock().unwrap().values() {
-        messages.push(trigger_type.message.to_message());
-    }
-
-    for service in inner.services.lock().unwrap().values() {
-        messages.push(service.to_message());
-    }
-
-    for function in inner.functions.lock().unwrap().values() {
-        messages.push(function.message.to_message());
-    }
-
-    for trigger in inner.triggers.lock().unwrap().values() {
-        messages.push(trigger.to_message());
-    }
-
-    messages
-}
-
-// WebSocket transmitter type alias
-type WsTx = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    WsMessage,
->;
-
-async fn flush_queue(ws_tx: &mut WsTx, queue: &mut Vec<Message>) -> Result<(), BridgeError> {
-    let mut drained = Vec::new();
-    std::mem::swap(queue, &mut drained);
-
-    let mut iter = drained.into_iter();
-    while let Some(message) = iter.next() {
-        if let Err(err) = send_ws(ws_tx, &message).await {
-            queue.push(message);
-            queue.extend(iter);
-            return Err(err);
-        }
-    }
-
-    Ok(())
-}
-
-async fn send_ws(ws_tx: &mut WsTx, message: &Message) -> Result<(), BridgeError> {
-    let payload = serde_json::to_string(message)?;
-    ws_tx.send(WsMessage::Text(payload)).await?;
-    Ok(())
-}
-
-fn handle_frame(inner: &Arc<BridgeInner>, frame: WsMessage) -> Result<(), BridgeError> {
-    match frame {
-        WsMessage::Text(text) => handle_message(inner, &text),
-        WsMessage::Binary(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).to_string();
-            handle_message(inner, &text)
-        }
-        _ => Ok(()),
-    }
-}
-
-fn handle_message(inner: &Arc<BridgeInner>, payload: &str) -> Result<(), BridgeError> {
-    let message: Message = serde_json::from_str(payload)?;
-
-    match message {
-        Message::InvocationResult {
-            invocation_id,
-            result,
-            error,
-            ..
-        } => {
-            handle_invocation_result(inner, invocation_id, result, error);
-        }
-        Message::InvokeFunction {
-            invocation_id,
-            function_path,
-            data,
-        } => {
-            handle_invoke_function(inner.clone(), invocation_id, function_path, data);
-        }
-        Message::RegisterTrigger {
-            id,
-            trigger_type,
-            function_path,
-            config,
-        } => {
-            handle_register_trigger(inner.clone(), id, trigger_type, function_path, config);
-        }
-        Message::FunctionsAvailable { functions } => {
-            let callbacks = inner
-                .callbacks
-                .lock()
-                .unwrap()
-                .values()
-                .cloned()
-                .collect::<Vec<_>>();
-            for callback in callbacks {
-                callback(functions.clone());
+            if self.inner.running.load(Ordering::SeqCst) {
+                sleep(Duration::from_secs(2)).await;
             }
         }
-        Message::Ping => {
-            let _ = inner.outbound.send(Outbound::Message(Message::Pong));
-        }
-        _ => {}
     }
 
-    Ok(())
-}
+    fn collect_registrations(&self) -> Vec<Message> {
+        let mut messages = Vec::new();
 
-fn handle_invocation_result(
-    inner: &Arc<BridgeInner>,
-    invocation_id: Uuid,
-    result: Option<Value>,
-    error: Option<ErrorBody>,
-) {
-    let sender = inner.pending.lock().unwrap().remove(&invocation_id);
-    if let Some(sender) = sender {
-        let result = match error {
-            Some(error) => Err(BridgeError::Remote {
-                code: error.code,
-                message: error.message,
-            }),
-            None => Ok(result.unwrap_or(Value::Null)),
-        };
-        let _ = sender.send(result);
+        for trigger_type in self.inner.trigger_types.lock().unwrap().values() {
+            messages.push(trigger_type.message.to_message());
+        }
+
+        for service in self.inner.services.lock().unwrap().values() {
+            messages.push(service.to_message());
+        }
+
+        for function in self.inner.functions.lock().unwrap().values() {
+            messages.push(function.message.to_message());
+        }
+
+        for trigger in self.inner.triggers.lock().unwrap().values() {
+            messages.push(trigger.to_message());
+        }
+
+        messages
     }
-}
 
-fn handle_invoke_function(
-    inner: Arc<BridgeInner>,
-    invocation_id: Option<Uuid>,
-    function_path: String,
-    data: Value,
-) {
-    let handler = inner
-        .functions
-        .lock()
-        .unwrap()
-        .get(&function_path)
-        .map(|data| data.handler.clone());
+    async fn flush_queue(
+        &self,
+        ws_tx: &mut WsTx,
+        queue: &mut Vec<Message>,
+    ) -> Result<(), BridgeError> {
+        let mut drained = Vec::new();
+        std::mem::swap(queue, &mut drained);
 
-    let Some(handler) = handler else {
-        if let Some(invocation_id) = invocation_id {
-            let error = ErrorBody {
-                code: "function_not_found".to_string(),
-                message: "Function not found".to_string(),
-            };
-            let _ = inner
-                .outbound
-                .send(Outbound::Message(Message::InvocationResult {
-                    invocation_id,
-                    function_path,
-                    result: None,
-                    error: Some(error),
-                }));
-        }
-        return;
-    };
-
-    let outbound = inner.outbound.clone();
-
-    tokio::spawn(async move {
-        let result = handler(data).await;
-
-        if let Some(invocation_id) = invocation_id {
-            let message = match result {
-                Ok(value) => Message::InvocationResult {
-                    invocation_id,
-                    function_path,
-                    result: Some(value),
-                    error: None,
-                },
-                Err(err) => Message::InvocationResult {
-                    invocation_id,
-                    function_path,
-                    result: None,
-                    error: Some(ErrorBody {
-                        code: "invocation_failed".to_string(),
-                        message: err.to_string(),
-                    }),
-                },
-            };
-
-            let _ = outbound.send(Outbound::Message(message));
-        } else if let Err(err) = result {
-            tracing::warn!(error = %err, "error handling async invocation");
-        }
-    });
-}
-
-fn handle_register_trigger(
-    inner: Arc<BridgeInner>,
-    id: String,
-    trigger_type: String,
-    function_path: String,
-    config: Value,
-) {
-    let handler = inner
-        .trigger_types
-        .lock()
-        .unwrap()
-        .get(&trigger_type)
-        .map(|data| data.handler.clone());
-
-    let outbound = inner.outbound.clone();
-
-    tokio::spawn(async move {
-        let message = if let Some(handler) = handler {
-            let config = TriggerConfig {
-                id: id.clone(),
-                function_path: function_path.clone(),
-                config,
-            };
-
-            match handler.register_trigger(config).await {
-                Ok(()) => Message::TriggerRegistrationResult {
-                    id,
-                    trigger_type,
-                    function_path,
-                    error: None,
-                },
-                Err(err) => Message::TriggerRegistrationResult {
-                    id,
-                    trigger_type,
-                    function_path,
-                    error: Some(ErrorBody {
-                        code: "trigger_registration_failed".to_string(),
-                        message: err.to_string(),
-                    }),
-                },
+        let mut iter = drained.into_iter();
+        while let Some(message) = iter.next() {
+            if let Err(err) = self.send_ws(ws_tx, &message).await {
+                queue.push(message);
+                queue.extend(iter);
+                return Err(err);
             }
-        } else {
-            Message::TriggerRegistrationResult {
+        }
+
+        Ok(())
+    }
+
+    async fn send_ws(&self, ws_tx: &mut WsTx, message: &Message) -> Result<(), BridgeError> {
+        let payload = serde_json::to_string(message)?;
+        ws_tx.send(WsMessage::Text(payload)).await?;
+        Ok(())
+    }
+
+    fn handle_frame(&self, frame: WsMessage) -> Result<(), BridgeError> {
+        match frame {
+            WsMessage::Text(text) => self.handle_message(&text),
+            WsMessage::Binary(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                self.handle_message(&text)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn handle_message(&self, payload: &str) -> Result<(), BridgeError> {
+        let message: Message = serde_json::from_str(payload)?;
+
+        match message {
+            Message::InvocationResult {
+                invocation_id,
+                result,
+                error,
+                ..
+            } => {
+                self.handle_invocation_result(invocation_id, result, error);
+            }
+            Message::InvokeFunction {
+                invocation_id,
+                function_path,
+                data,
+            } => {
+                self.handle_invoke_function(invocation_id, function_path, data);
+            }
+            Message::RegisterTrigger {
                 id,
                 trigger_type,
                 function_path,
-                error: Some(ErrorBody {
-                    code: "trigger_type_not_found".to_string(),
-                    message: "Trigger type not found".to_string(),
-                }),
+                config,
+            } => {
+                self.handle_register_trigger(id, trigger_type, function_path, config);
             }
+            Message::FunctionsAvailable { functions } => {
+                let callbacks = self
+                    .inner
+                    .callbacks
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for callback in callbacks {
+                    callback(functions.clone());
+                }
+            }
+            Message::Ping => {
+                let _ = self.inner.outbound.send(Outbound::Message(Message::Pong));
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_invocation_result(
+        &self,
+        invocation_id: Uuid,
+        result: Option<Value>,
+        error: Option<ErrorBody>,
+    ) {
+        let sender = self.inner.pending.lock().unwrap().remove(&invocation_id);
+        if let Some(sender) = sender {
+            let result = match error {
+                Some(error) => Err(BridgeError::Remote {
+                    code: error.code,
+                    message: error.message,
+                }),
+                None => Ok(result.unwrap_or(Value::Null)),
+            };
+            let _ = sender.send(result);
+        }
+    }
+
+    fn handle_invoke_function(
+        &self,
+        invocation_id: Option<Uuid>,
+        function_path: String,
+        data: Value,
+    ) {
+        let handler = self
+            .inner
+            .functions
+            .lock()
+            .unwrap()
+            .get(&function_path)
+            .map(|data| data.handler.clone());
+
+        let Some(handler) = handler else {
+            if let Some(invocation_id) = invocation_id {
+                let error = ErrorBody {
+                    code: "function_not_found".to_string(),
+                    message: "Function not found".to_string(),
+                };
+                let _ = self
+                    .inner
+                    .outbound
+                    .send(Outbound::Message(Message::InvocationResult {
+                        invocation_id,
+                        function_path,
+                        result: None,
+                        error: Some(error),
+                    }));
+            }
+            return;
         };
 
-        let _ = outbound.send(Outbound::Message(message));
-    });
+        let outbound = self.inner.outbound.clone();
+
+        tokio::spawn(async move {
+            let result = handler(data).await;
+
+            if let Some(invocation_id) = invocation_id {
+                let message = match result {
+                    Ok(value) => Message::InvocationResult {
+                        invocation_id,
+                        function_path,
+                        result: Some(value),
+                        error: None,
+                    },
+                    Err(err) => Message::InvocationResult {
+                        invocation_id,
+                        function_path,
+                        result: None,
+                        error: Some(ErrorBody {
+                            code: "invocation_failed".to_string(),
+                            message: err.to_string(),
+                        }),
+                    },
+                };
+
+                let _ = outbound.send(Outbound::Message(message));
+            } else if let Err(err) = result {
+                tracing::warn!(error = %err, "error handling async invocation");
+            }
+        });
+    }
+
+    fn handle_register_trigger(
+        &self,
+        id: String,
+        trigger_type: String,
+        function_path: String,
+        config: Value,
+    ) {
+        let handler = self
+            .inner
+            .trigger_types
+            .lock()
+            .unwrap()
+            .get(&trigger_type)
+            .map(|data| data.handler.clone());
+
+        let outbound = self.inner.outbound.clone();
+
+        tokio::spawn(async move {
+            let message = if let Some(handler) = handler {
+                let config = TriggerConfig {
+                    id: id.clone(),
+                    function_path: function_path.clone(),
+                    config,
+                };
+
+                match handler.register_trigger(config).await {
+                    Ok(()) => Message::TriggerRegistrationResult {
+                        id,
+                        trigger_type,
+                        function_path,
+                        error: None,
+                    },
+                    Err(err) => Message::TriggerRegistrationResult {
+                        id,
+                        trigger_type,
+                        function_path,
+                        error: Some(ErrorBody {
+                            code: "trigger_registration_failed".to_string(),
+                            message: err.to_string(),
+                        }),
+                    },
+                }
+            } else {
+                Message::TriggerRegistrationResult {
+                    id,
+                    trigger_type,
+                    function_path,
+                    error: Some(ErrorBody {
+                        code: "trigger_type_not_found".to_string(),
+                        message: "Trigger type not found".to_string(),
+                    }),
+                }
+            };
+
+            let _ = outbound.send(Outbound::Message(message));
+        });
+    }
 }
