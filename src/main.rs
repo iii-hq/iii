@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
 
     EngineBuilder::new()
         .config_file_or_default(&args.config)?
-        .address("127.0.0.1:49134")
+        .address("0.0.0.0:49134")
         .build()
         .await?
         .serve()

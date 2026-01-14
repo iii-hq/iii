@@ -143,7 +143,6 @@ impl BuiltinKvStore {
         loop {
             interval.tick().await;
             if !dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                tracing::debug!("No changes detected, skipping save to disk");
                 continue;
             }
             match Self::save_in_disk(storage.clone(), file_path).await {

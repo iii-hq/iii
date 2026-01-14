@@ -79,6 +79,27 @@ bridge.registerFunction({ function_path: 'math.add' }, async (input) => {
 })
 ```
 
+Rust (SDK in `packages/rust/iii`):
+
+```rust
+use iii_sdk::Bridge;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+  let bridge = Bridge::new("ws://127.0.0.1:49134");
+  bridge.connect().await?;
+
+  bridge.register_function("math.add", |input| async move {
+    let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
+    let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
+    Ok(json!({ "sum": a + b }))
+  });
+
+  Ok(())
+}
+```
+
 ## Expose an HTTP Endpoint (API trigger)
 
 The REST API module maps HTTP routes to functions via the `api` trigger type. Functions should
@@ -130,7 +151,7 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 - `src/protocol.rs` – WebSocket message schema.
 - `src/modules/` – Core modules (API, event, cron, streams, logging, shell).
 - `config.yaml` – Example module configuration.
-- `packages/node/*` and `packages/python/*` – SDKs and higher-level frameworks.
+- `packages/node/*`, `packages/python/*`, and `packages/rust/*` – SDKs and higher-level frameworks.
 - `examples/custom_event_adapter.rs` – Example of a custom module + adapter.
 
 ## Development
