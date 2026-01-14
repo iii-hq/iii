@@ -33,7 +33,6 @@ pub struct Trigger {
     pub function_path: String,
     pub config: Value,
     pub worker_id: Option<Uuid>,
-    pub trigger_index: usize,
 }
 
 // Only `id` is considered for Hash and Eq/PartialEq

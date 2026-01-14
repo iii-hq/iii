@@ -316,9 +316,7 @@ export class Bridge implements BridgeClient {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
     } else if (type === MessageType.FunctionsAvailable) {
       const { functions } = message as FunctionsAvailableMessage
-      for (const callback of this.functionsAvailableCallbacks) {
-        callback(functions)
-      }
+      this.functionsAvailableCallbacks.map((callback) => callback(functions))
     }
   }
 }
