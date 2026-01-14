@@ -126,6 +126,7 @@ export class Bridge implements BridgeClient {
     this.registerFunction({ function_path: `streams.set(${streamName})` }, stream.set.bind(stream))
     this.registerFunction({ function_path: `streams.delete(${streamName})` }, stream.delete.bind(stream))
     this.registerFunction({ function_path: `streams.getGroup(${streamName})` }, stream.getGroup.bind(stream))
+    this.registerFunction({ function_path: `streams.listGroups(${streamName})` }, stream.listGroups.bind(stream))
   }
 
   // private methods

@@ -126,6 +126,16 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         })
     }
 
+    async fn list_groups(&self, stream_name: &str) -> Vec<String> {
+        let prefix = format!("{}::", stream_name);
+        self.storage
+            .list_keys_with_prefix(&prefix)
+            .await
+            .into_iter()
+            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
+            .collect()
+    }
+
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
         self.pub_sub.subscribe(id, connection).await;
     }

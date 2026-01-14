@@ -47,6 +47,10 @@ export type StreamGetGroupInput = {
   group_id: string
 }
 
+export type StreamListGroupsInput = {
+  stream_name: string
+}
+
 export type StreamSetResult<TData> = {
   existed: boolean
   data?: TData
@@ -57,4 +61,5 @@ export interface IStream<TData> {
   set(input: StreamSetInput): Promise<StreamSetResult<TData> | null>
   delete(input: StreamDeleteInput): Promise<void>
   getGroup(input: StreamGetGroupInput): Promise<TData[]>
+  listGroups(input: StreamListGroupsInput): Promise<string[]>
 }
