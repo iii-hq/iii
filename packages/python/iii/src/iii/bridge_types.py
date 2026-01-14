@@ -18,8 +18,6 @@ class MessageType(str, Enum):
     UNREGISTER_TRIGGER = "unregistertrigger"
     UNREGISTER_TRIGGER_TYPE = "unregistertriggertype"
     TRIGGER_REGISTRATION_RESULT = "triggerregistrationresult"
-    EVALUATE_CONDITION = "evaluatecondition"
-    CONDITION_RESULT = "conditionresult"
 
 
 class RegisterTriggerTypeMessage(BaseModel):
@@ -62,7 +60,6 @@ class TriggerConfig(BaseModel):
 
     trigger_type: str
     config: Any
-    has_conditions: bool = False
 
 
 class RegisterTriggerMessage(BaseModel):
@@ -133,24 +130,6 @@ class InvocationResultMessage(BaseModel):
     type: MessageType = MessageType.INVOCATION_RESULT
 
 
-class EvaluateConditionMessage(BaseModel):
-    """Message for evaluating a condition."""
-
-    condition_id: str
-    trigger_id: str
-    trigger_metadata: Any
-    input_data: Any
-    type: MessageType = MessageType.EVALUATE_CONDITION
-
-
-class ConditionResultMessage(BaseModel):
-    """Message for condition evaluation result."""
-
-    condition_id: str
-    passed: bool
-    type: MessageType = MessageType.CONDITION_RESULT
-
-
 BridgeMessage = (
     RegisterFunctionMessage
     | InvokeFunctionMessage
@@ -161,6 +140,4 @@ BridgeMessage = (
     | UnregisterTriggerMessage
     | UnregisterTriggerTypeMessage
     | TriggerRegistrationResultMessage
-    | EvaluateConditionMessage
-    | ConditionResultMessage
 )

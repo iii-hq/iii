@@ -6,8 +6,6 @@ use uuid::Uuid;
 pub struct TriggerConfig {
     pub trigger_type: String,
     pub config: Value,
-    #[serde(default)]
-    pub has_conditions: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,16 +30,6 @@ pub enum Message {
     UnregisterTrigger {
         id: String,
         trigger_type: String,
-    },
-    EvaluateCondition {
-        condition_id: String,
-        trigger_id: String,
-        trigger_metadata: Value,
-        input_data: Value,
-    },
-    ConditionResult {
-        condition_id: String,
-        passed: bool,
     },
     RegisterFunction {
         function_path: String,

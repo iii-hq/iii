@@ -75,7 +75,7 @@ pub async fn dynamic_handler(
     let path_parameters: HashMap<String, String> =
         extract_path_params(&registered_path, actual_path);
 
-    if let Some(function_path) = api_handler
+    if let Some((function_path, condition_function_path)) = api_handler
         .get_router(method.as_str(), &registered_path)
         .await
     {
@@ -105,6 +105,49 @@ pub async fn dynamic_handler(
         );
 
         let api_request_value = serde_json::to_value(api_request).unwrap_or(serde_json::json!({}));
+
+        if let Some(condition_function_path) = condition_function_path.as_ref() {
+            tracing::debug!(
+                condition_function_path = %condition_function_path,
+                "Checking trigger conditions"
+            );
+
+            match engine
+                .invoke_function(condition_function_path, api_request_value.clone())
+                .await
+            {
+                Ok(Some(result)) => {
+                    if let Some(passed) = result.as_bool() {
+                        if !passed {
+                            tracing::debug!(
+                                function_path = %function_path,
+                                "Condition check failed, skipping handler"
+                            );
+                            return (StatusCode::OK, Json(json!({"skipped": true})))
+                                .into_response();
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        condition_function_path = %condition_function_path,
+                        "Condition function returned no result"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        condition_function_path = %condition_function_path,
+                        error = ?err,
+                        "Error invoking condition function"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "Condition check failed"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
 
         let func_result = engine
             .invoke_function(&function_path, api_request_value)

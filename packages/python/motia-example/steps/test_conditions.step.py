@@ -41,7 +41,7 @@ single_condition_config = StepConfig(
     triggers=[
         EventTrigger(
             subscribes=["order.created"],
-            conditions=[is_high_value],
+            condition=is_high_value,
         ),
     ],
     emits=["order.processed"],
@@ -56,13 +56,18 @@ async def single_condition_handler(input: TriggerInput[Any], ctx: FlowContext[An
 step_wrapper(single_condition_config, __file__, single_condition_handler)
 
 
+def all_premium_checks(input: TriggerInput[Any], ctx: FlowContext[Any], trigger: dict[str, Any]) -> bool:
+    """Combined check for premium orders."""
+    return is_high_value(input, ctx, trigger) and is_verified_user(input, ctx, trigger) and is_domestic(input, ctx, trigger)
+
+
 multiple_conditions_config = StepConfig(
     name="MultipleConditionsTest",
     description="Test multiple conditions (AND logic)",
     triggers=[
         EventTrigger(
             subscribes=["order.created"],
-            conditions=[is_high_value, is_verified_user, is_domestic],
+            condition=all_premium_checks,
         ),
     ],
     emits=["premium.order.processed"],
@@ -77,6 +82,11 @@ async def multiple_conditions_handler(input: TriggerInput[Any], ctx: FlowContext
 step_wrapper(multiple_conditions_config, __file__, multiple_conditions_handler)
 
 
+def api_premium_check(input: TriggerInput[Any], ctx: FlowContext[Any], trigger: dict[str, Any]) -> bool:
+    """Combined check for API premium orders."""
+    return is_high_value(input, ctx, trigger) and is_verified_user(input, ctx, trigger)
+
+
 api_with_conditions_config = StepConfig(
     name="ApiWithConditions",
     description="Test conditions on API trigger",
@@ -84,7 +94,7 @@ api_with_conditions_config = StepConfig(
         ApiTrigger(
             path="/orders/premium",
             method="POST",
-            conditions=[is_high_value, is_verified_user],
+            condition=api_premium_check,
         ),
     ],
     emits=[],
@@ -120,7 +130,7 @@ cron_with_condition_config = StepConfig(
     triggers=[
         CronTrigger(
             expression="*/5 * * * *",
-            conditions=[is_business_hours],
+            condition=is_business_hours,
         ),
     ],
     emits=[],
@@ -141,12 +151,12 @@ mixed_triggers_with_conditions_config = StepConfig(
     triggers=[
         EventTrigger(
             subscribes=["order.created"],
-            conditions=[is_high_value],
+            condition=is_high_value,
         ),
         ApiTrigger(
             path="/orders/manual",
             method="POST",
-            conditions=[is_verified_user],
+            condition=is_verified_user,
         ),
     ],
     emits=["order.processed"],

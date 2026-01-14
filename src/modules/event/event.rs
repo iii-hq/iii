@@ -82,8 +82,19 @@ impl TriggerRegistrator for EventCoreModule {
 
         Box::pin(async move {
             if !topic.is_empty() {
+                let condition_function_path = trigger
+                    .config
+                    .get("_condition_path")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string());
+
                 adapter
-                    .subscribe(&topic, &trigger.id, &trigger.function_path)
+                    .subscribe(
+                        &topic,
+                        &trigger.id,
+                        &trigger.function_path,
+                        condition_function_path,
+                    )
                     .await;
             } else {
                 tracing::warn!(

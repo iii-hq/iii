@@ -90,12 +90,22 @@ async def dual_trigger_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) 
 step_wrapper(dual_trigger_config, __file__, dual_trigger_handler)
 
 
+async def is_business_hours(
+    input: TriggerInput[Any], ctx: FlowContext[Any], trigger: dict[str, Any]
+) -> bool:
+    """Check if current time is business hours."""
+    from datetime import datetime
+
+    now = datetime.now()
+    return 9 <= now.hour < 17
+
+
 triple_trigger_config = StepConfig(
     name="TripleTrigger",
     description="Test triple trigger (event + API + cron)",
     triggers=[
         EventTrigger(subscribes=["test.triple"]),
-        ApiTrigger(path="/test/triple", method="POST", conditions=[is_business_hours]),
+        ApiTrigger(path="/test/triple", method="POST", condition=is_business_hours),
         CronTrigger(expression="0 */2 * * *"),
     ],
     emits=["test.triple.processed"],

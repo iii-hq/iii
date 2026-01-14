@@ -27,7 +27,6 @@ impl TriggerRegistrator for Worker {
                     triggers: vec![crate::protocol::TriggerConfig {
                         trigger_type: trigger.trigger_type,
                         config: trigger.config,
-                        has_conditions: trigger.has_conditions,
                     }],
                 }))
                 .await

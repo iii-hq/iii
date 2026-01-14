@@ -1,7 +1,6 @@
 import { type Data, WebSocket } from 'ws'
 import {
   type BridgeMessage,
-  type EvaluateConditionMessage,
   type FunctionMessage,
   type FunctionsAvailableMessage,
   type InvocationResultMessage,
@@ -25,7 +24,6 @@ import type {
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
   Trigger,
-  TriggerCondition,
 } from './types'
 
 export type FunctionsAvailableCallback = (functions: FunctionMessage[]) => void
@@ -37,7 +35,6 @@ export class Bridge implements BridgeClient {
   private invocations = new Map<string, Invocation>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
-  private triggerConditions = new Map<string, TriggerCondition[]>()
   private messagesToSend: BridgeMessage[] = []
   private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
 
@@ -70,11 +67,18 @@ export class Bridge implements BridgeClient {
   registerTrigger(input: RegisterTriggerInput): Trigger {
     const id = crypto.randomUUID()
   
-    const triggersConfig: TriggerConfig[] = input.triggers.map((trigger) => ({
-      trigger_type: trigger.trigger_type,
-      config: trigger.config,
-      has_conditions: Boolean(trigger.conditions?.length),
-    }))
+    const triggersConfig: TriggerConfig[] = input.triggers.map((trigger, index) => {
+      const conditionFunctionPath = trigger.condition
+        ? `${input.function_path}.conditions:${index}`
+        : undefined
+
+      return {
+        trigger_type: trigger.trigger_type,
+        config: conditionFunctionPath
+          ? { ...trigger.config, _condition_path: conditionFunctionPath }
+          : trigger.config,
+      }
+    })
   
     const message: Omit<RegisterTriggerMessage, 'type'> = {
       id,
@@ -86,19 +90,21 @@ export class Bridge implements BridgeClient {
   
     this.triggers.set(id, { ...message, type: MessageType.RegisterTrigger })
   
-    input.triggers
-      .filter((trigger) => trigger.conditions?.length)
-      .map((trigger) => this.triggerConditions.set(`${id}:${trigger.trigger_type}`, trigger.conditions!))
-  
+    input.triggers.forEach((trigger, index) => {
+      if (trigger.condition) {
+        const condition = trigger.condition
+        const conditionFunctionPath = `${input.function_path}.conditions:${index}`
+        this.registerFunction(
+          { function_path: conditionFunctionPath },
+          async (inputData) => condition(inputData, {}, { type: trigger.trigger_type, index })
+        )
+      }
+    })
 
     return {
       unregister: () => {
         this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
         this.triggers.delete(id)
-  
-        input.triggers.forEach(t => {
-          this.triggerConditions.delete(JSON.stringify([id, t.trigger_type]))
-        })
       },
     }
   }
@@ -183,13 +189,23 @@ export class Bridge implements BridgeClient {
     this.clearInterval()
     this.ws?.on('message', this.onMessage.bind(this))
 
-    this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
-    this.services.forEach((service) => this.sendMessage(MessageType.RegisterService, service, true))
-    this.functions.forEach(({ message }) => this.sendMessage(MessageType.RegisterFunction, message, true))
-    this.triggers.forEach((trigger) => this.sendMessage(MessageType.RegisterTrigger, trigger, true))
+    this.triggerTypes.forEach(({ message }) => {
+      this.sendMessage(MessageType.RegisterTriggerType, message, true)
+    })
+    this.services.forEach((service) => {
+      this.sendMessage(MessageType.RegisterService, service, true)
+    })
+    this.functions.forEach(({ message }) => {
+      this.sendMessage(MessageType.RegisterFunction, message, true)
+    })
+    this.triggers.forEach((trigger) => {
+      this.sendMessage(MessageType.RegisterTrigger, trigger, true)
+    })
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
-      .forEach((message) => this.ws?.send(JSON.stringify(message)))
+      .forEach((message) => {
+        this.ws?.send(JSON.stringify(message))
+      })
   }
 
   private isOpen() {
@@ -204,7 +220,7 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  private onInvocationResult(invocation_id: string, result: any, error: any) {
+  private onInvocationResult(invocation_id: string, result: unknown, error: unknown) {
     const invocation = this.invocations.get(invocation_id)
 
     if (invocation) {
@@ -287,26 +303,6 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  private async onEvaluateCondition(message: EvaluateConditionMessage) {
-    const { condition_id, trigger_id, trigger_metadata, input_data } = message
-    const conditions = this.triggerConditions.get(trigger_id) || []
-
-    const results = await Promise.all(conditions.map(async (condition: TriggerCondition) => {
-      return condition(
-        {
-          trigger: trigger_metadata,
-          request: input_data.request || null,
-          data: input_data.data || null,
-        },
-        {},
-        { type: trigger_metadata.type, index: trigger_metadata.index || 0 }
-      )
-    }))
-    const passed = results.every((result) => result)
-
-    this.sendMessage(MessageType.ConditionResult, { condition_id, passed })
-  }
-
   private onMessage(socketMessage: Data) {
     const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
 
@@ -320,9 +316,9 @@ export class Bridge implements BridgeClient {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
     } else if (type === MessageType.FunctionsAvailable) {
       const { functions } = message as FunctionsAvailableMessage
-      this.functionsAvailableCallbacks.forEach((callback) => callback(functions))
-    } else if (type === MessageType.EvaluateCondition) {
-      this.onEvaluateCondition(message as EvaluateConditionMessage)
+      for (const callback of this.functionsAvailableCallbacks) {
+        callback(functions)
+      }
     }
   }
 }

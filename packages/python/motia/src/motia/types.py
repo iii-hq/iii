@@ -145,7 +145,7 @@ class EventTrigger(BaseModel):
 
     type: Literal["event"] = "event"
     subscribes: list[str]
-    conditions: list[TriggerCondition] | None = None
+    condition: TriggerCondition | None = None
 
 
 class ApiTrigger(BaseModel):
@@ -156,7 +156,7 @@ class ApiTrigger(BaseModel):
     type: Literal["api"] = "api"
     path: str
     method: ApiRouteMethod
-    conditions: list[TriggerCondition] | None = None
+    condition: TriggerCondition | None = None
 
 
 class CronTrigger(BaseModel):
@@ -166,7 +166,7 @@ class CronTrigger(BaseModel):
 
     type: Literal["cron"] = "cron"
     expression: str
-    conditions: list[TriggerCondition] | None = None
+    condition: TriggerCondition | None = None
 
 
 TriggerConfig = EventTrigger | ApiTrigger | CronTrigger

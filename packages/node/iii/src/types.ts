@@ -28,7 +28,7 @@ export type RemoteTriggerTypeData = {
 export type TriggerConfigInput = {
   trigger_type: string
   config: Record<string, any>
-  conditions?: TriggerCondition[]
+  condition?: TriggerCondition
 }
 
 export type RegisterTriggerInput = {

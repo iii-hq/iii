@@ -240,7 +240,6 @@ impl Engine {
                             function_path: function_path.clone(),
                             config: trigger_config.config.clone(),
                             worker_id: Some(worker.id),
-                            has_conditions: trigger_config.has_conditions,
                             trigger_index: index,
                         })
                         .await;
@@ -442,30 +441,6 @@ impl Engine {
                 Ok(())
             }
             Message::Pong => Ok(()),
-            Message::EvaluateCondition {
-                condition_id,
-                trigger_id,
-                trigger_metadata: _,
-                input_data: _,
-            } => {
-                tracing::debug!(
-                    condition_id = %condition_id,
-                    trigger_id = %trigger_id,
-                    "EvaluateCondition"
-                );
-                Ok(())
-            }
-            Message::ConditionResult {
-                condition_id,
-                passed,
-            } => {
-                tracing::debug!(
-                    condition_id = %condition_id,
-                    passed = %passed,
-                    "ConditionResult"
-                );
-                Ok(())
-            }
         }
     }
 

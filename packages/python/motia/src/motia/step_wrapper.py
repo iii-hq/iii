@@ -54,24 +54,6 @@ def _compose_middleware(
     return composed
 
 
-async def _evaluate_conditions(
-    conditions: list[TriggerCondition] | None,
-    trigger_input: TriggerInput[Any],
-    ctx: FlowContext[Any],
-    trigger_info: dict[str, Any],
-) -> bool:
-    """Evaluate all conditions. Returns True if all pass, False otherwise."""
-    if not conditions:
-        return True
-
-    for condition in conditions:
-        result = condition(trigger_input, ctx, trigger_info)
-        if inspect.iscoroutine(result):
-            result = await result
-        if not result:
-            return False
-
-    return True
 
 
 def _trigger_to_engine_config(trigger: TriggerConfig) -> dict[str, Any]:
@@ -145,17 +127,6 @@ def step_wrapper(
                     data=motia_req.body,
                 )
 
-                if _trigger.conditions:
-                    passed = await _evaluate_conditions(
-                        _trigger.conditions, trigger_input, context, trigger_info
-                    )
-                    if not passed:
-                        return {
-                            "status_code": 200,
-                            "headers": {},
-                            "body": {"skipped": True, "reason": "conditions_not_met"},
-                        }
-
                 middlewares = getattr(step.config, "middleware", None) or []
 
                 if middlewares:
@@ -221,18 +192,26 @@ def step_wrapper(
                         data=req,
                     )
 
-                if _trigger.conditions:
-                    passed = await _evaluate_conditions(
-                        _trigger.conditions, trigger_input, context, trigger_info
-                    )
-                    if not passed:
-                        return None
-
                 return await handler(trigger_input, context)
 
             bridge.register_function(function_path, event_handler)
 
         engine_config = _trigger_to_engine_config(trigger)
+        
+        if trigger.condition:
+            condition_function_path = f"{function_path}.conditions:{trigger_index}"
+            engine_config["_condition_path"] = condition_function_path
+            
+            async def condition_handler(
+                input_data: Any, _trigger=trigger, _trigger_index=trigger_index
+            ) -> bool:
+                result = _trigger.condition(input_data, {}, {"type": _trigger.type, "index": _trigger_index})
+                if inspect.iscoroutine(result):
+                    result = await result
+                return result
+            
+            bridge.register_function(condition_function_path, condition_handler)
+        
         bridge.register_trigger(
             trigger_type=trigger.type,
             function_path=function_path,
