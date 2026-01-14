@@ -74,10 +74,11 @@ pub async fn dynamic_handler(
     let path_parameters: HashMap<String, String> =
         extract_path_params(&registered_path, actual_path);
 
-    if let Some(function_path) = api_handler
+    if let Some(path_router) = api_handler
         .get_router(method.as_str(), &registered_path)
         .await
     {
+        let function_path = path_router.function_path.clone();
         let api_request = APIrequest::new(
             query_params.clone(),
             path_parameters.clone(),
@@ -88,6 +89,29 @@ pub async fn dynamic_handler(
         );
 
         let api_request_value = serde_json::to_value(api_request).unwrap_or(serde_json::json!({}));
+
+        if !path_router.condition_check_function.is_empty() {
+            let result = engine
+                .invoke_function(
+                    &path_router.condition_check_function,
+                    api_request_value.clone(),
+                )
+                .await;
+            match result {
+                Ok(result) => {
+                    let result = result.unwrap_or(json!({}));
+                    let status_code = result
+                        .get("status_code")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(200) as u16;
+                }
+                Err(err) => {
+                    tracing::error!(error = ?err, "Failed to invoke condition check function");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+                        .into_response();
+                }
+            }
+        }
 
         let func_result = engine
             .invoke_function(&function_path, api_request_value)

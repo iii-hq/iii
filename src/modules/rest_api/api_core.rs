@@ -28,19 +28,26 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathRouter {
     pub http_path: String,
     pub http_method: String,
     pub function_path: String,
+    pub condition_check_function: String,
 }
 
 impl PathRouter {
-    pub fn new(http_path: String, http_method: String, function_path: String) -> Self {
+    pub fn new(
+        http_path: String,
+        http_method: String,
+        function_path: String,
+        condition_check_function: String,
+    ) -> Self {
         Self {
             http_path,
             http_method,
             function_path,
+            condition_check_function,
         }
     }
 }
@@ -270,7 +277,7 @@ impl RestApiCoreModule {
         cors.allow_headers(HTTP_Any)
     }
 
-    pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
+    pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<PathRouter> {
         let method = http_method.to_uppercase();
         let http_path = if http_path.starts_with('/') {
             tracing::debug!("Looking up router for path with leading slash");
@@ -287,7 +294,8 @@ impl RestApiCoreModule {
         tracing::debug!("Looking up router for key: {}", key);
         let routers = self.routers_registry.read().await;
         let router = routers.get(&key);
-        router.map(|r| r.function_path.clone())
+
+        router.map(|r| r.clone())
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
@@ -337,6 +345,13 @@ impl TriggerRegistrator for RestApiCoreModule {
         let adapter = self.clone();
 
         Box::pin(async move {
+            let condition_check_function = trigger
+                .config
+                .get("condition_check_function")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+
             let api_path = trigger
                 .config
                 .get("api_path")
@@ -353,9 +368,11 @@ impl TriggerRegistrator for RestApiCoreModule {
                 api_path.to_string(),
                 http_method.to_string(),
                 trigger.function_path.clone(),
+                condition_check_function.to_string(),
             );
 
             adapter.register_router(router).await?;
+
             Ok(())
         })
     }
