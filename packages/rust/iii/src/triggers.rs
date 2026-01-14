@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::Value;
-use std::sync::Arc;
 
 use crate::error::BridgeError;
 
@@ -29,5 +30,28 @@ impl Trigger {
 
     pub fn unregister(&self) {
         (self.unregister_fn)();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    #[test]
+    fn trigger_unregister_calls_closure() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called_ref = called.clone();
+        let trigger = Trigger::new(Arc::new(move || {
+            called_ref.store(true, Ordering::SeqCst);
+        }));
+
+        trigger.unregister();
+
+        assert!(called.load(Ordering::SeqCst));
     }
 }

@@ -174,3 +174,37 @@ pub struct ErrorBody {
     pub code: String,
     pub message: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_function_to_message_and_serializes_type() {
+        let msg = RegisterFunctionMessage {
+            function_path: "functions.echo".to_string(),
+            description: Some("Echo function".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let message = msg.to_message();
+        match &message {
+            Message::RegisterFunction {
+                function_path,
+                description,
+                ..
+            } => {
+                assert_eq!(function_path, "functions.echo");
+                assert_eq!(description.as_deref(), Some("Echo function"));
+            }
+            _ => panic!("unexpected message variant"),
+        }
+
+        let serialized = serde_json::to_value(&message).unwrap();
+        assert_eq!(serialized["type"], "registerfunction");
+        assert_eq!(serialized["function_path"], "functions.echo");
+        assert_eq!(serialized["description"], "Echo function");
+    }
+}

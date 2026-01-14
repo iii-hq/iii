@@ -726,3 +726,37 @@ impl Bridge {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn register_trigger_unregister_removes_entry() {
+        let bridge = Bridge::new("ws://localhost:1234");
+        let trigger = bridge.register_trigger("demo", "functions.echo", json!({ "foo": "bar" }));
+
+        assert_eq!(bridge.inner.triggers.lock().unwrap().len(), 1);
+
+        trigger.unregister();
+
+        assert_eq!(bridge.inner.triggers.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn invoke_function_times_out_and_clears_pending() {
+        let bridge = Bridge::new("ws://localhost:1234");
+        let result = bridge
+            .invoke_function_with_timeout(
+                "functions.echo",
+                json!({ "a": 1 }),
+                Duration::from_millis(10),
+            )
+            .await;
+
+        assert!(matches!(result, Err(BridgeError::Timeout)));
+        assert!(bridge.inner.pending.lock().unwrap().is_empty());
+    }
+}
