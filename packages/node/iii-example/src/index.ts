@@ -1,15 +1,12 @@
-import { useApi, useFunctionsAvailable, useOnLog } from './hooks'
+import { useApi } from './hooks'
+import { state } from './state'
 import { streams } from './streams'
 
-useFunctionsAvailable((functions) => {
-  console.log('--------------------------------')
-  console.log('Functions available:', functions)
-  console.log('--------------------------------')
-})
-
-useOnLog({ level: 'all', description: 'Monitor error logs' }, async (log) => {
-  console.log('[Log Event]', log)
-})
+// useFunctionsAvailable((functions) => {
+//   console.log('--------------------------------')
+//   console.log('Functions available:', functions)
+//   console.log('--------------------------------')
+// })
 
 useApi(
   { api_path: 'todo', http_method: 'POST', description: 'Create a new todo', metadata: { tags: ['todo'] } },
@@ -85,3 +82,34 @@ useApi(
     return { status_code: 200, body: todo, headers: { 'Content-Type': 'application/json' } }
   },
 )
+
+useApi({ api_path: 'state', http_method: 'POST', description: 'Create a new todo' }, async (req, { logger }) => {
+  logger.info('Creating new todo', { body: req.body })
+
+  const { description, dueDate } = req.body
+  const todoId = `todo-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+
+  if (!description) {
+    return { status_code: 400, body: { error: 'Description is required' } }
+  }
+
+  const newTodo = {
+    id: todoId,
+    description,
+    createdAt: new Date().toISOString(),
+    dueDate: dueDate,
+    completedAt: undefined,
+  }
+  const todo = await state.set('todo', todoId, newTodo)
+
+  return { status_code: 201, body: todo, headers: { 'Content-Type': 'application/json' } }
+})
+
+useApi({ api_path: 'state/:id', http_method: 'GET', description: 'Create a new todo' }, async (req, { logger }) => {
+  logger.info('Getting todo', { ...req.path_params })
+
+  const todoId = req.path_params.id
+  const todo = await state.get('todo', todoId)
+
+  return { status_code: 200, body: todo, headers: { 'Content-Type': 'application/json' } }
+})

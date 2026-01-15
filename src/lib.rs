@@ -20,6 +20,7 @@ pub mod modules {
     pub mod registry;
     pub mod rest_api;
     pub mod shell;
+    pub mod state;
     pub mod streams;
 }
 

@@ -8,6 +8,13 @@ modules:
         config:
           redis_url: redis://localhost:6379
 
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
   - class: modules::api::RestApiModule
     config:
       port: 3111

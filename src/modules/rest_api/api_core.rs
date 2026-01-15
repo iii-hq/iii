@@ -172,7 +172,14 @@ impl RestApiCoreModule {
             })
             .collect::<Vec<String>>()
             .join("/");
-        tracing::debug!("Converted path from :{} to : {}", path, axum_path);
+
+        if axum_path != *path {
+            tracing::debug!(
+                "Converted path from {} to {}",
+                path.purple(),
+                axum_path.purple()
+            );
+        }
 
         //ensure the path starts with a leading slash
         if !axum_path.starts_with('/') {
@@ -295,7 +302,7 @@ impl RestApiCoreModule {
         let http_path = router.http_path.clone();
         let method = router.http_method.to_uppercase();
         let key = format!("{}:{}", method, router.http_path);
-        tracing::debug!("Registering router: {}", key);
+        tracing::debug!("Registering router {}", key.purple());
         self.routers_registry.write().await.insert(key, router);
 
         tracing::info!(
@@ -317,7 +324,7 @@ impl RestApiCoreModule {
         http_path: &str,
     ) -> anyhow::Result<bool> {
         let key = format!("{}:{}", http_method.to_uppercase(), http_path);
-        tracing::debug!("Unregistering router: {}", key);
+        tracing::debug!("Unregistering router {}", key.purple());
         let removed = self.routers_registry.write().await.remove(&key).is_some();
 
         if removed {
