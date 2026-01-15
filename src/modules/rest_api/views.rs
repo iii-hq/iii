@@ -123,7 +123,7 @@ pub async fn dynamic_handler(
                                 function_path = %function_path,
                                 "Condition check failed, skipping handler"
                             );
-                            return (StatusCode::OK, Json(json!({"skipped": true})))
+                            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "Request condition not met", "skipped": true})))
                                 .into_response();
                         }
                     }

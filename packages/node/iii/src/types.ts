@@ -115,42 +115,34 @@ export type Trigger = {
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS' | 'HEAD'
 
-export type TriggerInfo = {
-  type: string
-  index: number
-}
-
 export type TriggerApiMetadata = {
   type: 'api'
-  index: number
+  index?: number
   path?: string
   method?: string
 }
 
 export type TriggerEventMetadata = {
   type: 'event'
-  index: number
+  index?: number
   topic?: string
 }
 
 export type TriggerCronMetadata = {
   type: 'cron'
-  index: number
+  index?: number
   expression?: string
 }
 
 export type TriggerMetadata = TriggerApiMetadata | TriggerEventMetadata | TriggerCronMetadata
 
 export type TriggerInput<TBody = any> = {
-  trigger: TriggerMetadata
-  request: ApiRequest<TBody> | null
-  data: TBody | null
+  data: TBody | ApiRequest<TBody> | null
 }
 
 export type TriggerCondition<TInput = any> = (
   input: TriggerInput<TInput>,
-  ctx: any,
-  trigger: TriggerInfo
+  ctx: any & { trigger: TriggerMetadata }
 ) => boolean | Promise<boolean>
 
 export type ApiRequest<TBody = unknown> = {

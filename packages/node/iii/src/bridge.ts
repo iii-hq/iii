@@ -82,7 +82,7 @@ export class Bridge implements BridgeClient {
           { function_path: conditionFunctionPath },
           async (inputData) => {
             const context = getContext()
-            return condition(inputData, context, { type: trigger.trigger_type, index })
+            return condition(inputData, { ...context, trigger: { type: trigger.trigger_type, index, ...trigger.config } })
           }
         )
       }
