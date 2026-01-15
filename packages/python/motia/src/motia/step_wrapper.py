@@ -94,9 +94,14 @@ def step_wrapper(
             async def api_handler(
                 req: dict[str, Any],
                 _trigger=trigger,
-                _trigger_index=trigger_index,
             ) -> dict[str, Any]:
                 context_data = get_context()
+
+                trigger_metadata = TriggerMetadata(
+                    type="api",
+                    path=req.get("path"),
+                    method=req.get("method"),
+                )
 
                 async def emit(event: Any) -> None:
                     await bridge.invoke_function("emit", {"event": event})
@@ -107,24 +112,14 @@ def step_wrapper(
                     state=state,
                     logger=context_data.logger,
                     streams=streams,
+                    trigger=trigger_metadata,
                 )
 
-                motia_req = ApiRequest(
+                motia_request = ApiRequest(
                     path_params=req.get("path_params", {}),
                     query_params=req.get("query_params", {}),
                     body=req.get("body"),
                     headers=req.get("headers", {}),
-                )
-
-                trigger_input = TriggerInput(
-                    trigger=TriggerMetadata(
-                        type="api",
-                        index=_trigger_index,
-                        path=_trigger.path,
-                        method=_trigger.method,
-                    ),
-                    request=motia_req,
-                    data=motia_req.body,
                 )
 
                 middlewares = getattr(step.config, "middleware", None) or []
@@ -132,10 +127,10 @@ def step_wrapper(
                 if middlewares:
                     composed = _compose_middleware(middlewares)
                     response: ApiResponse[Any] = await composed(
-                        trigger_input, context, lambda: handler(trigger_input, context)
+                        motia_request, context, lambda: handler(motia_request, context)
                     )
                 else:
-                    response = await handler(trigger_input, context)
+                    response = await handler(motia_request, context)
 
                 return {
                     "status_code": response.status,
@@ -146,10 +141,21 @@ def step_wrapper(
             bridge.register_function(function_path, api_handler)
         else:
 
-            async def event_handler(
-                req: Any, _trigger=trigger, _trigger_index=trigger_index
-            ) -> Any:
+            async def event_handler(req: Any, _trigger=trigger) -> Any:
                 context_data = get_context()
+
+                if isinstance(_trigger, EventTrigger):
+                    trigger_metadata = TriggerMetadata(
+                        type="event",
+                        topic=_trigger.subscribes[0] if _trigger.subscribes else None,
+                    )
+                elif isinstance(_trigger, CronTrigger):
+                    trigger_metadata = TriggerMetadata(
+                        type="cron",
+                        expression=_trigger.expression,
+                    )
+                else:
+                    trigger_metadata = TriggerMetadata(type="event")
 
                 async def emit(event: Any) -> None:
                     await bridge.invoke_function("emit", {"event": event})
@@ -160,39 +166,11 @@ def step_wrapper(
                     state=state,
                     logger=context_data.logger,
                     streams=streams,
+                    trigger=trigger_metadata,
                 )
 
-                if isinstance(_trigger, EventTrigger):
-                    trigger_input = TriggerInput(
-                        trigger=TriggerMetadata(
-                            type="event",
-                            index=_trigger_index,
-                            topic=_trigger.subscribes[0] if _trigger.subscribes else None,
-                        ),
-                        request=None,
-                        data=req,
-                    )
-                elif isinstance(_trigger, CronTrigger):
-                    trigger_input = TriggerInput(
-                        trigger=TriggerMetadata(
-                            type="cron",
-                            index=_trigger_index,
-                            expression=_trigger.expression,
-                        ),
-                        request=None,
-                        data={},
-                    )
-                else:
-                    trigger_input = TriggerInput(
-                        trigger=TriggerMetadata(
-                            type="event",
-                            index=_trigger_index,
-                        ),
-                        request=None,
-                        data=req,
-                    )
-
-                return await handler(trigger_input, context)
+                input_data = None if isinstance(_trigger, CronTrigger) else req
+                return await handler(input_data, context)
 
             bridge.register_function(function_path, event_handler)
 
@@ -202,10 +180,24 @@ def step_wrapper(
             condition_function_path = f"{function_path}.conditions:{trigger_index}"
             engine_config["_condition_path"] = condition_function_path
             
-            async def condition_handler(
-                input_data: Any, _trigger=trigger, _trigger_index=trigger_index
-            ) -> bool:
-                result = _trigger.condition(input_data, {}, {"type": _trigger.type, "index": _trigger_index})
+            async def condition_handler(input_data: Any, _trigger=trigger) -> bool:
+                context_data = get_context()
+                
+                trigger_metadata = TriggerMetadata(type=_trigger.type)
+                
+                async def emit(event: Any) -> None:
+                    pass
+                
+                context = FlowContext(
+                    emit=emit,
+                    trace_id="",
+                    state=state,
+                    logger=context_data.logger,
+                    streams=streams,
+                    trigger=trigger_metadata,
+                )
+                
+                result = _trigger.condition(input_data, context)
                 if inspect.iscoroutine(result):
                     result = await result
                 return result

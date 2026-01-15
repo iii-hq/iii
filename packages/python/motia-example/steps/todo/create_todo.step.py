@@ -5,7 +5,7 @@ import string
 from datetime import datetime
 from typing import Any
 
-from motia import ApiResponse, ApiTrigger, FlowContext, StepConfig, Stream, TriggerInput, step_wrapper
+from motia import ApiRequest, ApiResponse, ApiTrigger, FlowContext, StepConfig, Stream, step_wrapper
 
 todo_stream: Stream[dict[str, Any]] = Stream("todo")
 
@@ -21,11 +21,11 @@ config = StepConfig(
 )
 
 
-async def handler(input: TriggerInput[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def handler(request: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle create todo request."""
-    ctx.logger.info("Creating new todo", input.data)
+    ctx.logger.info("Creating new todo", request.body)
 
-    body = input.data or {}
+    body = request.body or {}
     description = body.get("description")
     due_date = body.get("due_date")
 

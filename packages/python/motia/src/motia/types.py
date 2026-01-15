@@ -38,6 +38,7 @@ class FlowContext(BaseModel, Generic[TEmitData]):
     state: Any  # InternalStateManager
     logger: Any  # Logger
     streams: dict[str, Stream[Any]] = Field(default_factory=dict)
+    trigger: "TriggerMetadata"
 
 
 EventHandler = Callable[[Any, FlowContext[Any]], Awaitable[None]]
@@ -115,7 +116,7 @@ class TriggerMetadata(BaseModel):
     """Metadata about the trigger that fired."""
 
     type: Literal["api", "event", "cron"]
-    index: int
+    index: int | None = None
 
     path: str | None = None
     method: str | None = None
@@ -125,17 +126,9 @@ class TriggerMetadata(BaseModel):
     expression: str | None = None
 
 
-class TriggerInput(BaseModel, Generic[TBody]):
-    """Unified input for all trigger types."""
+TriggerInput = Any
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    trigger: TriggerMetadata
-    request: ApiRequest[TBody] | None = None
-    data: Any = None
-
-
-TriggerCondition = Callable[[TriggerInput[Any], FlowContext[Any], dict[str, Any]], bool | Awaitable[bool]]
+TriggerCondition = Callable[[Any, FlowContext[Any]], bool | Awaitable[bool]]
 
 
 class EventTrigger(BaseModel):

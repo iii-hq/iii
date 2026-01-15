@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from motia import ApiResponse, ApiTrigger, FlowContext, StepConfig, Stream, TriggerInput, step_wrapper
+from motia import ApiRequest, ApiResponse, ApiTrigger, FlowContext, StepConfig, Stream, step_wrapper
 
 todo_stream: Stream[dict[str, Any]] = Stream("todo")
 
@@ -18,9 +18,9 @@ config = StepConfig(
 )
 
 
-async def handler(input: TriggerInput[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def handler(request: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle delete todo request."""
-    body = input.data or {}
+    body = request.body or {}
     todo_id = body.get("todo_id")
 
     ctx.logger.info("Deleting todo", body)

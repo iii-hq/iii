@@ -274,7 +274,7 @@ class Bridge:
                 
                 async def condition_handler(input_data: Any) -> bool:
                     context = get_context()
-                    return await condition(input_data, context, {"type": trigger_type, "index": index})
+                    return await condition(input_data, context)
                 
                 self.register_function(condition_function_path, condition_handler)
 

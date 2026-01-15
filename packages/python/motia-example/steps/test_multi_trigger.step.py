@@ -3,13 +3,13 @@
 from typing import Any
 
 from motia import (
+    ApiRequest,
     ApiResponse,
     ApiTrigger,
     CronTrigger,
     EventTrigger,
     FlowContext,
     StepConfig,
-    TriggerInput,
     step_wrapper,
 )
 
@@ -23,9 +23,9 @@ single_event_config = StepConfig(
 )
 
 
-async def single_event_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> None:
+async def single_event_handler(input: Any, ctx: FlowContext[Any]) -> None:
     """Handle single event trigger."""
-    ctx.logger.info("Single event trigger fired", {"data": input.data})
+    ctx.logger.info("Single event trigger fired", {"data": input})
 
 
 step_wrapper(single_event_config, __file__, single_event_handler)
@@ -41,7 +41,7 @@ single_api_config = StepConfig(
 )
 
 
-async def single_api_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def single_api_handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle single API trigger."""
     ctx.logger.info("Single API trigger fired")
     return ApiResponse(status=200, body={"message": "Single API trigger works"})
@@ -60,7 +60,7 @@ single_cron_config = StepConfig(
 )
 
 
-async def single_cron_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> None:
+async def single_cron_handler(input: None, ctx: FlowContext[Any]) -> None:
     """Handle single cron trigger."""
     ctx.logger.info("Single cron trigger fired")
 
@@ -79,10 +79,11 @@ dual_trigger_config = StepConfig(
 )
 
 
-async def dual_trigger_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> Any:
+async def dual_trigger_handler(input: Any, ctx: FlowContext[Any]) -> Any:
     """Handle dual trigger."""
-    ctx.logger.info("Dual trigger fired", {"data": input.data, "trigger": input.trigger.type})
-    if input.trigger.type == "api":
+    ctx.logger.info("Dual trigger fired", {"data": input, "trigger": ctx.trigger.type})
+    if ctx.trigger.type == "api":
+        request = input
         return ApiResponse(status=200, body={"message": "Dual trigger via API"})
     return None
 
@@ -90,9 +91,7 @@ async def dual_trigger_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) 
 step_wrapper(dual_trigger_config, __file__, dual_trigger_handler)
 
 
-async def is_business_hours(
-    input: TriggerInput[Any], ctx: FlowContext[Any], trigger: dict[str, Any]
-) -> bool:
+async def is_business_hours(input: Any, ctx: FlowContext[Any]) -> bool:
     """Check if current time is business hours."""
     from datetime import datetime
 
@@ -112,10 +111,10 @@ triple_trigger_config = StepConfig(
 )
 
 
-async def triple_trigger_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> Any:
+async def triple_trigger_handler(input: Any, ctx: FlowContext[Any]) -> Any:
     """Handle triple trigger."""
-    ctx.logger.info("Triple trigger fired", {"data": input.data, "trigger": input.trigger.type})
-    if input.trigger.type == "api":
+    ctx.logger.info("Triple trigger fired", {"data": input, "trigger": ctx.trigger.type})
+    if ctx.trigger.type == "api":
         return ApiResponse(status=200, body={"message": "Triple trigger via API"})
     return None
 
@@ -135,9 +134,9 @@ multiple_events_config = StepConfig(
 )
 
 
-async def multiple_events_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> None:
+async def multiple_events_handler(input: Any, ctx: FlowContext[Any]) -> None:
     """Handle multiple event triggers."""
-    ctx.logger.info("Multiple events trigger fired", {"data": input.data, "topic": input.trigger.topic})
+    ctx.logger.info("Multiple events trigger fired", {"data": input, "topic": ctx.trigger.topic})
 
 
 step_wrapper(multiple_events_config, __file__, multiple_events_handler)
@@ -155,9 +154,9 @@ multiple_apis_config = StepConfig(
 )
 
 
-async def multiple_apis_handler(input: TriggerInput[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def multiple_apis_handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle multiple API triggers."""
-    ctx.logger.info("Multiple APIs trigger fired", {"path": input.trigger.path, "method": input.trigger.method})
+    ctx.logger.info("Multiple APIs trigger fired", {"path": ctx.trigger.path, "method": ctx.trigger.method})
     return ApiResponse(status=200, body={"message": "Multiple APIs trigger works"})
 
 
