@@ -174,6 +174,7 @@ impl SocketStreamConnection {
                         id: id.clone(),
                     },
                 );
+                self.stream_module.notify_join(data).await;
 
                 if let Some(id) = id {
                     let data = self

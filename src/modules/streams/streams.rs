@@ -29,7 +29,7 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamListGroupsInput, StreamSetInput,
+                StreamGetInput, StreamIncomingMessageData, StreamListGroupsInput, StreamSetInput,
             },
             trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
             utils::{headers_to_map, query_to_multi_map},
@@ -217,6 +217,12 @@ impl ConfigurableModule for StreamCoreModule {
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
         config.adapter.as_ref().and_then(|a| a.config.clone())
+    }
+}
+
+impl StreamCoreModule {
+    pub async fn notify_join(&self, data: &StreamIncomingMessageData) {
+        self.adapter.notify_join(data).await;
     }
 }
 

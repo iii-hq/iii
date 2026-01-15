@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod kv_store;
 pub mod redis_adapter;
 
@@ -6,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::modules::streams::StreamWrapperMessage;
+use crate::modules::streams::{StreamWrapperMessage, structs::StreamIncomingMessageData};
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
@@ -21,6 +22,8 @@ pub trait StreamAdapter: Send + Sync {
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>);
     async fn unsubscribe(&self, id: String);
     async fn watch_events(&self);
+
+    async fn notify_join(&self, _data: &StreamIncomingMessageData) {}
 
     async fn destroy(&self) -> anyhow::Result<()>;
 }

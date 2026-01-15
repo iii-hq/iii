@@ -4,10 +4,15 @@ modules:
       port: ${STREAMS_PORT:31112}
       host: 127.0.0.1
       adapter:
-        class: modules::streams::adapters::KvStore
+        # class: modules::streams::adapters::KvStore
+        # config:
+        #   store_method: file_based # Options: in_memory, file_based
+        #   file_path: ./data/streams_store.db
+
+        class: modules::streams::adapters::BridgeAdapter
         config:
-          store_method: file_based # Options: in_memory, file_based
-          file_path: ./data/streams_store.db
+          url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
+          stream_ws_url: ${REMOTE_STREAM_URL:ws://192.168.1.200:31112/}
         # class: modules::streams::adapters::RedisAdapter
         # config:
         #   redis_url: redis://localhost:6379
@@ -46,38 +51,38 @@ modules:
       #     file_path: app.log
       #     save_interval_ms: 5000
 
-  - class: modules::event::EventModule
-    config:
-      adapter:
-        class: modules::event::RedisAdapter
-        config:
-          redis_url: redis://localhost:6379
+  # - class: modules::event::EventModule
+  #   config:
+  #     adapter:
+  #       class: modules::event::RedisAdapter
+  #       config:
+  #         redis_url: redis://localhost:6379
 
-  - class: modules::cron::CronModule
-    config:
-      adapter:
-        class: modules::cron::RedisCronAdapter
-        config:
-          redis_url: redis://localhost:6379
+  # - class: modules::cron::CronModule
+  #   config:
+  #     adapter:
+  #       class: modules::cron::RedisCronAdapter
+  #       config:
+  #         redis_url: redis://localhost:6379
 
-  - class: modules::bridge_client::BridgeClientModule
-    config:
-      url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
-      service_id: bridge-client
-      service_name: bridge-client
-      # expose:
-      #   - local_function: logger.info
-      #     remote_function: logger.info
+  # - class: modules::bridge_client::BridgeClientModule
+  #   config:
+  #     url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
+  #     service_id: bridge-client
+  #     service_name: bridge-client
+  #     # expose:
+  #     #   - local_function: logger.info
+  #     #     remote_function: logger.info
 
-      forward:
-        - local_function: remote.kv.get
-          remote_function: kv_server.get
-          timeout_ms: 5000
+  #     forward:
+  #       - local_function: remote.kv.get
+  #         remote_function: kv_server.get
+  #         timeout_ms: 5000
 
-        - local_function: remote.kv.set
-          remote_function: kv_server.set
-          timeout_ms: 5000
+  #       - local_function: remote.kv.set
+  #         remote_function: kv_server.set
+  #         timeout_ms: 5000
 
-        - local_function: remote.kv.delete
-          remote_function: kv_server.delete
-          timeout_ms: 5000
+  #       - local_function: remote.kv.delete
+  #         remote_function: kv_server.delete
+  #         timeout_ms: 5000

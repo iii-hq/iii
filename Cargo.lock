@@ -889,6 +889,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "tokio-tungstenite 0.23.1",
  "tower",
  "tower-http",
  "tracing",

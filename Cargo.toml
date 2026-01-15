@@ -26,6 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"]
 futures = "0.3"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+tokio-tungstenite = "0.23"
 
 axum = { version = "0.8", features = ["ws", "macros"] }
 serde = { version = "1", features = ["derive"] }
