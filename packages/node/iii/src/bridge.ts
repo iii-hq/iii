@@ -12,7 +12,7 @@ import {
   type RegisterTriggerTypeMessage,
   type TriggerConfig,
 } from './bridge-types'
-import { withContext } from './context'
+import { getContext, withContext } from './context'
 import { Logger, type LoggerParams } from './logger'
 import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
@@ -67,11 +67,26 @@ export class Bridge implements BridgeClient {
   registerTrigger(input: RegisterTriggerInput): Trigger {
     const id = crypto.randomUUID()
   
+    const conditionFunctionPaths: string[] = []
+  
     const triggersConfig: TriggerConfig[] = input.triggers.map((trigger, index) => {
       const conditionFunctionPath = trigger.condition
         ? `${input.function_path}.conditions:${index}`
         : undefined
-
+  
+      if (conditionFunctionPath && trigger.condition) {
+        const condition = trigger.condition
+        conditionFunctionPaths.push(conditionFunctionPath)
+        
+        this.registerFunction(
+          { function_path: conditionFunctionPath },
+          async (inputData) => {
+            const context = getContext()
+            return condition(inputData, context, { type: trigger.trigger_type, index })
+          }
+        )
+      }
+  
       return {
         trigger_type: trigger.trigger_type,
         config: conditionFunctionPath
@@ -87,24 +102,15 @@ export class Bridge implements BridgeClient {
     }
   
     this.sendMessage(MessageType.RegisterTrigger, message, true)
-  
     this.triggers.set(id, { ...message, type: MessageType.RegisterTrigger })
   
-    input.triggers.forEach((trigger, index) => {
-      if (trigger.condition) {
-        const condition = trigger.condition
-        const conditionFunctionPath = `${input.function_path}.conditions:${index}`
-        this.registerFunction(
-          { function_path: conditionFunctionPath },
-          async (inputData) => condition(inputData, {}, { type: trigger.trigger_type, index })
-        )
-      }
-    })
-
     return {
       unregister: () => {
         this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
         this.triggers.delete(id)
+        conditionFunctionPaths.forEach(path => {
+          this.functions.delete(path)
+        })
       },
     }
   }

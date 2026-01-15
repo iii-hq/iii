@@ -21,7 +21,7 @@ from .bridge_types import (
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
 )
-from .context import Context, with_context
+from .context import Context, get_context, with_context
 from .logger import Logger
 from .triggers import Trigger, TriggerConfig, TriggerHandler
 from .types import RemoteFunctionData, RemoteTriggerTypeData
@@ -260,6 +260,7 @@ class Bridge:
     ) -> Trigger:
         trigger_id = str(uuid.uuid4())
 
+        condition_function_paths: list[str] = []
         trigger_configs = []
         for index, t in enumerate(triggers):
             trigger_type = t.get("trigger_type", "")
@@ -269,9 +270,11 @@ class Bridge:
             if condition:
                 condition_function_path = f"{function_path}.conditions:{index}"
                 config = {**config, "_condition_path": condition_function_path}
+                condition_function_paths.append(condition_function_path)
                 
                 async def condition_handler(input_data: Any) -> bool:
-                    return await condition(input_data, {}, {"type": trigger_type, "index": index})
+                    context = get_context()
+                    return await condition(input_data, context, {"type": trigger_type, "index": index})
                 
                 self.register_function(condition_function_path, condition_handler)
 
@@ -293,6 +296,9 @@ class Bridge:
         def unregister() -> None:
             self._enqueue(UnregisterTriggerMessage(id=trigger_id))
             self._triggers.pop(trigger_id, None)
+            
+            for condition_path in condition_function_paths:
+                self._functions.pop(condition_path, None)
 
         return Trigger(unregister)
 

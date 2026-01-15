@@ -1,7 +1,6 @@
 import type {
   RegisterFunctionMessage,
   RegisterServiceMessage,
-  RegisterTriggerMessage,
   RegisterTriggerTypeMessage,
 } from './bridge-types'
 import type { TriggerHandler } from './triggers'
@@ -121,17 +120,26 @@ export type TriggerInfo = {
   index: number
 }
 
-export type TriggerMetadata = {
-  type: 'api' | 'event' | 'cron'
+export type TriggerApiMetadata = {
+  type: 'api'
   index: number
-
   path?: string
   method?: string
+}
 
+export type TriggerEventMetadata = {
+  type: 'event'
+  index: number
   topic?: string
+}
 
+export type TriggerCronMetadata = {
+  type: 'cron'
+  index: number
   expression?: string
 }
+
+export type TriggerMetadata = TriggerApiMetadata | TriggerEventMetadata | TriggerCronMetadata
 
 export type TriggerInput<TBody = any> = {
   trigger: TriggerMetadata

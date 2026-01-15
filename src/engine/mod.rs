@@ -240,7 +240,6 @@ impl Engine {
                             function_path: function_path.clone(),
                             config: trigger_config.config.clone(),
                             worker_id: Some(worker.id),
-                            trigger_index: index,
                         })
                         .await;
                 }

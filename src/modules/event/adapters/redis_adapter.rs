@@ -153,7 +153,13 @@ impl EventAdapter for RedisAdapter {
                 return;
             }
 
-            tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribed to Redis channel");
+            tracing::debug!(
+                topic = %topic_for_task,
+                id = %id_for_task,
+                function_path = %function_path_for_task,
+                condition_function_path = ?condition_function_path_for_task,
+                "Subscribed to Redis channel"
+            );
 
             let mut msg = pubsub.into_on_message();
 
