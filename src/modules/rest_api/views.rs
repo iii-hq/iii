@@ -126,9 +126,7 @@ pub async fn dynamic_handler(
                         );
                         return (
                             StatusCode::UNPROCESSABLE_ENTITY,
-                            Json(
-                                json!({"error": "Request condition not met", "skipped": true}),
-                            ),
+                            Json(json!({"error": "Request condition not met", "skipped": true})),
                         )
                             .into_response();
                     }
