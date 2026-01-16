@@ -9,16 +9,14 @@ export const useApi = (
 
   bridge.registerFunction({ function_path, metadata: config.metadata }, (req) => handler(req, getContext()))
   bridge.registerTrigger({
+    trigger_type: 'api',
     function_path,
-    triggers: [
-      {
-        trigger_type: 'api',
-        config: {
-          api_path: config.api_path,
-          http_method: config.http_method,
-        },
-      },
-    ],
+    config: {
+      api_path: config.api_path,
+      http_method: config.http_method,
+      description: config.description,
+      metadata: config.metadata,
+    },
   })
 }
 
