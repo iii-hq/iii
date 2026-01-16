@@ -198,14 +198,14 @@ impl EventAdapter for RedisAdapter {
                         .await
                     {
                         Ok(Some(result)) => {
-                            if let Some(passed) = result.as_bool() {
-                                if !passed {
-                                    tracing::debug!(
-                                        function_path = %function_path,
-                                        "Condition check failed, skipping handler"
-                                    );
-                                    continue;
-                                }
+                            if let Some(passed) = result.as_bool()
+                                && !passed
+                            {
+                                tracing::debug!(
+                                    function_path = %function_path,
+                                    "Condition check failed, skipping handler"
+                                );
+                                continue;
                             }
                         }
                         Ok(None) => {

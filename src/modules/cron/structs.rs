@@ -120,15 +120,15 @@ impl CronAdapter {
                             .await
                         {
                             Ok(Some(result)) => {
-                                if let Some(passed) = result.as_bool() {
-                                    if !passed {
-                                        tracing::debug!(
-                                            function_path = %func_path,
-                                            "Condition check failed, skipping handler"
-                                        );
-                                        scheduler.release_lock(&job_id).await;
-                                        continue;
-                                    }
+                                if let Some(passed) = result.as_bool()
+                                    && !passed
+                                {
+                                    tracing::debug!(
+                                        function_path = %func_path,
+                                        "Condition check failed, skipping handler"
+                                    );
+                                    scheduler.release_lock(&job_id).await;
+                                    continue;
                                 }
                             }
                             Ok(None) => {

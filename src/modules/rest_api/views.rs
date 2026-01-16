@@ -117,20 +117,20 @@ pub async fn dynamic_handler(
                 .await
             {
                 Ok(Some(result)) => {
-                    if let Some(passed) = result.as_bool() {
-                        if !passed {
-                            tracing::debug!(
-                                function_path = %function_path,
-                                "Condition check failed, skipping handler"
-                            );
-                            return (
-                                StatusCode::UNPROCESSABLE_ENTITY,
-                                Json(
-                                    json!({"error": "Request condition not met", "skipped": true}),
-                                ),
-                            )
-                                .into_response();
-                        }
+                    if let Some(passed) = result.as_bool()
+                        && !passed
+                    {
+                        tracing::debug!(
+                            function_path = %function_path,
+                            "Condition check failed, skipping handler"
+                        );
+                        return (
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            Json(
+                                json!({"error": "Request condition not met", "skipped": true}),
+                            ),
+                        )
+                            .into_response();
                     }
                 }
                 Ok(None) => {
