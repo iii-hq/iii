@@ -17,7 +17,6 @@ from .bridge_types import (
     RegisterServiceMessage,
     RegisterTriggerMessage,
     RegisterTriggerTypeMessage,
-    TriggerConfig as BridgeTriggerConfig,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
 )
@@ -215,32 +214,30 @@ class Bridge:
 
     async def _handle_trigger_registration(self, data: dict[str, Any]) -> None:
         trigger_id = data.get("id", "")
+        trigger_type_id = data.get("trigger_type", "")
         function_path = data.get("function_path", "")
-        triggers = data.get("triggers", [])
+        config = data.get("config")
 
-        for trigger_config in triggers:
-            trigger_type_id = trigger_config.get("trigger_type")
-            handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
-            config = trigger_config.get("config")
+        handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
 
-            result_base = {
-                "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
-                "id": trigger_id,
-                "trigger_type": trigger_type_id,
-                "function_path": function_path,
-            }
+        result_base = {
+            "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
+            "id": trigger_id,
+            "trigger_type": trigger_type_id,
+            "function_path": function_path,
+        }
 
-            if not handler_data:
-                continue
+        if not handler_data:
+            return
 
-            try:
-                await handler_data.handler.register_trigger(
-                    TriggerConfig(id=trigger_id, function_path=function_path, config=config)
-                )
-                await self._send(result_base)
-            except Exception as e:
-                log.exception(f"Error registering trigger {trigger_id}")
-                await self._send({**result_base, "error": {"code": "trigger_registration_failed", "message": str(e)}})
+        try:
+            await handler_data.handler.register_trigger(
+                TriggerConfig(id=trigger_id, function_path=function_path, config=config)
+            )
+            await self._send(result_base)
+        except Exception as e:
+            log.exception(f"Error registering trigger {trigger_id}")
+            await self._send({**result_base, "error": {"code": "trigger_registration_failed", "message": str(e)}})
 
     # Public API
 
@@ -258,11 +255,13 @@ class Bridge:
         function_path: str,
         triggers: list[dict[str, Any]],
     ) -> Trigger:
-        trigger_id = str(uuid.uuid4())
-
         condition_function_paths: list[str] = []
-        trigger_configs = []
+        trigger_ids: list[str] = []
+
         for index, t in enumerate(triggers):
+            trigger_id = str(uuid.uuid4())
+            trigger_ids.append(trigger_id)
+
             trigger_type = t.get("trigger_type", "")
             config = t.get("config", {})
             condition = t.get("condition")
@@ -278,24 +277,19 @@ class Bridge:
                 
                 self.register_function(condition_function_path, condition_handler)
 
-            trigger_configs.append(
-                BridgeTriggerConfig(
-                    trigger_type=trigger_type,
-                    config=config,
-                )
+            msg = RegisterTriggerMessage(
+                id=trigger_id,
+                trigger_type=trigger_type,
+                function_path=function_path,
+                config=config,
             )
-
-        msg = RegisterTriggerMessage(
-            id=trigger_id,
-            function_path=function_path,
-            triggers=trigger_configs,
-        )
-        self._enqueue(msg)
-        self._triggers[trigger_id] = msg
+            self._enqueue(msg)
+            self._triggers[trigger_id] = msg
 
         def unregister() -> None:
-            self._enqueue(UnregisterTriggerMessage(id=trigger_id))
-            self._triggers.pop(trigger_id, None)
+            for trigger_id in trigger_ids:
+                self._enqueue(UnregisterTriggerMessage(id=trigger_id))
+                self._triggers.pop(trigger_id, None)
             
             for condition_path in condition_function_paths:
                 self._functions.pop(condition_path, None)

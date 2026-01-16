@@ -22,12 +22,10 @@ impl TriggerRegistrator for Worker {
         Box::pin(async move {
             sender
                 .send(Outbound::Protocol(Message::RegisterTrigger {
-                    id: trigger.id.clone(),
-                    function_path: trigger.function_path.clone(),
-                    triggers: vec![crate::protocol::TriggerConfig {
-                        trigger_type: trigger.trigger_type,
-                        config: trigger.config,
-                    }],
+                    id: trigger.id,
+                    trigger_type: trigger.trigger_type,
+                    function_path: trigger.function_path,
+                    config: trigger.config,
                 }))
                 .await
                 .map_err(|err| {

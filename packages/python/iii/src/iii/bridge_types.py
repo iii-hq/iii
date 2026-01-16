@@ -55,21 +55,15 @@ class TriggerRegistrationResultMessage(BaseModel):
     type: MessageType = MessageType.TRIGGER_REGISTRATION_RESULT
 
 
-class TriggerConfig(BaseModel):
-    """Configuration for a single trigger."""
-
-    trigger_type: str
-    config: Any
-
-
 class RegisterTriggerMessage(BaseModel):
     """Message for registering a trigger."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
+    trigger_type: str = Field()
     function_path: str = Field()
-    triggers: list[TriggerConfig]
+    config: Any
     type: MessageType = MessageType.REGISTER_TRIGGER
 
 

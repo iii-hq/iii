@@ -10,7 +10,6 @@ import {
   type RegisterServiceMessage,
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
-  type TriggerConfig,
 } from './bridge-types'
 import { getContext, withContext } from './context'
 import { Logger, type LoggerParams } from './logger'
@@ -65,11 +64,13 @@ export class Bridge implements BridgeClient {
   }
 
   registerTrigger(input: RegisterTriggerInput): Trigger {
-    const id = crypto.randomUUID()
-  
     const conditionFunctionPaths: string[] = []
+    const triggerIds: string[] = []
   
-    const triggersConfig: TriggerConfig[] = input.triggers.map((trigger, index) => {
+    input.triggers.forEach((trigger, index) => {
+      const triggerId = crypto.randomUUID()
+      triggerIds.push(triggerId)
+  
       const conditionFunctionPath = trigger.condition
         ? `${input.function_path}.conditions:${index}`
         : undefined
@@ -87,27 +88,27 @@ export class Bridge implements BridgeClient {
         )
       }
   
-      return {
+      const config = conditionFunctionPath
+        ? { ...trigger.config, _condition_path: conditionFunctionPath }
+        : trigger.config
+  
+      const message: Omit<RegisterTriggerMessage, 'type'> = {
+        id: triggerId,
         trigger_type: trigger.trigger_type,
-        config: conditionFunctionPath
-          ? { ...trigger.config, _condition_path: conditionFunctionPath }
-          : trigger.config,
+        function_path: input.function_path,
+        config,
       }
+  
+      this.sendMessage(MessageType.RegisterTrigger, message, true)
+      this.triggers.set(triggerId, { ...message, type: MessageType.RegisterTrigger })
     })
-  
-    const message: Omit<RegisterTriggerMessage, 'type'> = {
-      id,
-      function_path: input.function_path,
-      triggers: triggersConfig,
-    }
-  
-    this.sendMessage(MessageType.RegisterTrigger, message, true)
-    this.triggers.set(id, { ...message, type: MessageType.RegisterTrigger })
   
     return {
       unregister: () => {
-        this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
-        this.triggers.delete(id)
+        triggerIds.forEach(id => {
+          this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
+          this.triggers.delete(id)
+        })
         conditionFunctionPaths.forEach(path => {
           this.functions.delete(path)
         })
@@ -273,39 +274,37 @@ export class Bridge implements BridgeClient {
   }
 
   private async onRegisterTrigger(message: RegisterTriggerMessage) {
-    const { id, function_path, triggers } = message
+    const { id, trigger_type, function_path, config } = message
 
-    for (const triggerConfig of triggers) {
-      const triggerTypeData = this.triggerTypes.get(triggerConfig.trigger_type)
+    const triggerTypeData = this.triggerTypes.get(trigger_type)
 
-      if (triggerTypeData) {
-        try {
-          await triggerTypeData.handler.registerTrigger({
-            id,
-            function_path,
-            config: triggerConfig.config,
-          })
-          this.sendMessage(MessageType.TriggerRegistrationResult, {
-            id,
-            trigger_type: triggerConfig.trigger_type,
-            function_path,
-          })
-        } catch (error) {
-          this.sendMessage(MessageType.TriggerRegistrationResult, {
-            id,
-            trigger_type: triggerConfig.trigger_type,
-            function_path,
-            error: { code: 'trigger_registration_failed', message: (error as Error).message },
-          })
-        }
-      } else {
+    if (triggerTypeData) {
+      try {
+        await triggerTypeData.handler.registerTrigger({
+          id,
+          function_path,
+          config,
+        })
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
-          trigger_type: triggerConfig.trigger_type,
+          trigger_type,
           function_path,
-          error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+        })
+      } catch (error) {
+        this.sendMessage(MessageType.TriggerRegistrationResult, {
+          id,
+          trigger_type,
+          function_path,
+          error: { code: 'trigger_registration_failed', message: (error as Error).message },
         })
       }
+    } else {
+      this.sendMessage(MessageType.TriggerRegistrationResult, {
+        id,
+        trigger_type,
+        function_path,
+        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
+      })
     }
   }
 

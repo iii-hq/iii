@@ -215,34 +215,28 @@ impl Engine {
             }
             Message::RegisterTrigger {
                 id,
+                trigger_type,
                 function_path,
-                triggers,
+                config,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
+                    trigger_type = %trigger_type,
                     function_path = %function_path,
-                    triggers_count = triggers.len(),
+                    config = ?config,
                     "RegisterTrigger"
                 );
 
-                for (index, trigger_config) in triggers.iter().enumerate() {
-                    let trigger_id = if triggers.len() == 1 {
-                        id.clone()
-                    } else {
-                        format!("{}:{}", id, index)
-                    };
-
-                    let _ = self
-                        .trigger_registry
-                        .register_trigger(Trigger {
-                            id: trigger_id,
-                            trigger_type: trigger_config.trigger_type.clone(),
-                            function_path: function_path.clone(),
-                            config: trigger_config.config.clone(),
-                            worker_id: Some(worker.id),
-                        })
-                        .await;
-                }
+                let _ = self
+                    .trigger_registry
+                    .register_trigger(Trigger {
+                        id: id.clone(),
+                        trigger_type: trigger_type.clone(),
+                        function_path: function_path.clone(),
+                        config: config.clone(),
+                        worker_id: Some(worker.id),
+                    })
+                    .await;
 
                 Ok(())
             }

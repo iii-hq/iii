@@ -37,21 +37,21 @@ export type TriggerRegistrationResultMessage = {
   error?: any
 }
 
-export type TriggerConfig = {
-  trigger_type: string
-  config: any
-}
-
 export type RegisterTriggerMessage = {
   type: MessageType.RegisterTrigger
+
   id: string
+  /**
+   * The type of trigger. Can be 'cron', 'event', 'http', etc.
+   */
+  trigger_type: string
   /**
    * Engine path for the function, including the service and function name
    * Example: software.engineering.code.rust
    * Where software, engineering, and code are the service ids
    */
   function_path: string
-  triggers: TriggerConfig[]
+  config: any
 }
 
 export type RegisterServiceMessage = {
