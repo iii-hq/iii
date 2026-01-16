@@ -62,16 +62,10 @@ export class Bridge implements BridgeClient {
     this.triggerTypes.delete(triggerType.id)
   }
 
-  registerTrigger(id: string, trigger_type: string, function_path: string, config: Record<string, any>): Trigger {
-    const message: Omit<RegisterTriggerMessage, 'type'> = {
-      id,
-      trigger_type,
-      function_path,
-      config,
-    }
-
-    this.sendMessage(MessageType.RegisterTrigger, message, true)
-    this.triggers.set(id, { ...message, type: MessageType.RegisterTrigger })
+  registerTrigger(trigger: Omit<RegisterTriggerMessage, 'type' | 'id'>): Trigger {
+    const id = crypto.randomUUID()
+    this.sendMessage(MessageType.RegisterTrigger, { ...trigger, id }, true)
+    this.triggers.set(id, { ...trigger, id, type: MessageType.RegisterTrigger })
 
     return {
       unregister: () => {
@@ -161,23 +155,13 @@ export class Bridge implements BridgeClient {
     this.clearInterval()
     this.ws?.on('message', this.onMessage.bind(this))
 
-    this.triggerTypes.forEach(({ message }) => {
-      this.sendMessage(MessageType.RegisterTriggerType, message, true)
-    })
-    this.services.forEach((service) => {
-      this.sendMessage(MessageType.RegisterService, service, true)
-    })
-    this.functions.forEach(({ message }) => {
-      this.sendMessage(MessageType.RegisterFunction, message, true)
-    })
-    this.triggers.forEach((trigger) => {
-      this.sendMessage(MessageType.RegisterTrigger, trigger, true)
-    })
+    this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
+    this.services.forEach((service) => this.sendMessage(MessageType.RegisterService, service, true))
+    this.functions.forEach(({ message }) => this.sendMessage(MessageType.RegisterFunction, message, true))
+    this.triggers.forEach((trigger) => this.sendMessage(MessageType.RegisterTrigger, trigger, true))
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
-      .forEach((message) => {
-        this.ws?.send(JSON.stringify(message))
-      })
+      .forEach((message) => this.ws?.send(JSON.stringify(message)))
   }
 
   private isOpen() {
@@ -239,22 +223,13 @@ export class Bridge implements BridgeClient {
   }
 
   private async onRegisterTrigger(message: RegisterTriggerMessage) {
+    const triggerTypeData = this.triggerTypes.get(message.trigger_type)
     const { id, trigger_type, function_path, config } = message
-
-    const triggerTypeData = this.triggerTypes.get(trigger_type)
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({
-          id,
-          function_path,
-          config,
-        })
-        this.sendMessage(MessageType.TriggerRegistrationResult, {
-          id,
-          trigger_type,
-          function_path,
-        })
+        await triggerTypeData.handler.registerTrigger({ id, function_path, config })
+        this.sendMessage(MessageType.TriggerRegistrationResult, { id, trigger_type, function_path })
       } catch (error) {
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,

@@ -213,12 +213,12 @@ class Bridge:
             )
 
     async def _handle_trigger_registration(self, data: dict[str, Any]) -> None:
+        trigger_type_id = data.get("trigger_type")
+        handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
+
         trigger_id = data.get("id", "")
-        trigger_type_id = data.get("trigger_type", "")
         function_path = data.get("function_path", "")
         config = data.get("config")
-
-        handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
 
         result_base = {
             "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
@@ -250,25 +250,20 @@ class Bridge:
         self._enqueue(UnregisterTriggerTypeMessage(id=id))
         self._trigger_types.pop(id, None)
 
-    def register_trigger(
-        self,
-        id: str,
-        trigger_type: str,
-        function_path: str,
-        config: dict[str, Any],
-    ) -> Trigger:
+    def register_trigger(self, trigger_type: str, function_path: str, config: Any) -> Trigger:
+        trigger_id = str(uuid.uuid4())
         msg = RegisterTriggerMessage(
-            id=id,
+            id=trigger_id,
             trigger_type=trigger_type,
             function_path=function_path,
             config=config,
         )
         self._enqueue(msg)
-        self._triggers[id] = msg
+        self._triggers[trigger_id] = msg
 
         def unregister() -> None:
-            self._enqueue(UnregisterTriggerMessage(id=id))
-            self._triggers.pop(id, None)
+            self._enqueue(UnregisterTriggerMessage(id=trigger_id))
+            self._triggers.pop(trigger_id, None)
 
         return Trigger(unregister)
 
