@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::{BuiltInPubSubAdapter, BuiltinKvStore},
+    builtins::{BuiltInPubSubAdapter, BuiltinKvStore, filters::UpdateOp},
     engine::Engine,
     modules::streams::{
         StreamOutboundMessage, StreamWrapperMessage,
@@ -49,6 +49,11 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
     async fn emit_event(&self, message: StreamWrapperMessage) {
         self.pub_sub.send_msg(message);
+    }
+
+    async fn update(&self, stream_name: &str, group_id: &str, ops: Vec<UpdateOp>) -> Option<Value> {
+        let key = self.gen_key(stream_name, group_id);
+        self.storage.update(key, ops).await
     }
 
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {

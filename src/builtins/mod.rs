@@ -1,3 +1,4 @@
+pub mod filters;
 use std::{
     collections::HashMap,
     sync::{Arc, atomic::AtomicBool},
@@ -213,6 +214,101 @@ impl BuiltinKvStore {
             .filter(|k| k.starts_with(prefix))
             .cloned()
             .collect()
+    }
+
+    pub async fn update(&self, key: String, ops: Vec<filters::UpdateOp>) -> Option<Value> {
+        let mut store = self.store.write().await;
+        if let Some(existing_value) = store.get_mut(&key) {
+            let mut updated_value = existing_value.clone();
+            for op in ops {
+                match op {
+                    filters::UpdateOp::Set { path, value } => {
+                        if path.0.is_empty() {
+                            updated_value = value;
+                        } else {
+                            if let Value::Object(ref mut map) = updated_value {
+                                map.insert(path.0, value);
+                            } else {
+                                tracing::warn!(
+                                    "Set operation with path requires existing value to be a JSON object"
+                                );
+                            }
+                        }
+                    }
+                    filters::UpdateOp::Merge { path, value } => {
+                        if path.is_none() || path.as_ref().unwrap().0.is_empty() {
+                            if let (Value::Object(existing_map), Value::Object(new_map)) =
+                                (&mut updated_value, value)
+                            {
+                                for (k, v) in new_map {
+                                    existing_map.insert(k, v);
+                                }
+                            } else {
+                                tracing::warn!(
+                                    "Merge operation requires both existing and new values to be JSON objects"
+                                );
+                            }
+                        } else {
+                            tracing::warn!("Only root-level merge is supported");
+                        }
+                    }
+                    filters::UpdateOp::Increment { path, by } => {
+                        if let Value::Object(ref mut map) = updated_value {
+                            if let Some(existing_val) = map.get_mut(&path.0) {
+                                if let Some(num) = existing_val.as_i64() {
+                                    *existing_val =
+                                        Value::Number(serde_json::Number::from(num + by));
+                                } else {
+                                    tracing::warn!(
+                                        "Increment operation requires existing value to be a number"
+                                    );
+                                }
+                            } else {
+                                map.insert(path.0, Value::Number(serde_json::Number::from(by)));
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Increment operation requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                    filters::UpdateOp::Decrement { path, by } => {
+                        if let Value::Object(ref mut map) = updated_value {
+                            if let Some(existing_val) = map.get_mut(&path.0) {
+                                if let Some(num) = existing_val.as_i64() {
+                                    *existing_val =
+                                        Value::Number(serde_json::Number::from(num - by));
+                                } else {
+                                    tracing::warn!(
+                                        "Decrement operation requires existing value to be a number"
+                                    );
+                                }
+                            } else {
+                                map.insert(path.0, Value::Number(serde_json::Number::from(-by)));
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Decrement operation requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                    filters::UpdateOp::Remove { path } => {
+                        if let Value::Object(ref mut map) = updated_value {
+                            map.remove(&path.0);
+                        } else {
+                            tracing::warn!(
+                                "Remove operation requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                }
+            }
+            *existing_value = updated_value.clone();
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
+            Some(updated_value)
+        } else {
+            None
+        }
     }
 }
 
@@ -488,5 +584,191 @@ mod test {
         // Ensure item is deleted
         let should_be_none = kv_store.get(key).await;
         assert!(should_be_none.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_missing_key() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "missing_key".to_string();
+
+        let result = kv_store
+            .update(
+                key,
+                vec![filters::UpdateOp::Set {
+                    path: filters::FieldPath::from(""),
+                    value: serde_json::json!({"a": 1}),
+                }],
+            )
+            .await;
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_set_root() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_set_root".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Set {
+                    path: filters::FieldPath::from(""),
+                    value: serde_json::json!({"b": 2}),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"b": 2}));
+        assert_eq!(
+            kv_store.get(key).await.expect("Value should exist"),
+            serde_json::json!({"b": 2})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_set_field() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_set_field".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"a": 1, "b": 2}))
+            .await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Set {
+                    path: filters::FieldPath::from("c"),
+                    value: serde_json::json!(3),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"a": 1, "b": 2, "c": 3}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_merge_root() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_merge_root".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Merge {
+                    path: None,
+                    value: serde_json::json!({"b": 2}),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"a": 1, "b": 2}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_merge_non_root_noop() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_merge_non_root".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Merge {
+                    path: Some(filters::FieldPath::from("nested")),
+                    value: serde_json::json!({"b": 2}),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"a": 1}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_increment() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_increment".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![
+                    filters::UpdateOp::Increment {
+                        path: filters::FieldPath::from("a"),
+                        by: 2,
+                    },
+                    filters::UpdateOp::Increment {
+                        path: filters::FieldPath::from("b"),
+                        by: 5,
+                    },
+                ],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"a": 3, "b": 5}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_decrement() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_decrement".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"a": 10}))
+            .await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![
+                    filters::UpdateOp::Decrement {
+                        path: filters::FieldPath::from("a"),
+                        by: 3,
+                    },
+                    filters::UpdateOp::Decrement {
+                        path: filters::FieldPath::from("b"),
+                        by: 2,
+                    },
+                ],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"a": 7, "b": -2}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_remove() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_remove".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"a": 1, "b": 2}))
+            .await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Remove {
+                    path: filters::FieldPath::from("a"),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, serde_json::json!({"b": 2}));
     }
 }
