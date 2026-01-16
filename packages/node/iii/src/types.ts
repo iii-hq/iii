@@ -24,35 +24,25 @@ export type RemoteTriggerTypeData = {
   handler: TriggerHandler<any>
 }
 
-export type TriggerConfigInput = {
-  trigger_type: string
-  config: Record<string, any>
-  condition?: TriggerCondition
-}
 
-export type RegisterTriggerInput = {
-  function_path: string
-  triggers: TriggerConfigInput[]
-}
-
-export type RegisterServiceInput = Omit<RegisterServiceMessage, 'type'>
-export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'type'>
-export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'type'>
 
 export interface BridgeClient {
   /**
    * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
-   * @param trigger - The trigger to register
+   * @param id - The trigger ID
+   * @param trigger_type - The type of trigger (e.g., 'api', 'event', 'cron')
+   * @param function_path - The path to the function to invoke
+   * @param config - The trigger configuration
    * @returns A trigger object that can be used to unregister the trigger
    */
-  registerTrigger(trigger: RegisterTriggerInput): Trigger
+  registerTrigger(id: string, trigger_type: string, function_path: string, config: Record<string, any>): Trigger
 
   /**
    * Registers a new service. A service is a collection of functions that are related to each other.
    * @param service - The service to register
    * @returns A service object that can be used to unregister the service
    */
-  registerService(service: RegisterServiceInput): void
+  registerService(service: Omit<RegisterServiceMessage, 'type'>): void
 
   /**
    * Registers a new function. A function is a unit of work that can be invoked by other services.
@@ -60,7 +50,7 @@ export interface BridgeClient {
    * @param handler - The handler for the function
    * @returns A function object that can be used to invoke the function
    */
-  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler): void
+  registerFunction(func: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler): void
 
   /**
    * Invokes a function.
@@ -83,13 +73,13 @@ export interface BridgeClient {
    * @param handler - The handler for the trigger type
    * @returns A trigger type object that can be used to unregister the trigger type
    */
-  registerTriggerType<TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>): void
+  registerTriggerType<TConfig>(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>, handler: TriggerHandler<TConfig>): void
 
   /**
    * Unregisters a trigger type.
    * @param triggerType - The trigger type to unregister
    */
-  unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
+  unregisterTriggerType(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>): void
 
   /**
    * Registers a callback for a specific event.
@@ -114,36 +104,6 @@ export type Trigger = {
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS' | 'HEAD'
-
-export type TriggerApiMetadata = {
-  type: 'api'
-  index?: number
-  path?: string
-  method?: string
-}
-
-export type TriggerEventMetadata = {
-  type: 'event'
-  index?: number
-  topic?: string
-}
-
-export type TriggerCronMetadata = {
-  type: 'cron'
-  index?: number
-  expression?: string
-}
-
-export type TriggerMetadata = TriggerApiMetadata | TriggerEventMetadata | TriggerCronMetadata
-
-export type TriggerInput<TBody = any> = {
-  data: TBody | ApiRequest<TBody> | null
-}
-
-export type TriggerCondition<TInput = any> = (
-  input: TriggerInput<TInput>,
-  ctx: any & { trigger: TriggerMetadata }
-) => boolean | Promise<boolean>
 
 export type ApiRequest<TBody = unknown> = {
   path_params: Record<string, string>

@@ -20,7 +20,7 @@ from .bridge_types import (
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
 )
-from .context import Context, get_context, with_context
+from .context import Context, with_context
 from .logger import Logger
 from .triggers import Trigger, TriggerConfig, TriggerHandler
 from .types import RemoteFunctionData, RemoteTriggerTypeData
@@ -252,47 +252,23 @@ class Bridge:
 
     def register_trigger(
         self,
+        id: str,
+        trigger_type: str,
         function_path: str,
-        triggers: list[dict[str, Any]],
+        config: dict[str, Any],
     ) -> Trigger:
-        condition_function_paths: list[str] = []
-        trigger_ids: list[str] = []
-
-        for index, t in enumerate(triggers):
-            trigger_id = str(uuid.uuid4())
-            trigger_ids.append(trigger_id)
-
-            trigger_type = t.get("trigger_type", "")
-            config = t.get("config", {})
-            condition = t.get("condition")
-
-            if condition:
-                condition_function_path = f"{function_path}.conditions:{index}"
-                config = {**config, "_condition_path": condition_function_path}
-                condition_function_paths.append(condition_function_path)
-                
-                async def condition_handler(input_data: Any) -> bool:
-                    context = get_context()
-                    return await condition(input_data, context)
-                
-                self.register_function(condition_function_path, condition_handler)
-
-            msg = RegisterTriggerMessage(
-                id=trigger_id,
-                trigger_type=trigger_type,
-                function_path=function_path,
-                config=config,
-            )
-            self._enqueue(msg)
-            self._triggers[trigger_id] = msg
+        msg = RegisterTriggerMessage(
+            id=id,
+            trigger_type=trigger_type,
+            function_path=function_path,
+            config=config,
+        )
+        self._enqueue(msg)
+        self._triggers[id] = msg
 
         def unregister() -> None:
-            for trigger_id in trigger_ids:
-                self._enqueue(UnregisterTriggerMessage(id=trigger_id))
-                self._triggers.pop(trigger_id, None)
-            
-            for condition_path in condition_function_paths:
-                self._functions.pop(condition_path, None)
+            self._enqueue(UnregisterTriggerMessage(id=id))
+            self._triggers.pop(id, None)
 
         return Trigger(unregister)
 

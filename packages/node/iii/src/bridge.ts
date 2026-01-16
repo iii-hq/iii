@@ -11,14 +11,13 @@ import {
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
 } from './bridge-types'
-import { getContext, withContext } from './context'
+import { withContext } from './context'
 import { Logger, type LoggerParams } from './logger'
 import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
   BridgeClient,
   Invocation,
-  RegisterTriggerInput,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
@@ -63,55 +62,21 @@ export class Bridge implements BridgeClient {
     this.triggerTypes.delete(triggerType.id)
   }
 
-  registerTrigger(input: RegisterTriggerInput): Trigger {
-    const conditionFunctionPaths: string[] = []
-    const triggerIds: string[] = []
-  
-    input.triggers.forEach((trigger, index) => {
-      const triggerId = crypto.randomUUID()
-      triggerIds.push(triggerId)
-  
-      const conditionFunctionPath = trigger.condition
-        ? `${input.function_path}.conditions:${index}`
-        : undefined
-  
-      if (conditionFunctionPath && trigger.condition) {
-        const condition = trigger.condition
-        conditionFunctionPaths.push(conditionFunctionPath)
-        
-        this.registerFunction(
-          { function_path: conditionFunctionPath },
-          async (inputData) => {
-            const context = getContext()
-            return condition(inputData, { ...context, trigger: { type: trigger.trigger_type, index, ...trigger.config } })
-          }
-        )
-      }
-  
-      const config = conditionFunctionPath
-        ? { ...trigger.config, _condition_path: conditionFunctionPath }
-        : trigger.config
-  
-      const message: Omit<RegisterTriggerMessage, 'type'> = {
-        id: triggerId,
-        trigger_type: trigger.trigger_type,
-        function_path: input.function_path,
-        config,
-      }
-  
-      this.sendMessage(MessageType.RegisterTrigger, message, true)
-      this.triggers.set(triggerId, { ...message, type: MessageType.RegisterTrigger })
-    })
-  
+  registerTrigger(id: string, trigger_type: string, function_path: string, config: Record<string, any>): Trigger {
+    const message: Omit<RegisterTriggerMessage, 'type'> = {
+      id,
+      trigger_type,
+      function_path,
+      config,
+    }
+
+    this.sendMessage(MessageType.RegisterTrigger, message, true)
+    this.triggers.set(id, { ...message, type: MessageType.RegisterTrigger })
+
     return {
       unregister: () => {
-        triggerIds.forEach(id => {
-          this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
-          this.triggers.delete(id)
-        })
-        conditionFunctionPaths.forEach(path => {
-          this.functions.delete(path)
-        })
+        this.sendMessage(MessageType.UnregisterTrigger, { id, type: MessageType.UnregisterTrigger })
+        this.triggers.delete(id)
       },
     }
   }
