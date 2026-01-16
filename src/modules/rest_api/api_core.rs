@@ -33,14 +33,21 @@ pub struct PathRouter {
     pub http_path: String,
     pub http_method: String,
     pub function_path: String,
+    pub condition_function_path: Option<String>,
 }
 
 impl PathRouter {
-    pub fn new(http_path: String, http_method: String, function_path: String) -> Self {
+    pub fn new(
+        http_path: String,
+        http_method: String,
+        function_path: String,
+        condition_function_path: Option<String>,
+    ) -> Self {
         Self {
             http_path,
             http_method,
             function_path,
+            condition_function_path,
         }
     }
 }
@@ -277,7 +284,11 @@ impl RestApiCoreModule {
         cors.allow_headers(HTTP_Any)
     }
 
-    pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
+    pub async fn get_router(
+        &self,
+        http_method: &str,
+        http_path: &str,
+    ) -> Option<(String, Option<String>)> {
         let method = http_method.to_uppercase();
         let http_path = if http_path.starts_with('/') {
             tracing::debug!("Looking up router for path with leading slash");
@@ -294,7 +305,7 @@ impl RestApiCoreModule {
         tracing::debug!("Looking up router for key: {}", key);
         let routers = self.routers_registry.read().await;
         let router = routers.get(&key);
-        router.map(|r| r.function_path.clone())
+        router.map(|r| (r.function_path.clone(), r.condition_function_path.clone()))
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
@@ -356,10 +367,17 @@ impl TriggerRegistrator for RestApiCoreModule {
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 
+            let condition_function_path = trigger
+                .config
+                .get("_condition_path")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+
             let router = PathRouter::new(
                 api_path.to_string(),
                 http_method.to_string(),
                 trigger.function_path.clone(),
+                condition_function_path,
             );
 
             adapter.register_router(router).await?;

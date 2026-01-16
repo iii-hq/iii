@@ -38,6 +38,7 @@ class FlowContext(BaseModel, Generic[TEmitData]):
     state: Any  # InternalStateManager
     logger: Any  # Logger
     streams: dict[str, Stream[Any]] = Field(default_factory=dict)
+    trigger: "TriggerMetadata"
 
 
 EventHandler = Callable[[Any, FlowContext[Any]], Awaitable[None]]
@@ -109,6 +110,59 @@ class NoopConfig(BaseModel):
 
 
 ApiRouteMethod = Literal["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+
+
+class TriggerMetadata(BaseModel):
+    """Metadata about the trigger that fired."""
+
+    type: Literal["api", "event", "cron"]
+    index: int | None = None
+
+    path: str | None = None
+    method: str | None = None
+
+    topic: str | None = None
+
+    expression: str | None = None
+
+
+TriggerInput = Any
+
+TriggerCondition = Callable[[Any, FlowContext[Any]], bool | Awaitable[bool]]
+
+
+class EventTrigger(BaseModel):
+    """Event trigger configuration."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["event"] = "event"
+    subscribes: list[str]
+    condition: TriggerCondition | None = None
+
+
+class ApiTrigger(BaseModel):
+    """API trigger configuration."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["api"] = "api"
+    path: str
+    method: ApiRouteMethod
+    condition: TriggerCondition | None = None
+
+
+class CronTrigger(BaseModel):
+    """Cron trigger configuration."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["cron"] = "cron"
+    expression: str
+    condition: TriggerCondition | None = None
+
+
+TriggerConfig = EventTrigger | ApiTrigger | CronTrigger
 
 
 class QueryParam(BaseModel):
@@ -188,7 +242,18 @@ class CronConfig(BaseModel):
 CronHandler = Callable[[FlowContext[Any]], Awaitable[None]]
 
 
-StepConfig = EventConfig | NoopConfig | ApiRouteConfig | CronConfig
+class StepConfig(BaseModel):
+    """Configuration for a step with triggers."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    triggers: list[TriggerConfig]
+    emits: list[str | Emit] = Field(default_factory=list)
+    description: str | None = None
+    flows: list[str] | None = None
+    include_files: list[str] | None = Field(default=None, serialization_alias="includeFiles")
+    infrastructure: InfrastructureConfig | None = None
 
 
 class Step(BaseModel, Generic[TInput]):

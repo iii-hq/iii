@@ -30,6 +30,8 @@ pub struct RedisAdapter {
 
 struct SubscriptionInfo {
     id: String,
+    #[allow(dead_code)]
+    condition_function_path: Option<String>,
     task_handle: JoinHandle<()>,
 }
 
@@ -104,7 +106,13 @@ impl EventAdapter for RedisAdapter {
         }
     }
 
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
+    async fn subscribe(
+        &self,
+        topic: &str,
+        id: &str,
+        function_path: &str,
+        condition_function_path: Option<String>,
+    ) {
         let topic = topic.to_string();
         let id = id.to_string();
         let function_path = function_path.to_string();
@@ -126,6 +134,7 @@ impl EventAdapter for RedisAdapter {
         let topic_for_task = topic.clone();
         let id_for_task = id.clone();
         let function_path_for_task = function_path.clone();
+        let condition_function_path_for_task = condition_function_path.clone();
 
         tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribing to Redis channel");
 
@@ -144,7 +153,13 @@ impl EventAdapter for RedisAdapter {
                 return;
             }
 
-            tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribed to Redis channel");
+            tracing::debug!(
+                topic = %topic_for_task,
+                id = %id_for_task,
+                function_path = %function_path_for_task,
+                condition_function_path = ?condition_function_path_for_task,
+                "Subscribed to Redis channel"
+            );
 
             let mut msg = pubsub.into_on_message();
 
@@ -167,10 +182,48 @@ impl EventAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::debug!(topic = %topic_for_task, function_path = %function_path, "Received event from Redis, invoking function");
+                tracing::debug!(topic = %topic_for_task, function_path = %function_path_for_task, "Received event from Redis, invoking function");
 
                 let engine = Arc::clone(&engine);
                 let function_path = function_path_for_task.clone();
+
+                if let Some(condition_function_path) = condition_function_path_for_task.as_ref() {
+                    tracing::debug!(
+                        condition_function_path = %condition_function_path,
+                        "Checking trigger conditions"
+                    );
+
+                    match engine
+                        .invoke_function(condition_function_path, event_data.clone())
+                        .await
+                    {
+                        Ok(Some(result)) => {
+                            if let Some(passed) = result.as_bool()
+                                && !passed
+                            {
+                                tracing::debug!(
+                                    function_path = %function_path,
+                                    "Condition check failed, skipping handler"
+                                );
+                                continue;
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                condition_function_path = %condition_function_path,
+                                "Condition function returned no result"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                condition_function_path = %condition_function_path,
+                                error = ?err,
+                                "Error invoking condition function"
+                            );
+                            continue;
+                        }
+                    }
+                }
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
@@ -185,7 +238,14 @@ impl EventAdapter for RedisAdapter {
 
         // Store the subscription
         let mut subs = subscriptions.write().await;
-        subs.insert(topic, SubscriptionInfo { id, task_handle });
+        subs.insert(
+            topic,
+            SubscriptionInfo {
+                id,
+                condition_function_path,
+                task_handle,
+            },
+        );
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {

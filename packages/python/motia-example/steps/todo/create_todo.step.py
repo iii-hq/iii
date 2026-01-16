@@ -5,29 +5,27 @@ import string
 from datetime import datetime
 from typing import Any
 
-from motia import ApiRequest, ApiResponse, ApiRouteConfig, FlowContext, Stream, step_wrapper
+from motia import ApiRequest, ApiResponse, ApiTrigger, FlowContext, StepConfig, Stream, step_wrapper
 
-# Create stream instance
 todo_stream: Stream[dict[str, Any]] = Stream("todo")
 
 
-config = ApiRouteConfig(
-    type="api",
+config = StepConfig(
     name="CreateTodo",
     description="Create a new todo item",
     flows=["todo-app"],
-    method="POST",
-    path="/todo",
+    triggers=[
+        ApiTrigger(path="/todo", method="POST"),
+    ],
     emits=[],
-    virtual_emits=["todo-created"],
 )
 
 
-async def handler(req: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def handler(request: ApiRequest[dict[str, Any]], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle create todo request."""
-    ctx.logger.info("Creating new todo", req.body)
+    ctx.logger.info("Creating new todo", request.body)
 
-    body = req.body or {}
+    body = request.body or {}
     description = body.get("description")
     due_date = body.get("due_date")
 
