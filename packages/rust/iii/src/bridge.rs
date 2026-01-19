@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -421,6 +421,7 @@ impl Bridge {
                     let (mut ws_tx, mut ws_rx) = stream.split();
 
                     queue.extend(self.collect_registrations());
+                    Self::dedupe_registrations(&mut queue);
                     if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
                         tracing::warn!(error = %err, "failed to flush queue");
                         sleep(Duration::from_secs(2)).await;
@@ -500,6 +501,33 @@ impl Bridge {
         }
 
         messages
+    }
+
+    fn dedupe_registrations(queue: &mut Vec<Message>) {
+        let mut seen = HashSet::new();
+        let mut deduped_rev = Vec::with_capacity(queue.len());
+
+        for message in queue.iter().rev() {
+            let key = match message {
+                Message::RegisterTriggerType { id, .. } => format!("trigger_type:{id}"),
+                Message::RegisterTrigger { id, .. } => format!("trigger:{id}"),
+                Message::RegisterFunction { function_path, .. } => {
+                    format!("function:{function_path}")
+                }
+                Message::RegisterService { id, .. } => format!("service:{id}"),
+                _ => {
+                    deduped_rev.push(message.clone());
+                    continue;
+                }
+            };
+
+            if seen.insert(key) {
+                deduped_rev.push(message.clone());
+            }
+        }
+
+        deduped_rev.reverse();
+        *queue = deduped_rev;
     }
 
     async fn flush_queue(
