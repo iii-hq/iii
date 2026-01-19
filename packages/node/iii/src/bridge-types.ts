@@ -10,6 +10,9 @@ export enum MessageType {
   TriggerRegistrationResult = 'triggerregistrationresult',
   FunctionsAvailable = 'functionsavailable',
   ListFunctions = 'listfunctions',
+  RegisterWorker = 'registerworker',
+  ListWorkers = 'listworkers',
+  WorkersAvailable = 'workersavailable',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -153,6 +156,37 @@ export type ListFunctionsMessage = {
   type: MessageType.ListFunctions
 }
 
+export type RegisterWorkerMessage = {
+  type: MessageType.RegisterWorker
+  runtime: string
+  version?: string
+  name?: string
+  os?: string
+}
+
+export type ListWorkersMessage = {
+  type: MessageType.ListWorkers
+}
+
+export type WorkerInfo = {
+  id: string
+  name?: string
+  runtime?: string
+  version?: string
+  os?: string
+  ip_address?: string
+  status: string
+  connected_at_ms: number
+  function_count: number
+  functions: string[]
+  active_invocations: number
+}
+
+export type WorkersAvailableMessage = {
+  type: MessageType.WorkersAvailable
+  workers: WorkerInfo[]
+}
+
 export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage
@@ -165,3 +199,6 @@ export type BridgeMessage =
   | TriggerRegistrationResultMessage
   | FunctionsAvailableMessage
   | ListFunctionsMessage
+  | RegisterWorkerMessage
+  | ListWorkersMessage
+  | WorkersAvailableMessage

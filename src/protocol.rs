@@ -58,6 +58,19 @@ pub enum Message {
         functions: Vec<FunctionMessage>,
     },
     ListFunctions,
+    RegisterWorker {
+        runtime: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        os: Option<String>,
+    },
+    ListWorkers,
+    WorkersAvailable {
+        workers: Vec<WorkerInfo>,
+    },
     Ping,
     Pong,
 }
@@ -79,4 +92,24 @@ pub struct FunctionMessage {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerInfo {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_address: Option<String>,
+    pub status: String,
+    pub connected_at_ms: u64,
+    pub function_count: usize,
+    pub functions: Vec<String>,
+    pub active_invocations: usize,
 }

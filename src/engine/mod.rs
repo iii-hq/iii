@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    protocol::{ErrorBody, FunctionMessage, Message},
+    protocol::{ErrorBody, FunctionMessage, Message, WorkerInfo},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -434,6 +434,53 @@ impl Engine {
                 Ok(())
             }
             Message::Pong => Ok(()),
+            Message::RegisterWorker { runtime, version, name, os } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    runtime = %runtime,
+                    version = ?version,
+                    name = ?name,
+                    os = ?os,
+                    "RegisterWorker"
+                );
+
+                self.worker_registry
+                    .update_worker_metadata(&worker.id, runtime.clone(), version.clone(), name.clone(), os.clone())
+                    .await;
+
+                Ok(())
+            }
+            Message::ListWorkers => {
+                let workers = self.worker_registry.list_workers().await;
+                let mut worker_infos = Vec::with_capacity(workers.len());
+
+                for w in workers {
+                    let functions = w.get_function_paths().await;
+                    let function_count = functions.len();
+                    let active_invocations = w.invocation_count().await;
+
+                    worker_infos.push(WorkerInfo {
+                        id: w.id.to_string(),
+                        name: w.name.clone(),
+                        runtime: w.runtime.clone(),
+                        version: w.version.clone(),
+                        os: w.os.clone(),
+                        ip_address: w.ip_address.clone(),
+                        status: w.status.as_str().to_string(),
+                        connected_at_ms: w.connected_at.timestamp_millis() as u64,
+                        function_count,
+                        functions,
+                        active_invocations,
+                    });
+                }
+
+                self.send_msg(worker, Message::WorkersAvailable { workers: worker_infos })
+                    .await;
+                Ok(())
+            }
+            Message::WorkersAvailable { workers: _ } => {
+                Ok(())
+            }
         }
     }
 
@@ -461,7 +508,7 @@ impl Engine {
             }
         });
 
-        let worker = Worker::new(tx.clone());
+        let worker = Worker::with_ip(tx.clone(), peer.ip().to_string());
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone()).await;
