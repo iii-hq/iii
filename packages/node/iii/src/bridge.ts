@@ -76,11 +76,12 @@ export class Bridge implements BridgeClient {
   }
 
   registerFunction(message: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler) {
+    const invoke = this.invokeFunctionAsync.bind(this)
+
     this.sendMessage(MessageType.RegisterFunction, message, true)
     this.functions.set(message.function_path, {
       message: { ...message, type: MessageType.RegisterFunction },
       handler: async (input) => {
-        const invoke = (function_path: string, params: LoggerParams) => this.invokeFunctionAsync(function_path, params)
         const logger = new Logger(invoke, crypto.randomUUID(), message.function_path)
         const context = { logger }
 
