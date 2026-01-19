@@ -167,6 +167,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
+    use crate::builtins::filters::FieldPath;
 
     struct RecordingConnection {
         tx: mpsc::UnboundedSender<StreamWrapperMessage>,
@@ -286,5 +287,45 @@ mod tests {
         assert_eq!(saved_data, data2);
 
         watcher.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_kv_store_adapter_concurrent_updates_increment() {
+        let builtin_adapter = Arc::new(BuiltinKvStoreAdapter::new(None));
+        let stream_name = "test_stream_concurrent";
+        let group_id = "test_group_concurrent";
+        let counter_key = "counter";
+
+        builtin_adapter
+            .set(stream_name, group_id, counter_key, serde_json::json!(0))
+            .await;
+
+        let mut handles = Vec::with_capacity(500);
+        for _ in 0..500 {
+            let adapter = Arc::clone(&builtin_adapter);
+            handles.push(tokio::spawn(async move {
+                let _ = adapter
+                    .update(
+                        stream_name,
+                        group_id,
+                        vec![UpdateOp::Increment {
+                            path: FieldPath::from(counter_key),
+                            by: 1,
+                        }],
+                    )
+                    .await;
+            }));
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        let result = builtin_adapter
+            .get(stream_name, group_id, counter_key)
+            .await
+            .expect("Counter should exist");
+
+        assert_eq!(result, serde_json::json!(500));
     }
 }

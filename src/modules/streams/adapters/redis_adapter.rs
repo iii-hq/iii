@@ -10,6 +10,7 @@ use tokio::{
 };
 
 use crate::{
+    builtins::filters::UpdateOp,
     engine::Engine,
     modules::{
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
@@ -60,6 +61,148 @@ impl RedisAdapter {
 
 #[async_trait]
 impl StreamAdapter for RedisAdapter {
+    async fn update(&self, stream_name: &str, group_id: &str, ops: Vec<UpdateOp>) -> Option<Value> {
+        let key = format!("stream:{}:{}", stream_name, group_id);
+        let mut conn = self.publisher.lock().await;
+
+        let exists = match conn.exists::<_, bool>(&key).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to check Redis key existence");
+                return None;
+            }
+        };
+        if !exists {
+            return None;
+        }
+
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+
+        for op in ops {
+            match op {
+                UpdateOp::Set { path, value } => {
+                    if path.0.is_empty() {
+                        match value {
+                            Value::Object(map) => {
+                                pipe.del(&key);
+                                for (field, v) in map {
+                                    let payload = match serde_json::to_string(&v) {
+                                        Ok(payload) => payload,
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                error = ?err,
+                                                stream_name = %stream_name,
+                                                group_id = %group_id,
+                                                field = %field,
+                                                "Failed to serialize value for HSET"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    pipe.hset(&key, field, payload);
+                                }
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    "Set operation with empty path requires value to be a JSON object"
+                                );
+                            }
+                        }
+                    } else {
+                        let payload = match serde_json::to_string(&value) {
+                            Ok(payload) => payload,
+                            Err(err) => {
+                                tracing::warn!(
+                                    error = ?err,
+                                    stream_name = %stream_name,
+                                    group_id = %group_id,
+                                    "Failed to serialize value for HSET"
+                                );
+                                continue;
+                            }
+                        };
+                        pipe.hset(&key, path.0, payload);
+                    }
+                }
+                UpdateOp::Merge { path, value } => {
+                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
+                        match value {
+                            Value::Object(map) => {
+                                for (field, v) in map {
+                                    let payload = match serde_json::to_string(&v) {
+                                        Ok(payload) => payload,
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                error = ?err,
+                                                stream_name = %stream_name,
+                                                group_id = %group_id,
+                                                field = %field,
+                                                "Failed to serialize value for HSET"
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    pipe.hset(&key, field, payload);
+                                }
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    "Merge operation requires new values to be a JSON object"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::warn!("Only root-level merge is supported");
+                    }
+                }
+                UpdateOp::Increment { path, by } => {
+                    pipe.hincr(&key, path.0, by);
+                }
+                UpdateOp::Decrement { path, by } => {
+                    pipe.hincr(&key, path.0, -by);
+                }
+                UpdateOp::Remove { path } => {
+                    pipe.hdel(&key, path.0);
+                }
+            }
+        }
+
+        let result: Result<(), _> = pipe.query_async(&mut *conn).await;
+        if let Err(e) = result {
+            tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to update Redis hash");
+            return None;
+        }
+
+        let values = match conn.hgetall::<_, HashMap<String, String>>(&key).await {
+            Ok(values) => values,
+            Err(e) => {
+                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
+                return None;
+            }
+        };
+
+        let mut map = serde_json::Map::new();
+        for (field, value) in values {
+            match serde_json::from_str::<Value>(&value) {
+                Ok(parsed) => {
+                    map.insert(field, parsed);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = ?err,
+                        stream_name = %stream_name,
+                        group_id = %group_id,
+                        field = %field,
+                        "Failed to parse Redis hash value as JSON"
+                    );
+                }
+            }
+        }
+
+        Some(Value::Object(map))
+    }
+
     async fn emit_event(&self, message: StreamWrapperMessage) {
         let mut conn = self.publisher.lock().await;
         tracing::debug!(msg = ?message, "Emitting event to Redis");
@@ -84,7 +227,6 @@ impl StreamAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
 
-        // Check existence
         let existed = match conn.hexists::<_, _, bool>(&key, item_id).await {
             Ok(b) => b,
             Err(e) => {
@@ -122,7 +264,6 @@ impl StreamAdapter for RedisAdapter {
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
         let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
-
         match conn.hget::<_, _, Option<String>>(&key, &item_id).await {
             Ok(Some(s)) => serde_json::from_str(&s).ok(),
             Ok(None) => None,
@@ -281,3 +422,173 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::RedisAdapter", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::filters::{FieldPath, UpdateOp};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    async fn create_adapter() -> Option<RedisAdapter> {
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+
+        match RedisAdapter::new(redis_url).await {
+            Ok(adapter) => Some(adapter),
+            Err(err) => {
+                eprintln!("Skipping RedisAdapter tests: {err}");
+                None
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_redis_adapter_set_get_delete() {
+        let Some(adapter) = create_adapter().await else {
+            return;
+        };
+
+        let stream_name = format!("test_stream_{}", Uuid::new_v4());
+        let group_id = format!("group_{}", Uuid::new_v4());
+        let item_id = "item1";
+        let data = json!({"key": "value"});
+
+        adapter
+            .set(&stream_name, &group_id, item_id, data.clone())
+            .await;
+
+        let retrieved = adapter
+            .get(&stream_name, &group_id, item_id)
+            .await
+            .expect("Item should exist");
+        assert_eq!(retrieved, data);
+
+        adapter.delete(&stream_name, &group_id, item_id).await;
+        let deleted = adapter.get(&stream_name, &group_id, item_id).await;
+        assert!(deleted.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_redis_adapter_update_missing_group_returns_none() {
+        let Some(adapter) = create_adapter().await else {
+            return;
+        };
+
+        let stream_name = format!("test_stream_{}", Uuid::new_v4());
+        let group_id = format!("group_{}", Uuid::new_v4());
+
+        let result = adapter
+            .update(
+                &stream_name,
+                &group_id,
+                vec![UpdateOp::Set {
+                    path: FieldPath::from("a"),
+                    value: json!(1),
+                }],
+            )
+            .await;
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_redis_adapter_update_applies_ops() {
+        let Some(adapter) = create_adapter().await else {
+            return;
+        };
+
+        let stream_name = format!("test_stream_{}", Uuid::new_v4());
+        let group_id = format!("group_{}", Uuid::new_v4());
+
+        adapter.set(&stream_name, &group_id, "a", json!(1)).await;
+        adapter.set(&stream_name, &group_id, "b", json!(2)).await;
+
+        let result = adapter
+            .update(
+                &stream_name,
+                &group_id,
+                vec![
+                    UpdateOp::Increment {
+                        path: FieldPath::from("a"),
+                        by: 2,
+                    },
+                    UpdateOp::Decrement {
+                        path: FieldPath::from("b"),
+                        by: 1,
+                    },
+                    UpdateOp::Set {
+                        path: FieldPath::from("c"),
+                        value: json!(5),
+                    },
+                    UpdateOp::Merge {
+                        path: None,
+                        value: json!({"d": 6}),
+                    },
+                    UpdateOp::Remove {
+                        path: FieldPath::from("b"),
+                    },
+                ],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result, json!({"a": 3, "c": 5, "d": 6}));
+
+        let a = adapter.get(&stream_name, &group_id, "a").await;
+        let b = adapter.get(&stream_name, &group_id, "b").await;
+        let c = adapter.get(&stream_name, &group_id, "c").await;
+        let d = adapter.get(&stream_name, &group_id, "d").await;
+
+        assert_eq!(a, Some(json!(3)));
+        assert!(b.is_none());
+        assert_eq!(c, Some(json!(5)));
+        assert_eq!(d, Some(json!(6)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_redis_adapter_concurrent_updates_increment() {
+        let Some(adapter) = create_adapter().await else {
+            return;
+        };
+
+        let adapter = Arc::new(adapter);
+        let stream_name = format!("test_stream_{}", Uuid::new_v4());
+        let group_id = format!("group_{}", Uuid::new_v4());
+        let counter_key = "counter";
+
+        adapter
+            .set(&stream_name, &group_id, counter_key, json!(0))
+            .await;
+
+        let mut handles = Vec::with_capacity(500);
+        for _ in 0..500 {
+            let adapter = Arc::clone(&adapter);
+            let stream_name = stream_name.clone();
+            let group_id = group_id.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = adapter
+                    .update(
+                        &stream_name,
+                        &group_id,
+                        vec![UpdateOp::Increment {
+                            path: FieldPath::from(counter_key),
+                            by: 1,
+                        }],
+                    )
+                    .await;
+            }));
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+
+        let result = adapter
+            .get(&stream_name, &group_id, counter_key)
+            .await
+            .expect("Counter should exist");
+
+        assert_eq!(result, json!(500));
+    }
+}

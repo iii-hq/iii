@@ -225,14 +225,12 @@ impl BuiltinKvStore {
                     filters::UpdateOp::Set { path, value } => {
                         if path.0.is_empty() {
                             updated_value = value;
+                        } else if let Value::Object(ref mut map) = updated_value {
+                            map.insert(path.0, value);
                         } else {
-                            if let Value::Object(ref mut map) = updated_value {
-                                map.insert(path.0, value);
-                            } else {
-                                tracing::warn!(
-                                    "Set operation with path requires existing value to be a JSON object"
-                                );
-                            }
+                            tracing::warn!(
+                                "Set operation with path requires existing value to be a JSON object"
+                            );
                         }
                     }
                     filters::UpdateOp::Merge { path, value } => {
