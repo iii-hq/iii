@@ -603,6 +603,30 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_after_delete_returns_none() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_deleted_key".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"counter": 0}))
+            .await;
+        kv_store.delete(key.clone()).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Increment {
+                    path: filters::FieldPath::from("counter"),
+                    by: 1,
+                }],
+            )
+            .await;
+
+        assert!(result.is_none());
+        assert!(kv_store.get(key).await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_set_root() {
         let kv_store = BuiltinKvStore::new(None);
         let key = "update_set_root".to_string();

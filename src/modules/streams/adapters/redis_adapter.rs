@@ -22,12 +22,46 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+use tokio::sync::Barrier;
+
 const STREAM_TOPIC: &str = "stream::events";
+
+#[cfg(test)]
+#[derive(Clone)]
+struct UpdateTestHook {
+    reached: Arc<Barrier>,
+    proceed: Arc<Barrier>,
+}
+
+#[cfg(test)]
+impl UpdateTestHook {
+    fn new() -> Self {
+        Self {
+            reached: Arc::new(Barrier::new(2)),
+            proceed: Arc::new(Barrier::new(2)),
+        }
+    }
+}
+
+#[cfg(test)]
+struct UpdateHookGuard<'a> {
+    hook: &'a std::sync::Mutex<Option<Arc<UpdateTestHook>>>,
+}
+
+#[cfg(test)]
+impl Drop for UpdateHookGuard<'_> {
+    fn drop(&mut self) {
+        *self.hook.lock().unwrap() = None;
+    }
+}
 
 pub struct RedisAdapter {
     publisher: Arc<Mutex<ConnectionManager>>,
     subscriber: Arc<Client>,
     connections: Arc<RwLock<HashMap<String, Arc<dyn StreamConnection>>>>,
+    #[cfg(test)]
+    update_hook: std::sync::Mutex<Option<Arc<UpdateTestHook>>>,
 }
 
 impl RedisAdapter {
@@ -55,8 +89,33 @@ impl RedisAdapter {
             publisher,
             subscriber,
             connections: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(test)]
+            update_hook: std::sync::Mutex::new(None),
         })
     }
+}
+
+#[cfg(test)]
+impl RedisAdapter {
+    fn install_update_hook<'a>(&'a self, hook: Arc<UpdateTestHook>) -> UpdateHookGuard<'a> {
+        *self.update_hook.lock().unwrap() = Some(hook);
+        UpdateHookGuard {
+            hook: &self.update_hook,
+        }
+    }
+
+    async fn maybe_wait_update_hook(&self) {
+        let hook = self.update_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook.reached.wait().await;
+            hook.proceed.wait().await;
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl RedisAdapter {
+    async fn maybe_wait_update_hook(&self) {}
 }
 
 #[async_trait]
@@ -86,6 +145,8 @@ impl StreamAdapter for RedisAdapter {
                 let _: Result<(), _> = redis::cmd("UNWATCH").query_async(&mut *conn).await;
                 return None;
             }
+
+            self.maybe_wait_update_hook().await;
 
             let mut pipe = redis::pipe();
             pipe.atomic();
@@ -179,9 +240,9 @@ impl StreamAdapter for RedisAdapter {
                 }
             }
 
-            let result: Result<(), _> = pipe.query_async(&mut *conn).await;
+            let result: Result<Option<Vec<redis::Value>>, _> = pipe.query_async(&mut *conn).await;
             match result {
-                Ok(_) => {
+                Ok(Some(_)) => {
                     let values = match conn.hgetall::<_, HashMap<String, String>>(&key).await {
                         Ok(values) => values,
                         Err(e) => {
@@ -209,6 +270,19 @@ impl StreamAdapter for RedisAdapter {
                     }
 
                     return Some(Value::Object(map));
+                }
+                Ok(None) => {
+                    let exists = match conn.exists::<_, bool>(&key).await {
+                        Ok(exists) => exists,
+                        Err(err) => {
+                            tracing::error!(error = %err, stream_name = %stream_name, group_id = %group_id, "Failed to re-check Redis key existence");
+                            return None;
+                        }
+                    };
+                    if !exists {
+                        return None;
+                    }
+                    continue;
                 }
                 Err(e)
                     if e.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ExecAbort) =>
@@ -476,6 +550,26 @@ mod tests {
         }
     }
 
+    async fn create_connection() -> Option<ConnectionManager> {
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let client = match Client::open(redis_url.as_str()) {
+            Ok(client) => client,
+            Err(err) => {
+                eprintln!("Skipping RedisAdapter tests: {err}");
+                return None;
+            }
+        };
+
+        match client.get_connection_manager().await {
+            Ok(conn) => Some(conn),
+            Err(err) => {
+                eprintln!("Skipping RedisAdapter tests: {err}");
+                None
+            }
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_redis_adapter_set_get_delete() {
         let Some(adapter) = create_adapter().await else {
@@ -621,5 +715,65 @@ mod tests {
             .expect("Counter should exist");
 
         assert_eq!(result, json!(500));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_redis_adapter_update_does_not_resurrect_after_delete() {
+        let Some(adapter) = create_adapter().await else {
+            return;
+        };
+        let Some(mut delete_conn) = create_connection().await else {
+            return;
+        };
+
+        let adapter = Arc::new(adapter);
+        let hook = Arc::new(UpdateTestHook::new());
+        let _hook_guard = adapter.install_update_hook(hook.clone());
+
+        let stream_name = format!("test_stream_{}", Uuid::new_v4());
+        let group_id = format!("group_{}", Uuid::new_v4());
+        let counter_key = "counter";
+        let key = format!("stream:{}:{}", stream_name, group_id);
+
+        adapter
+            .set(&stream_name, &group_id, counter_key, json!(0))
+            .await;
+
+        let adapter_for_update = Arc::clone(&adapter);
+        let stream_for_update = stream_name.clone();
+        let group_for_update = group_id.clone();
+
+        let update_task = tokio::spawn(async move {
+            adapter_for_update
+                .update(
+                    &stream_for_update,
+                    &group_for_update,
+                    vec![UpdateOp::Increment {
+                        path: FieldPath::from(counter_key),
+                        by: 1,
+                    }],
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), hook.reached.wait())
+            .await
+            .expect("Timed out waiting for update hook");
+
+        let result: Result<(), _> = redis::cmd("DEL")
+            .arg(&key)
+            .query_async(&mut delete_conn)
+            .await;
+        assert!(result.is_ok());
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), hook.proceed.wait())
+            .await
+            .expect("Timed out waiting for update hook proceed");
+
+        let update_result = update_task.await.expect("Update task should complete");
+        assert!(update_result.is_none());
+
+        let exists: bool = delete_conn.exists(&key).await.unwrap_or(true);
+        assert!(!exists);
     }
 }
