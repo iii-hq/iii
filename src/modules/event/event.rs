@@ -16,7 +16,7 @@ use super::{EventAdapter, config::EventModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+    modules::module::{AdapterFactory, ConfigurableModule, Module},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -133,14 +133,11 @@ impl TriggerRegistrator for EventCoreModule {
 }
 
 #[async_trait]
-impl CoreModule for EventCoreModule {
+impl Module for EventCoreModule {
     fn name(&self) -> &'static str {
         "EventModule"
     }
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 

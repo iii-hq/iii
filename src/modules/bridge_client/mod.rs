@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::CoreModule,
+    modules::module::Module,
     protocol::ErrorBody,
 };
 
@@ -58,15 +58,12 @@ pub struct BridgeClientModule {
 }
 
 #[async_trait]
-impl CoreModule for BridgeClientModule {
+impl Module for BridgeClientModule {
     fn name(&self) -> &'static str {
         "Bridge Client"
     }
 
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         let config: BridgeClientConfig = config
             .map(serde_json::from_value)
             .transpose()?

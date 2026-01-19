@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+    modules::module::{AdapterFactory, ConfigurableModule, Module},
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -28,15 +28,12 @@ pub struct CronCoreModule {
 }
 
 #[async_trait]
-impl CoreModule for CronCoreModule {
+impl Module for CronCoreModule {
     fn name(&self) -> &'static str {
         "CronModule"
     }
 
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 

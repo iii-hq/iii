@@ -13,11 +13,11 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        core_module::CoreModule,
         kv_server::{
             adapters::KVStoreAdapter,
             structs::{KvListInput, KvListKeysWithPrefixInput},
         },
+        module::Module,
     },
     protocol::ErrorBody,
 };
@@ -28,7 +28,7 @@ pub struct KvServer {
 }
 
 #[async_trait]
-impl CoreModule for KvServer {
+impl Module for KvServer {
     fn name(&self) -> &'static str {
         "KV Server"
     }
@@ -36,7 +36,7 @@ impl CoreModule for KvServer {
     async fn create(
         _engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    ) -> anyhow::Result<Box<dyn Module>> {
         let storage = BuiltinKvStore::new(config);
         let storage = Arc::new(storage);
         Ok(Box::new(KvServer { storage }))

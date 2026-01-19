@@ -16,7 +16,7 @@ use super::{PubSubAdapter, config::PubSubModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+    modules::module::{AdapterFactory, ConfigurableModule, Module},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -122,14 +122,11 @@ impl TriggerRegistrator for PubSubCoreModule {
 }
 
 #[async_trait]
-impl CoreModule for PubSubCoreModule {
+impl Module for PubSubCoreModule {
     fn name(&self) -> &'static str {
         "PubSubModule"
     }
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 

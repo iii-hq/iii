@@ -26,7 +26,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        module::{AdapterFactory, ConfigurableModule, Module},
         observability::registry::LoggerAdapterRegistration,
     },
     protocol::ErrorBody,
@@ -322,14 +322,11 @@ impl TriggerRegistrator for LoggerCoreModule {
 }
 
 #[async_trait]
-impl CoreModule for LoggerCoreModule {
+impl Module for LoggerCoreModule {
     fn name(&self) -> &'static str {
         "LoggerModule"
     }
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 

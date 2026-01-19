@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-use super::{core_module::CoreModule, registry::ModuleRegistration};
+use super::{module::Module, registry::ModuleRegistration};
 use crate::engine::Engine;
 
 // =============================================================================
@@ -162,7 +162,7 @@ type ModuleFactory = Arc<
     dyn Fn(
             Arc<Engine>,
             Option<Value>,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn CoreModule>>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Module>>> + Send>>
         + Send
         + Sync,
 >;
@@ -206,8 +206,8 @@ impl ModuleRegistry {
 
     /// Registers a module by type
     ///
-    /// The module must implement `CoreModule`. The registry uses `M::create()` to create instances.
-    pub fn register<M: CoreModule + 'static>(&self, class: &str) {
+    /// The module must implement `Module`. The registry uses `M::create()` to create instances.
+    pub fn register<M: Module + 'static>(&self, class: &str) {
         let info = ModuleInfo {
             factory: Arc::new(|engine, config| Box::pin(M::create(engine, config))),
         };
@@ -224,7 +224,7 @@ impl ModuleRegistry {
         class: &str,
         engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    ) -> anyhow::Result<Box<dyn Module>> {
         let factory = {
             let factories = self.module_factories.read().expect("RwLock poisoned");
             factories
@@ -260,7 +260,7 @@ impl ModuleEntry {
         &self,
         engine: Arc<Engine>,
         registry: &Arc<ModuleRegistry>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    ) -> anyhow::Result<Box<dyn Module>> {
         registry
             .create_module(&self.class, engine, self.config.clone())
             .await
@@ -298,7 +298,7 @@ pub struct EngineBuilder {
     address: String,
     engine: Arc<Engine>,
     registry: Arc<ModuleRegistry>,
-    modules: Vec<Arc<dyn CoreModule>>,
+    modules: Vec<Arc<dyn Module>>,
 }
 
 impl EngineBuilder {
@@ -330,7 +330,7 @@ impl EngineBuilder {
     ///
     /// This allows you to register a module implementation that can then be used
     /// via `add_module` or in the config file.
-    pub fn register_module<M: CoreModule + 'static>(self, class: &str) -> Self {
+    pub fn register_module<M: Module + 'static>(self, class: &str) -> Self {
         self.registry.register::<M>(class);
         self
     }

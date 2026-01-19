@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::modules::core_module::AdapterEntry;
+use crate::modules::module::AdapterEntry;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
