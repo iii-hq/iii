@@ -1,6 +1,6 @@
 pub mod traits;
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, str::FromStr, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
@@ -88,14 +88,18 @@ impl WorkerStatus {
             WorkerStatus::Disconnected => "disconnected",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl FromStr for WorkerStatus {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "available" => WorkerStatus::Available,
             "busy" => WorkerStatus::Busy,
             "disconnected" => WorkerStatus::Disconnected,
             _ => WorkerStatus::Connected,
-        }
+        })
     }
 }
 

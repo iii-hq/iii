@@ -160,6 +160,7 @@ impl Engine {
         }
     }
 
+    #[allow(dead_code)]
     async fn broadcast_msg(&self, msg: Message) {
         for worker in self.worker_registry.workers.read().await.iter() {
             let _ = worker
