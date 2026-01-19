@@ -5,6 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerMetadata {
+    #[serde(rename = "type")]
+    pub trigger_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct APIrequest {
     pub query_params: HashMap<String, String>,
     pub path_params: HashMap<String, String>,
@@ -12,6 +22,8 @@ pub struct APIrequest {
     pub path: String,
     pub method: String,
     pub body: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<TriggerMetadata>,
 }
 
 impl APIrequest {
@@ -23,7 +35,6 @@ impl APIrequest {
         method: String,
         body: Option<Json<Value>>,
     ) -> Self {
-        // sometimes body can be empty, like in GET requests
         let body_value = body.map(|Json(v)| v).unwrap_or(serde_json::json!({}));
         APIrequest {
             query_params,
@@ -32,9 +43,14 @@ impl APIrequest {
                 .iter()
                 .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
                 .collect(),
-            path,
-            method,
+            path: path.clone(),
+            method: method.clone(),
             body: body_value,
+            trigger: Some(TriggerMetadata {
+                trigger_type: "api".to_string(),
+                path: Some(path),
+                method: Some(method),
+            }),
         }
     }
 }

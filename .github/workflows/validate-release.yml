@@ -286,3 +286,109 @@ jobs:
             echo "All 9 platform binaries validated successfully" >> $GITHUB_STEP_SUMMARY
           fi
 
+  publish-sdk:
+    name: Publish Node SDK
+    needs: validate
+    if: success()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get release tag
+        id: get_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then
+            echo "No tag found, skipping SDK publishing"
+            exit 0
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Publishing SDK for release: $TAG"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: |
+          cd packages/node/iii
+          pnpm install
+
+      - name: Build SDK
+        run: |
+          cd packages/node/iii
+          pnpm build
+
+      - name: Publish to npm
+        id: publish
+        run: |
+          cd packages/node/iii
+          pnpm publish --access restricted --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Notify Slack - SDK Published
+        if: success()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "📦 Node SDK published for release ${{ steps.get_tag.outputs.tag }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Node SDK Published* 📦\n\nVersion: `${{ steps.get_tag.outputs.tag }}`\nPackage: `@iii-dev/sdk`\n\n✅ Published to npm registry"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
+
+      - name: Notify Slack - SDK Publishing Failed
+        if: failure()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "⚠️ Node SDK publishing failed for release ${{ steps.get_tag.outputs.tag }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*SDK Publishing Failed* ⚠️\n\nVersion: `${{ steps.get_tag.outputs.tag }}`\nPackage: `@iii-dev/sdk`\n\n❌ Failed to publish to npm registry\n\n⚠️ Release binaries are available but SDK was not published"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
+
+      - name: Summary
+        if: always()
+        run: |
+          TAG="${{ steps.get_tag.outputs.tag }}"
+          echo "### Node SDK Publishing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Release:** \`$TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.publish.outcome }}" == "success" ]; then
+            echo "✅ **Status:** Published successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Package \`@iii-dev/sdk@$TAG\` is now available on npm" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status:** Publishing failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Release binaries are available but SDK was not published" >> $GITHUB_STEP_SUMMARY
+          fi

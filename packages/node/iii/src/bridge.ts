@@ -176,7 +176,7 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  private onInvocationResult(invocation_id: string, result: any, error: any) {
+  private onInvocationResult(invocation_id: string, result: unknown, error: unknown) {
     const invocation = this.invocations.get(invocation_id)
 
     if (invocation) {
@@ -261,7 +261,7 @@ export class Bridge implements BridgeClient {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
     } else if (type === MessageType.FunctionsAvailable) {
       const { functions } = message as FunctionsAvailableMessage
-      this.functionsAvailableCallbacks.forEach((callback) => callback(functions))
+      this.functionsAvailableCallbacks.map((callback) => callback(functions))
     }
   }
 }

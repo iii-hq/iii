@@ -33,14 +33,21 @@ pub struct PathRouter {
     pub http_path: String,
     pub http_method: String,
     pub function_path: String,
+    pub condition_function_path: Option<String>,
 }
 
 impl PathRouter {
-    pub fn new(http_path: String, http_method: String, function_path: String) -> Self {
+    pub fn new(
+        http_path: String,
+        http_method: String,
+        function_path: String,
+        condition_function_path: Option<String>,
+    ) -> Self {
         Self {
             http_path,
             http_method,
             function_path,
+            condition_function_path,
         }
     }
 }
@@ -172,7 +179,14 @@ impl RestApiCoreModule {
             })
             .collect::<Vec<String>>()
             .join("/");
-        tracing::debug!("Converted path from :{} to : {}", path, axum_path);
+
+        if axum_path != *path {
+            tracing::debug!(
+                "Converted path from {} to {}",
+                path.purple(),
+                axum_path.purple()
+            );
+        }
 
         //ensure the path starts with a leading slash
         if !axum_path.starts_with('/') {
@@ -270,7 +284,11 @@ impl RestApiCoreModule {
         cors.allow_headers(HTTP_Any)
     }
 
-    pub async fn get_router(&self, http_method: &str, http_path: &str) -> Option<String> {
+    pub async fn get_router(
+        &self,
+        http_method: &str,
+        http_path: &str,
+    ) -> Option<(String, Option<String>)> {
         let method = http_method.to_uppercase();
         let http_path = if http_path.starts_with('/') {
             tracing::debug!("Looking up router for path with leading slash");
@@ -287,7 +305,7 @@ impl RestApiCoreModule {
         tracing::debug!("Looking up router for key: {}", key);
         let routers = self.routers_registry.read().await;
         let router = routers.get(&key);
-        router.map(|r| r.function_path.clone())
+        router.map(|r| (r.function_path.clone(), r.condition_function_path.clone()))
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
@@ -295,7 +313,7 @@ impl RestApiCoreModule {
         let http_path = router.http_path.clone();
         let method = router.http_method.to_uppercase();
         let key = format!("{}:{}", method, router.http_path);
-        tracing::debug!("Registering router: {}", key);
+        tracing::debug!("Registering router {}", key.purple());
         self.routers_registry.write().await.insert(key, router);
 
         tracing::info!(
@@ -317,7 +335,7 @@ impl RestApiCoreModule {
         http_path: &str,
     ) -> anyhow::Result<bool> {
         let key = format!("{}:{}", http_method.to_uppercase(), http_path);
-        tracing::debug!("Unregistering router: {}", key);
+        tracing::debug!("Unregistering router {}", key.purple());
         let removed = self.routers_registry.write().await.remove(&key).is_some();
 
         if removed {
@@ -349,10 +367,17 @@ impl TriggerRegistrator for RestApiCoreModule {
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 
+            let condition_function_path = trigger
+                .config
+                .get("_condition_path")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+
             let router = PathRouter::new(
                 api_path.to_string(),
                 http_method.to_string(),
                 trigger.function_path.clone(),
+                condition_function_path,
             );
 
             adapter.register_router(router).await?;

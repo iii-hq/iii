@@ -23,6 +23,8 @@ pub(crate) struct CronJobInfo {
     #[allow(dead_code)]
     pub schedule: Schedule,
     pub function_path: String,
+    #[allow(dead_code)]
+    pub condition_function_path: Option<String>,
     pub task_handle: JoinHandle<()>,
 }
 
@@ -54,6 +56,7 @@ impl CronAdapter {
         id: String,
         schedule: Schedule,
         function_path: String,
+        condition_function_path: Option<String>,
     ) -> JoinHandle<()> {
         let scheduler = Arc::clone(&self.adapter);
         let engine = Arc::clone(&self.engine);
@@ -106,6 +109,46 @@ impl CronAdapter {
                         "actual_time": chrono::Utc::now().to_rfc3339(),
                     });
 
+                    if let Some(condition_function_path) = condition_function_path.as_ref() {
+                        tracing::debug!(
+                            condition_function_path = %condition_function_path,
+                            "Checking trigger conditions"
+                        );
+
+                        match engine
+                            .invoke_function(condition_function_path, event_data.clone())
+                            .await
+                        {
+                            Ok(Some(result)) => {
+                                if let Some(passed) = result.as_bool()
+                                    && !passed
+                                {
+                                    tracing::debug!(
+                                        function_path = %func_path,
+                                        "Condition check failed, skipping handler"
+                                    );
+                                    scheduler.release_lock(&job_id).await;
+                                    continue;
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    condition_function_path = %condition_function_path,
+                                    "Condition function returned no result"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    condition_function_path = %condition_function_path,
+                                    error = ?err,
+                                    "Error invoking condition function"
+                                );
+                                scheduler.release_lock(&job_id).await;
+                                continue;
+                            }
+                        }
+                    }
+
                     // Invoke the function
                     let _ = engine.invoke_function(&func_path, event_data).await;
 
@@ -129,6 +172,7 @@ impl CronAdapter {
         id: &str,
         cron_expression: &str,
         function_path: &str,
+        condition_function_path: Option<String>,
     ) -> anyhow::Result<()> {
         // Check if already registered
         {
@@ -151,7 +195,12 @@ impl CronAdapter {
 
         // Start the cron job
         let task_handle = self
-            .start_cron_job(id.to_string(), schedule.clone(), function_path.to_string())
+            .start_cron_job(
+                id.to_string(),
+                schedule.clone(),
+                function_path.to_string(),
+                condition_function_path.clone(),
+            )
             .await;
 
         // Store the job info
@@ -162,6 +211,7 @@ impl CronAdapter {
                 id: id.to_string(),
                 schedule,
                 function_path: function_path.to_string(),
+                condition_function_path,
                 task_handle,
             },
         );

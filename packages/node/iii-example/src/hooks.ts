@@ -2,7 +2,7 @@ import { type ApiRequest, type ApiResponse, type Context, type FunctionMessage, 
 import { bridge } from './bridge'
 
 export const useApi = (
-  config: { api_path: string; http_method: string; description?: string; metadata: Record<string, any> },
+  config: { api_path: string; http_method: string; description?: string; metadata?: Record<string, any> },
   handler: (req: ApiRequest<any>, context: Context) => Promise<ApiResponse>,
 ) => {
   const function_path = `api.${config.http_method.toLowerCase()}.${config.api_path}`
@@ -38,13 +38,12 @@ export type LogLevel = 'info' | 'warn' | 'error' | 'all'
 type LogTriggerConfig = { level: LogLevel; description?: string }
 type LogTriggerHandler = (log: LogEvent, context: Context) => Promise<void>
 
-export const useOnLog = (
-  config: LogTriggerConfig,
-  handler: LogTriggerHandler,
-) => {
+export const useOnLog = (config: LogTriggerConfig, handler: LogTriggerHandler) => {
   const function_path = `onLog.${config.level}.${Date.now()}`
 
-  bridge.registerFunction({ function_path, description: config.description, metadata: {} }, (log) => handler(log, getContext()))
+  bridge.registerFunction({ function_path, description: config.description, metadata: {} }, (log) =>
+    handler(log, getContext()),
+  )
   bridge.registerTrigger({
     trigger_type: 'log',
     function_path,
