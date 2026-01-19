@@ -65,142 +65,175 @@ impl StreamAdapter for RedisAdapter {
         let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
-        let exists = match conn.exists::<_, bool>(&key).await {
-            Ok(exists) => exists,
-            Err(e) => {
-                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to check Redis key existence");
+        const MAX_RETRIES: usize = 5;
+        for _ in 0..MAX_RETRIES {
+            let watch_result: Result<(), _> =
+                redis::cmd("WATCH").arg(&key).query_async(&mut *conn).await;
+            if let Err(e) = watch_result {
+                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to watch Redis key");
                 return None;
             }
-        };
-        if !exists {
-            return None;
-        }
 
-        let mut pipe = redis::pipe();
-        pipe.atomic();
+            let exists = match conn.exists::<_, bool>(&key).await {
+                Ok(exists) => exists,
+                Err(e) => {
+                    tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to check Redis key existence");
+                    let _: Result<(), _> = redis::cmd("UNWATCH").query_async(&mut *conn).await;
+                    return None;
+                }
+            };
+            if !exists {
+                let _: Result<(), _> = redis::cmd("UNWATCH").query_async(&mut *conn).await;
+                return None;
+            }
 
-        for op in ops {
-            match op {
-                UpdateOp::Set { path, value } => {
-                    if path.0.is_empty() {
-                        match value {
-                            Value::Object(map) => {
-                                pipe.del(&key);
-                                for (field, v) in map {
-                                    let payload = match serde_json::to_string(&v) {
-                                        Ok(payload) => payload,
-                                        Err(err) => {
-                                            tracing::warn!(
-                                                error = ?err,
-                                                stream_name = %stream_name,
-                                                group_id = %group_id,
-                                                field = %field,
-                                                "Failed to serialize value for HSET"
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                    pipe.hset(&key, field, payload);
+            let mut pipe = redis::pipe();
+            pipe.atomic();
+
+            for op in ops.iter().cloned() {
+                match op {
+                    UpdateOp::Set { path, value } => {
+                        if path.0.is_empty() {
+                            match value {
+                                Value::Object(map) => {
+                                    pipe.del(&key);
+                                    for (field, v) in map {
+                                        let payload = match serde_json::to_string(&v) {
+                                            Ok(payload) => payload,
+                                            Err(err) => {
+                                                tracing::warn!(
+                                                    error = ?err,
+                                                    stream_name = %stream_name,
+                                                    group_id = %group_id,
+                                                    field = %field,
+                                                    "Failed to serialize value for HSET"
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        pipe.hset(&key, field, payload);
+                                    }
+                                }
+                                _ => {
+                                    tracing::warn!(
+                                        "Set operation with empty path requires value to be a JSON object"
+                                    );
                                 }
                             }
-                            _ => {
-                                tracing::warn!(
-                                    "Set operation with empty path requires value to be a JSON object"
-                                );
-                            }
+                        } else {
+                            let payload = match serde_json::to_string(&value) {
+                                Ok(payload) => payload,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        error = ?err,
+                                        stream_name = %stream_name,
+                                        group_id = %group_id,
+                                        "Failed to serialize value for HSET"
+                                    );
+                                    continue;
+                                }
+                            };
+                            pipe.hset(&key, path.0, payload);
                         }
-                    } else {
-                        let payload = match serde_json::to_string(&value) {
-                            Ok(payload) => payload,
+                    }
+                    UpdateOp::Merge { path, value } => {
+                        if path.is_none() || path.as_ref().unwrap().0.is_empty() {
+                            match value {
+                                Value::Object(map) => {
+                                    for (field, v) in map {
+                                        let payload = match serde_json::to_string(&v) {
+                                            Ok(payload) => payload,
+                                            Err(err) => {
+                                                tracing::warn!(
+                                                    error = ?err,
+                                                    stream_name = %stream_name,
+                                                    group_id = %group_id,
+                                                    field = %field,
+                                                    "Failed to serialize value for HSET"
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        pipe.hset(&key, field, payload);
+                                    }
+                                }
+                                _ => {
+                                    tracing::warn!(
+                                        "Merge operation requires new values to be a JSON object"
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::warn!("Only root-level merge is supported");
+                        }
+                    }
+                    UpdateOp::Increment { path, by } => {
+                        pipe.hincr(&key, path.0, by);
+                    }
+                    UpdateOp::Decrement { path, by } => {
+                        pipe.hincr(&key, path.0, -by);
+                    }
+                    UpdateOp::Remove { path } => {
+                        pipe.hdel(&key, path.0);
+                    }
+                }
+            }
+
+            let result: Result<(), _> = pipe.query_async(&mut *conn).await;
+            match result {
+                Ok(_) => {
+                    let values = match conn.hgetall::<_, HashMap<String, String>>(&key).await {
+                        Ok(values) => values,
+                        Err(e) => {
+                            tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
+                            return None;
+                        }
+                    };
+
+                    let mut map = serde_json::Map::new();
+                    for (field, value) in values {
+                        match serde_json::from_str::<Value>(&value) {
+                            Ok(parsed) => {
+                                map.insert(field, parsed);
+                            }
                             Err(err) => {
                                 tracing::warn!(
                                     error = ?err,
                                     stream_name = %stream_name,
                                     group_id = %group_id,
-                                    "Failed to serialize value for HSET"
-                                );
-                                continue;
-                            }
-                        };
-                        pipe.hset(&key, path.0, payload);
-                    }
-                }
-                UpdateOp::Merge { path, value } => {
-                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
-                        match value {
-                            Value::Object(map) => {
-                                for (field, v) in map {
-                                    let payload = match serde_json::to_string(&v) {
-                                        Ok(payload) => payload,
-                                        Err(err) => {
-                                            tracing::warn!(
-                                                error = ?err,
-                                                stream_name = %stream_name,
-                                                group_id = %group_id,
-                                                field = %field,
-                                                "Failed to serialize value for HSET"
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                    pipe.hset(&key, field, payload);
-                                }
-                            }
-                            _ => {
-                                tracing::warn!(
-                                    "Merge operation requires new values to be a JSON object"
+                                    field = %field,
+                                    "Failed to parse Redis hash value as JSON"
                                 );
                             }
                         }
-                    } else {
-                        tracing::warn!("Only root-level merge is supported");
                     }
+
+                    return Some(Value::Object(map));
                 }
-                UpdateOp::Increment { path, by } => {
-                    pipe.hincr(&key, path.0, by);
+                Err(e)
+                    if e.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ExecAbort) =>
+                {
+                    let exists = match conn.exists::<_, bool>(&key).await {
+                        Ok(exists) => exists,
+                        Err(err) => {
+                            tracing::error!(error = %err, stream_name = %stream_name, group_id = %group_id, "Failed to re-check Redis key existence");
+                            return None;
+                        }
+                    };
+                    if !exists {
+                        return None;
+                    }
+                    continue;
                 }
-                UpdateOp::Decrement { path, by } => {
-                    pipe.hincr(&key, path.0, -by);
-                }
-                UpdateOp::Remove { path } => {
-                    pipe.hdel(&key, path.0);
+                Err(e) => {
+                    let _: Result<(), _> = redis::cmd("UNWATCH").query_async(&mut *conn).await;
+                    tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to update Redis hash");
+                    return None;
                 }
             }
         }
 
-        let result: Result<(), _> = pipe.query_async(&mut *conn).await;
-        if let Err(e) = result {
-            tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to update Redis hash");
-            return None;
-        }
-
-        let values = match conn.hgetall::<_, HashMap<String, String>>(&key).await {
-            Ok(values) => values,
-            Err(e) => {
-                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
-                return None;
-            }
-        };
-
-        let mut map = serde_json::Map::new();
-        for (field, value) in values {
-            match serde_json::from_str::<Value>(&value) {
-                Ok(parsed) => {
-                    map.insert(field, parsed);
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = ?err,
-                        stream_name = %stream_name,
-                        group_id = %group_id,
-                        field = %field,
-                        "Failed to parse Redis hash value as JSON"
-                    );
-                }
-            }
-        }
-
-        Some(Value::Object(map))
+        None
     }
 
     async fn emit_event(&self, message: StreamWrapperMessage) {
@@ -580,9 +613,7 @@ mod tests {
             }));
         }
 
-        for handle in handles {
-            let _ = handle.await;
-        }
+        futures::future::join_all(handles).await;
 
         let result = adapter
             .get(&stream_name, &group_id, counter_key)

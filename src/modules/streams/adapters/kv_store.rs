@@ -317,9 +317,7 @@ mod tests {
             }));
         }
 
-        for handle in handles {
-            let _ = handle.await;
-        }
+        futures::future::join_all(handles).await;
 
         let result = builtin_adapter
             .get(stream_name, group_id, counter_key)
