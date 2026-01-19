@@ -22,6 +22,12 @@ impl Default for Storage {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetResult {
+    pub old_value: Option<Value>,
+    pub new_value: Value,
+}
+
 impl Storage {
     pub fn new() -> Self {
         Storage(HashMap::new())
@@ -39,8 +45,7 @@ impl Storage {
         match rkyv::from_bytes::<Storage, rkyv::rancor::Error>(&bytes) {
             Ok(storage) => storage,
             Err(err) => {
-                tracing::error!(error = ?err, "failed to parse
-  storage from disk");
+                tracing::error!(error = ?err, "failed to parse storage from disk");
                 Storage::new()
             }
         }
@@ -185,10 +190,16 @@ impl BuiltinKvStore {
         }
     }
 
-    pub async fn set(&self, key: String, data: Value) {
+    pub async fn set(&self, key: String, data: Value) -> SetResult {
         let mut store = self.store.write().await;
-        store.insert(key, data);
+        let old_value = store.get(&key).cloned();
+        store.insert(key, data.clone());
         self.dirty.store(true, std::sync::atomic::Ordering::Release);
+
+        SetResult {
+            old_value,
+            new_value: data,
+        }
     }
 
     pub async fn get(&self, key: String) -> Option<Value> {
@@ -206,13 +217,20 @@ impl BuiltinKvStore {
         result
     }
 
-    pub async fn list_keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+    pub async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String> {
         let store = self.store.read().await;
         store
             .keys()
-            .filter(|k| k.starts_with(prefix))
+            .filter(|k| k.starts_with(&prefix))
             .cloned()
             .collect()
+    }
+
+    pub async fn list(&self, key: String) -> Vec<Value> {
+        self.get(key).await.map_or(vec![], |v| {
+            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
+            topic.values().cloned().collect()
+        })
     }
 }
 

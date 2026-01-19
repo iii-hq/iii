@@ -27,7 +27,8 @@ use crate::engine::Engine;
 // =============================================================================
 
 /// Default address for the engine server
-const DEFAULT_ADDRESS: &str = "127.0.0.1:49134";
+pub const DEFAULT_PORT: u16 = 49134;
+const DEFAULT_HOST: &str = "127.0.0.1";
 
 // =============================================================================
 // EngineConfig (YAML structure)
@@ -36,6 +37,8 @@ const DEFAULT_ADDRESS: &str = "127.0.0.1:49134";
 #[derive(Debug, Deserialize)]
 pub struct EngineConfig {
     #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
     pub modules: Vec<ModuleEntry>,
 }
 
@@ -43,7 +46,10 @@ impl EngineConfig {
     pub fn default_modules(self) -> Self {
         let modules = default_module_entries();
 
-        Self { modules }
+        Self {
+            port: 49134,
+            modules,
+        }
     }
 
     pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
@@ -94,6 +100,7 @@ impl EngineConfig {
             Err(_) => {
                 tracing::info!("No {} found, using default modules", path);
                 Ok(Self {
+                    port: DEFAULT_PORT,
                     modules: default_module_entries(),
                 })
             }
@@ -295,7 +302,7 @@ impl EngineBuilder {
     pub fn new() -> Self {
         Self {
             config: None,
-            address: DEFAULT_ADDRESS.to_string(),
+            address: format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT),
             engine: Arc::new(Engine::new()),
             registry: Arc::new(ModuleRegistry::with_inventory()),
             modules: Vec::new(),
@@ -329,6 +336,7 @@ impl EngineBuilder {
         if self.config.is_none() {
             self.config = Some(EngineConfig {
                 modules: Vec::new(),
+                port: DEFAULT_PORT,
             });
         }
 

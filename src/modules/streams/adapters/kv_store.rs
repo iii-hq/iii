@@ -60,13 +60,29 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
                 serde_json::from_value(value).unwrap_or_default();
             exist = topic.contains_key(item_id);
             topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
+
+            match serde_json::to_value(&topic) {
+                Ok(value) => {
+                    self.storage.set(key, value).await;
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed to serialize topic");
+                    return;
+                }
+            };
         } else {
             let mut topic = HashMap::new();
             topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
+
+            match serde_json::to_value(&topic) {
+                Ok(value) => {
+                    self.storage.set(key, value).await;
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed to serialize topic");
+                    return;
+                }
+            };
         }
 
         let event = if exist {
@@ -120,19 +136,17 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
         let key = self.gen_key(stream_name, group_id);
-        self.storage.get(key).await.map_or(vec![], |v| {
-            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-            topic.values().cloned().collect()
-        })
+
+        self.storage.list(key).await
     }
 
     async fn list_groups(&self, stream_name: &str) -> Vec<String> {
-        let prefix = format!("{}::", stream_name);
+        let prefix = &format!("{}::", stream_name);
         self.storage
-            .list_keys_with_prefix(&prefix)
+            .list_keys_with_prefix(prefix.to_string())
             .await
             .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
+            .filter_map(|key| key.strip_prefix(&prefix.clone()).map(|s| s.to_string()))
             .collect()
     }
 
