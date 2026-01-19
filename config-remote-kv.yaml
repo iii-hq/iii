@@ -1,4 +1,4 @@
-port: 49134
+port: ${III_PORT:49134}
 modules:
   - class: modules::streams::StreamModule
     config:
