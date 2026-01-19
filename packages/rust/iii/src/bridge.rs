@@ -344,7 +344,8 @@ impl Bridge {
     }
 
     pub async fn list_functions(&self) -> Result<Value, BridgeError> {
-        self.invoke_function("engine.functions.list", serde_json::json!({})).await
+        self.invoke_function("engine.functions.list", serde_json::json!({}))
+            .await
     }
 
     fn send_message(&self, message: Message) -> Result<(), BridgeError> {

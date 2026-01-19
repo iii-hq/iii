@@ -548,15 +548,24 @@ impl Engine {
         serde_json::json!({ "workers": worker_infos })
     }
 
-    pub async fn register_worker_metadata(
-        &self,
-        worker_id: &Uuid,
-        data: &Value,
-    ) {
-        let runtime = data.get("runtime").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        let version = data.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let name = data.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let os = data.get("os").and_then(|v| v.as_str()).map(|s| s.to_string());
+    pub async fn register_worker_metadata(&self, worker_id: &Uuid, data: &Value) {
+        let runtime = data
+            .get("runtime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let version = data
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let name = data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let os = data
+            .get("os")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         self.worker_registry
             .update_worker_metadata(worker_id, runtime, version, name, os)
