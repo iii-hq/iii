@@ -8,11 +8,6 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
-  FunctionsAvailable = 'functionsavailable',
-  ListFunctions = 'listfunctions',
-  RegisterWorker = 'registerworker',
-  ListWorkers = 'listworkers',
-  WorkersAvailable = 'workersavailable',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -139,33 +134,12 @@ export type InvocationResultMessage = {
   error?: any
 }
 
-export type FunctionMessage = {
-  functionPath: string
+export type FunctionInfo = {
+  function_path: string
   description?: string
-  requestFormat?: RegisterFunctionFormat
-  responseFormat?: RegisterFunctionFormat
+  request_format?: RegisterFunctionFormat
+  response_format?: RegisterFunctionFormat
   metadata?: Record<string, unknown>
-}
-
-export type FunctionsAvailableMessage = {
-  type: MessageType.FunctionsAvailable
-  functions: FunctionMessage[]
-}
-
-export type ListFunctionsMessage = {
-  type: MessageType.ListFunctions
-}
-
-export type RegisterWorkerMessage = {
-  type: MessageType.RegisterWorker
-  runtime: string
-  version?: string
-  name?: string
-  os?: string
-}
-
-export type ListWorkersMessage = {
-  type: MessageType.ListWorkers
 }
 
 export type WorkerInfo = {
@@ -182,11 +156,6 @@ export type WorkerInfo = {
   active_invocations: number
 }
 
-export type WorkersAvailableMessage = {
-  type: MessageType.WorkersAvailable
-  workers: WorkerInfo[]
-}
-
 export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage
@@ -197,8 +166,3 @@ export type BridgeMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
-  | FunctionsAvailableMessage
-  | ListFunctionsMessage
-  | RegisterWorkerMessage
-  | ListWorkersMessage
-  | WorkersAvailableMessage

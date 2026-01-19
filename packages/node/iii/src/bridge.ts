@@ -1,8 +1,7 @@
 import { type Data, WebSocket } from 'ws'
 import {
   type BridgeMessage,
-  type FunctionMessage,
-  type FunctionsAvailableMessage,
+  type FunctionInfo,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
   MessageType,
@@ -11,7 +10,6 @@ import {
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type WorkerInfo,
-  type WorkersAvailableMessage,
 } from './bridge-types'
 import { withContext } from './context'
 import { Logger, type LoggerParams } from './logger'
@@ -26,7 +24,7 @@ import type {
   Trigger,
 } from './types'
 
-export type FunctionsAvailableCallback = (functions: FunctionMessage[]) => void
+export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 export type WorkersAvailableCallback = (workers: WorkerInfo[]) => void
 
 import * as os from 'os'
@@ -138,12 +136,14 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  listFunctions(): void {
-    this.sendMessage(MessageType.ListFunctions, {})
+  async listFunctions(): Promise<FunctionInfo[]> {
+    const result = await this.invokeFunction<{}, { functions: FunctionInfo[] }>('engine.functions.list', {})
+    return result.functions
   }
 
-  listWorkers(): void {
-    this.sendMessage(MessageType.ListWorkers, {})
+  async listWorkers(): Promise<WorkerInfo[]> {
+    const result = await this.invokeFunction<{}, { workers: WorkerInfo[] }>('engine.workers.list', {})
+    return result.workers
   }
 
   onWorkersAvailable(callback: WorkersAvailableCallback): () => void {
@@ -154,6 +154,15 @@ export class Bridge implements BridgeClient {
         this.workersAvailableCallbacks.splice(index, 1)
       }
     }
+  }
+
+  private registerWorkerMetadata(): void {
+    this.invokeFunctionAsync('engine.workers.register', {
+      runtime: 'node',
+      version: SDK_VERSION,
+      name: getWorkerName(),
+      os: getOsInfo(),
+    })
   }
 
   createStream<TData>(streamName: string, stream: IStream<TData>): void {
@@ -190,13 +199,6 @@ export class Bridge implements BridgeClient {
     this.clearInterval()
     this.ws?.on('message', this.onMessage.bind(this))
 
-    this.sendMessage(MessageType.RegisterWorker, {
-      runtime: 'node',
-      version: SDK_VERSION,
-      name: getWorkerName(),
-      os: getOsInfo(),
-    })
-
     this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
     this.services.forEach((service) => this.sendMessage(MessageType.RegisterService, service, true))
     this.functions.forEach(({ message }) => this.sendMessage(MessageType.RegisterFunction, message, true))
@@ -204,6 +206,8 @@ export class Bridge implements BridgeClient {
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
       .forEach((message) => this.ws?.send(JSON.stringify(message)))
+
+    this.registerWorkerMetadata()
   }
 
   private isOpen() {
@@ -301,12 +305,6 @@ export class Bridge implements BridgeClient {
       this.onInvokeFunction(invocation_id, function_path, data)
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
-    } else if (type === MessageType.FunctionsAvailable) {
-      const { functions } = message as FunctionsAvailableMessage
-      this.functionsAvailableCallbacks.map((callback) => callback(functions))
-    } else if (type === MessageType.WorkersAvailable) {
-      const { workers } = message as WorkersAvailableMessage
-      this.workersAvailableCallbacks.map((callback) => callback(workers))
     }
   }
 }

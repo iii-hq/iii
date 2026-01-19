@@ -1,5 +1,5 @@
 export { Bridge, type FunctionsAvailableCallback, type WorkersAvailableCallback } from './bridge'
-export type { FunctionMessage, FunctionsAvailableMessage, WorkerInfo, WorkersAvailableMessage } from './bridge-types'
+export type { FunctionInfo, WorkerInfo } from './bridge-types'
 export { type Context, getContext, withContext } from './context'
 export { Logger } from './logger'
 export * from './streams'

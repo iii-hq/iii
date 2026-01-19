@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -22,7 +22,7 @@ use crate::{
     error::BridgeError,
     logger::{Logger, LoggerInvoker},
     protocol::{
-        ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterServiceMessage,
+        ErrorBody, Message, RegisterFunctionMessage, RegisterServiceMessage,
         RegisterTriggerMessage, RegisterTriggerTypeMessage, UnregisterTriggerMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
@@ -37,7 +37,6 @@ enum Outbound {
 }
 
 type PendingInvocation = oneshot::Sender<Result<Value, BridgeError>>;
-type FunctionsAvailableCallback = Arc<dyn Fn(Vec<FunctionMessage>) + Send + Sync>;
 
 // WebSocket transmitter type alias
 type WsTx = futures_util::stream::SplitSink<
@@ -56,26 +55,11 @@ struct BridgeInner {
     trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
-    callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
-    next_callback_id: AtomicUsize,
 }
 
 #[derive(Clone)]
 pub struct Bridge {
     inner: Arc<BridgeInner>,
-}
-
-#[derive(Clone)]
-pub struct FunctionsAvailableSubscription {
-    id: usize,
-    inner: Arc<BridgeInner>,
-}
-
-impl FunctionsAvailableSubscription {
-    pub fn unsubscribe(&self) {
-        let mut callbacks = self.inner.callbacks.lock().unwrap();
-        callbacks.remove(&self.id);
-    }
 }
 
 impl Bridge {
@@ -92,8 +76,6 @@ impl Bridge {
             trigger_types: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
             services: Mutex::new(HashMap::new()),
-            callbacks: Mutex::new(HashMap::new()),
-            next_callback_id: AtomicUsize::new(0),
         };
         Self {
             inner: Arc::new(inner),
@@ -361,44 +343,8 @@ impl Bridge {
         })
     }
 
-    pub async fn list_functions(&self) -> Result<Vec<FunctionMessage>, BridgeError> {
-        let (tx, rx) = oneshot::channel();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let sub = self.on_functions_available({
-            let tx = tx.clone();
-            move |funcs| {
-                if let Some(sender) = tx.lock().unwrap().take() {
-                    let _ = sender.send(funcs);
-                }
-            }
-        });
-
-        self.send_message(Message::ListFunctions)?;
-
-        let result = match tokio::time::timeout(DEFAULT_TIMEOUT, rx).await {
-            Ok(Ok(funcs)) => Ok(funcs),
-            Ok(Err(_)) => Err(BridgeError::NotConnected),
-            Err(_) => Err(BridgeError::Timeout),
-        };
-
-        sub.unsubscribe();
-        result
-    }
-
-    pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableSubscription
-    where
-        F: Fn(Vec<FunctionMessage>) + Send + Sync + 'static,
-    {
-        let id = self.inner.next_callback_id.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .callbacks
-            .lock()
-            .unwrap()
-            .insert(id, Arc::new(callback));
-        FunctionsAvailableSubscription {
-            id,
-            inner: self.inner.clone(),
-        }
+    pub async fn list_functions(&self) -> Result<Value, BridgeError> {
+        self.invoke_function("engine.functions.list", serde_json::json!({})).await
     }
 
     fn send_message(&self, message: Message) -> Result<(), BridgeError> {
@@ -562,19 +508,6 @@ impl Bridge {
                 config,
             } => {
                 self.handle_register_trigger(id, trigger_type, function_path, config);
-            }
-            Message::FunctionsAvailable { functions } => {
-                let callbacks = self
-                    .inner
-                    .callbacks
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for callback in callbacks {
-                    callback(functions.clone());
-                }
             }
             Message::Ping => {
                 let _ = self.inner.outbound.send(Outbound::Message(Message::Pong));

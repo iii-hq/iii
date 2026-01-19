@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    protocol::{ErrorBody, FunctionMessage, Message, WorkerInfo},
+    protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -147,14 +147,7 @@ impl Engine {
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)) => {
                     let new_functions_hash = self.functions.functions_hash();
                     if new_functions_hash != current_functions_hash {
-                        tracing::info!("New functions detected, notifying workers");
-                        let message: Vec<FunctionMessage> = self
-                            .functions
-                            .iter()
-                            .map(|entry| FunctionMessage::from(entry.value()))
-                            .collect();
-                        let message = Message::FunctionsAvailable { functions: message };
-                        self.broadcast_msg(message).await;
+                        tracing::info!("New functions detected (workers can call engine.functions.list to refresh)");
                         current_functions_hash = new_functions_hash;
                     }
                 }
@@ -179,10 +172,6 @@ impl Engine {
 
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
-            Message::FunctionsAvailable { functions } => {
-                tracing::debug!(?functions, "FunctionsAvailable");
-                Ok(())
-            }
             Message::TriggerRegistrationResult {
                 id,
                 trigger_type,
@@ -267,6 +256,74 @@ impl Engine {
                     payload = ?data,
                     "InvokeFunction"
                 );
+
+                if function_path == "engine.functions.list" {
+                    let result = self.list_functions_as_json();
+                    if let Some(inv_id) = invocation_id {
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: *inv_id,
+                                function_path: function_path.clone(),
+                                result: Some(result),
+                                error: None,
+                            },
+                        )
+                        .await;
+                    }
+                    return Ok(());
+                }
+
+                if function_path == "engine.workers.list" {
+                    let result = self.list_workers_as_json().await;
+                    if let Some(inv_id) = invocation_id {
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: *inv_id,
+                                function_path: function_path.clone(),
+                                result: Some(result),
+                                error: None,
+                            },
+                        )
+                        .await;
+                    }
+                    return Ok(());
+                }
+
+                if function_path == "engine.workers.register" {
+                    self.register_worker_metadata(&worker.id, data).await;
+                    if let Some(inv_id) = invocation_id {
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: *inv_id,
+                                function_path: function_path.clone(),
+                                result: Some(serde_json::json!({"success": true})),
+                                error: None,
+                            },
+                        )
+                        .await;
+                    }
+                    return Ok(());
+                }
+
+                if function_path == "engine.triggers.list" {
+                    let result = self.list_triggers_as_json().await;
+                    if let Some(inv_id) = invocation_id {
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: *inv_id,
+                                function_path: function_path.clone(),
+                                result: Some(result),
+                                error: None,
+                            },
+                        )
+                        .await;
+                    }
+                    return Ok(());
+                }
 
                 let engine = self.clone();
                 let worker = worker.clone();
@@ -419,69 +476,91 @@ impl Engine {
 
                 Ok(())
             }
-            Message::ListFunctions => {
-                let functions: Vec<FunctionMessage> = self
-                    .functions
-                    .iter()
-                    .map(|entry| FunctionMessage::from(entry.value()))
-                    .collect();
-                self.send_msg(worker, Message::FunctionsAvailable { functions })
-                    .await;
-                Ok(())
-            }
             Message::Ping => {
                 self.send_msg(worker, Message::Pong).await;
                 Ok(())
             }
             Message::Pong => Ok(()),
-            Message::RegisterWorker { runtime, version, name, os } => {
-                tracing::debug!(
-                    worker_id = %worker.id,
-                    runtime = %runtime,
-                    version = ?version,
-                    name = ?name,
-                    os = ?os,
-                    "RegisterWorker"
-                );
-
-                self.worker_registry
-                    .update_worker_metadata(&worker.id, runtime.clone(), version.clone(), name.clone(), os.clone())
-                    .await;
-
-                Ok(())
-            }
-            Message::ListWorkers => {
-                let workers = self.worker_registry.list_workers().await;
-                let mut worker_infos = Vec::with_capacity(workers.len());
-
-                for w in workers {
-                    let functions = w.get_function_paths().await;
-                    let function_count = functions.len();
-                    let active_invocations = w.invocation_count().await;
-
-                    worker_infos.push(WorkerInfo {
-                        id: w.id.to_string(),
-                        name: w.name.clone(),
-                        runtime: w.runtime.clone(),
-                        version: w.version.clone(),
-                        os: w.os.clone(),
-                        ip_address: w.ip_address.clone(),
-                        status: w.status.as_str().to_string(),
-                        connected_at_ms: w.connected_at.timestamp_millis() as u64,
-                        function_count,
-                        functions,
-                        active_invocations,
-                    });
-                }
-
-                self.send_msg(worker, Message::WorkersAvailable { workers: worker_infos })
-                    .await;
-                Ok(())
-            }
-            Message::WorkersAvailable { workers: _ } => {
-                Ok(())
-            }
         }
+    }
+
+    pub fn list_functions_as_json(&self) -> Value {
+        let functions: Vec<Value> = self
+            .functions
+            .iter()
+            .map(|entry| {
+                let f = entry.value();
+                serde_json::json!({
+                    "function_path": f._function_path,
+                    "description": f._description,
+                    "request_format": f.request_format,
+                    "response_format": f.response_format,
+                    "metadata": f.metadata,
+                })
+            })
+            .collect();
+
+        serde_json::json!({ "functions": functions })
+    }
+
+    pub async fn list_triggers_as_json(&self) -> Value {
+        let triggers_map = self.trigger_registry.triggers.read().await;
+        let triggers: Vec<Value> = triggers_map
+            .iter()
+            .map(|entry| {
+                let t = entry.value();
+                serde_json::json!({
+                    "id": t.id,
+                    "trigger_type": t.trigger_type,
+                    "function_path": t.function_path,
+                    "config": t.config,
+                })
+            })
+            .collect();
+
+        serde_json::json!({ "triggers": triggers })
+    }
+
+    pub async fn list_workers_as_json(&self) -> Value {
+        let workers = self.worker_registry.list_workers().await;
+        let mut worker_infos = Vec::with_capacity(workers.len());
+
+        for w in workers {
+            let functions = w.get_function_paths().await;
+            let function_count = functions.len();
+            let active_invocations = w.invocation_count().await;
+
+            worker_infos.push(serde_json::json!({
+                "id": w.id.to_string(),
+                "name": w.name.clone(),
+                "runtime": w.runtime.clone(),
+                "version": w.version.clone(),
+                "os": w.os.clone(),
+                "ip_address": w.ip_address.clone(),
+                "status": w.status.as_str(),
+                "connected_at_ms": w.connected_at.timestamp_millis() as u64,
+                "function_count": function_count,
+                "functions": functions,
+                "active_invocations": active_invocations,
+            }));
+        }
+
+        serde_json::json!({ "workers": worker_infos })
+    }
+
+    pub async fn register_worker_metadata(
+        &self,
+        worker_id: &Uuid,
+        data: &Value,
+    ) {
+        let runtime = data.get("runtime").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let version = data.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let name = data.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let os = data.get("os").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        self.worker_registry
+            .update_worker_metadata(worker_id, runtime, version, name, os)
+            .await;
     }
 
     pub async fn handle_worker(&self, socket: WebSocket, peer: SocketAddr) -> anyhow::Result<()> {
