@@ -1,16 +1,24 @@
 use std::sync::Arc;
 pub mod adapters;
+pub mod structs;
+
+pub use self::structs::{KvDeleteInput, KvGetInput, KvSetInput};
 
 use async_trait::async_trait;
 use function_macros::{function, service};
-use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
     builtins::BuiltinKvStore,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::{core_module::CoreModule, kv_server::adapters::KVStoreAdapter},
+    modules::{
+        core_module::CoreModule,
+        kv_server::{
+            adapters::KVStoreAdapter,
+            structs::{KvListInput, KvListKeysWithPrefixInput},
+        },
+    },
     protocol::ErrorBody,
 };
 
@@ -43,20 +51,14 @@ impl CoreModule for KvServer {
     }
 }
 
-#[derive(Deserialize)]
-pub struct KvSetInput {
-    pub key: String,
-    pub value: Value,
-}
-
 #[service(name = "kv_server")]
 impl KvServer {
     #[function(
         name = "kv_server.get",
         description = "Get a value by key from the KV store"
     )]
-    pub async fn get(&self, key: String) -> FunctionResult<Option<Value>, ErrorBody> {
-        let result = self.storage.get(key, None).await;
+    pub async fn get(&self, data: KvGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        let result = self.storage.get(data.key, None).await;
         FunctionResult::Success(result)
     }
 
@@ -73,10 +75,45 @@ impl KvServer {
         name = "kv_server.delete",
         description = "Delete a value by key from the KV store"
     )]
-    pub async fn delete(&self, key: String) -> FunctionResult<Option<Value>, ErrorBody> {
-        match self.storage.delete(key).await {
+    pub async fn delete(&self, data: KvDeleteInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.storage.delete(data.key).await {
             Some(value) => FunctionResult::Success(Some(value)),
             None => FunctionResult::NoResult,
+        }
+    }
+
+    #[function(
+        name = "kv_server.list_keys_with_prefix",
+        description = "List all keys with a prefix in the KV store"
+    )]
+    pub async fn list_keys_with_prefix(
+        &self,
+        data: KvListKeysWithPrefixInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let result = self.storage.list_keys_with_prefix(data.prefix).await;
+
+        match serde_json::to_value(result) {
+            Ok(value) => FunctionResult::Success(Some(value)),
+            Err(err) => FunctionResult::Failure(ErrorBody {
+                code: "serialization_error".into(),
+                message: format!("Failed to serialize result: {}", err),
+            }),
+        }
+    }
+
+    #[function(
+        name = "kv_server.list",
+        description = "List all values in the KV store"
+    )]
+    pub async fn list(&self, data: KvListInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        let result = self.storage.list(data.key).await;
+
+        match serde_json::to_value(result) {
+            Ok(value) => FunctionResult::Success(Some(value)),
+            Err(err) => FunctionResult::Failure(ErrorBody {
+                code: "serialization_error".into(),
+                message: format!("Failed to serialize result: {}", err),
+            }),
         }
     }
 }
