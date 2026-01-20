@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
+use dashmap::DashMap;
 use function_macros::{function, service};
+use futures::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -9,7 +11,11 @@ use crate::{
     function::FunctionResult,
     modules::core_module::CoreModule,
     protocol::ErrorBody,
+    trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
+
+pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
+pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
@@ -17,11 +23,46 @@ pub struct EmptyInput {}
 #[derive(Clone)]
 pub struct WorkerModule {
     engine: Arc<Engine>,
+    triggers: Arc<DashMap<String, Trigger>>,
 }
 
 impl WorkerModule {
     pub fn new(engine: Arc<Engine>) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            triggers: Arc::new(DashMap::new()),
+        }
+    }
+}
+
+impl TriggerRegistrator for WorkerModule {
+    fn register_trigger(
+        &self,
+        trigger: Trigger,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let triggers = self.triggers.clone();
+        Box::pin(async move {
+            tracing::debug!(
+                trigger_id = %trigger.id,
+                trigger_type = %trigger.trigger_type,
+                function_path = %trigger.function_path,
+                "Registering engine trigger"
+            );
+            triggers.insert(trigger.id.clone(), trigger);
+            Ok(())
+        })
+    }
+
+    fn unregister_trigger(
+        &self,
+        trigger: Trigger,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let triggers = self.triggers.clone();
+        Box::pin(async move {
+            tracing::debug!(trigger_id = %trigger.id, "Unregistering engine trigger");
+            triggers.remove(&trigger.id);
+            Ok(())
+        })
     }
 }
 
@@ -44,6 +85,23 @@ impl CoreModule for WorkerModule {
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing WorkerModule");
+
+        let functions_trigger = TriggerType {
+            id: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
+            _description: "Triggered when functions are registered/unregistered".to_string(),
+            registrator: Box::new(self.clone()),
+            worker_id: None,
+        };
+        let _ = self.engine.register_trigger_type(functions_trigger).await;
+
+        let workers_trigger = TriggerType {
+            id: TRIGGER_WORKERS_AVAILABLE.to_string(),
+            _description: "Triggered when workers connect/disconnect".to_string(),
+            registrator: Box::new(self.clone()),
+            worker_id: None,
+        };
+        let _ = self.engine.register_trigger_type(workers_trigger).await;
+
         Ok(())
     }
 
