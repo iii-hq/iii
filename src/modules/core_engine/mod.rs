@@ -20,6 +20,38 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
 
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionInfo {
+    pub function_path: String,
+    pub description: Option<String>,
+    pub request_format: Option<Value>,
+    pub response_format: Option<Value>,
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriggerInfo {
+    pub id: String,
+    pub trigger_type: String,
+    pub function_path: String,
+    pub config: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkerInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub runtime: Option<String>,
+    pub version: Option<String>,
+    pub os: Option<String>,
+    pub ip_address: Option<String>,
+    pub status: String,
+    pub connected_at_ms: u64,
+    pub function_count: usize,
+    pub functions: Vec<String>,
+    pub active_invocations: usize,
+}
+
 #[derive(Clone)]
 pub struct WorkerModule {
     engine: Arc<Engine>,
@@ -52,43 +84,40 @@ impl WorkerModule {
         }
     }
 
-    fn list_functions_as_json(&self) -> Value {
-        let functions: Vec<Value> = self
-            .engine
+    fn list_functions(&self) -> Vec<FunctionInfo> {
+        self.engine
             .functions
             .iter()
             .map(|entry| {
                 let f = entry.value();
-                serde_json::json!({
-                    "function_path": f._function_path,
-                    "description": f._description,
-                    "request_format": f.request_format,
-                    "response_format": f.response_format,
-                    "metadata": f.metadata,
-                })
+                FunctionInfo {
+                    function_path: f._function_path.clone(),
+                    description: f._description.clone(),
+                    request_format: f.request_format.clone(),
+                    response_format: f.response_format.clone(),
+                    metadata: f.metadata.clone(),
+                }
             })
-            .collect();
-        serde_json::json!({ "functions": functions })
+            .collect()
     }
 
-    async fn list_triggers_as_json(&self) -> Value {
+    async fn list_trigger_infos(&self) -> Vec<TriggerInfo> {
         let triggers_map = self.engine.trigger_registry.triggers.read().await;
-        let triggers: Vec<Value> = triggers_map
+        triggers_map
             .iter()
             .map(|entry| {
                 let t = entry.value();
-                serde_json::json!({
-                    "id": t.id,
-                    "trigger_type": t.trigger_type,
-                    "function_path": t.function_path,
-                    "config": t.config,
-                })
+                TriggerInfo {
+                    id: t.id.clone(),
+                    trigger_type: t.trigger_type.clone(),
+                    function_path: t.function_path.clone(),
+                    config: t.config.clone(),
+                }
             })
-            .collect();
-        serde_json::json!({ "triggers": triggers })
+            .collect()
     }
 
-    async fn list_workers_as_json(&self) -> Value {
+    async fn list_worker_infos(&self) -> Vec<WorkerInfo> {
         let workers = self.engine.worker_registry.list_workers().await;
         let mut worker_infos = Vec::with_capacity(workers.len());
 
@@ -97,21 +126,21 @@ impl WorkerModule {
             let function_count = functions.len();
             let active_invocations = w.invocation_count().await;
 
-            worker_infos.push(serde_json::json!({
-                "id": w.id.to_string(),
-                "name": w.name.clone(),
-                "runtime": w.runtime.clone(),
-                "version": w.version.clone(),
-                "os": w.os.clone(),
-                "ip_address": w.ip_address.clone(),
-                "status": w.status.as_str(),
-                "connected_at_ms": w.connected_at.timestamp_millis() as u64,
-                "function_count": function_count,
-                "functions": functions,
-                "active_invocations": active_invocations,
-            }));
+            worker_infos.push(WorkerInfo {
+                id: w.id.to_string(),
+                name: w.name.clone(),
+                runtime: w.runtime.clone(),
+                version: w.version.clone(),
+                os: w.os.clone(),
+                ip_address: w.ip_address.clone(),
+                status: w.status.as_str().to_string(),
+                connected_at_ms: w.connected_at.timestamp_millis() as u64,
+                function_count,
+                functions,
+                active_invocations,
+            });
         }
-        serde_json::json!({ "workers": worker_infos })
+        worker_infos
     }
 }
 
@@ -193,27 +222,30 @@ impl CoreModule for WorkerModule {
 #[service(name = "engine")]
 impl WorkerModule {
     #[function(name = "engine.functions.list", description = "List all functions")]
-    pub async fn list_functions(
+    pub async fn get_functions(
         &self,
         _input: EmptyInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        FunctionResult::Success(Some(self.list_functions_as_json()))
+        let functions = self.list_functions();
+        FunctionResult::Success(Some(serde_json::json!({ "functions": functions })))
     }
 
     #[function(name = "engine.workers.list", description = "List all workers")]
-    pub async fn list_workers(
+    pub async fn get_workers(
         &self,
         _input: EmptyInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        FunctionResult::Success(Some(self.list_workers_as_json().await))
+        let workers = self.list_worker_infos().await;
+        FunctionResult::Success(Some(serde_json::json!({ "workers": workers })))
     }
 
     #[function(name = "engine.triggers.list", description = "List all triggers")]
-    pub async fn list_triggers(
+    pub async fn get_triggers(
         &self,
         _input: EmptyInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        FunctionResult::Success(Some(self.list_triggers_as_json().await))
+        let triggers = self.list_trigger_infos().await;
+        FunctionResult::Success(Some(serde_json::json!({ "triggers": triggers })))
     }
 }
 
