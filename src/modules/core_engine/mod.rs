@@ -15,27 +15,27 @@ use crate::{
 pub struct EmptyInput {}
 
 #[derive(Clone)]
-pub struct CoreEngineModule {
+pub struct WorkerModule {
     engine: Arc<Engine>,
 }
 
-impl CoreEngineModule {
+impl WorkerModule {
     pub fn new(engine: Arc<Engine>) -> Self {
         Self { engine }
     }
 }
 
 #[async_trait::async_trait]
-impl CoreModule for CoreEngineModule {
+impl CoreModule for WorkerModule {
     fn name(&self) -> &'static str {
-        "CoreEngineModule"
+        "WorkerModule"
     }
 
     async fn create(
         engine: Arc<Engine>,
         _config: Option<Value>,
     ) -> anyhow::Result<Box<dyn CoreModule>> {
-        Ok(Box::new(CoreEngineModule::new(engine)))
+        Ok(Box::new(WorkerModule::new(engine)))
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
@@ -43,7 +43,7 @@ impl CoreModule for CoreEngineModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing CoreEngineModule");
+        tracing::info!("Initializing WorkerModule");
         Ok(())
     }
 
@@ -53,7 +53,7 @@ impl CoreModule for CoreEngineModule {
 }
 
 #[service(name = "engine")]
-impl CoreEngineModule {
+impl WorkerModule {
     #[function(name = "engine.functions.list", description = "List all functions")]
     pub async fn list_functions(&self, _input: EmptyInput) -> FunctionResult<Option<Value>, ErrorBody> {
         FunctionResult::Success(Some(self.engine.list_functions_as_json()))
@@ -71,7 +71,7 @@ impl CoreEngineModule {
 }
 
 crate::register_module!(
-    "modules::core_engine::CoreEngineModule",
-    CoreEngineModule,
+    "modules::core_engine::WorkerModule",
+    WorkerModule,
     enabled_by_default = true
 );

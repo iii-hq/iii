@@ -1,3 +1,4 @@
+import { createRequire } from 'module'
 import * as os from 'os'
 import { type Data, WebSocket } from 'ws'
 import {
@@ -13,7 +14,7 @@ import {
   type WorkerInfo,
 } from './bridge-types'
 import { withContext } from './context'
-import { Logger, type LoggerParams } from './logger'
+import { Logger } from './logger'
 import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
@@ -25,22 +26,19 @@ import type {
   Trigger,
 } from './types'
 
-export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
-export type WorkersAvailableCallback = (workers: WorkerInfo[]) => void
-
-const SDK_VERSION = '0.1.0'
+const require = createRequire(import.meta.url)
+const { version: SDK_VERSION } = require('../package.json')
 
 function getOsInfo(): string {
-  const platform = os.platform()
-  const release = os.release()
-  const arch = os.arch()
-  return `${platform} ${release} (${arch})`
+  return `${os.platform()} ${os.release()} (${os.arch()})`
 }
 
-function getWorkerName(): string {
-  const hostname = os.hostname()
-  const pid = process.pid
-  return `${hostname}:${pid}`
+function getDefaultWorkerName(): string {
+  return `${os.hostname()}:${process.pid}`
+}
+
+export type BridgeOptions = {
+  workerName?: string
 }
 
 export class Bridge implements BridgeClient {
@@ -51,12 +49,14 @@ export class Bridge implements BridgeClient {
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
-  private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
-  private workersAvailableCallbacks: WorkersAvailableCallback[] = []
-
+  private workerName: string
   private interval?: NodeJS.Timeout
 
-  constructor(private readonly address: string) {
+  constructor(
+    private readonly address: string,
+    options?: BridgeOptions,
+  ) {
+    this.workerName = options?.workerName ?? getDefaultWorkerName()
     this.connect()
   }
 
@@ -126,16 +126,6 @@ export class Bridge implements BridgeClient {
     this.sendMessage(MessageType.InvokeFunction, { function_path, data })
   }
 
-  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void {
-    this.functionsAvailableCallbacks.push(callback)
-    return () => {
-      const index = this.functionsAvailableCallbacks.indexOf(callback)
-      if (index !== -1) {
-        this.functionsAvailableCallbacks.splice(index, 1)
-      }
-    }
-  }
-
   async listFunctions(): Promise<FunctionInfo[]> {
     const result = await this.invokeFunction<{}, { functions: FunctionInfo[] }>('engine.functions.list', {})
     return result.functions
@@ -146,21 +136,11 @@ export class Bridge implements BridgeClient {
     return result.workers
   }
 
-  onWorkersAvailable(callback: WorkersAvailableCallback): () => void {
-    this.workersAvailableCallbacks.push(callback)
-    return () => {
-      const index = this.workersAvailableCallbacks.indexOf(callback)
-      if (index !== -1) {
-        this.workersAvailableCallbacks.splice(index, 1)
-      }
-    }
-  }
-
   private registerWorkerMetadata(): void {
     this.invokeFunctionAsync('engine.workers.register', {
       runtime: 'node',
       version: SDK_VERSION,
-      name: getWorkerName(),
+      name: this.workerName,
       os: getOsInfo(),
     })
   }

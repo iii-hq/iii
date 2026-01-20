@@ -431,8 +431,6 @@ impl Engine {
                 Ok(())
             }
             Message::Pong => Ok(()),
-            Message::FunctionsAvailable { .. } => Ok(()),
-            Message::ListFunctions => Ok(()),
         }
     }
 

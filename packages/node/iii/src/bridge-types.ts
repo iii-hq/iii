@@ -8,8 +8,6 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
-  FunctionsAvailable = 'functionsavailable',
-  ListFunctions = 'listfunctions',
 }
 
 export type RegisterTriggerTypeMessage = {

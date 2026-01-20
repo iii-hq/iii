@@ -54,25 +54,8 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    FunctionsAvailable {
-        functions: Vec<FunctionInfo>,
-    },
-    ListFunctions,
     Ping,
     Pong,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionInfo {
-    pub function_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
