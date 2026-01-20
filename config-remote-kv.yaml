@@ -1,0 +1,46 @@
+port: ${III_PORT:49134}
+modules:
+  - class: modules::streams::StreamModule
+    config:
+      port: ${STREAMS_PORT:31112}
+      host: 127.0.0.1
+      adapter:
+        class: modules::streams::adapters::Bridge
+        config:
+          bridge_url: ws://localhost:49133
+
+  - class: modules::api::RestApiModule
+    config:
+      port: ${API_PORT:3111}
+      host: 127.0.0.1
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:5173
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+
+  - class: modules::observability::LoggingModule
+    config:
+      level: debug
+      format: default
+
+  - class: modules::event::EventModule
+    config:
+      adapter:
+        class: modules::event::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::RedisCronAdapter
+        config:
+          redis_url: redis://localhost:6379
