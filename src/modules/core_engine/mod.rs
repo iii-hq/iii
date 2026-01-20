@@ -34,6 +34,24 @@ impl WorkerModule {
         }
     }
 
+    pub async fn fire_triggers(&self, trigger_type: &str, data: Value) {
+        let triggers_to_fire: Vec<Trigger> = self
+            .triggers
+            .iter()
+            .filter(|entry| entry.value().trigger_type == trigger_type)
+            .map(|entry| entry.value().clone())
+            .collect();
+
+        for trigger in triggers_to_fire {
+            let engine = self.engine.clone();
+            let function_path = trigger.function_path.clone();
+            let data = data.clone();
+            tokio::spawn(async move {
+                let _ = engine.invoke_function(&function_path, data).await;
+            });
+        }
+    }
+
     fn list_functions_as_json(&self) -> Value {
         let functions: Vec<Value> = self
             .engine
