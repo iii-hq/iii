@@ -419,16 +419,6 @@ impl Engine {
 
                 Ok(())
             }
-            Message::ListFunctions => {
-                let functions: Vec<FunctionMessage> = self
-                    .functions
-                    .iter()
-                    .map(|entry| FunctionMessage::from(entry.value()))
-                    .collect();
-                self.send_msg(worker, Message::FunctionsAvailable { functions })
-                    .await;
-                Ok(())
-            }
             Message::Ping => {
                 self.send_msg(worker, Message::Pong).await;
                 Ok(())
@@ -465,6 +455,16 @@ impl Engine {
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone()).await;
+
+        // Send all available functions to the newly connected worker
+        let functions: Vec<FunctionMessage> = self
+            .functions
+            .iter()
+            .map(|entry| FunctionMessage::from(entry.value()))
+            .collect();
+        let _ = tx
+            .send(Outbound::Protocol(Message::FunctionsAvailable { functions }))
+            .await;
 
         while let Some(frame) = ws_rx.next().await {
             match frame {

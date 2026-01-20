@@ -2,17 +2,17 @@ import { type Data, WebSocket } from 'ws'
 import {
   type BridgeMessage,
   type FunctionMessage,
-  type FunctionsAvailableMessage,
+  FunctionsEngineMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
   MessageType,
   type RegisterFunctionMessage,
   type RegisterServiceMessage,
   type RegisterTriggerMessage,
-  type RegisterTriggerTypeMessage,
+  type RegisterTriggerTypeMessage
 } from './bridge-types'
 import { withContext } from './context'
-import { Logger, type LoggerParams } from './logger'
+import { Logger } from './logger'
 import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
@@ -35,6 +35,7 @@ export class Bridge implements BridgeClient {
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
   private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
+  private availableFunctions: FunctionMessage[] = []
 
   private interval?: NodeJS.Timeout
 
@@ -110,16 +111,18 @@ export class Bridge implements BridgeClient {
 
   onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void {
     this.functionsAvailableCallbacks.push(callback)
+
+    // If functions are already available, immediately invoke the callback
+    if (this.availableFunctions.length > 0) {
+      callback(this.availableFunctions)
+    }
+
     return () => {
       const index = this.functionsAvailableCallbacks.indexOf(callback)
       if (index !== -1) {
         this.functionsAvailableCallbacks.splice(index, 1)
       }
     }
-  }
-
-  listFunctions(): void {
-    this.sendMessage(MessageType.ListFunctions, {})
   }
 
   createStream<TData>(streamName: string, stream: IStream<TData>): void {
@@ -261,8 +264,9 @@ export class Bridge implements BridgeClient {
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
     } else if (type === MessageType.FunctionsAvailable) {
-      const { functions } = message as FunctionsAvailableMessage
-      this.functionsAvailableCallbacks.map((callback) => callback(functions))
+      const { functions } = message as FunctionsEngineMessage
+      this.availableFunctions = functions.map((f) => ({ functionPath: f.function_path, metadata: f.metadata }))
+      this.functionsAvailableCallbacks.map((callback) => callback(this.availableFunctions))
     }
   }
 }

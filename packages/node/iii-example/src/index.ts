@@ -1,12 +1,12 @@
-import { useApi } from './hooks'
+import { useApi, useFunctionsAvailable } from './hooks'
 import { state } from './state'
 import { streams } from './streams'
 
-// useFunctionsAvailable((functions) => {
-//   console.log('--------------------------------')
-//   console.log('Functions available:', functions)
-//   console.log('--------------------------------')
-// })
+useFunctionsAvailable((functions) => {
+  console.log('--------------------------------')
+  console.log('Functions available count:', functions.length)
+  console.log('--------------------------------')
+})
 
 useApi(
   { api_path: 'todo', http_method: 'POST', description: 'Create a new todo', metadata: { tags: ['todo'] } },

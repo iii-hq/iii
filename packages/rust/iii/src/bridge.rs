@@ -58,6 +58,7 @@ struct BridgeInner {
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
     next_callback_id: AtomicUsize,
+    available_functions: Mutex<Vec<FunctionMessage>>,
 }
 
 #[derive(Clone)]
@@ -94,6 +95,7 @@ impl Bridge {
             services: Mutex::new(HashMap::new()),
             callbacks: Mutex::new(HashMap::new()),
             next_callback_id: AtomicUsize::new(0),
+            available_functions: Mutex::new(Vec::new()),
         };
         Self {
             inner: Arc::new(inner),
@@ -360,40 +362,21 @@ impl Bridge {
         })
     }
 
-    pub async fn list_functions(&self) -> Result<Vec<FunctionMessage>, BridgeError> {
-        let (tx, rx) = oneshot::channel();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let sub = self.on_functions_available({
-            let tx = tx.clone();
-            move |funcs| {
-                if let Some(sender) = tx.lock().unwrap().take() {
-                    let _ = sender.send(funcs);
-                }
-            }
-        });
-
-        self.send_message(Message::ListFunctions)?;
-
-        let result = match tokio::time::timeout(DEFAULT_TIMEOUT, rx).await {
-            Ok(Ok(funcs)) => Ok(funcs),
-            Ok(Err(_)) => Err(BridgeError::NotConnected),
-            Err(_) => Err(BridgeError::Timeout),
-        };
-
-        sub.unsubscribe();
-        result
-    }
-
     pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableSubscription
     where
         F: Fn(Vec<FunctionMessage>) + Send + Sync + 'static,
     {
         let id = self.inner.next_callback_id.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .callbacks
-            .lock()
-            .unwrap()
-            .insert(id, Arc::new(callback));
+        let callback = Arc::new(callback);
+
+        // If functions are already available, immediately invoke the callback
+        let available = self.inner.available_functions.lock().unwrap();
+        if !available.is_empty() {
+            callback(available.clone());
+        }
+        drop(available);
+
+        self.inner.callbacks.lock().unwrap().insert(id, callback);
         FunctionsAvailableSubscription {
             id,
             inner: self.inner.clone(),
@@ -595,6 +578,9 @@ impl Bridge {
                 self.handle_register_trigger(id, trigger_type, function_path, config);
             }
             Message::FunctionsAvailable { functions } => {
+                // Cache the functions
+                *self.inner.available_functions.lock().unwrap() = functions.clone();
+
                 let callbacks = self
                     .inner
                     .callbacks

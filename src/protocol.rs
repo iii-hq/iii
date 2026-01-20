@@ -57,7 +57,6 @@ pub enum Message {
     FunctionsAvailable {
         functions: Vec<FunctionMessage>,
     },
-    ListFunctions,
     Ping,
     Pong,
 }

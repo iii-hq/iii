@@ -25,8 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     println!("result: {result}");
-    let list_functions = bridge.list_functions().await?;
-    println!("registered functions: {list_functions:#?}");
+
+    bridge.on_functions_available(|functions| {
+        println!("registered functions: {functions:#?}");
+    });
 
     let data = KeyValueData {
         key: "my_key".to_string(),
