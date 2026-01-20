@@ -48,6 +48,7 @@ impl PubSubAdapter for LocalAdapter {
 
         if let Some(sub_info) = subs.get_mut(&topic) {
             for (_id, function_path) in sub_info.iter() {
+                tracing::debug!(function_path = %function_path, topic = %topic, "Event: Invoking function");
                 let function_path = function_path.clone();
                 let event_data = event_data.clone();
                 let engine = Arc::clone(&self.engine);
@@ -56,6 +57,8 @@ impl PubSubAdapter for LocalAdapter {
                     let _ = engine.invoke_function(&function_path, event_data).await;
                 });
             }
+        } else {
+            tracing::debug!(topic = %topic, "Event: No subscriptions found");
         }
     }
 

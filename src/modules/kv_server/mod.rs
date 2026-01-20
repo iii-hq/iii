@@ -58,6 +58,7 @@ impl KvServer {
         description = "Get a value by key from the KV store"
     )]
     pub async fn get(&self, data: KvGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        tracing::debug!(key = %data.key, "Getting value from KV store");
         let result = self.storage.get(data.key, None).await;
         FunctionResult::Success(result)
     }
@@ -67,8 +68,13 @@ impl KvServer {
         description = "Set a value by key in the KV store"
     )]
     pub async fn set(&self, data: KvSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.storage.set(data.key, data.value, None).await;
-        FunctionResult::NoResult
+        tracing::debug!(key = %data.key, "Setting value in KV store");
+        let result = self.storage.set(data.key, data.value, None).await;
+
+        FunctionResult::Success(Some(serde_json::to_value(result).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to serialize set result");
+            Value::Null
+        })))
     }
 
     #[function(
@@ -76,6 +82,8 @@ impl KvServer {
         description = "Delete a value by key from the KV store"
     )]
     pub async fn delete(&self, data: KvDeleteInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        tracing::debug!(key = %data.key, "Deleting value from KV store");
+
         match self.storage.delete(data.key).await {
             Some(value) => FunctionResult::Success(Some(value)),
             None => FunctionResult::NoResult,
@@ -106,7 +114,8 @@ impl KvServer {
         description = "List all values in the KV store"
     )]
     pub async fn list(&self, data: KvListInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        let result = self.storage.list(data.key).await;
+        let result = self.storage.list(data.key.clone()).await;
+        tracing::debug!(key = %data.key.clone(), result = %result.len(), "Listing values from KV store");
 
         match serde_json::to_value(result) {
             Ok(value) => FunctionResult::Success(Some(value)),

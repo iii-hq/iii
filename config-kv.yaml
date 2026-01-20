@@ -9,5 +9,5 @@ modules:
 
   - class: modules::observability::LoggingModule
     config:
-      level: info
+      level: debug
       format: default
