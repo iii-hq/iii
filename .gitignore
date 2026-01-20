@@ -9,9 +9,28 @@ dist/
 .DS_Store
 .idea/
 .cursor/
+.claude/
 
 packages/docker/bun/iii
 
 # Separate repos (not part of iii-engine)
 packages/iii-console/
 packages/iii-tui/
+
+# Local files
+app.log
+data/
+demo-start.sh
+demo-test.sh
+*.pdf
+
+# Plugins (separate repos)
+plugin-bullmq/
+plugin-cron/
+plugin-endpoint/
+plugin-example/
+plugin-logs/
+plugin-observability/
+plugin-states/
+plugin-streams/
+plugin-ws/
