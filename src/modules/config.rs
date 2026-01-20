@@ -346,11 +346,8 @@ impl EngineBuilder {
         let config = self.config.take().expect("No module configs founded");
 
         // Collect module classes from config
-        let config_classes: std::collections::HashSet<String> = config
-            .modules
-            .iter()
-            .map(|m| m.class.clone())
-            .collect();
+        let config_classes: std::collections::HashSet<String> =
+            config.modules.iter().map(|m| m.class.clone()).collect();
 
         // Get default modules that aren't already in config
         let default_entries: Vec<ModuleEntry> = default_module_entries()
@@ -359,8 +356,12 @@ impl EngineBuilder {
             .collect();
 
         let total_modules = config.modules.len() + default_entries.len();
-        tracing::info!("Building engine with {} modules ({} from config, {} default)", 
-            total_modules, config.modules.len(), default_entries.len());
+        tracing::info!(
+            "Building engine with {} modules ({} from config, {} default)",
+            total_modules,
+            config.modules.len(),
+            default_entries.len()
+        );
 
         // Create default modules first
         for entry in &default_entries {

@@ -55,17 +55,26 @@ impl CoreModule for WorkerModule {
 #[service(name = "engine")]
 impl WorkerModule {
     #[function(name = "engine.functions.list", description = "List all functions")]
-    pub async fn list_functions(&self, _input: EmptyInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn list_functions(
+        &self,
+        _input: EmptyInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         FunctionResult::Success(Some(self.engine.list_functions_as_json()))
     }
 
     #[function(name = "engine.workers.list", description = "List all workers")]
-    pub async fn list_workers(&self, _input: EmptyInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn list_workers(
+        &self,
+        _input: EmptyInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         FunctionResult::Success(Some(self.engine.list_workers_as_json().await))
     }
 
     #[function(name = "engine.triggers.list", description = "List all triggers")]
-    pub async fn list_triggers(&self, _input: EmptyInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn list_triggers(
+        &self,
+        _input: EmptyInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         FunctionResult::Success(Some(self.engine.list_triggers_as_json().await))
     }
 }
