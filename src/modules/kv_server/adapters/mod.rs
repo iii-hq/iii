@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::builtins::BuiltinKvStore;
+use crate::builtins::{BuiltinKvStore, SetResult};
 
 #[async_trait]
 pub trait KVStoreAdapter: Send + Sync {
-    async fn set(&self, key: String, value: Value, config: Option<Value>);
+    async fn set(&self, key: String, value: Value, config: Option<Value>) -> SetResult;
     async fn get(&self, key: String, config: Option<Value>) -> Option<Value>;
     async fn delete(&self, key: String) -> Option<Value>;
     async fn exists(&self, key: String) -> bool;
@@ -17,8 +17,8 @@ pub trait KVStoreAdapter: Send + Sync {
 
 #[async_trait]
 impl KVStoreAdapter for BuiltinKvStore {
-    async fn set(&self, key: String, value: Value, _config: Option<Value>) {
-        self.set(key, value).await;
+    async fn set(&self, key: String, value: Value, _config: Option<Value>) -> SetResult {
+        self.set(key, value).await
     }
 
     async fn get(&self, key: String, _config: Option<Value>) -> Option<Value> {

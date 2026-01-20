@@ -37,14 +37,14 @@ pub const STREAMS_EVENTS_TOPIC: &str = "streams.events";
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubAdapter>,
     handler_function_path: String,
-    bridge: Bridge,
+    bridge: Arc<Bridge>,
 }
 
 impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Bridge::new(&bridge_url);
+        let bridge = Arc::new(Bridge::new(&bridge_url));
         let handler_function_path = format!("streams::bridge::on_pub::{}", uuid::Uuid::new_v4());
         let res = bridge.connect().await;
 
@@ -80,7 +80,9 @@ impl StreamAdapter for BridgeAdapter {
             }),
         };
 
-        let _ = self.bridge.invoke_function("pubsub.publish", data).await;
+        tracing::debug!(data = ?data.clone(), "Emitting event");
+
+        let _ = self.bridge.invoke_function("publish", data).await;
     }
 
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
@@ -179,7 +181,7 @@ impl StreamAdapter for BridgeAdapter {
             key: self.gen_key(stream_name, group_id),
         };
 
-        let value = self.bridge.invoke_function("kv_server.get", data).await;
+        let value = self.bridge.invoke_function("kv_server.list", data).await;
 
         match value {
             Ok(value) => serde_json::from_value::<Vec<Value>>(value).unwrap_or_else(|e| {
@@ -223,14 +225,17 @@ impl StreamAdapter for BridgeAdapter {
 
     async fn watch_events(&self) {
         let handler_function_path = self.handler_function_path.clone();
-        let pub_sub = Arc::clone(&self.pub_sub);
+        let pub_sub = self.pub_sub.clone();
         let _ = self
             .bridge
-            .register_function(handler_function_path, move |data| {
+            .register_function(handler_function_path.clone(), move |data| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
                     let data = serde_json::from_value::<StreamWrapperMessage>(data).unwrap();
+
+                    tracing::debug!(data = ?data.clone(), "Event: Received event");
+
                     let _ = pub_sub.send_msg(data);
 
                     Ok(Value::Null)
@@ -239,11 +244,13 @@ impl StreamAdapter for BridgeAdapter {
 
         let _ = self.bridge.register_trigger(
             "subscribe",
-            self.handler_function_path.clone(),
+            handler_function_path,
             SubscribeTrigger {
                 topic: STREAMS_EVENTS_TOPIC.to_string(),
             },
         );
+
+        self.pub_sub.watch_events().await;
     }
 }
 

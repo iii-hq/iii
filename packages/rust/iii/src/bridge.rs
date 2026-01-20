@@ -641,6 +641,8 @@ impl Bridge {
         function_path: String,
         data: Value,
     ) {
+        tracing::debug!(function_path = %function_path, "Invoking function");
+
         let handler = self
             .inner
             .functions
@@ -650,6 +652,8 @@ impl Bridge {
             .map(|data| data.handler.clone());
 
         let Some(handler) = handler else {
+            tracing::warn!(function_path = %function_path, "Invocation: Function not found");
+
             if let Some(invocation_id) = invocation_id {
                 let error = ErrorBody {
                     code: "function_not_found".to_string(),
