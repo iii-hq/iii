@@ -68,7 +68,7 @@ modules:
   - class: modules::pubsub::PubSubModule
     config:
       adapter:
-        class: modules::pubsub::adapters::KvAdapter
+        class: modules::pubsub::LocalAdapter
 
   - class: modules::cron::CronModule
     config:
