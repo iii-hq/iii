@@ -33,6 +33,68 @@ impl WorkerModule {
             triggers: Arc::new(DashMap::new()),
         }
     }
+
+    fn list_functions_as_json(&self) -> Value {
+        let functions: Vec<Value> = self
+            .engine
+            .functions
+            .iter()
+            .map(|entry| {
+                let f = entry.value();
+                serde_json::json!({
+                    "function_path": f._function_path,
+                    "description": f._description,
+                    "request_format": f.request_format,
+                    "response_format": f.response_format,
+                    "metadata": f.metadata,
+                })
+            })
+            .collect();
+        serde_json::json!({ "functions": functions })
+    }
+
+    async fn list_triggers_as_json(&self) -> Value {
+        let triggers_map = self.engine.trigger_registry.triggers.read().await;
+        let triggers: Vec<Value> = triggers_map
+            .iter()
+            .map(|entry| {
+                let t = entry.value();
+                serde_json::json!({
+                    "id": t.id,
+                    "trigger_type": t.trigger_type,
+                    "function_path": t.function_path,
+                    "config": t.config,
+                })
+            })
+            .collect();
+        serde_json::json!({ "triggers": triggers })
+    }
+
+    async fn list_workers_as_json(&self) -> Value {
+        let workers = self.engine.worker_registry.list_workers().await;
+        let mut worker_infos = Vec::with_capacity(workers.len());
+
+        for w in workers {
+            let functions = w.get_function_paths().await;
+            let function_count = functions.len();
+            let active_invocations = w.invocation_count().await;
+
+            worker_infos.push(serde_json::json!({
+                "id": w.id.to_string(),
+                "name": w.name.clone(),
+                "runtime": w.runtime.clone(),
+                "version": w.version.clone(),
+                "os": w.os.clone(),
+                "ip_address": w.ip_address.clone(),
+                "status": w.status.as_str(),
+                "connected_at_ms": w.connected_at.timestamp_millis() as u64,
+                "function_count": function_count,
+                "functions": functions,
+                "active_invocations": active_invocations,
+            }));
+        }
+        serde_json::json!({ "workers": worker_infos })
+    }
 }
 
 impl TriggerRegistrator for WorkerModule {
@@ -117,7 +179,7 @@ impl WorkerModule {
         &self,
         _input: EmptyInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        FunctionResult::Success(Some(self.engine.list_functions_as_json()))
+        FunctionResult::Success(Some(self.list_functions_as_json()))
     }
 
     #[function(name = "engine.workers.list", description = "List all workers")]
@@ -125,7 +187,7 @@ impl WorkerModule {
         &self,
         _input: EmptyInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        FunctionResult::Success(Some(self.engine.list_workers_as_json().await))
+        FunctionResult::Success(Some(self.list_workers_as_json().await))
     }
 
     #[function(name = "engine.triggers.list", description = "List all triggers")]
@@ -133,7 +195,7 @@ impl WorkerModule {
         &self,
         _input: EmptyInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        FunctionResult::Success(Some(self.engine.list_triggers_as_json().await))
+        FunctionResult::Success(Some(self.list_triggers_as_json().await))
     }
 }
 
