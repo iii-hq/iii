@@ -363,20 +363,12 @@ impl EngineBuilder {
             default_entries.len()
         );
 
-        // Create default modules first
-        for entry in &default_entries {
-            tracing::debug!("Creating default module: {}", entry.class);
-            let module = entry
-                .create_module(self.engine.clone(), &self.registry)
-                .await?;
-            tracing::debug!("Initializing module: {}", entry.class);
-            module.initialize().await?;
-            module.register_functions(self.engine.clone());
-            self.modules.push(Arc::from(module));
-        }
+        let all_entries: Vec<&ModuleEntry> = default_entries
+            .iter()
+            .chain(config.modules.iter())
+            .collect();
 
-        // Create modules from config
-        for entry in &config.modules {
+        for entry in all_entries {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)

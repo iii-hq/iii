@@ -282,7 +282,17 @@ impl WorkerModule {
         &self,
         input: RegisterWorkerInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let worker_id = input.worker_id.clone();
         self.register_worker_metadata(input).await;
+
+        let data = serde_json::json!({
+            "event": "worker_metadata_updated",
+            "worker_id": worker_id,
+        });
+        self.engine
+            .fire_triggers(TRIGGER_WORKERS_AVAILABLE, data)
+            .await;
+
         FunctionResult::Success(Some(serde_json::json!({"success": true})))
     }
 }

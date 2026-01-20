@@ -166,17 +166,6 @@ impl Engine {
         }
     }
 
-    #[allow(dead_code)]
-    async fn broadcast_msg(&self, msg: Message) {
-        for worker in self.worker_registry.workers.read().await.iter() {
-            let _ = worker
-                .value()
-                .channel
-                .send(Outbound::Protocol(msg.clone()))
-                .await;
-        }
-    }
-
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
             Message::TriggerRegistrationResult {
