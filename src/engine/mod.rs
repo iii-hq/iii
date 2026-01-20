@@ -258,40 +258,6 @@ impl Engine {
                     "InvokeFunction"
                 );
 
-                if function_path == "engine.functions.list" {
-                    let result = self.list_functions_as_json();
-                    if let Some(inv_id) = invocation_id {
-                        self.send_msg(
-                            worker,
-                            Message::InvocationResult {
-                                invocation_id: *inv_id,
-                                function_path: function_path.clone(),
-                                result: Some(result),
-                                error: None,
-                            },
-                        )
-                        .await;
-                    }
-                    return Ok(());
-                }
-
-                if function_path == "engine.workers.list" {
-                    let result = self.list_workers_as_json().await;
-                    if let Some(inv_id) = invocation_id {
-                        self.send_msg(
-                            worker,
-                            Message::InvocationResult {
-                                invocation_id: *inv_id,
-                                function_path: function_path.clone(),
-                                result: Some(result),
-                                error: None,
-                            },
-                        )
-                        .await;
-                    }
-                    return Ok(());
-                }
-
                 if function_path == "engine.workers.register" {
                     self.register_worker_metadata(&worker.id, data).await;
                     if let Some(inv_id) = invocation_id {
@@ -301,23 +267,6 @@ impl Engine {
                                 invocation_id: *inv_id,
                                 function_path: function_path.clone(),
                                 result: Some(serde_json::json!({"success": true})),
-                                error: None,
-                            },
-                        )
-                        .await;
-                    }
-                    return Ok(());
-                }
-
-                if function_path == "engine.triggers.list" {
-                    let result = self.list_triggers_as_json().await;
-                    if let Some(inv_id) = invocation_id {
-                        self.send_msg(
-                            worker,
-                            Message::InvocationResult {
-                                invocation_id: *inv_id,
-                                function_path: function_path.clone(),
-                                result: Some(result),
                                 error: None,
                             },
                         )
@@ -482,6 +431,8 @@ impl Engine {
                 Ok(())
             }
             Message::Pong => Ok(()),
+            Message::FunctionsAvailable { .. } => Ok(()),
+            Message::ListFunctions => Ok(()),
         }
     }
 

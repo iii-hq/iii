@@ -11,6 +11,7 @@ pub mod workers;
 pub mod modules {
     pub mod bridge_client;
     pub mod config;
+    pub mod core_engine;
     pub mod core_module;
     pub mod cron;
     pub mod event;

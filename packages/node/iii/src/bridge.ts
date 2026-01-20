@@ -1,3 +1,4 @@
+import * as os from 'os'
 import { type Data, WebSocket } from 'ws'
 import {
   type BridgeMessage,
@@ -26,8 +27,6 @@ import type {
 
 export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 export type WorkersAvailableCallback = (workers: WorkerInfo[]) => void
-
-import * as os from 'os'
 
 const SDK_VERSION = '0.1.0'
 
