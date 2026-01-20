@@ -463,7 +463,9 @@ impl Engine {
             .map(|entry| FunctionMessage::from(entry.value()))
             .collect();
         let _ = tx
-            .send(Outbound::Protocol(Message::FunctionsAvailable { functions }))
+            .send(Outbound::Protocol(Message::FunctionsAvailable {
+                functions,
+            }))
             .await;
 
         while let Some(frame) = ws_rx.next().await {
