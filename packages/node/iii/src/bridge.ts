@@ -265,7 +265,13 @@ export class Bridge implements BridgeClient {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
     } else if (type === MessageType.FunctionsAvailable) {
       const { functions } = message as FunctionsEngineMessage
-      this.availableFunctions = functions.map((f) => ({ functionPath: f.function_path, metadata: f.metadata }))
+      this.availableFunctions = functions.map((f) => ({
+        functionPath: f.function_path,
+        description: f.description,
+        requestFormat: f.request_format,
+        responseFormat: f.response_format,
+        metadata: f.metadata,
+      }))
       this.functionsAvailableCallbacks.map((callback) => callback(this.availableFunctions))
     }
   }
