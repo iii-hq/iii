@@ -1,0 +1,78 @@
+{
+  "name": "@motiadev/cron-plugin",
+  "version": "0.17.13-beta.195",
+  "description": "A Motia workbench plugin for monitoring and managing cron jobs.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./plugin": {
+      "development": "./src/plugin.ts",
+      "default": "./dist/plugin.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "lucide-react": "^0.555.0",
+    "react": "^19.2.0",
+    "zustand": "^5.0.8"
+  },
+  "peerDependencies": {
+    "@motiadev/core": "workspace:*",
+    "@motiadev/ui": "workspace:*",
+    "@motiadev/stream-client-react": "workspace:*"
+  },
+  "devDependencies": {
+    "@bosh-code/tsdown-plugin-inject-css": "^2.0.0",
+    "@rollup/plugin-babel": "^6.1.0",
+    "@tailwindcss/postcss": "^4.1.17",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "publint": "^0.3.15",
+    "rollup-plugin-postcss": "^4.0.2",
+    "tailwindcss": "^4.1.17",
+    "tsdown": "^0.16.8",
+    "typescript": "^5.9.3",
+    "unplugin-unused": "^0.5.6"
+  },
+  "module": "./dist/index.js",
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": "./dist/index.js",
+      "./plugin": "./dist/plugin.js",
+      "./package.json": "./package.json"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/motia-org/motia.git",
+    "directory": "plugins/plugin-cron"
+  },
+  "bugs": {
+    "url": "https://github.com/motia-org/motia/issues"
+  },
+  "homepage": "https://github.com/motia-org/motia/tree/main/plugins/plugin-cron#readme",
+  "keywords": [
+    "motia",
+    "cron",
+    "scheduler",
+    "plugin",
+    "devtools"
+  ],
+  "author": "Motia Team"
+}

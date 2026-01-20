@@ -11,7 +11,6 @@ pub mod workers;
 pub mod modules {
     pub mod bridge_client;
     pub mod config;
-    pub mod core_engine;
     pub mod core_module;
     pub mod cron;
     pub mod event;
@@ -23,6 +22,7 @@ pub mod modules {
     pub mod shell;
     pub mod state;
     pub mod streams;
+    pub mod worker;
 }
 
 // Re-export commonly used types

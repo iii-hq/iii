@@ -17,9 +17,9 @@ modules:
   - class: modules::state::StateModule
     config:
       adapter:
-        class: modules::streams::adapters::KvStore
+        class: modules::state::adapters::KvStore
         config:
-          store_method: file_based # Options: in_memory, file_based
+          store_method: file_based
           file_path: ./data/state_store.db
 
   - class: modules::api::RestApiModule

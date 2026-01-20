@@ -11,3 +11,7 @@ dist/
 .cursor/
 
 packages/docker/bun/iii
+
+# Separate repos (not part of iii-engine)
+packages/iii-console/
+packages/iii-tui/

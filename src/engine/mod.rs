@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    modules::core_engine::{TRIGGER_FUNCTIONS_AVAILABLE, TRIGGER_WORKERS_AVAILABLE},
+    modules::worker::{TRIGGER_FUNCTIONS_AVAILABLE, TRIGGER_WORKERS_AVAILABLE},
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
@@ -264,28 +264,23 @@ impl Engine {
                     "InvokeFunction"
                 );
 
-                if function_path == "engine.workers.register" {
-                    self.register_worker_metadata(&worker.id, data).await;
-                    if let Some(inv_id) = invocation_id {
-                        self.send_msg(
-                            worker,
-                            Message::InvocationResult {
-                                invocation_id: *inv_id,
-                                function_path: function_path.clone(),
-                                result: Some(serde_json::json!({"success": true})),
-                                error: None,
-                            },
-                        )
-                        .await;
-                    }
-                    return Ok(());
-                }
-
                 let engine = self.clone();
                 let worker = worker.clone();
                 let invocation_id = *invocation_id;
                 let function_path = function_path.to_string();
-                let data = data.clone();
+
+                let data = if function_path == "engine.workers.register" {
+                    let mut data = data.clone();
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert(
+                            "worker_id".to_string(),
+                            serde_json::json!(worker.id.to_string()),
+                        );
+                    }
+                    data
+                } else {
+                    data.clone()
+                };
 
                 tokio::spawn(async move {
                     let result = engine
@@ -438,30 +433,6 @@ impl Engine {
             }
             Message::Pong => Ok(()),
         }
-    }
-
-    pub async fn register_worker_metadata(&self, worker_id: &Uuid, data: &Value) {
-        let runtime = data
-            .get("runtime")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let version = data
-            .get("version")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let name = data
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let os = data
-            .get("os")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        self.worker_registry
-            .update_worker_metadata(worker_id, runtime, version, name, os)
-            .await;
     }
 
     pub async fn fire_triggers(&self, trigger_type: &str, data: Value) {

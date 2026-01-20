@@ -1,0 +1,53 @@
+{
+  "name": "@motiadev/plugin-example",
+  "version": "0.17.13-beta.195",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./plugin": {
+      "development": "./src/plugin.ts",
+      "default": "./dist/plugin.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "@motiadev/core": "workspace:*",
+    "@motiadev/ui": "workspace:*",
+    "lucide-react": "^0.555.0",
+    "react": "^19.2.3"
+  },
+  "devDependencies": {
+    "@rollup/plugin-babel": "^6.1.0",
+    "@tailwindcss/postcss": "^4.1.17",
+    "rollup-plugin-postcss": "^4.0.2",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "publint": "^0.3.15",
+    "tailwindcss": "^4.1.17",
+    "tsdown": "^0.16.8",
+    "typescript": "^5.9.3",
+    "unplugin-unused": "^0.5.6"
+  },
+  "module": "./dist/index.js",
+  "publishConfig": {
+    "exports": {
+      ".": "./dist/index.js",
+      "./plugin": "./dist/plugin.js",
+      "./package.json": "./package.json"
+    }
+  }
+}
