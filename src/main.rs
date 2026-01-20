@@ -1,5 +1,8 @@
 use clap::Parser;
-use iii::{EngineBuilder, logging};
+use iii::{
+    EngineBuilder, logging,
+    modules::config::{DEFAULT_PORT, EngineConfig},
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "engine", about = "Process communication engine")]
@@ -19,9 +22,16 @@ async fn main() -> anyhow::Result<()> {
     }
     logging::init_log(&args.config);
 
+    let config = EngineConfig::config_file_or_default(&args.config)?;
+    let port = if config.port == 0 {
+        DEFAULT_PORT
+    } else {
+        config.port
+    };
+
     EngineBuilder::new()
         .config_file_or_default(&args.config)?
-        .address("0.0.0.0:49134")
+        .address(format!("0.0.0.0:{}", port).as_str())
         .build()
         .await?
         .serve()

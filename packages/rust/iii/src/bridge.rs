@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -173,9 +173,10 @@ impl Bridge {
             return Ok(());
         };
 
-        self.inner.running.store(true, Ordering::SeqCst);
         let bridge = self.clone();
+
         tokio::spawn(async move {
+            bridge.inner.running.store(true, Ordering::SeqCst);
             bridge.run_connection(rx).await;
         });
 
@@ -336,9 +337,10 @@ impl Bridge {
         &self,
         trigger_type: impl Into<String>,
         function_path: impl Into<String>,
-        config: Value,
-    ) -> Trigger {
+        config: impl serde::Serialize,
+    ) -> Result<Trigger, BridgeError> {
         let id = Uuid::new_v4().to_string();
+        let config = serde_json::to_value(config)?;
         let message = RegisterTriggerMessage {
             id: id.clone(),
             trigger_type: trigger_type.into(),
@@ -353,29 +355,26 @@ impl Bridge {
             .insert(message.id.clone(), message.clone());
         let _ = self.send_message(message.to_message());
 
-        let inner = self.inner.clone();
+        let bridge = self.clone();
         let trigger_type = message.trigger_type.clone();
         let unregister_id = message.id.clone();
         let unregister_fn = Arc::new(move || {
-            let _ = inner.triggers.lock().unwrap().remove(&unregister_id);
+            let _ = bridge.inner.triggers.lock().unwrap().remove(&unregister_id);
             let msg = UnregisterTriggerMessage {
                 id: unregister_id.clone(),
                 trigger_type: trigger_type.clone(),
             };
-            let _ = inner.outbound.send(Outbound::Message(msg.to_message()));
+            let _ = bridge.send_message(msg.to_message());
         });
 
-        Trigger::new(unregister_fn)
+        Ok(Trigger::new(unregister_fn))
     }
 
-    pub async fn invoke_function<TInput>(
+    pub async fn invoke_function(
         &self,
         function_path: &str,
-        data: TInput,
-    ) -> Result<Value, BridgeError>
-    where
-        TInput: Serialize,
-    {
+        data: impl serde::Serialize,
+    ) -> Result<Value, BridgeError> {
         let value = serde_json::to_value(data)?;
         self.invoke_function_with_timeout(function_path, value, DEFAULT_TIMEOUT)
             .await
@@ -474,6 +473,10 @@ impl Bridge {
     }
 
     fn send_message(&self, message: Message) -> Result<(), BridgeError> {
+        if !self.inner.running.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
         self.inner
             .outbound
             .send(Outbound::Message(message))
@@ -490,6 +493,7 @@ impl Bridge {
                     let (mut ws_tx, mut ws_rx) = stream.split();
 
                     queue.extend(self.collect_registrations());
+                    Self::dedupe_registrations(&mut queue);
                     if let Err(err) = self.flush_queue(&mut ws_tx, &mut queue).await {
                         tracing::warn!(error = %err, "failed to flush queue");
                         sleep(Duration::from_secs(2)).await;
@@ -574,6 +578,33 @@ impl Bridge {
         messages
     }
 
+    fn dedupe_registrations(queue: &mut Vec<Message>) {
+        let mut seen = HashSet::new();
+        let mut deduped_rev = Vec::with_capacity(queue.len());
+
+        for message in queue.iter().rev() {
+            let key = match message {
+                Message::RegisterTriggerType { id, .. } => format!("trigger_type:{id}"),
+                Message::RegisterTrigger { id, .. } => format!("trigger:{id}"),
+                Message::RegisterFunction { function_path, .. } => {
+                    format!("function:{function_path}")
+                }
+                Message::RegisterService { id, .. } => format!("service:{id}"),
+                _ => {
+                    deduped_rev.push(message.clone());
+                    continue;
+                }
+            };
+
+            if seen.insert(key) {
+                deduped_rev.push(message.clone());
+            }
+        }
+
+        deduped_rev.reverse();
+        *queue = deduped_rev;
+    }
+
     async fn flush_queue(
         &self,
         ws_tx: &mut WsTx,
@@ -639,7 +670,7 @@ impl Bridge {
                 self.handle_register_trigger(id, trigger_type, function_path, config);
             }
             Message::Ping => {
-                let _ = self.inner.outbound.send(Outbound::Message(Message::Pong));
+                let _ = self.send_message(Message::Pong);
             }
             _ => {}
         }
@@ -672,6 +703,8 @@ impl Bridge {
         function_path: String,
         data: Value,
     ) {
+        tracing::debug!(function_path = %function_path, "Invoking function");
+
         let handler = self
             .inner
             .functions
@@ -681,25 +714,28 @@ impl Bridge {
             .map(|data| data.handler.clone());
 
         let Some(handler) = handler else {
+            tracing::warn!(function_path = %function_path, "Invocation: Function not found");
+
             if let Some(invocation_id) = invocation_id {
                 let error = ErrorBody {
                     code: "function_not_found".to_string(),
                     message: "Function not found".to_string(),
                 };
-                let _ = self
-                    .inner
-                    .outbound
-                    .send(Outbound::Message(Message::InvocationResult {
-                        invocation_id,
-                        function_path,
-                        result: None,
-                        error: Some(error),
-                    }));
+                let result = self.send_message(Message::InvocationResult {
+                    invocation_id,
+                    function_path,
+                    result: None,
+                    error: Some(error),
+                });
+
+                if let Err(err) = result {
+                    tracing::warn!(error = %err, "error sending invocation result");
+                }
             }
             return;
         };
 
-        let outbound = self.inner.outbound.clone();
+        let bridge = self.clone();
 
         tokio::spawn(async move {
             let result = handler(data).await;
@@ -723,7 +759,7 @@ impl Bridge {
                     },
                 };
 
-                let _ = outbound.send(Outbound::Message(message));
+                let _ = bridge.send_message(message);
             } else if let Err(err) = result {
                 tracing::warn!(error = %err, "error handling async invocation");
             }
@@ -745,7 +781,7 @@ impl Bridge {
             .get(&trigger_type)
             .map(|data| data.handler.clone());
 
-        let outbound = self.inner.outbound.clone();
+        let bridge = self.clone();
 
         tokio::spawn(async move {
             let message = if let Some(handler) = handler {
@@ -784,7 +820,7 @@ impl Bridge {
                 }
             };
 
-            let _ = outbound.send(Outbound::Message(message));
+            let _ = bridge.send_message(message);
         });
     }
 }

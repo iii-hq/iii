@@ -10,5 +10,6 @@ dist/
 .idea/
 .cursor/
 .claude/
+app.log
 
 packages/docker/bun/iii

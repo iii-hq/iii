@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod kv_store;
 pub mod redis_adapter;
 
