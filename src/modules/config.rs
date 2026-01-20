@@ -34,9 +34,13 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 // EngineConfig (YAML structure)
 // =============================================================================
 
+fn default_port() -> u16 {
+    DEFAULT_PORT
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EngineConfig {
-    #[serde(default)]
+    #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
@@ -47,7 +51,7 @@ impl EngineConfig {
         let modules = default_module_entries();
 
         Self {
-            port: 49134,
+            port: DEFAULT_PORT,
             modules,
         }
     }
