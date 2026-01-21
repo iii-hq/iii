@@ -56,10 +56,6 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    FunctionsAvailable {
-        functions: Vec<FunctionMessage>,
-    },
-    ListFunctions,
     Ping,
     Pong,
 }

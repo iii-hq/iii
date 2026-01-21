@@ -23,6 +23,7 @@ pub mod modules {
     pub mod shell;
     pub mod state;
     pub mod streams;
+    pub mod worker;
 }
 
 // Re-export commonly used types

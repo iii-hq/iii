@@ -1,8 +1,9 @@
+import { createRequire } from 'module'
+import * as os from 'os'
 import { type Data, WebSocket } from 'ws'
 import {
   type BridgeMessage,
-  type FunctionMessage,
-  type FunctionsAvailableMessage,
+  type FunctionInfo,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
   MessageType,
@@ -10,9 +11,10 @@ import {
   type RegisterServiceMessage,
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
+  type WorkerInfo,
 } from './bridge-types'
 import { withContext } from './context'
-import { Logger, type LoggerParams } from './logger'
+import { Logger } from './logger'
 import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
@@ -24,7 +26,20 @@ import type {
   Trigger,
 } from './types'
 
-export type FunctionsAvailableCallback = (functions: FunctionMessage[]) => void
+const require = createRequire(import.meta.url)
+const { version: SDK_VERSION } = require('../package.json')
+
+function getOsInfo(): string {
+  return `${os.platform()} ${os.release()} (${os.arch()})`
+}
+
+function getDefaultWorkerName(): string {
+  return `${os.hostname()}:${process.pid}`
+}
+
+export type BridgeOptions = {
+  workerName?: string
+}
 
 export class Bridge implements BridgeClient {
   private ws?: WebSocket
@@ -34,11 +49,14 @@ export class Bridge implements BridgeClient {
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: BridgeMessage[] = []
-  private functionsAvailableCallbacks: FunctionsAvailableCallback[] = []
-
+  private workerName: string
   private interval?: NodeJS.Timeout
 
-  constructor(private readonly address: string) {
+  constructor(
+    private readonly address: string,
+    options?: BridgeOptions,
+  ) {
+    this.workerName = options?.workerName ?? getDefaultWorkerName()
     this.connect()
   }
 
@@ -108,18 +126,23 @@ export class Bridge implements BridgeClient {
     this.sendMessage(MessageType.InvokeFunction, { function_path, data })
   }
 
-  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void {
-    this.functionsAvailableCallbacks.push(callback)
-    return () => {
-      const index = this.functionsAvailableCallbacks.indexOf(callback)
-      if (index !== -1) {
-        this.functionsAvailableCallbacks.splice(index, 1)
-      }
-    }
+  async listFunctions(): Promise<FunctionInfo[]> {
+    const result = await this.invokeFunction<{}, { functions: FunctionInfo[] }>('engine.functions.list', {})
+    return result.functions
   }
 
-  listFunctions(): void {
-    this.sendMessage(MessageType.ListFunctions, {})
+  async listWorkers(): Promise<WorkerInfo[]> {
+    const result = await this.invokeFunction<{}, { workers: WorkerInfo[] }>('engine.workers.list', {})
+    return result.workers
+  }
+
+  private registerWorkerMetadata(): void {
+    this.invokeFunctionAsync('engine.workers.register', {
+      runtime: 'node',
+      version: SDK_VERSION,
+      name: this.workerName,
+      os: getOsInfo(),
+    })
   }
 
   createStream<TData>(streamName: string, stream: IStream<TData>): void {
@@ -163,6 +186,8 @@ export class Bridge implements BridgeClient {
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
       .forEach((message) => this.ws?.send(JSON.stringify(message)))
+
+    this.registerWorkerMetadata()
   }
 
   private isOpen() {
@@ -193,7 +218,7 @@ export class Bridge implements BridgeClient {
     if (fn) {
       if (!invocation_id) {
         try {
-          return fn.handler(input) // no need to wait on anything
+          return fn.handler(input)
         } catch (error) {
           console.error({
             message: 'Error invoking function',
@@ -260,9 +285,6 @@ export class Bridge implements BridgeClient {
       this.onInvokeFunction(invocation_id, function_path, data)
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
-    } else if (type === MessageType.FunctionsAvailable) {
-      const { functions } = message as FunctionsAvailableMessage
-      this.functionsAvailableCallbacks.map((callback) => callback(functions))
     }
   }
 }

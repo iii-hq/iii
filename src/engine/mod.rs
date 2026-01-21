@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    protocol::{ErrorBody, FunctionMessage, Message},
+    modules::worker::TRIGGER_WORKERS_AVAILABLE,
+    protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
@@ -135,54 +136,8 @@ impl Engine {
         }
     }
 
-    pub async fn notify_new_functions(
-        &self,
-        duration_secs: u64,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) {
-        let mut current_functions_hash = self.functions.functions_hash();
-
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)) => {
-                    let new_functions_hash = self.functions.functions_hash();
-                    if new_functions_hash != current_functions_hash {
-                        tracing::info!("New functions detected, notifying workers");
-                        let message: Vec<FunctionMessage> = self
-                            .functions
-                            .iter()
-                            .map(|entry| FunctionMessage::from(entry.value()))
-                            .collect();
-                        let message = Message::FunctionsAvailable { functions: message };
-                        self.broadcast_msg(message).await;
-                        current_functions_hash = new_functions_hash;
-                    }
-                }
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    async fn broadcast_msg(&self, msg: Message) {
-        for worker in self.worker_registry.workers.read().await.iter() {
-            let _ = worker
-                .value()
-                .channel
-                .send(Outbound::Protocol(msg.clone()))
-                .await;
-        }
-    }
-
     async fn router_msg(&self, worker: &Worker, msg: &Message) -> anyhow::Result<()> {
         match msg {
-            Message::FunctionsAvailable { functions } => {
-                tracing::debug!(?functions, "FunctionsAvailable");
-                Ok(())
-            }
             Message::TriggerRegistrationResult {
                 id,
                 trigger_type,
@@ -272,7 +227,18 @@ impl Engine {
                 let worker = worker.clone();
                 let invocation_id = *invocation_id;
                 let function_path = function_path.to_string();
-                let data = data.clone();
+
+                // Add caller's worker_id to invocation data as standard metadata
+                let data = {
+                    let mut data = data.clone();
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert(
+                            "_caller_worker_id".to_string(),
+                            serde_json::json!(worker.id.to_string()),
+                        );
+                    }
+                    data
+                };
 
                 tokio::spawn(async move {
                     let result = engine
@@ -419,21 +385,32 @@ impl Engine {
 
                 Ok(())
             }
-            Message::ListFunctions => {
-                let functions: Vec<FunctionMessage> = self
-                    .functions
-                    .iter()
-                    .map(|entry| FunctionMessage::from(entry.value()))
-                    .collect();
-                self.send_msg(worker, Message::FunctionsAvailable { functions })
-                    .await;
-                Ok(())
-            }
             Message::Ping => {
                 self.send_msg(worker, Message::Pong).await;
                 Ok(())
             }
             Message::Pong => Ok(()),
+        }
+    }
+
+    pub async fn fire_triggers(&self, trigger_type: &str, data: Value) {
+        let triggers: Vec<crate::trigger::Trigger> = self
+            .trigger_registry
+            .triggers
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.value().trigger_type == trigger_type)
+            .map(|entry| entry.value().clone())
+            .collect();
+
+        for trigger in triggers {
+            let engine = self.clone();
+            let function_path = trigger.function_path.clone();
+            let data = data.clone();
+            tokio::spawn(async move {
+                let _ = engine.invoke_function(&function_path, data).await;
+            });
         }
     }
 
@@ -461,10 +438,17 @@ impl Engine {
             }
         });
 
-        let worker = Worker::new(tx.clone());
+        let worker = Worker::with_ip(tx.clone(), peer.ip().to_string());
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone()).await;
+
+        let workers_data = serde_json::json!({
+            "event": "worker_connected",
+            "worker_id": worker.id.to_string(),
+        });
+        self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
+            .await;
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -527,6 +511,13 @@ impl Engine {
 
         self.trigger_registry.unregister_worker(&worker.id).await;
         self.worker_registry.unregister_worker(&worker.id).await;
+
+        let workers_data = serde_json::json!({
+            "event": "worker_disconnected",
+            "worker_id": worker.id.to_string(),
+        });
+        self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
+            .await;
 
         tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
     }

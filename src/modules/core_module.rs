@@ -41,6 +41,13 @@ pub trait CoreModule: Send + Sync {
     /// Initializes the module
     async fn initialize(&self) -> anyhow::Result<()>;
 
+    async fn start_background_tasks(
+        &self,
+        _shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying module: {}", self.name());
         Ok(())

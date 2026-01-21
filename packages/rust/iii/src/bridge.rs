@@ -2,13 +2,13 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -17,12 +17,14 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use uuid::Uuid;
 
+const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use crate::{
     context::{Context, with_context},
     error::BridgeError,
     logger::{Logger, LoggerInvoker},
     protocol::{
-        ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterServiceMessage,
+        ErrorBody, Message, RegisterFunctionMessage, RegisterServiceMessage,
         RegisterTriggerMessage, RegisterTriggerTypeMessage, UnregisterTriggerMessage,
     },
     triggers::{Trigger, TriggerConfig, TriggerHandler},
@@ -31,13 +33,78 @@ use crate::{
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Worker information returned by `engine.workers.list`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerInfo {
+    pub id: String,
+    pub name: Option<String>,
+    pub runtime: Option<String>,
+    pub version: Option<String>,
+    pub os: Option<String>,
+    pub ip_address: Option<String>,
+    pub status: String,
+    pub connected_at_ms: u64,
+    pub function_count: usize,
+    pub functions: Vec<String>,
+    pub active_invocations: usize,
+}
+
+/// Function information returned by `engine.functions.list`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionInfo {
+    pub function_path: String,
+    pub description: Option<String>,
+    pub request_format: Option<Value>,
+    pub response_format: Option<Value>,
+    pub metadata: Option<Value>,
+}
+
+/// Trigger information returned by `engine.triggers.list`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerInfo {
+    pub id: String,
+    pub trigger_type: String,
+    pub function_path: String,
+    pub config: Value,
+}
+
+/// Worker metadata for auto-registration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerMetadata {
+    pub runtime: String,
+    pub version: String,
+    pub name: String,
+    pub os: String,
+}
+
+impl Default for WorkerMetadata {
+    fn default() -> Self {
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        let pid = std::process::id();
+        let os_info = format!(
+            "{} {} ({})",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            std::env::consts::FAMILY
+        );
+
+        Self {
+            runtime: "rust".to_string(),
+            version: SDK_VERSION.to_string(),
+            name: format!("{}:{}", hostname, pid),
+            os: os_info,
+        }
+    }
+}
+
 enum Outbound {
     Message(Message),
     Shutdown,
 }
 
 type PendingInvocation = oneshot::Sender<Result<Value, BridgeError>>;
-type FunctionsAvailableCallback = Arc<dyn Fn(Vec<FunctionMessage>) + Send + Sync>;
 
 // WebSocket transmitter type alias
 type WsTx = futures_util::stream::SplitSink<
@@ -56,8 +123,7 @@ struct BridgeInner {
     trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
-    callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
-    next_callback_id: AtomicUsize,
+    worker_metadata: Mutex<Option<WorkerMetadata>>,
 }
 
 #[derive(Clone)]
@@ -65,21 +131,14 @@ pub struct Bridge {
     inner: Arc<BridgeInner>,
 }
 
-#[derive(Clone)]
-pub struct FunctionsAvailableSubscription {
-    id: usize,
-    inner: Arc<BridgeInner>,
-}
-
-impl FunctionsAvailableSubscription {
-    pub fn unsubscribe(&self) {
-        let mut callbacks = self.inner.callbacks.lock().unwrap();
-        callbacks.remove(&self.id);
-    }
-}
-
 impl Bridge {
+    /// Create a new Bridge with default worker metadata (auto-detected runtime, os, hostname)
     pub fn new(address: &str) -> Self {
+        Self::with_metadata(address, WorkerMetadata::default())
+    }
+
+    /// Create a new Bridge with custom worker metadata
+    pub fn with_metadata(address: &str, metadata: WorkerMetadata) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = BridgeInner {
             address: address.into(),
@@ -92,12 +151,16 @@ impl Bridge {
             trigger_types: Mutex::new(HashMap::new()),
             triggers: Mutex::new(HashMap::new()),
             services: Mutex::new(HashMap::new()),
-            callbacks: Mutex::new(HashMap::new()),
-            next_callback_id: AtomicUsize::new(0),
+            worker_metadata: Mutex::new(Some(metadata)),
         };
         Self {
             inner: Arc::new(inner),
         }
+    }
+
+    /// Set custom worker metadata (call before connect)
+    pub fn set_metadata(&self, metadata: WorkerMetadata) {
+        *self.inner.worker_metadata.lock().unwrap() = Some(metadata);
     }
 
     pub async fn connect(&self) -> Result<(), BridgeError> {
@@ -360,43 +423,52 @@ impl Bridge {
         })
     }
 
-    pub async fn list_functions(&self) -> Result<Vec<FunctionMessage>, BridgeError> {
-        let (tx, rx) = oneshot::channel();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let sub = self.on_functions_available({
-            let tx = tx.clone();
-            move |funcs| {
-                if let Some(sender) = tx.lock().unwrap().take() {
-                    let _ = sender.send(funcs);
-                }
-            }
-        });
+    /// List all registered functions from the engine
+    pub async fn list_functions(&self) -> Result<Vec<FunctionInfo>, BridgeError> {
+        let result = self
+            .invoke_function("engine.functions.list", serde_json::json!({}))
+            .await?;
 
-        self.send_message(Message::ListFunctions)?;
+        let functions = result
+            .get("functions")
+            .and_then(|v| serde_json::from_value::<Vec<FunctionInfo>>(v.clone()).ok())
+            .unwrap_or_default();
 
-        let result = match tokio::time::timeout(DEFAULT_TIMEOUT, rx).await {
-            Ok(Ok(funcs)) => Ok(funcs),
-            Ok(Err(_)) => Err(BridgeError::NotConnected),
-            Err(_) => Err(BridgeError::Timeout),
-        };
-
-        sub.unsubscribe();
-        result
+        Ok(functions)
     }
 
-    pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableSubscription
-    where
-        F: Fn(Vec<FunctionMessage>) + Send + Sync + 'static,
-    {
-        let id = self.inner.next_callback_id.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .callbacks
-            .lock()
-            .unwrap()
-            .insert(id, Arc::new(callback));
-        FunctionsAvailableSubscription {
-            id,
-            inner: self.inner.clone(),
+    /// List all connected workers from the engine
+    pub async fn list_workers(&self) -> Result<Vec<WorkerInfo>, BridgeError> {
+        let result = self
+            .invoke_function("engine.workers.list", serde_json::json!({}))
+            .await?;
+
+        let workers = result
+            .get("workers")
+            .and_then(|v| serde_json::from_value::<Vec<WorkerInfo>>(v.clone()).ok())
+            .unwrap_or_default();
+
+        Ok(workers)
+    }
+
+    /// List all registered triggers from the engine
+    pub async fn list_triggers(&self) -> Result<Vec<TriggerInfo>, BridgeError> {
+        let result = self
+            .invoke_function("engine.triggers.list", serde_json::json!({}))
+            .await?;
+
+        let triggers = result
+            .get("triggers")
+            .and_then(|v| serde_json::from_value::<Vec<TriggerInfo>>(v.clone()).ok())
+            .unwrap_or_default();
+
+        Ok(triggers)
+    }
+
+    /// Register this worker's metadata with the engine (called automatically on connect)
+    fn register_worker_metadata(&self) {
+        if let Some(metadata) = self.inner.worker_metadata.lock().unwrap().clone() {
+            let _ = self.invoke_function_async("engine.workers.register", metadata);
         }
     }
 
@@ -427,6 +499,9 @@ impl Bridge {
                         sleep(Duration::from_secs(2)).await;
                         continue;
                     }
+
+                    // Auto-register worker metadata on connect (like Node SDK)
+                    self.register_worker_metadata();
 
                     let mut should_reconnect = false;
 
@@ -593,19 +668,6 @@ impl Bridge {
                 config,
             } => {
                 self.handle_register_trigger(id, trigger_type, function_path, config);
-            }
-            Message::FunctionsAvailable { functions } => {
-                let callbacks = self
-                    .inner
-                    .callbacks
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for callback in callbacks {
-                    callback(functions.clone());
-                }
             }
             Message::Ping => {
                 let _ = self.send_message(Message::Pong);
