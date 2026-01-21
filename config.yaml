@@ -7,7 +7,7 @@ modules:
         class: modules::streams::adapters::KvStore
         config:
           store_method: file_based # Options: in_memory, file_based
-          file_path: ./data/streams_store.db
+          file_path: ./data/streams_store
         # class: modules::streams::adapters::RedisAdapter
         # config:
         #   redis_url: redis://localhost:6379
@@ -15,7 +15,7 @@ modules:
   - class: modules::kv_server::KvServer
     config:
       store_method: file_based # Options: in_memory, file_based
-      file_path: ./data/kv_store.db
+      file_path: ./data/kv_store
       save_interval_ms: 5000
 
   - class: modules::state::StateModule
@@ -68,7 +68,7 @@ modules:
   - class: modules::pubsub::PubSubModule
     config:
       adapter:
-        class: modules::pubsub::adapters::KvAdapter
+        class: modules::pubsub::LocalAdapter
 
   - class: modules::cron::CronModule
     config:
@@ -77,24 +77,24 @@ modules:
         config:
           redis_url: redis://localhost:6379
 
-  - class: modules::bridge_client::BridgeClientModule
-    config:
-      url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
-      service_id: bridge-client
-      service_name: bridge-client
-      # expose:
-      #   - local_function: logger.info
-      #     remote_function: logger.info
+  # - class: modules::bridge_client::BridgeClientModule
+  #   config:
+  #     url: ${REMOTE_III_URL:ws://192.168.1.200:49134}
+  #     service_id: bridge-client
+  #     service_name: bridge-client
+  #     # expose:
+  #     #   - local_function: logger.info
+  #     #     remote_function: logger.info
 
-      forward:
-        - local_function: remote.kv.get
-          remote_function: kv_server.get
-          timeout_ms: 5000
+  #     forward:
+  #       - local_function: remote.kv.get
+  #         remote_function: kv_server.get
+  #         timeout_ms: 5000
 
-        - local_function: remote.kv.set
-          remote_function: kv_server.set
-          timeout_ms: 5000
+  #       - local_function: remote.kv.set
+  #         remote_function: kv_server.set
+  #         timeout_ms: 5000
 
-        - local_function: remote.kv.delete
-          remote_function: kv_server.delete
-          timeout_ms: 5000
+  #       - local_function: remote.kv.delete
+  #         remote_function: kv_server.delete
+  #         timeout_ms: 5000

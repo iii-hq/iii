@@ -1,4 +1,5 @@
 target/
+data/
 node_modules
 .mypy_cache
 worker_py/__pycache__/
