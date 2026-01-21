@@ -170,8 +170,7 @@ export class Bridge implements BridgeClient {
 
       const function_path = this.functionsAvailableFunctionPath
       if (!this.functions.has(function_path)) {
-        this.registerFunction({ function_path }, async (data: unknown) => {
-          console.log('data', data)
+        this.registerFunction({ function_path }, async () => {
           const functions = await this.listFunctions()
           this.functionsAvailableCallbacks.forEach((handler) => {
             handler(functions)
