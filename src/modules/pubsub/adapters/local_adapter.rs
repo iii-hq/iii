@@ -44,10 +44,11 @@ impl PubSubAdapter for LocalAdapter {
         let topic = topic.to_string();
         let event_data = event_data.clone();
         let subscriptions = Arc::clone(&self.subscriptions);
-        let mut subs = subscriptions.write().await;
+        let subs = subscriptions.read().await;
 
-        if let Some(sub_info) = subs.get_mut(&topic) {
+        if let Some(sub_info) = subs.get(&topic) {
             for (_id, function_path) in sub_info.iter() {
+                tracing::debug!(function_path = %function_path, topic = %topic, "Event: Invoking function");
                 let function_path = function_path.clone();
                 let event_data = event_data.clone();
                 let engine = Arc::clone(&self.engine);
@@ -56,6 +57,8 @@ impl PubSubAdapter for LocalAdapter {
                     let _ = engine.invoke_function(&function_path, event_data).await;
                 });
             }
+        } else {
+            tracing::debug!(topic = %topic, "Event: No subscriptions found");
         }
     }
 
@@ -65,11 +68,9 @@ impl PubSubAdapter for LocalAdapter {
         let function_path = function_path.to_string();
         let mut subs = self.subscriptions.write().await;
 
-        if let Some(sub_info) = subs.get_mut(&topic) {
-            sub_info.insert(id, function_path);
-        } else {
-            subs.insert(topic, HashMap::from([(id, function_path)]));
-        }
+        subs.entry(topic)
+            .or_insert_with(HashMap::new)
+            .insert(id, function_path);
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {

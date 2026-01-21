@@ -11,7 +11,7 @@ modules:
 
   - class: modules::api::RestApiModule
     config:
-      port: 3111
+      port: ${API_PORT:3111}
       host: 127.0.0.1
       default_timeout: 30000
       concurrency_request_limit: 1024
@@ -28,7 +28,7 @@ modules:
 
   - class: modules::observability::LoggingModule
     config:
-      level: info
+      level: debug
       format: default
 
   - class: modules::event::EventModule

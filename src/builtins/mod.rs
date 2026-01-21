@@ -1,3 +1,4 @@
+pub mod filters;
 use std::{
     collections::HashMap,
     sync::{Arc, atomic::AtomicBool},
@@ -8,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{RwLock, broadcast};
 
-use crate::modules::streams::{StreamWrapperMessage, adapters::StreamConnection};
+use crate::modules::streams::{
+    StreamWrapperMessage,
+    adapters::{StreamConnection, UpdateResult},
+};
 
 type Subscribers = Vec<Arc<dyn StreamConnection>>;
 type TopicName = String;
@@ -225,6 +229,103 @@ impl BuiltinKvStore {
             .cloned()
             .collect()
     }
+    pub async fn update(&self, key: String, ops: Vec<filters::UpdateOp>) -> Option<UpdateResult> {
+        let mut store = self.store.write().await;
+        if let Some(existing_value) = store.get_mut(&key) {
+            let old_value = existing_value.clone();
+            let mut updated_value = existing_value.clone();
+            for op in ops {
+                match op {
+                    filters::UpdateOp::Set { path, value } => {
+                        if path.0.is_empty() {
+                            updated_value = value;
+                        } else if let Value::Object(ref mut map) = updated_value {
+                            map.insert(path.0, value);
+                        } else {
+                            tracing::warn!(
+                                "Set operation with path requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                    filters::UpdateOp::Merge { path, value } => {
+                        if path.is_none() || path.as_ref().unwrap().0.is_empty() {
+                            if let (Value::Object(existing_map), Value::Object(new_map)) =
+                                (&mut updated_value, value)
+                            {
+                                for (k, v) in new_map {
+                                    existing_map.insert(k, v);
+                                }
+                            } else {
+                                tracing::warn!(
+                                    "Merge operation requires both existing and new values to be JSON objects"
+                                );
+                            }
+                        } else {
+                            tracing::warn!("Only root-level merge is supported");
+                        }
+                    }
+                    filters::UpdateOp::Increment { path, by } => {
+                        if let Value::Object(ref mut map) = updated_value {
+                            if let Some(existing_val) = map.get_mut(&path.0) {
+                                if let Some(num) = existing_val.as_i64() {
+                                    *existing_val =
+                                        Value::Number(serde_json::Number::from(num + by));
+                                } else {
+                                    tracing::warn!(
+                                        "Increment operation requires existing value to be a number"
+                                    );
+                                }
+                            } else {
+                                map.insert(path.0, Value::Number(serde_json::Number::from(by)));
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Increment operation requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                    filters::UpdateOp::Decrement { path, by } => {
+                        if let Value::Object(ref mut map) = updated_value {
+                            if let Some(existing_val) = map.get_mut(&path.0) {
+                                if let Some(num) = existing_val.as_i64() {
+                                    *existing_val =
+                                        Value::Number(serde_json::Number::from(num - by));
+                                } else {
+                                    tracing::warn!(
+                                        "Decrement operation requires existing value to be a number"
+                                    );
+                                }
+                            } else {
+                                map.insert(path.0, Value::Number(serde_json::Number::from(-by)));
+                            }
+                        } else {
+                            tracing::warn!(
+                                "Decrement operation requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                    filters::UpdateOp::Remove { path } => {
+                        if let Value::Object(ref mut map) = updated_value {
+                            map.remove(&path.0);
+                        } else {
+                            tracing::warn!(
+                                "Remove operation requires existing value to be a JSON object"
+                            );
+                        }
+                    }
+                }
+            }
+            *existing_value = updated_value.clone();
+            self.dirty.store(true, std::sync::atomic::Ordering::Release);
+
+            Some(UpdateResult {
+                old_value: Some(old_value),
+                new_value: updated_value,
+            })
+        } else {
+            None
+        }
+    }
 
     pub async fn list(&self, key: String) -> Vec<Value> {
         self.get(key).await.map_or(vec![], |v| {
@@ -301,11 +402,18 @@ impl BuiltInPubSubAdapter {
 mod test {
     use async_trait::async_trait;
     use mockall::mock;
+    use uuid::Uuid;
 
     use super::*;
     use crate::modules::streams::{
         StreamOutboundMessage, adapters::StreamConnection as StreamConnectionTrait,
     };
+
+    fn next_delay(seed: &mut u64, max_ms: u64) -> std::time::Duration {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let millis = (*seed >> 32) % (max_ms + 1);
+        std::time::Duration::from_millis(millis)
+    }
 
     mock! {
         pub StreamConnection {}
@@ -506,5 +614,518 @@ mod test {
         // Ensure item is deleted
         let should_be_none = kv_store.get(key).await;
         assert!(should_be_none.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_missing_key() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "missing_key".to_string();
+
+        let result = kv_store
+            .update(
+                key,
+                vec![filters::UpdateOp::Set {
+                    path: filters::FieldPath::from(""),
+                    value: serde_json::json!({"a": 1}),
+                }],
+            )
+            .await;
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_after_delete_returns_none() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_deleted_key".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"counter": 0}))
+            .await;
+        kv_store.delete(key.clone()).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Increment {
+                    path: filters::FieldPath::from("counter"),
+                    by: 1,
+                }],
+            )
+            .await;
+
+        assert!(result.is_none());
+        assert!(kv_store.get(key).await.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_set_root() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_set_root".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Set {
+                    path: filters::FieldPath::from(""),
+                    value: serde_json::json!({"b": 2}),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result.new_value, serde_json::json!({"b": 2}));
+        assert_eq!(
+            kv_store.get(key).await.expect("Value should exist"),
+            serde_json::json!({"b": 2})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_set_field() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_set_field".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"a": 1, "b": 2}))
+            .await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Set {
+                    path: filters::FieldPath::from("c"),
+                    value: serde_json::json!(3),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(
+            result.new_value,
+            serde_json::json!({"a": 1, "b": 2, "c": 3})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_merge_root() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_merge_root".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Merge {
+                    path: None,
+                    value: serde_json::json!({"b": 2}),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result.new_value, serde_json::json!({"a": 1, "b": 2}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_merge_non_root_noop() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_merge_non_root".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Merge {
+                    path: Some(filters::FieldPath::from("nested")),
+                    value: serde_json::json!({"b": 2}),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result.new_value, serde_json::json!({"a": 1}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_increment() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_increment".to_string();
+
+        kv_store.set(key.clone(), serde_json::json!({"a": 1})).await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![
+                    filters::UpdateOp::Increment {
+                        path: filters::FieldPath::from("a"),
+                        by: 2,
+                    },
+                    filters::UpdateOp::Increment {
+                        path: filters::FieldPath::from("b"),
+                        by: 5,
+                    },
+                ],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result.new_value, serde_json::json!({"a": 3, "b": 5}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_decrement() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_decrement".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"a": 10}))
+            .await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![
+                    filters::UpdateOp::Decrement {
+                        path: filters::FieldPath::from("a"),
+                        by: 3,
+                    },
+                    filters::UpdateOp::Decrement {
+                        path: filters::FieldPath::from("b"),
+                        by: 2,
+                    },
+                ],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result.new_value, serde_json::json!({"a": 7, "b": -2}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_remove() {
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "update_remove".to_string();
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"a": 1, "b": 2}))
+            .await;
+
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![filters::UpdateOp::Remove {
+                    path: filters::FieldPath::from("a"),
+                }],
+            )
+            .await
+            .expect("Update should return value");
+
+        assert_eq!(result.new_value, serde_json::json!({"b": 2}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_concurrent_updates_increment() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let key = format!("concurrent_counter::{}", Uuid::new_v4());
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"name": "a", "counter": 0}))
+            .await;
+
+        let mut handles = Vec::with_capacity(500);
+        for _ in 0..500 {
+            let store = Arc::clone(&kv_store);
+            let key = key.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = store
+                    .update(
+                        key,
+                        vec![filters::UpdateOp::Increment {
+                            path: filters::FieldPath::from("counter"),
+                            by: 1,
+                        }],
+                    )
+                    .await;
+            }));
+        }
+
+        futures::future::join_all(handles).await;
+
+        let result = kv_store.get(key).await.expect("Counter should exist");
+        assert_eq!(result, serde_json::json!({"name": "a", "counter": 500}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_concurrent_name_and_counter_updates() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let scenarios: Vec<(&str, Vec<&str>)> = vec![
+            ("len5", vec!["B", "E", "G", "I", "J"]),
+            ("len7", vec!["B", "C", "E", "G", "H", "I", "J"]),
+            ("len10", vec!["B", "C", "D", "E", "F", "G", "H", "I", "J"]),
+        ];
+
+        for (scenario_idx, (_, updates)) in scenarios.iter().enumerate() {
+            for order in 0..3 {
+                let key = format!("concurrent_name_counter::{}", Uuid::new_v4());
+                kv_store
+                    .set(key.clone(), serde_json::json!({"name": "A", "counter": 0}))
+                    .await;
+
+                let store_for_name = Arc::clone(&kv_store);
+                let key_for_name = key.clone();
+                let updates = updates.clone();
+                let name_task = tokio::spawn(async move {
+                    if order == 1 {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    for (idx, value) in updates.iter().enumerate() {
+                        let _ = store_for_name
+                            .update(
+                                key_for_name.clone(),
+                                vec![filters::UpdateOp::Set {
+                                    path: filters::FieldPath::from("name"),
+                                    value: serde_json::json!(value),
+                                }],
+                            )
+                            .await;
+                        if (idx + scenario_idx) % 3 == 0 {
+                            tokio::task::yield_now().await;
+                        } else if (idx + scenario_idx) % 3 == 1 {
+                            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        }
+                    }
+                });
+
+                let store_for_counter = Arc::clone(&kv_store);
+                let key_for_counter = key.clone();
+                let counter_task = tokio::spawn(async move {
+                    if order == 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    for idx in 0..500 {
+                        let _ = store_for_counter
+                            .update(
+                                key_for_counter.clone(),
+                                vec![filters::UpdateOp::Increment {
+                                    path: filters::FieldPath::from("counter"),
+                                    by: 2,
+                                }],
+                            )
+                            .await;
+                        if idx % 50 == 0 {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                });
+
+                let _ = tokio::join!(name_task, counter_task);
+
+                let result = kv_store
+                    .get(key)
+                    .await
+                    .expect("Name and counter should exist");
+                assert_eq!(result, serde_json::json!({"name": "J", "counter": 1000}));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_concurrent_name_and_counter_updates_randomized_delays() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let key = format!("concurrent_random_delays::{}", Uuid::new_v4());
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"name": "A", "counter": 0}))
+            .await;
+
+        let name_updates = ["B", "C", "D", "E", "F", "G", "H", "I", "J"];
+
+        let store_for_name = Arc::clone(&kv_store);
+        let key_for_name = key.clone();
+        let name_task = tokio::spawn(async move {
+            let mut seed = 0xA5A5_1234u64;
+            for value in name_updates {
+                let _ = store_for_name
+                    .update(
+                        key_for_name.clone(),
+                        vec![filters::UpdateOp::Set {
+                            path: filters::FieldPath::from("name"),
+                            value: serde_json::json!(value),
+                        }],
+                    )
+                    .await;
+                let delay = next_delay(&mut seed, 3);
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                } else {
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+
+        let store_for_counter = Arc::clone(&kv_store);
+        let key_for_counter = key.clone();
+        let counter_task = tokio::spawn(async move {
+            let mut seed = 0x5A5A_4321u64;
+            for _ in 0..500 {
+                let _ = store_for_counter
+                    .update(
+                        key_for_counter.clone(),
+                        vec![filters::UpdateOp::Increment {
+                            path: filters::FieldPath::from("counter"),
+                            by: 2,
+                        }],
+                    )
+                    .await;
+                let delay = next_delay(&mut seed, 2);
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        });
+
+        let _ = tokio::join!(name_task, counter_task);
+
+        let result = kv_store
+            .get(key)
+            .await
+            .expect("Name and counter should exist");
+        assert_eq!(result, serde_json::json!({"name": "J", "counter": 1000}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_concurrent_varying_increments() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let key = format!("concurrent_varying_increments::{}", Uuid::new_v4());
+
+        kv_store
+            .set(key.clone(), serde_json::json!({"name": "A", "counter": 0}))
+            .await;
+
+        let store_for_name = Arc::clone(&kv_store);
+        let key_for_name = key.clone();
+        let name_task = tokio::spawn(async move {
+            for value in ["B", "C", "D", "E", "F", "G", "H", "I", "J"] {
+                let _ = store_for_name
+                    .update(
+                        key_for_name.clone(),
+                        vec![filters::UpdateOp::Set {
+                            path: filters::FieldPath::from("name"),
+                            value: serde_json::json!(value),
+                        }],
+                    )
+                    .await;
+            }
+        });
+
+        let increments: Vec<i64> = [1, 2, 3, 4, 5].repeat(40);
+        let expected_total: i64 = increments.iter().sum();
+
+        let store_for_counter = Arc::clone(&kv_store);
+        let key_for_counter = key.clone();
+        let counter_task = tokio::spawn(async move {
+            for (idx, by) in increments.into_iter().enumerate() {
+                let _ = store_for_counter
+                    .update(
+                        key_for_counter.clone(),
+                        vec![filters::UpdateOp::Increment {
+                            path: filters::FieldPath::from("counter"),
+                            by,
+                        }],
+                    )
+                    .await;
+                if idx % 25 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+
+        let _ = tokio::join!(name_task, counter_task);
+
+        let result = kv_store
+            .get(key)
+            .await
+            .expect("Name and counter should exist");
+        assert_eq!(
+            result,
+            serde_json::json!({"name": "J", "counter": expected_total})
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_multi_group_interleaving() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+
+        let key_a = format!("concurrent_group_a::{}", Uuid::new_v4());
+        let key_b = format!("concurrent_group_b::{}", Uuid::new_v4());
+
+        for key in [&key_a, &key_b] {
+            kv_store
+                .set(
+                    key.to_string(),
+                    serde_json::json!({"name": "A", "counter": 0}),
+                )
+                .await;
+        }
+
+        let store_a = Arc::clone(&kv_store);
+        let key_a_clone = key_a.clone();
+        let task_a = tokio::spawn(async move {
+            for value in ["B", "C", "D", "E", "F", "G", "H", "I", "J"] {
+                let _ = store_a
+                    .update(
+                        key_a_clone.clone(),
+                        vec![
+                            filters::UpdateOp::Set {
+                                path: filters::FieldPath::from("name"),
+                                value: serde_json::json!(value),
+                            },
+                            filters::UpdateOp::Increment {
+                                path: filters::FieldPath::from("counter"),
+                                by: 2,
+                            },
+                        ],
+                    )
+                    .await;
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let store_b = Arc::clone(&kv_store);
+        let key_b_clone = key_b.clone();
+        let task_b = tokio::spawn(async move {
+            for value in ["B", "D", "F", "H", "J"] {
+                let _ = store_b
+                    .update(
+                        key_b_clone.clone(),
+                        vec![
+                            filters::UpdateOp::Set {
+                                path: filters::FieldPath::from("name"),
+                                value: serde_json::json!(value),
+                            },
+                            filters::UpdateOp::Increment {
+                                path: filters::FieldPath::from("counter"),
+                                by: 4,
+                            },
+                        ],
+                    )
+                    .await;
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let _ = tokio::join!(task_a, task_b);
+
+        let value_a = kv_store.get(key_a).await.expect("Group A should exist");
+        let value_b = kv_store.get(key_b).await.expect("Group B should exist");
+
+        assert_eq!(value_a, serde_json::json!({"name": "J", "counter": 18}));
+        assert_eq!(value_b, serde_json::json!({"name": "J", "counter": 20}));
     }
 }

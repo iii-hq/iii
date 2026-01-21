@@ -28,7 +28,7 @@ pub struct PubSubCoreModule {
     _config: PubSubModuleConfig,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PubSubInput {
     pub topic: String,
     pub data: Value,

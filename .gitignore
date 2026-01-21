@@ -9,5 +9,6 @@ dist/
 .DS_Store
 .idea/
 .cursor/
+app.log
 
 packages/docker/bun/iii
