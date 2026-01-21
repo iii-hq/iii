@@ -404,8 +404,9 @@ impl Engine {
             .map(|entry| entry.value().clone())
             .collect();
 
+        let engine = self.clone();
         for trigger in triggers {
-            let engine = self.clone();
+            let engine = engine.clone();
             let function_path = trigger.function_path.clone();
             let data = data.clone();
             tokio::spawn(async move {
