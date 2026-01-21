@@ -12,7 +12,7 @@ use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{EventAdapter, config::EventModuleConfig};
+use super::{EventAdapter, SubscriberQueueConfig, config::EventModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
@@ -88,12 +88,20 @@ impl TriggerRegistrator for EventCoreModule {
                     .and_then(|v| v.as_str())
                     .map(|v| v.to_string());
 
+                let queue_config = trigger
+                    .config
+                    .get("metadata")
+                    .and_then(|m| m.get("infrastructure"))
+                    .and_then(|i| i.get("queue"))
+                    .and_then(|q| SubscriberQueueConfig::from_value(Some(q)));
+
                 adapter
                     .subscribe(
                         &topic,
                         &trigger.id,
                         &trigger.function_path,
                         condition_function_path,
+                        queue_config,
                     )
                     .await;
             } else {

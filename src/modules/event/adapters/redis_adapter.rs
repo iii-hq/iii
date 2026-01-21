@@ -14,7 +14,7 @@ use crate::{
     engine::{Engine, EngineTrait},
     modules::{
         event::{
-            EventAdapter,
+            EventAdapter, SubscriberQueueConfig,
             registry::{EventAdapterFuture, EventAdapterRegistration},
         },
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
@@ -112,6 +112,7 @@ impl EventAdapter for RedisAdapter {
         id: &str,
         function_path: &str,
         condition_function_path: Option<String>,
+        _queue_config: Option<SubscriberQueueConfig>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
@@ -268,5 +269,13 @@ impl EventAdapter for RedisAdapter {
         } else {
             tracing::warn!(topic = %topic, id = %id, "No active subscription found for topic");
         }
+    }
+
+    async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
+        Err(anyhow::anyhow!("RedisAdapter does not support DLQ operations (pub/sub only)"))
+    }
+
+    async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
+        Err(anyhow::anyhow!("RedisAdapter does not support DLQ operations (pub/sub only)"))
     }
 }
