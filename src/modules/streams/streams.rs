@@ -22,6 +22,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
+        kv_server::structs::UpdateResult,
         module::{AdapterFactory, ConfigurableModule, Module},
         streams::{
             StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
@@ -29,7 +30,7 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamListGroupsInput, StreamSetInput,
+                StreamGetInput, StreamListGroupsInput, StreamSetInput, StreamUpdateInput,
             },
             trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
             utils::{headers_to_map, query_to_multi_map},
@@ -434,6 +435,48 @@ impl StreamCoreModule {
                 FunctionResult::Success(serde_json::to_value(groups).ok())
             }
         }
+    }
+
+    #[function(
+        name = "streams.update",
+        description = "Atomically update a stream value with multiple operations"
+    )]
+    pub async fn update(
+        &self,
+        input: StreamUpdateInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let key = input.key;
+        let ops = input.ops;
+        let adapter = self.adapter.clone();
+
+        tracing::debug!(key = %key, ops_count = ops.len(), "Executing atomic stream update");
+
+        let result: UpdateResult = adapter.update(&key, ops).await;
+
+        // Emit update event if the value changed
+        if result.old_value != Some(result.new_value.clone()) {
+            // Parse key to extract stream_name, group_id, item_id if in standard format
+            let parts: Vec<&str> = key.split("::").collect();
+            if parts.len() >= 3 {
+                let stream_name = parts[0].to_string();
+                let group_id = parts[1].to_string();
+                let item_id = parts[2..].join("::");
+
+                adapter
+                    .emit_event(StreamWrapperMessage {
+                        id: Some(item_id),
+                        timestamp: Utc::now().timestamp_millis(),
+                        stream_name,
+                        group_id,
+                        event: StreamOutboundMessage::Update {
+                            data: result.new_value.clone(),
+                        },
+                    })
+                    .await;
+            }
+        }
+
+        FunctionResult::Success(serde_json::to_value(result).ok())
     }
 }
 

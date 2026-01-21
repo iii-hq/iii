@@ -12,6 +12,7 @@ use tokio::{
 use crate::{
     engine::Engine,
     modules::{
+        kv_server::structs::{UpdateOp, UpdateResult},
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         streams::{
             StreamOutboundMessage, StreamWrapperMessage,
@@ -60,6 +61,139 @@ impl RedisAdapter {
 
 #[async_trait]
 impl StreamAdapter for RedisAdapter {
+    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+        // Use RedisJSON commands for atomic, server-side operations
+        // Each JSON.* command is atomic, and we use MULTI/EXEC to make all ops atomic together
+        let mut conn = self.publisher.lock().await;
+
+        // Get old value first using JSON.GET
+        let old_value: Option<Value> = match redis::cmd("JSON.GET")
+            .arg(key)
+            .arg("$")
+            .query_async::<Option<String>>(&mut *conn)
+            .await
+        {
+            Ok(Some(json_array)) => {
+                // JSON.GET with $ returns an array, parse and get first element
+                serde_json::from_str::<Vec<Value>>(&json_array)
+                    .ok()
+                    .and_then(|arr| arr.into_iter().next())
+            }
+            Ok(None) => None,
+            Err(e) => {
+                // Key doesn't exist or other error - try to initialize it
+                tracing::debug!(error = %e, key = %key, "JSON.GET failed, key may not exist");
+                None
+            }
+        };
+
+        // If key doesn't exist, initialize it with empty object
+        if old_value.is_none()
+            && let Err(e) = redis::cmd("JSON.SET")
+                .arg(key)
+                .arg("$")
+                .arg("{}")
+                .query_async::<()>(&mut *conn)
+                .await
+        {
+            tracing::error!(error = %e, key = %key, "Failed to initialize JSON key");
+            return UpdateResult {
+                old_value: None,
+                new_value: Value::Null,
+            };
+        }
+
+        // Build a pipeline with all RedisJSON operations
+        let mut pipe = redis::pipe();
+        pipe.atomic(); // Use MULTI/EXEC for atomicity
+
+        for op in &ops {
+            match op {
+                UpdateOp::Set { path, value } => {
+                    let json_path = if path.0.is_empty() {
+                        "$".to_string()
+                    } else {
+                        format!("$.{}", path.0)
+                    };
+                    let json_value =
+                        serde_json::to_string(value).expect("Failed to serialize value");
+                    pipe.cmd("JSON.SET")
+                        .arg(key)
+                        .arg(&json_path)
+                        .arg(&json_value)
+                        .ignore();
+                }
+                UpdateOp::Merge { path: _, value } => {
+                    // For merge, set each field individually
+                    if let Value::Object(map) = value {
+                        for (field, val) in map {
+                            let json_path = format!("$.{}", field);
+                            let json_value =
+                                serde_json::to_string(val).expect("Failed to serialize value");
+                            pipe.cmd("JSON.SET")
+                                .arg(key)
+                                .arg(&json_path)
+                                .arg(&json_value)
+                                .ignore();
+                        }
+                    }
+                }
+                UpdateOp::Increment { path, by } => {
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.NUMINCRBY")
+                        .arg(key)
+                        .arg(&json_path)
+                        .arg(*by)
+                        .ignore();
+                }
+                UpdateOp::Decrement { path, by } => {
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.NUMINCRBY")
+                        .arg(key)
+                        .arg(&json_path)
+                        .arg(-*by)
+                        .ignore();
+                }
+                UpdateOp::Remove { path } => {
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.DEL").arg(key).arg(&json_path).ignore();
+                }
+            }
+        }
+
+        // Execute all operations atomically
+        if let Err(e) = pipe.query_async::<()>(&mut *conn).await {
+            tracing::error!(error = %e, key = %key, "Failed to execute RedisJSON operations");
+            return UpdateResult {
+                old_value,
+                new_value: Value::Null,
+            };
+        }
+
+        // Get new value after operations
+        let new_value: Value = match redis::cmd("JSON.GET")
+            .arg(key)
+            .arg("$")
+            .query_async::<Option<String>>(&mut *conn)
+            .await
+        {
+            Ok(Some(json_array)) => serde_json::from_str::<Vec<Value>>(&json_array)
+                .ok()
+                .and_then(|arr| arr.into_iter().next())
+                .unwrap_or(Value::Null),
+            Ok(None) => Value::Null,
+            Err(e) => {
+                tracing::error!(error = %e, key = %key, "Failed to get new value after update");
+                Value::Null
+            }
+        };
+
+        UpdateResult {
+            old_value,
+            new_value,
+        }
+    }
+
     async fn emit_event(&self, message: StreamWrapperMessage) {
         let mut conn = self.publisher.lock().await;
         tracing::debug!(msg = ?message, "Emitting event to Redis");
@@ -281,3 +415,165 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::RedisAdapter", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::kv_server::structs::FieldPath;
+
+    const TEST_REDIS_URL: &str = "redis://localhost:6379";
+
+    async fn create_test_adapter() -> Option<RedisAdapter> {
+        match RedisAdapter::new(TEST_REDIS_URL.to_string()).await {
+            Ok(adapter) => Some(adapter),
+            Err(e) => {
+                eprintln!("Skipping test - Redis not available: {}", e);
+                None
+            }
+        }
+    }
+
+    async fn cleanup_key(adapter: &RedisAdapter, key: &str) {
+        let mut conn = adapter.publisher.lock().await;
+        // Use DEL to remove the key (works for both regular and JSON keys)
+        let _: Result<(), _> = conn.del(key).await;
+    }
+
+    async fn set_initial_value(adapter: &RedisAdapter, key: &str, value: &Value) {
+        let mut conn = adapter.publisher.lock().await;
+        let json = serde_json::to_string(value).unwrap();
+        // Use JSON.SET to store as RedisJSON
+        let _: Result<(), _> = redis::cmd("JSON.SET")
+            .arg(key)
+            .arg("$")
+            .arg(&json)
+            .query_async(&mut *conn)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_redis_update_basic_operations() {
+        let Some(adapter) = create_test_adapter().await else {
+            return;
+        };
+
+        let key = "test:update:basic";
+        cleanup_key(&adapter, key).await;
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        set_initial_value(&adapter, key, &initial).await;
+
+        // Test Set operation
+        let result = adapter
+            .update(
+                key,
+                vec![UpdateOp::Set {
+                    path: FieldPath("name".to_string()),
+                    value: Value::String("B".to_string()),
+                }],
+            )
+            .await;
+
+        assert_eq!(result.old_value, Some(initial));
+        assert_eq!(result.new_value["name"], "B");
+        assert_eq!(result.new_value["counter"], 0);
+
+        // Test Increment operation
+        let result = adapter
+            .update(
+                key,
+                vec![UpdateOp::Increment {
+                    path: FieldPath("counter".to_string()),
+                    by: 5,
+                }],
+            )
+            .await;
+
+        assert_eq!(result.new_value["counter"], 5);
+
+        // Test Decrement operation
+        let result = adapter
+            .update(
+                key,
+                vec![UpdateOp::Decrement {
+                    path: FieldPath("counter".to_string()),
+                    by: 2,
+                }],
+            )
+            .await;
+
+        assert_eq!(result.new_value["counter"], 3);
+
+        // Test Remove operation
+        let result = adapter
+            .update(
+                key,
+                vec![UpdateOp::Remove {
+                    path: FieldPath("name".to_string()),
+                }],
+            )
+            .await;
+
+        assert!(result.new_value.get("name").is_none());
+        assert_eq!(result.new_value["counter"], 3);
+
+        // Test Merge operation
+        let result = adapter
+            .update(
+                key,
+                vec![UpdateOp::Merge {
+                    path: None,
+                    value: serde_json::json!({"name": "C", "extra": "field"}),
+                }],
+            )
+            .await;
+
+        assert_eq!(result.new_value["name"], "C");
+        assert_eq!(result.new_value["counter"], 3);
+        assert_eq!(result.new_value["extra"], "field");
+
+        cleanup_key(&adapter, key).await;
+    }
+
+    #[tokio::test]
+    async fn test_redis_update_multiple_ops_in_single_call() {
+        let Some(adapter) = create_test_adapter().await else {
+            return;
+        };
+
+        let key = "test:update:multi_ops";
+        cleanup_key(&adapter, key).await;
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        set_initial_value(&adapter, key, &initial).await;
+
+        // Apply multiple operations in a single update call
+        let result = adapter
+            .update(
+                key,
+                vec![
+                    UpdateOp::Set {
+                        path: FieldPath("name".to_string()),
+                        value: Value::String("Z".to_string()),
+                    },
+                    UpdateOp::Increment {
+                        path: FieldPath("counter".to_string()),
+                        by: 10,
+                    },
+                    UpdateOp::Set {
+                        path: FieldPath("status".to_string()),
+                        value: Value::String("active".to_string()),
+                    },
+                ],
+            )
+            .await;
+
+        assert_eq!(result.new_value["name"], "Z");
+        assert_eq!(result.new_value["counter"], 10);
+        assert_eq!(result.new_value["status"], "active");
+
+        cleanup_key(&adapter, key).await;
+    }
+}
