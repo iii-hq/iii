@@ -240,6 +240,59 @@ impl CoreModule for WorkerModule {
         Ok(())
     }
 
+    async fn start_background_tasks(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        let engine = self.engine.clone();
+        let triggers = self.triggers.clone();
+        let duration_secs = 5u64;
+
+        tokio::spawn(async move {
+            let mut current_functions_hash = engine.functions.functions_hash();
+
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)) => {
+                        let new_functions_hash = engine.functions.functions_hash();
+                        if new_functions_hash != current_functions_hash {
+                            tracing::info!("New functions detected, firing functions-available trigger");
+                            current_functions_hash = new_functions_hash;
+
+                            let functions_data = serde_json::json!({
+                                "event": "functions_changed",
+                            });
+
+                            // Fire triggers directly from this module
+                            let triggers_to_fire: Vec<Trigger> = triggers
+                                .iter()
+                                .filter(|entry| entry.value().trigger_type == TRIGGER_FUNCTIONS_AVAILABLE)
+                                .map(|entry| entry.value().clone())
+                                .collect();
+
+                            for trigger in triggers_to_fire {
+                                let engine = engine.clone();
+                                let function_path = trigger.function_path.clone();
+                                let data = functions_data.clone();
+                                tokio::spawn(async move {
+                                    let _ = engine.invoke_function(&function_path, data).await;
+                                });
+                            }
+                        }
+                    }
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            tracing::info!("WorkerModule background tasks shutting down");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     async fn destroy(&self) -> anyhow::Result<()> {
         Ok(())
     }

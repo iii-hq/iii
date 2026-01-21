@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    modules::worker::{TRIGGER_FUNCTIONS_AVAILABLE, TRIGGER_WORKERS_AVAILABLE},
+    modules::worker::TRIGGER_WORKERS_AVAILABLE,
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     trigger::{Trigger, TriggerRegistry, TriggerType},
@@ -133,36 +133,6 @@ impl Engine {
                 code: "function_not_found".into(),
                 message: "Function not found".into(),
             }))
-        }
-    }
-
-    pub async fn notify_new_functions(
-        &self,
-        duration_secs: u64,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
-    ) {
-        let mut current_functions_hash = self.functions.functions_hash();
-
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)) => {
-                    let new_functions_hash = self.functions.functions_hash();
-                    if new_functions_hash != current_functions_hash {
-                        tracing::info!("New functions detected, firing functions-available trigger");
-                        current_functions_hash = new_functions_hash;
-
-                        let functions_data = serde_json::json!({
-                            "event": "functions_changed",
-                        });
-                        self.fire_triggers(TRIGGER_FUNCTIONS_AVAILABLE, functions_data).await;
-                    }
-                }
-                changed = shutdown.changed() => {
-                    if changed.is_err() || *shutdown.borrow() {
-                        break;
-                    }
-                }
-            }
         }
     }
 

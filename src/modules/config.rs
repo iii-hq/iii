@@ -408,12 +408,17 @@ impl EngineBuilder {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        // Start function notification task
-        let engine_clone = engine.clone();
-        let notify_shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            engine_clone.notify_new_functions(5, notify_shutdown).await;
-        });
+        // Start background tasks for all modules
+        for module in self.modules.iter() {
+            let module_shutdown = shutdown_rx.clone();
+            if let Err(e) = module.start_background_tasks(module_shutdown).await {
+                tracing::warn!(
+                    module = module.name(),
+                    error = %e,
+                    "Failed to start background tasks for module"
+                );
+            }
+        }
 
         // Setup router
         let app = Router::new().route("/", get(ws_handler)).with_state(engine);
