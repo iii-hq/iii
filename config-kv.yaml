@@ -3,8 +3,7 @@ modules:
   - class: modules::kv_server::KvServer
     config:
       store_method: file_based
-      file_path: ./data/kv_store.db
-      save_interval_ms: 5000
+      file_path: ./data/kv_store
 
   - class: modules::pubsub::PubSubModule
     config:
