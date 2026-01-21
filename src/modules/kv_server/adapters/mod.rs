@@ -3,6 +3,8 @@ use serde_json::Value;
 
 use crate::builtins::{BuiltinKvStore, SetResult};
 
+use super::structs::{UpdateOp, UpdateResult};
+
 #[async_trait]
 pub trait KVStoreAdapter: Send + Sync {
     async fn set(&self, key: String, value: Value, config: Option<Value>) -> SetResult;
@@ -11,6 +13,8 @@ pub trait KVStoreAdapter: Send + Sync {
     async fn exists(&self, key: String) -> bool;
     async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String>;
     async fn list(&self, key: String) -> Vec<Value>;
+
+    async fn update(&self, stream_name: &str, ops: Vec<UpdateOp>) -> UpdateResult;
 
     async fn destroy(&self) -> anyhow::Result<()>;
 }
@@ -31,6 +35,16 @@ impl KVStoreAdapter for BuiltinKvStore {
 
     async fn exists(&self, key: String) -> bool {
         self.exists(key).await
+    }
+
+    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+        match self.update(key.to_string(), ops).await {
+            Some(result) => result,
+            None => UpdateResult {
+                old_value: None,
+                new_value: serde_json::Value::Null,
+            },
+        }
     }
 
     async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String> {
