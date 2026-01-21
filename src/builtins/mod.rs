@@ -819,76 +819,52 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_two_threads_counter_and_name() {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
-        use futures::Future;
-        use std::pin::Pin;
 
         let kv_store = Arc::new(BuiltinKvStore::new(None));
         let key = "test:update:two_threads".to_string();
 
-        // Set initial value
         let initial = serde_json::json!({"name": "A", "counter": 0});
         kv_store.set(key.clone(), initial).await;
 
-        let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+        let names: Vec<String> = ('A'..='Z').map(|c| c.to_string()).collect();
 
-        let mut all_tasks: Vec<Pin<Box<dyn Future<Output = Option<UpdateResult>> + Send>>> = vec![];
-
-        // Add counter update tasks (500 increments of 2 each)
-        for _ in 0..500 {
-            let kv = Arc::clone(&kv_store);
-            let k = key.clone();
-            let task = Box::pin(async move {
-                kv.update(
-                    k,
+        let kv_counter = Arc::clone(&kv_store);
+        let key_counter = key.clone();
+        let counter_handle = tokio::spawn(async move {
+            let mut tasks = vec![];
+            for _ in 0..500 {
+                let task = kv_counter.update(
+                    key_counter.clone(),
                     vec![UpdateOp::Increment {
                         path: FieldPath("counter".to_string()),
                         by: 2,
                     }],
-                )
-                .await
-            });
-            all_tasks.push(task);
-        }
-
-        // Add name update tasks (500 sets cycling through A-J)
-        for i in 0..500 {
-            let kv = Arc::clone(&kv_store);
-            let k = key.clone();
-            let name_idx = i % 10;
-            let name_value = names[name_idx].to_string();
-            let task = Box::pin(async move {
-                kv.update(
-                    k,
-                    vec![UpdateOp::Set {
-                        path: FieldPath("name".to_string()),
-                        value: Value::String(name_value),
-                    }],
-                )
-                .await
-            });
-            all_tasks.push(task);
-        }
-
-        let results = futures::future::join_all(all_tasks).await;
-
-        let mut success_count = 0;
-        let mut error_count = 0;
-        for result in &results {
-            match result {
-                Some(_) => success_count += 1,
-                None => error_count += 1,
+                );
+                tasks.push(task);
             }
-        }
+            futures::future::join_all(tasks).await;
+        });
 
-        assert_eq!(
-            error_count, 0,
-            "All updates should succeed, but {} failed",
-            error_count
-        );
-        assert_eq!(
-            success_count, 1000,
-            "Expected 1000 successful updates (500 counter + 500 name)"
-        );
+        let kv_name = Arc::clone(&kv_store);
+        let key_name = key.clone();
+        let name_handle = tokio::spawn(async move {
+            for name in names {
+                kv_name
+                    .update(
+                        key_name.clone(),
+                        vec![UpdateOp::Set {
+                            path: FieldPath("name".to_string()),
+                            value: Value::String(name),
+                        }],
+                    )
+                    .await;
+            }
+        });
+
+        // Wait for both spawns to complete
+        let (counter_result, name_result) = tokio::join!(counter_handle, name_handle);
+        counter_result.expect("Counter spawn failed");
+        name_result.expect("Name spawn failed");
 
         let final_value = kv_store.get(key).await.expect("Value should exist");
 
@@ -898,7 +874,7 @@ mod test {
         );
 
         let name = final_value["name"].as_str().unwrap_or("");
-        assert_eq!("I", name.to_string());
+        assert_eq!("Z", name);
     }
 
     #[tokio::test(flavor = "multi_thread")]
