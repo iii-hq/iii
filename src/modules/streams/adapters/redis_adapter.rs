@@ -451,23 +451,6 @@ mod tests {
             .await;
     }
 
-    async fn get_value(adapter: &RedisAdapter, key: &str) -> Option<Value> {
-        let mut conn = adapter.publisher.lock().await;
-        // Use JSON.GET to retrieve RedisJSON value
-        let result: Option<String> = redis::cmd("JSON.GET")
-            .arg(key)
-            .arg("$")
-            .query_async(&mut *conn)
-            .await
-            .ok()?;
-        // JSON.GET with $ returns an array, parse and get first element
-        result.and_then(|json_array| {
-            serde_json::from_str::<Vec<Value>>(&json_array)
-                .ok()
-                .and_then(|arr| arr.into_iter().next())
-        })
-    }
-
     #[tokio::test]
     async fn test_redis_update_basic_operations() {
         let Some(adapter) = create_test_adapter().await else {
