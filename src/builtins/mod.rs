@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, atomic::AtomicBool},
+    ffi::OsStr,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -14,6 +17,7 @@ type Subscribers = Vec<Arc<dyn StreamConnection>>;
 type TopicName = String;
 
 const SCALAR_SENTINEL_KEY: &str = "__kv_store_scalar__";
+const KEY_FILE_EXTENSION: &str = "bin";
 
 fn is_scalar_map(map: &HashMap<String, Value>) -> bool {
     map.len() == 1 && map.contains_key(SCALAR_SENTINEL_KEY)
@@ -40,13 +44,99 @@ fn value_to_map(value: Value) -> HashMap<String, Value> {
     }
 }
 
-#[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
-pub struct Storage(HashMap<String, String>);
+#[derive(Archive, RkyvSerialize, RkyvDeserialize)]
+struct KeyStorage(String);
 
-impl Default for Storage {
-    fn default() -> Self {
-        Self::new()
+fn encode_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for byte in key.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
     }
+    out
+}
+
+fn decode_key(encoded: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut iter = encoded.as_bytes().iter().copied();
+    while let Some(byte) = iter.next() {
+        if byte == b'%' {
+            let high = iter.next()?;
+            let low = iter.next()?;
+            let high = (high as char).to_digit(16)? as u8;
+            let low = (low as char).to_digit(16)? as u8;
+            bytes.push((high << 4) | low);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn key_file_name(key: &str) -> String {
+    format!("{}.{}", encode_key(key), KEY_FILE_EXTENSION)
+}
+
+fn key_from_path(path: &Path) -> Option<String> {
+    let file_name = path.file_name()?.to_string_lossy();
+    let file_name = file_name.strip_suffix(&format!(".{}", KEY_FILE_EXTENSION))?;
+    decode_key(file_name)
+}
+
+fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
+    let mut store = HashMap::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::info!(error = ?err, "storage directory not found, starting empty");
+            return store;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension() != Some(OsStr::new(KEY_FILE_EXTENSION)) {
+            continue;
+        }
+        let key = match key_from_path(&path) {
+            Some(key) => key,
+            None => {
+                tracing::warn!(path = %path.display(), "invalid key filename, skipping");
+                continue;
+            }
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(error = ?err, path = %path.display(), "failed to read key file");
+                continue;
+            }
+        };
+        let storage = match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
+            Ok(storage) => storage,
+            Err(err) => {
+                tracing::warn!(error = ?err, path = %path.display(), "failed to parse key file");
+                continue;
+            }
+        };
+        let value = match serde_json::from_str::<Value>(&storage.0) {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::warn!(error = ?err, path = %path.display(), "failed to decode key value");
+                continue;
+            }
+        };
+        store.insert(key, value_to_map(value));
+    }
+
+    store
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,60 +145,9 @@ pub struct SetResult {
     pub new_value: Value,
 }
 
-impl Storage {
-    pub fn new() -> Self {
-        Storage(HashMap::new())
-    }
-
-    fn load_storage(file_path: &str) -> Storage {
-        let bytes = match std::fs::read(file_path) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                tracing::info!(error = ?err, "storage file not found, starting empty");
-                return Storage::new();
-            }
-        };
-
-        match rkyv::from_bytes::<Storage, rkyv::rancor::Error>(&bytes) {
-            Ok(storage) => storage,
-            Err(err) => {
-                tracing::error!(error = ?err, "failed to parse storage from disk");
-                Storage::new()
-            }
-        }
-    }
-
-    fn disk_to_store(self) -> HashMap<String, HashMap<String, Value>> {
-        self.0
-            .into_iter()
-            .map(|(key, item)| {
-                let item = serde_json::from_str::<Value>(&item).unwrap_or_default();
-                (key, value_to_map(item))
-            })
-            .collect::<HashMap<String, HashMap<String, Value>>>()
-    }
-
-    fn store_to_disk(value: &HashMap<String, HashMap<String, Value>>) -> Storage {
-        let mut storage = Storage::new();
-        storage.0 = value
-            .iter()
-            .map(|(key, item)| {
-                let item_as_string = serde_json::to_string(&map_to_value(item)).unwrap_or_default();
-                (key.clone(), item_as_string)
-            })
-            .collect::<HashMap<String, String>>();
-        storage
-    }
-}
-
 pub struct BuiltinKvStore {
     store: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
-    #[allow(
-        dead_code,
-        reason = "Going to be used in the future for graceful shutdown"
-    )]
-    handler: Option<tokio::task::JoinHandle<()>>,
-    dirty: Arc<AtomicBool>,
+    file_store_dir: Option<PathBuf>,
 }
 
 impl BuiltinKvStore {
@@ -132,96 +171,95 @@ impl BuiltinKvStore {
             })
             .unwrap_or_else(|| "kv_store_data.db".to_string());
 
-        let interval = config
-            .clone()
-            .and_then(|cfg| cfg.get("save_interval_ms").and_then(|v| v.as_u64()))
-            .unwrap_or(5000);
-
-        let storage = match store_method.as_str() {
-            "in_memory" => Storage::new(),
-            "file_based" => Storage::load_storage(&file_path),
+        let file_store_dir = match store_method.as_str() {
+            "file_based" => {
+                let dir = PathBuf::from(&file_path);
+                if let Err(err) = std::fs::create_dir_all(&dir) {
+                    tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+                }
+                Some(dir)
+            }
+            "in_memory" => None,
             other => {
                 tracing::warn!(store_method = %other, "Unknown store_method, defaulting to in_memory");
-                Storage::new()
+                None
             }
         };
-        let data_from_disk = storage.disk_to_store();
-        let store = Arc::new(RwLock::new(data_from_disk));
-        let storage_clone = store.clone();
 
-        let dirty = Arc::new(AtomicBool::new(false));
-        let dirty_clone = dirty.clone();
-        let handler = match store_method.as_str() {
-            "file_based" => Some(tokio::spawn(async move {
-                Self::save_loop(storage_clone, interval, &file_path, dirty_clone).await;
-            })),
-            _ => None,
+        let data_from_disk = match &file_store_dir {
+            Some(dir) => load_store_from_dir(dir),
+            None => HashMap::new(),
         };
+        let store = Arc::new(RwLock::new(data_from_disk));
         Self {
             store,
-            handler,
-            dirty,
+            file_store_dir,
         }
     }
 
-    async fn save_loop(
-        storage: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
-        polling_interval: u64,
-        file_path: &str,
-        dirty: Arc<AtomicBool>,
-    ) {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_millis(polling_interval));
-        loop {
-            interval.tick().await;
-            if !dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                continue;
-            }
-            match Self::save_in_disk(storage.clone(), file_path).await {
-                Ok(_) => tracing::info!("Storage saved to disk successfully"),
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to save storage to disk");
-                    dirty.store(true, std::sync::atomic::Ordering::Release);
-                }
-            }
-        }
-    }
-
-    async fn save_in_disk(
-        storage: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
-        file_path: &str,
-    ) -> anyhow::Result<()> {
-        let snapshot = {
-            let store = storage.read().await;
-            store.clone()
+    async fn persist_key_to_disk(&self, key: &str, value: &HashMap<String, Value>) {
+        let Some(dir) = &self.file_store_dir else {
+            return;
         };
-        let file_path = file_path.to_string();
-        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            let storage = Storage::store_to_disk(&snapshot);
-            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&storage)?;
-            let humanized_size = bytes.len();
-            tracing::info!("Saving storage to disk, size {:?}", humanized_size);
-            let temp_file_path = format!("{}.tmp", file_path);
-            if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                std::fs::create_dir_all(parent)
-                    .expect("Failed to create parent directories for storage file");
+
+        if let Err(err) = tokio::fs::create_dir_all(dir).await {
+            tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+            return;
+        }
+
+        let file_name = key_file_name(key);
+        let path = dir.join(&file_name);
+        let temp_path = dir.join(format!("{}.tmp", file_name));
+        let value = map_to_value(value);
+        let json = match serde_json::to_string(&value) {
+            Ok(json) => json,
+            Err(err) => {
+                tracing::error!(error = ?err, key = %key, "failed to serialize key value");
+                return;
             }
-            std::fs::write(&temp_file_path, bytes)?;
-            std::fs::rename(&temp_file_path, file_path)?;
-            Ok(())
-        })
-        .await;
-        match result {
-            Ok(inner) => inner,
-            Err(e) => Err(anyhow::Error::new(e)),
+        };
+        let bytes = match rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json)) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::error!(error = ?err, key = %key, "failed to encode key value");
+                return;
+            }
+        };
+
+        if let Err(err) = tokio::fs::write(&temp_path, bytes).await {
+            tracing::error!(error = ?err, path = %temp_path.display(), "failed to write key file");
+            return;
+        }
+
+        if let Err(err) = tokio::fs::rename(&temp_path, &path).await {
+            tracing::error!(error = ?err, path = %path.display(), "failed to finalize key file");
+        }
+    }
+
+    async fn delete_key_from_disk(&self, key: &str) {
+        let Some(dir) = &self.file_store_dir else {
+            return;
+        };
+
+        let path = dir.join(key_file_name(key));
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::error!(error = ?err, path = %path.display(), "failed to delete key file");
+            }
         }
     }
 
     pub async fn set(&self, key: String, data: Value) -> SetResult {
         let mut store = self.store.write().await;
         let old_value = store.get(&key).map(map_to_value);
-        store.insert(key, value_to_map(data.clone()));
-        self.dirty.store(true, std::sync::atomic::Ordering::Release);
+        store.insert(key.clone(), value_to_map(data.clone()));
+        let new_value = store.get(&key).cloned();
+        drop(store);
+        if let Some(value) = new_value {
+            self.persist_key_to_disk(&key, &value).await;
+        }
 
         SetResult {
             old_value,
@@ -237,8 +275,9 @@ impl BuiltinKvStore {
     pub async fn delete(&self, key: String) -> Option<Value> {
         let mut store = self.store.write().await;
         let result = store.remove(&key).map(|value| map_to_value(&value));
+        drop(store);
         if result.is_some() {
-            self.dirty.store(true, std::sync::atomic::Ordering::Release);
+            self.delete_key_from_disk(&key).await;
         }
         result
     }
@@ -345,70 +384,43 @@ mod test {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_storage_default() {
-        let storage = Storage::default();
-        assert!(storage.0.is_empty(), "Default storage should be empty");
+    fn temp_store_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("kv_store_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_storage_load_storage() {
-        // Test loading from a non-existent file
-        let storage = Storage::load_storage("non_existent_file.db");
-        assert!(
-            storage.0.is_empty(),
-            "Storage should be empty for non-existent file"
-        );
-        // Test with existing file
-        let test_storage = Storage::new();
-        let test_file_path = "test_storage.db";
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&test_storage).unwrap();
-        std::fs::write(test_file_path, bytes).unwrap();
-        let loaded_storage = Storage::load_storage(test_file_path);
-        assert_eq!(loaded_storage.0.len(), 0);
-        std::fs::remove_file(test_file_path).unwrap();
-    }
+    async fn test_file_based_load_set_delete() {
+        let dir = temp_store_dir();
+        let key = "test_stream::test_group::item1";
+        let data = serde_json::json!({"key": "value"});
+        let file_path = dir.join(key_file_name(key));
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_storage_snapshot_to_storage_and_back() {
-        let mut original_store: HashMap<String, HashMap<String, Value>> = HashMap::new();
-        let key = "test_stream::test_group::item1".to_string();
-        let mut topic = HashMap::new();
-        topic.insert("key".to_string(), serde_json::json!("value"));
-        original_store.insert(key.clone(), topic.clone());
+        let json = serde_json::to_string(&data).unwrap();
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json)).unwrap();
+        std::fs::write(&file_path, bytes).unwrap();
 
-        let storage = Storage::store_to_disk(&original_store);
-        let restored_store = storage.disk_to_store();
-
-        assert_eq!(restored_store.len(), original_store.len());
-        assert_eq!(restored_store.get(&key).unwrap(), &topic);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_storage_save_loop_when_dirty_flag_is_true() {
-        let mut store: HashMap<String, HashMap<String, Value>> = HashMap::new();
-        let key = "test_stream::test_group::item1".to_string();
-        let mut topic = HashMap::new();
-        topic.insert("key".to_string(), serde_json::json!("value"));
-        store.insert(key, topic);
-
-        let storage = Arc::new(RwLock::new(store));
-        let dirty = Arc::new(AtomicBool::new(true));
-        let test_file_path = "test_save_loop_storage.db";
-
-        let save_handle = tokio::spawn(async move {
-            BuiltinKvStore::save_loop(storage.clone(), 100, test_file_path, dirty.clone()).await;
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy()
         });
+        let kv_store = BuiltinKvStore::new(Some(config));
 
-        // Wait some time to allow the save loop to run
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let loaded = kv_store.get(key.to_string()).await;
+        assert_eq!(loaded, Some(data.clone()));
 
-        // Check if the file was created
-        assert!(std::path::Path::new(test_file_path).exists());
+        let updated = serde_json::json!({"key": "updated"});
+        kv_store.set(key.to_string(), updated.clone()).await;
+        let bytes = std::fs::read(&file_path).unwrap();
+        let storage = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
+        let on_disk = serde_json::from_str::<Value>(&storage.0).unwrap();
+        assert_eq!(on_disk, updated);
 
-        // Clean up
-        save_handle.abort();
-        std::fs::remove_file(test_file_path).unwrap();
+        kv_store.delete(key.to_string()).await;
+        assert!(!file_path.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -434,29 +446,6 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_storage_save_in_disk_and_load() {
-        let mut store: HashMap<String, HashMap<String, Value>> = HashMap::new();
-        let key = "test_stream::test_group::item1".to_string();
-        let mut topic = HashMap::new();
-        topic.insert("key".to_string(), serde_json::json!("value"));
-        store.insert(key.clone(), topic.clone());
-
-        let storage = Arc::new(RwLock::new(store));
-        let test_file_path = "test_save_storage.db";
-
-        BuiltinKvStore::save_in_disk(storage.clone(), test_file_path)
-            .await
-            .expect("Failed to save storage to disk");
-
-        let loaded_storage = Storage::load_storage(test_file_path);
-        let restored_store = loaded_storage.disk_to_store();
-        assert_eq!(restored_store.len(), 1);
-        assert_eq!(restored_store.get(&key).unwrap(), &topic);
-
-        std::fs::remove_file(test_file_path).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_invalid_store_method() {
         // when this happens it should default to in_memory
         let config = serde_json::json!({
@@ -468,13 +457,14 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_with_config() {
+        let dir = temp_store_dir();
         let config = serde_json::json!({
             "store_method": "file_based",
-            "file_path": "test_kv_store.db",
-            "save_interval_ms": 1000
+            "file_path": dir.to_string_lossy()
         });
         let kv_store = BuiltinKvStore::new(Some(config));
         assert!(kv_store.store.read().await.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_pub_sub() {
