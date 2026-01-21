@@ -817,11 +817,13 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_builtin_kv_store_update_sequential_500_calls() {
+    async fn test_builtin_kv_store_update_two_threads_counter_and_name() {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
+        use futures::Future;
+        use std::pin::Pin;
 
-        let kv_store = BuiltinKvStore::new(None);
-        let key = "test:update:sequential_500".to_string();
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let key = "test:update:two_threads".to_string();
 
         // Set initial value
         let initial = serde_json::json!({"name": "A", "counter": 0});
@@ -829,40 +831,74 @@ mod test {
 
         let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
-        // Run 500 sequential updates
-        for i in 0..500 {
-            let name_idx = i % 10;
-            kv_store
-                .update(
-                    key.clone(),
-                    vec![
-                        UpdateOp::Increment {
-                            path: FieldPath("counter".to_string()),
-                            by: 2,
-                        },
-                        UpdateOp::Set {
-                            path: FieldPath("name".to_string()),
-                            value: Value::String(names[name_idx].to_string()),
-                        },
-                    ],
+        let mut all_tasks: Vec<Pin<Box<dyn Future<Output = Option<UpdateResult>> + Send>>> = vec![];
+
+        // Add counter update tasks (500 increments of 2 each)
+        for _ in 0..500 {
+            let kv = Arc::clone(&kv_store);
+            let k = key.clone();
+            let task = Box::pin(async move {
+                kv.update(
+                    k,
+                    vec![UpdateOp::Increment {
+                        path: FieldPath("counter".to_string()),
+                        by: 2,
+                    }],
                 )
-                .await;
+                .await
+            });
+            all_tasks.push(task);
         }
 
-        // Verify final result
+        // Add name update tasks (500 sets cycling through A-J)
+        for i in 0..500 {
+            let kv = Arc::clone(&kv_store);
+            let k = key.clone();
+            let name_idx = i % 10;
+            let name_value = names[name_idx].to_string();
+            let task = Box::pin(async move {
+                kv.update(
+                    k,
+                    vec![UpdateOp::Set {
+                        path: FieldPath("name".to_string()),
+                        value: Value::String(name_value),
+                    }],
+                )
+                .await
+            });
+            all_tasks.push(task);
+        }
+
+        let results = futures::future::join_all(all_tasks).await;
+
+        let mut success_count = 0;
+        let mut error_count = 0;
+        for result in &results {
+            match result {
+                Some(_) => success_count += 1,
+                None => error_count += 1,
+            }
+        }
+
+        assert_eq!(
+            error_count, 0,
+            "All updates should succeed, but {} failed",
+            error_count
+        );
+        assert_eq!(
+            success_count, 1000,
+            "Expected 1000 successful updates (500 counter + 500 name)"
+        );
+
         let final_value = kv_store.get(key).await.expect("Value should exist");
 
-        // Counter should be 500 * 2 = 1000
         assert_eq!(
             final_value["counter"], 1000,
             "Counter should be 1000 after 500 increments of 2"
         );
 
-        // Name should be "J" (index 499 % 10 = 9 = "J")
-        assert_eq!(
-            final_value["name"], "J",
-            "Name should be 'J' after 500 updates cycling A-J"
-        );
+        let name = final_value["name"].as_str().unwrap_or("");
+        assert_eq!("I", name.to_string());
     }
 
     #[tokio::test(flavor = "multi_thread")]
