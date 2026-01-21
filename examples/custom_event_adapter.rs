@@ -15,7 +15,7 @@ use iii::{
     function::{FunctionHandler, FunctionResult},
     modules::{
         config::EngineBuilder,
-        core_module::{AdapterEntry, AdapterFactory, ConfigurableModule, CoreModule},
+        module::{AdapterEntry, AdapterFactory, ConfigurableModule, Module},
         registry::{AdapterFuture, AdapterRegistrationEntry},
     },
     protocol::ErrorBody,
@@ -213,16 +213,13 @@ pub struct CustomEventModule {
 }
 
 #[async_trait]
-impl CoreModule for CustomEventModule {
+impl Module for CustomEventModule {
     fn name(&self) -> &'static str {
         "CustomEventModule"
     }
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 

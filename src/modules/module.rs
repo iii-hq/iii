@@ -22,12 +22,9 @@ pub struct AdapterEntry {
 }
 
 #[async_trait::async_trait]
-pub trait CoreModule: Send + Sync {
+pub trait Module: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>>
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>>
     where
         Self: Sized;
 
@@ -70,7 +67,7 @@ pub type AdapterFactory<A> = Arc<
 >;
 
 #[async_trait::async_trait]
-pub trait ConfigurableModule: CoreModule + Sized + 'static {
+pub trait ConfigurableModule: Module + Sized + 'static {
     type Config: DeserializeOwned + Default + Send;
     type Adapter: Send + Sync + 'static + ?Sized;
     type AdapterRegistration: AdapterRegistrationEntry<Self::Adapter> + inventory::Collect;
@@ -162,7 +159,7 @@ pub trait ConfigurableModule: CoreModule + Sized + 'static {
     async fn create_with_adapters(
         engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    ) -> anyhow::Result<Box<dyn Module>> {
         // 1. Parse config
         let parsed_config: Self::Config = config
             .map(serde_json::from_value)

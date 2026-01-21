@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::modules::core_module::AdapterEntry;
+use crate::modules::module::AdapterEntry;
 #[allow(dead_code)] // this is used as default value
 fn default_redis_url() -> String {
     "redis://localhost:6379".to_string()

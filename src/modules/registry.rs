@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde_json::Value;
 
-use crate::{engine::Engine, modules::core_module::CoreModule};
+use crate::{engine::Engine, modules::module::Module};
 
 pub type AdapterFuture<A> = Pin<Box<dyn Future<Output = anyhow::Result<Arc<A>>> + Send>>;
 
@@ -48,7 +48,7 @@ macro_rules! register_adapter {
     };
 }
 
-pub type ModuleFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn CoreModule>>> + Send>>;
+pub type ModuleFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Module>>> + Send>>;
 
 pub struct ModuleRegistration {
     pub class: &'static str,
@@ -62,7 +62,7 @@ macro_rules! register_module {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
-                factory: < $module as $crate::modules::core_module::CoreModule >::make_module,
+                factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: $enabled_by_default,
             }
         }
@@ -71,7 +71,7 @@ macro_rules! register_module {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
-                factory: < $module as $crate::modules::core_module::CoreModule >::make_module,
+                factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: false,
             }
         }

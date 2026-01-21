@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::modules::core_module::AdapterEntry;
+use crate::modules::module::AdapterEntry;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
@@ -19,7 +19,7 @@ pub struct StreamModuleConfig {
 }
 
 fn default_port() -> u16 {
-    31112
+    3112
 }
 
 fn default_host() -> String {

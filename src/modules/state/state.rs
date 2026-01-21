@@ -11,7 +11,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        module::{AdapterFactory, ConfigurableModule, Module},
         state::{
             adapters::StateAdapter,
             config::StateModuleConfig,
@@ -27,14 +27,11 @@ pub struct StateCoreModule {
 }
 
 #[async_trait::async_trait]
-impl CoreModule for StateCoreModule {
+impl Module for StateCoreModule {
     fn name(&self) -> &'static str {
         "StateCoreModule"
     }
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 
