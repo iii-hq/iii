@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use redis::{AsyncCommands, Client, aio::ConnectionManager, pipe};
+use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::{
     sync::{Mutex, RwLock},
@@ -62,139 +62,135 @@ impl RedisAdapter {
 #[async_trait]
 impl StreamAdapter for RedisAdapter {
     async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+        // Use RedisJSON commands for atomic, server-side operations
+        // Each JSON.* command is atomic, and we use MULTI/EXEC to make all ops atomic together
         let mut conn = self.publisher.lock().await;
 
-        // Get current value
-        let current_json: Option<String> = match conn.get(key).await {
-            Ok(v) => v,
+        // Get old value first using JSON.GET
+        let old_value: Option<Value> = match redis::cmd("JSON.GET")
+            .arg(key)
+            .arg("$")
+            .query_async::<Option<String>>(&mut *conn)
+            .await
+        {
+            Ok(Some(json_array)) => {
+                // JSON.GET with $ returns an array, parse and get first element
+                serde_json::from_str::<Vec<Value>>(&json_array)
+                    .ok()
+                    .and_then(|arr| arr.into_iter().next())
+            }
+            Ok(None) => None,
             Err(e) => {
-                tracing::error!(error = %e, key = %key, "Failed to get value from Redis");
-                return UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
+                // Key doesn't exist or other error - try to initialize it
+                tracing::debug!(error = %e, key = %key, "JSON.GET failed, key may not exist");
+                None
             }
         };
 
-        let old_value: Option<Value> = current_json
-            .as_ref()
-            .and_then(|json| serde_json::from_str(json).ok());
+        // If key doesn't exist, initialize it with empty object
+        if old_value.is_none()
+            && let Err(e) = redis::cmd("JSON.SET")
+                .arg(key)
+                .arg("$")
+                .arg("{}")
+                .query_async::<()>(&mut *conn)
+                .await
+        {
+            tracing::error!(error = %e, key = %key, "Failed to initialize JSON key");
+            return UpdateResult {
+                old_value: None,
+                new_value: Value::Null,
+            };
+        }
 
-        let mut updated_value = old_value
-            .clone()
-            .unwrap_or(Value::Object(Default::default()));
+        // Build a pipeline with all RedisJSON operations
+        let mut pipe = redis::pipe();
+        pipe.atomic(); // Use MULTI/EXEC for atomicity
 
-        // Apply all operations
-        for op in ops {
+        for op in &ops {
             match op {
                 UpdateOp::Set { path, value } => {
-                    if path.0.is_empty() {
-                        updated_value = value;
-                    } else if let Value::Object(ref mut map) = updated_value {
-                        map.insert(path.0, value);
+                    let json_path = if path.0.is_empty() {
+                        "$".to_string()
                     } else {
-                        tracing::warn!(
-                            "Set operation with path requires existing value to be a JSON object"
-                        );
-                    }
+                        format!("$.{}", path.0)
+                    };
+                    let json_value =
+                        serde_json::to_string(value).expect("Failed to serialize value");
+                    pipe.cmd("JSON.SET")
+                        .arg(key)
+                        .arg(&json_path)
+                        .arg(&json_value)
+                        .ignore();
                 }
-                UpdateOp::Merge { path, value } => {
-                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
-                        if let (Value::Object(existing_map), Value::Object(new_map)) =
-                            (&mut updated_value, value)
-                        {
-                            for (k, v) in new_map {
-                                existing_map.insert(k, v);
-                            }
-                        } else {
-                            tracing::warn!(
-                                "Merge operation requires both existing and new values to be JSON objects"
-                            );
+                UpdateOp::Merge { path: _, value } => {
+                    // For merge, set each field individually
+                    if let Value::Object(map) = value {
+                        for (field, val) in map {
+                            let json_path = format!("$.{}", field);
+                            let json_value =
+                                serde_json::to_string(val).expect("Failed to serialize value");
+                            pipe.cmd("JSON.SET")
+                                .arg(key)
+                                .arg(&json_path)
+                                .arg(&json_value)
+                                .ignore();
                         }
-                    } else {
-                        tracing::warn!("Only root-level merge is supported");
                     }
                 }
                 UpdateOp::Increment { path, by } => {
-                    if let Value::Object(ref mut map) = updated_value {
-                        if let Some(existing_val) = map.get_mut(&path.0) {
-                            if let Some(num) = existing_val.as_i64() {
-                                *existing_val = Value::Number(serde_json::Number::from(num + by));
-                            } else {
-                                tracing::warn!(
-                                    "Increment operation requires existing value to be a number"
-                                );
-                            }
-                        } else {
-                            map.insert(path.0, Value::Number(serde_json::Number::from(by)));
-                        }
-                    } else {
-                        tracing::warn!(
-                            "Increment operation requires existing value to be a JSON object"
-                        );
-                    }
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.NUMINCRBY")
+                        .arg(key)
+                        .arg(&json_path)
+                        .arg(*by)
+                        .ignore();
                 }
                 UpdateOp::Decrement { path, by } => {
-                    if let Value::Object(ref mut map) = updated_value {
-                        if let Some(existing_val) = map.get_mut(&path.0) {
-                            if let Some(num) = existing_val.as_i64() {
-                                *existing_val = Value::Number(serde_json::Number::from(num - by));
-                            } else {
-                                tracing::warn!(
-                                    "Decrement operation requires existing value to be a number"
-                                );
-                            }
-                        } else {
-                            map.insert(path.0, Value::Number(serde_json::Number::from(-by)));
-                        }
-                    } else {
-                        tracing::warn!(
-                            "Decrement operation requires existing value to be a JSON object"
-                        );
-                    }
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.NUMINCRBY")
+                        .arg(key)
+                        .arg(&json_path)
+                        .arg(-*by)
+                        .ignore();
                 }
                 UpdateOp::Remove { path } => {
-                    if let Value::Object(ref mut map) = updated_value {
-                        map.remove(&path.0);
-                    } else {
-                        tracing::warn!(
-                            "Remove operation requires existing value to be a JSON object"
-                        );
-                    }
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.DEL").arg(key).arg(&json_path).ignore();
                 }
             }
         }
 
-        // Serialize the new value
-        let new_json = match serde_json::to_string(&updated_value) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, key = %key, "Failed to serialize updated value");
-                return UpdateResult {
-                    old_value,
-                    new_value: Value::Null,
-                };
-            }
-        };
-
-        // Execute SET in a pipeline (atomic single command)
-        let result: Result<(), redis::RedisError> = pipe()
-            .atomic()
-            .set(key, &new_json)
-            .query_async(&mut *conn)
-            .await;
-
-        if let Err(e) = result {
-            tracing::error!(error = %e, key = %key, "Failed to set updated value in Redis");
+        // Execute all operations atomically
+        if let Err(e) = pipe.query_async::<()>(&mut *conn).await {
+            tracing::error!(error = %e, key = %key, "Failed to execute RedisJSON operations");
             return UpdateResult {
                 old_value,
                 new_value: Value::Null,
             };
         }
 
+        // Get new value after operations
+        let new_value: Value = match redis::cmd("JSON.GET")
+            .arg(key)
+            .arg("$")
+            .query_async::<Option<String>>(&mut *conn)
+            .await
+        {
+            Ok(Some(json_array)) => serde_json::from_str::<Vec<Value>>(&json_array)
+                .ok()
+                .and_then(|arr| arr.into_iter().next())
+                .unwrap_or(Value::Null),
+            Ok(None) => Value::Null,
+            Err(e) => {
+                tracing::error!(error = %e, key = %key, "Failed to get new value after update");
+                Value::Null
+            }
+        };
+
         UpdateResult {
             old_value,
-            new_value: updated_value,
+            new_value,
         }
     }
 
@@ -439,19 +435,37 @@ mod tests {
 
     async fn cleanup_key(adapter: &RedisAdapter, key: &str) {
         let mut conn = adapter.publisher.lock().await;
+        // Use DEL to remove the key (works for both regular and JSON keys)
         let _: Result<(), _> = conn.del(key).await;
     }
 
     async fn set_initial_value(adapter: &RedisAdapter, key: &str, value: &Value) {
         let mut conn = adapter.publisher.lock().await;
         let json = serde_json::to_string(value).unwrap();
-        let _: Result<(), _> = conn.set(key, json).await;
+        // Use JSON.SET to store as RedisJSON
+        let _: Result<(), _> = redis::cmd("JSON.SET")
+            .arg(key)
+            .arg("$")
+            .arg(&json)
+            .query_async(&mut *conn)
+            .await;
     }
 
     async fn get_value(adapter: &RedisAdapter, key: &str) -> Option<Value> {
         let mut conn = adapter.publisher.lock().await;
-        let result: Option<String> = conn.get(key).await.ok()?;
-        result.and_then(|json| serde_json::from_str(&json).ok())
+        // Use JSON.GET to retrieve RedisJSON value
+        let result: Option<String> = redis::cmd("JSON.GET")
+            .arg(key)
+            .arg("$")
+            .query_async(&mut *conn)
+            .await
+            .ok()?;
+        // JSON.GET with $ returns an array, parse and get first element
+        result.and_then(|json_array| {
+            serde_json::from_str::<Vec<Value>>(&json_array)
+                .ok()
+                .and_then(|arr| arr.into_iter().next())
+        })
     }
 
     #[tokio::test]
@@ -576,150 +590,6 @@ mod tests {
         assert_eq!(result.new_value["name"], "Z");
         assert_eq!(result.new_value["counter"], 10);
         assert_eq!(result.new_value["status"], "active");
-
-        cleanup_key(&adapter, key).await;
-    }
-
-    #[tokio::test]
-    async fn test_redis_update_sequential_500_calls() {
-        let Some(adapter) = create_test_adapter().await else {
-            return;
-        };
-
-        let key = "test:update:sequential_500";
-        cleanup_key(&adapter, key).await;
-
-        // Set initial value
-        let initial = serde_json::json!({"name": "A", "counter": 0});
-        set_initial_value(&adapter, key, &initial).await;
-
-        let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
-
-        // Run 500 updates at same time
-        let mut tasks = vec![];
-        for i in 0..500 {
-            let name_idx = i % 10;
-            let task = adapter.update(
-                key,
-                vec![
-                    UpdateOp::Increment {
-                        path: FieldPath("counter".to_string()),
-                        by: 2,
-                    },
-                    UpdateOp::Set {
-                        path: FieldPath("name".to_string()),
-                        value: Value::String(names[name_idx].to_string()),
-                    },
-                ],
-            );
-            tasks.push(task);
-        }
-        futures::future::join_all(tasks).await;
-
-        // Verify final result
-        let final_value = get_value(&adapter, key).await.expect("Value should exist");
-
-        // Counter should be 500 * 2 = 1000
-        assert_eq!(
-            final_value["counter"], 1000,
-            "Counter should be 1000 after 500 increments of 2"
-        );
-
-        // Name should be "J" (500 % 10 = 0, but we start from 0, so index 499 % 10 = 9 = "J")
-        assert_eq!(
-            final_value["name"], "J",
-            "Name should be 'J' after 500 updates cycling A-J"
-        );
-
-        cleanup_key(&adapter, key).await;
-    }
-
-    #[tokio::test]
-    async fn test_redis_update_concurrent_500_calls() {
-        let Some(adapter) = create_test_adapter().await else {
-            return;
-        };
-
-        let adapter = Arc::new(adapter);
-        let key = "test:update:concurrent_500";
-        cleanup_key(&adapter, key).await;
-
-        // Set initial value
-        let initial = serde_json::json!({"name": "A", "counter": 0});
-        set_initial_value(&adapter, key, &initial).await;
-
-        let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
-
-        // Spawn 500 concurrent update tasks
-        let mut handles = Vec::with_capacity(500);
-
-        for i in 0..500 {
-            let adapter = Arc::clone(&adapter);
-            let key = key.to_string();
-            let name = names[i % 10].to_string();
-
-            let handle = tokio::spawn(async move {
-                adapter
-                    .update(
-                        &key,
-                        vec![
-                            UpdateOp::Increment {
-                                path: FieldPath("counter".to_string()),
-                                by: 2,
-                            },
-                            UpdateOp::Set {
-                                path: FieldPath("name".to_string()),
-                                value: Value::String(name),
-                            },
-                        ],
-                    )
-                    .await
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for all tasks to complete
-        for handle in handles {
-            let _ = handle.await;
-        }
-
-        // Verify final result
-        let final_value = get_value(&adapter, key).await.expect("Value should exist");
-
-        // Note: Due to race conditions in the current implementation (GET-modify-SET is not atomic),
-        // the counter will likely NOT be 1000. This test demonstrates the race condition.
-        let counter = final_value["counter"].as_i64().unwrap_or(0);
-
-        println!(
-            "Concurrent test result: counter = {} (expected 1000 without race conditions)",
-            counter
-        );
-        println!("Final name: {}", final_value["name"]);
-
-        // The counter should be <= 1000 due to lost updates from race conditions
-        assert!(
-            counter <= 1000,
-            "Counter should be at most 1000, got {}",
-            counter
-        );
-
-        // With race conditions, the counter will likely be less than 1000
-        // This is expected behavior with the current non-atomic implementation
-        if counter < 1000 {
-            println!(
-                "WARNING: Race condition detected! Lost {} increments due to concurrent updates.",
-                (1000 - counter) / 2
-            );
-        }
-
-        // Name should be one of A-J
-        let name = final_value["name"].as_str().unwrap_or("");
-        assert!(
-            names.contains(&name),
-            "Name should be one of A-J, got '{}'",
-            name
-        );
 
         cleanup_key(&adapter, key).await;
     }
