@@ -13,6 +13,33 @@ use crate::modules::streams::{StreamWrapperMessage, adapters::StreamConnection};
 type Subscribers = Vec<Arc<dyn StreamConnection>>;
 type TopicName = String;
 
+const SCALAR_SENTINEL_KEY: &str = "__kv_store_scalar__";
+
+fn is_scalar_map(map: &HashMap<String, Value>) -> bool {
+    map.len() == 1 && map.contains_key(SCALAR_SENTINEL_KEY)
+}
+
+fn map_to_value(map: &HashMap<String, Value>) -> Value {
+    if let Some(value) = map.get(SCALAR_SENTINEL_KEY)
+        && is_scalar_map(map)
+    {
+        return value.clone();
+    }
+
+    Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+fn value_to_map(value: Value) -> HashMap<String, Value> {
+    match value {
+        Value::Object(map) => map.into_iter().collect(),
+        other => {
+            let mut map = HashMap::new();
+            map.insert(SCALAR_SENTINEL_KEY.to_string(), other);
+            map
+        }
+    }
+}
+
 #[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
 pub struct Storage(HashMap<String, String>);
 
@@ -51,22 +78,22 @@ impl Storage {
         }
     }
 
-    fn disk_to_store(self) -> HashMap<String, Value> {
+    fn disk_to_store(self) -> HashMap<String, HashMap<String, Value>> {
         self.0
             .into_iter()
             .map(|(key, item)| {
                 let item = serde_json::from_str::<Value>(&item).unwrap_or_default();
-                (key, item)
+                (key, value_to_map(item))
             })
-            .collect::<HashMap<String, Value>>()
+            .collect::<HashMap<String, HashMap<String, Value>>>()
     }
 
-    fn store_to_disk(value: &HashMap<String, Value>) -> Storage {
+    fn store_to_disk(value: &HashMap<String, HashMap<String, Value>>) -> Storage {
         let mut storage = Storage::new();
         storage.0 = value
             .iter()
             .map(|(key, item)| {
-                let item_as_string = serde_json::to_string(item).unwrap_or_default();
+                let item_as_string = serde_json::to_string(&map_to_value(item)).unwrap_or_default();
                 (key.clone(), item_as_string)
             })
             .collect::<HashMap<String, String>>();
@@ -75,7 +102,7 @@ impl Storage {
 }
 
 pub struct BuiltinKvStore {
-    store: Arc<RwLock<HashMap<String, Value>>>,
+    store: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
     #[allow(
         dead_code,
         reason = "Going to be used in the future for graceful shutdown"
@@ -138,7 +165,7 @@ impl BuiltinKvStore {
     }
 
     async fn save_loop(
-        storage: Arc<RwLock<HashMap<String, Value>>>,
+        storage: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
         polling_interval: u64,
         file_path: &str,
         dirty: Arc<AtomicBool>,
@@ -161,7 +188,7 @@ impl BuiltinKvStore {
     }
 
     async fn save_in_disk(
-        storage: Arc<RwLock<HashMap<String, Value>>>,
+        storage: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
         file_path: &str,
     ) -> anyhow::Result<()> {
         let snapshot = {
@@ -192,8 +219,8 @@ impl BuiltinKvStore {
 
     pub async fn set(&self, key: String, data: Value) -> SetResult {
         let mut store = self.store.write().await;
-        let old_value = store.get(&key).cloned();
-        store.insert(key, data.clone());
+        let old_value = store.get(&key).map(map_to_value);
+        store.insert(key, value_to_map(data.clone()));
         self.dirty.store(true, std::sync::atomic::Ordering::Release);
 
         SetResult {
@@ -204,13 +231,12 @@ impl BuiltinKvStore {
 
     pub async fn get(&self, key: String) -> Option<Value> {
         let store = self.store.read().await;
-        let results = store.get(&key);
-        results.cloned()
+        store.get(&key).map(map_to_value)
     }
 
     pub async fn delete(&self, key: String) -> Option<Value> {
         let mut store = self.store.write().await;
-        let result = store.remove(&key);
+        let result = store.remove(&key).map(|value| map_to_value(&value));
         if result.is_some() {
             self.dirty.store(true, std::sync::atomic::Ordering::Release);
         }
@@ -227,8 +253,11 @@ impl BuiltinKvStore {
     }
 
     pub async fn list(&self, key: String) -> Vec<Value> {
-        self.get(key).await.map_or(vec![], |v| {
-            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
+        let store = self.store.read().await;
+        store.get(&key).map_or(vec![], |topic| {
+            if is_scalar_map(topic) {
+                return vec![];
+            }
             topic.values().cloned().collect()
         })
     }
@@ -342,25 +371,26 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_snapshot_to_storage_and_back() {
-        let mut original_store: HashMap<String, Value> = HashMap::new();
+        let mut original_store: HashMap<String, HashMap<String, Value>> = HashMap::new();
         let key = "test_stream::test_group::item1".to_string();
-        original_store.insert(key.clone(), serde_json::json!({"key": "value"}));
+        let mut topic = HashMap::new();
+        topic.insert("key".to_string(), serde_json::json!("value"));
+        original_store.insert(key.clone(), topic.clone());
 
         let storage = Storage::store_to_disk(&original_store);
         let restored_store = storage.disk_to_store();
 
         assert_eq!(restored_store.len(), original_store.len());
-        assert_eq!(
-            restored_store.get(&key).unwrap(),
-            &serde_json::json!({"key": "value"})
-        );
+        assert_eq!(restored_store.get(&key).unwrap(), &topic);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_save_loop_when_dirty_flag_is_true() {
-        let mut store: HashMap<String, Value> = HashMap::new();
+        let mut store: HashMap<String, HashMap<String, Value>> = HashMap::new();
         let key = "test_stream::test_group::item1".to_string();
-        store.insert(key, serde_json::json!({"key": "value"}));
+        let mut topic = HashMap::new();
+        topic.insert("key".to_string(), serde_json::json!("value"));
+        store.insert(key, topic);
 
         let storage = Arc::new(RwLock::new(store));
         let dirty = Arc::new(AtomicBool::new(true));
@@ -405,9 +435,11 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_storage_save_in_disk_and_load() {
-        let mut store: HashMap<String, Value> = HashMap::new();
+        let mut store: HashMap<String, HashMap<String, Value>> = HashMap::new();
         let key = "test_stream::test_group::item1".to_string();
-        store.insert(key.clone(), serde_json::json!({"key": "value"}));
+        let mut topic = HashMap::new();
+        topic.insert("key".to_string(), serde_json::json!("value"));
+        store.insert(key.clone(), topic.clone());
 
         let storage = Arc::new(RwLock::new(store));
         let test_file_path = "test_save_storage.db";
@@ -419,10 +451,7 @@ mod test {
         let loaded_storage = Storage::load_storage(test_file_path);
         let restored_store = loaded_storage.disk_to_store();
         assert_eq!(restored_store.len(), 1);
-        assert_eq!(
-            restored_store.get(&key).unwrap(),
-            &serde_json::json!({"key": "value"})
-        );
+        assert_eq!(restored_store.get(&key).unwrap(), &topic);
 
         std::fs::remove_file(test_file_path).unwrap();
     }
