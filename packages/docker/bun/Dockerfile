@@ -5,6 +5,6 @@ WORKDIR /app
 COPY iii ./iii
 
 EXPOSE 3111
-EXPOSE 31112
+EXPOSE 3112
 
 CMD ["./iii", "--config", "config.yaml"]
