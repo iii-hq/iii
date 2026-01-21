@@ -54,6 +54,8 @@ pub struct WorkerInfo {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisterWorkerInput {
+    /// Worker ID injected by engine from caller context
+    #[serde(rename = "_caller_worker_id")]
     pub worker_id: String,
     pub runtime: Option<String>,
     pub version: Option<String>,

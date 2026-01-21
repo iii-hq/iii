@@ -228,17 +228,16 @@ impl Engine {
                 let invocation_id = *invocation_id;
                 let function_path = function_path.to_string();
 
-                let data = if function_path == "engine.workers.register" {
+                // Add caller's worker_id to invocation data as standard metadata
+                let data = {
                     let mut data = data.clone();
                     if let Some(obj) = data.as_object_mut() {
                         obj.insert(
-                            "worker_id".to_string(),
+                            "_caller_worker_id".to_string(),
                             serde_json::json!(worker.id.to_string()),
                         );
                     }
                     data
-                } else {
-                    data.clone()
                 };
 
                 tokio::spawn(async move {
