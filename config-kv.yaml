@@ -4,6 +4,7 @@ modules:
     config:
       store_method: file_based
       file_path: ./data/kv_store
+      save_interval_ms: 5000
 
   - class: modules::pubsub::PubSubModule
     config:

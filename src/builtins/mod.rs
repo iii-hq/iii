@@ -47,6 +47,12 @@ fn value_to_map(value: Value) -> HashMap<String, Value> {
 #[derive(Archive, RkyvSerialize, RkyvDeserialize)]
 struct KeyStorage(String);
 
+#[derive(Clone, Copy, Debug)]
+enum DirtyOp {
+    Upsert,
+    Delete,
+}
+
 fn encode_key(key: &str) -> String {
     let mut out = String::with_capacity(key.len());
     for byte in key.bytes() {
@@ -139,6 +145,38 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
     store
 }
 
+async fn persist_key_to_disk(
+    dir: &Path,
+    key: &str,
+    value: &HashMap<String, Value>,
+) -> anyhow::Result<()> {
+    if let Err(err) = tokio::fs::create_dir_all(dir).await {
+        tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+        return Err(err.into());
+    }
+
+    let file_name = key_file_name(key);
+    let path = dir.join(&file_name);
+    let temp_path = dir.join(format!("{}.tmp", file_name));
+    let value = map_to_value(value);
+    let json = serde_json::to_string(&value)?;
+    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json))?;
+
+    tokio::fs::write(&temp_path, bytes).await?;
+    tokio::fs::rename(&temp_path, &path).await?;
+
+    Ok(())
+}
+
+async fn delete_key_from_disk(dir: &Path, key: &str) -> anyhow::Result<()> {
+    let path = dir.join(key_file_name(key));
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SetResult {
     pub old_value: Option<Value>,
@@ -148,6 +186,12 @@ pub struct SetResult {
 pub struct BuiltinKvStore {
     store: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
     file_store_dir: Option<PathBuf>,
+    dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+    #[allow(
+        dead_code,
+        reason = "Going to be used in the future for graceful shutdown"
+    )]
+    handler: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl BuiltinKvStore {
@@ -171,6 +215,11 @@ impl BuiltinKvStore {
             })
             .unwrap_or_else(|| "kv_store_data.db".to_string());
 
+        let interval = config
+            .clone()
+            .and_then(|cfg| cfg.get("save_interval_ms").and_then(|v| v.as_u64()))
+            .unwrap_or(5000);
+
         let file_store_dir = match store_method.as_str() {
             "file_based" => {
                 let dir = PathBuf::from(&file_path);
@@ -191,62 +240,64 @@ impl BuiltinKvStore {
             None => HashMap::new(),
         };
         let store = Arc::new(RwLock::new(data_from_disk));
+        let dirty = Arc::new(RwLock::new(HashMap::new()));
+        let handler = file_store_dir.clone().map(|dir| {
+            let store = Arc::clone(&store);
+            let dirty = Arc::clone(&dirty);
+            tokio::spawn(async move {
+                Self::save_loop(store, dirty, interval, dir).await;
+            })
+        });
+
         Self {
             store,
             file_store_dir,
+            dirty,
+            handler,
         }
     }
 
-    async fn persist_key_to_disk(&self, key: &str, value: &HashMap<String, Value>) {
-        let Some(dir) = &self.file_store_dir else {
-            return;
-        };
+    async fn save_loop(
+        store: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
+        dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+        polling_interval: u64,
+        dir: PathBuf,
+    ) {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(polling_interval));
+        loop {
+            interval.tick().await;
+            let batch = {
+                let mut dirty = dirty.write().await;
+                if dirty.is_empty() {
+                    continue;
+                }
+                dirty.drain().collect::<Vec<_>>()
+            };
 
-        if let Err(err) = tokio::fs::create_dir_all(dir).await {
-            tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
-            return;
-        }
-
-        let file_name = key_file_name(key);
-        let path = dir.join(&file_name);
-        let temp_path = dir.join(format!("{}.tmp", file_name));
-        let value = map_to_value(value);
-        let json = match serde_json::to_string(&value) {
-            Ok(json) => json,
-            Err(err) => {
-                tracing::error!(error = ?err, key = %key, "failed to serialize key value");
-                return;
-            }
-        };
-        let bytes = match rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json)) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                tracing::error!(error = ?err, key = %key, "failed to encode key value");
-                return;
-            }
-        };
-
-        if let Err(err) = tokio::fs::write(&temp_path, bytes).await {
-            tracing::error!(error = ?err, path = %temp_path.display(), "failed to write key file");
-            return;
-        }
-
-        if let Err(err) = tokio::fs::rename(&temp_path, &path).await {
-            tracing::error!(error = ?err, path = %path.display(), "failed to finalize key file");
-        }
-    }
-
-    async fn delete_key_from_disk(&self, key: &str) {
-        let Some(dir) = &self.file_store_dir else {
-            return;
-        };
-
-        let path = dir.join(key_file_name(key));
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == ErrorKind::NotFound => {}
-            Err(err) => {
-                tracing::error!(error = ?err, path = %path.display(), "failed to delete key file");
+            for (key, op) in batch {
+                match op {
+                    DirtyOp::Upsert => {
+                        let value = {
+                            let store = store.read().await;
+                            store.get(&key).cloned()
+                        };
+                        if let Some(value) = value
+                            && let Err(err) = persist_key_to_disk(&dir, &key, &value).await
+                        {
+                            tracing::error!(error = ?err, key = %key, "failed to persist key");
+                            let mut dirty = dirty.write().await;
+                            dirty.insert(key, DirtyOp::Upsert);
+                        }
+                    }
+                    DirtyOp::Delete => {
+                        if let Err(err) = delete_key_from_disk(&dir, &key).await {
+                            tracing::error!(error = ?err, key = %key, "failed to delete key");
+                            let mut dirty = dirty.write().await;
+                            dirty.insert(key, DirtyOp::Delete);
+                        }
+                    }
+                }
             }
         }
     }
@@ -255,10 +306,11 @@ impl BuiltinKvStore {
         let mut store = self.store.write().await;
         let old_value = store.get(&key).map(map_to_value);
         store.insert(key.clone(), value_to_map(data.clone()));
-        let new_value = store.get(&key).cloned();
         drop(store);
-        if let Some(value) = new_value {
-            self.persist_key_to_disk(&key, &value).await;
+
+        if self.file_store_dir.is_some() {
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(key.clone(), DirtyOp::Upsert);
         }
 
         SetResult {
@@ -276,8 +328,9 @@ impl BuiltinKvStore {
         let mut store = self.store.write().await;
         let result = store.remove(&key).map(|value| map_to_value(&value));
         drop(store);
-        if result.is_some() {
-            self.delete_key_from_disk(&key).await;
+        if result.is_some() && self.file_store_dir.is_some() {
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(key.clone(), DirtyOp::Delete);
         }
         result
     }
@@ -403,7 +456,8 @@ mod test {
 
         let config = serde_json::json!({
             "store_method": "file_based",
-            "file_path": dir.to_string_lossy()
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 5
         });
         let kv_store = BuiltinKvStore::new(Some(config));
 
@@ -412,12 +466,14 @@ mod test {
 
         let updated = serde_json::json!({"key": "updated"});
         kv_store.set(key.to_string(), updated.clone()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let bytes = std::fs::read(&file_path).unwrap();
         let storage = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
         let on_disk = serde_json::from_str::<Value>(&storage.0).unwrap();
         assert_eq!(on_disk, updated);
 
         kv_store.delete(key.to_string()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(!file_path.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -460,7 +516,8 @@ mod test {
         let dir = temp_store_dir();
         let config = serde_json::json!({
             "store_method": "file_based",
-            "file_path": dir.to_string_lossy()
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 5
         });
         let kv_store = BuiltinKvStore::new(Some(config));
         assert!(kv_store.store.read().await.is_empty());
