@@ -8,10 +8,13 @@ use serde_json::Value;
 use crate::{
     builtins::{BuiltInPubSubAdapter, BuiltinKvStore},
     engine::Engine,
-    modules::streams::{
-        StreamOutboundMessage, StreamWrapperMessage,
-        adapters::{StreamAdapter, StreamConnection},
-        registry::{StreamAdapterFuture, StreamAdapterRegistration},
+    modules::{
+        kv_server::structs::{UpdateOp, UpdateResult},
+        streams::{
+            StreamOutboundMessage, StreamWrapperMessage,
+            adapters::{StreamAdapter, StreamConnection},
+            registry::{StreamAdapterFuture, StreamAdapterRegistration},
+        },
     },
 };
 
@@ -45,6 +48,16 @@ impl BuiltinKvStoreAdapter {
 impl StreamAdapter for BuiltinKvStoreAdapter {
     async fn destroy(&self) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+        match self.storage.update(key.to_string(), ops).await {
+            Some(result) => result,
+            None => UpdateResult {
+                old_value: None,
+                new_value: Value::Null,
+            },
+        }
     }
 
     async fn emit_event(&self, message: StreamWrapperMessage) {

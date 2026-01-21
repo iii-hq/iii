@@ -12,6 +12,7 @@ use tokio::{
 use crate::{
     engine::Engine,
     modules::{
+        kv_server::structs::{UpdateOp, UpdateResult},
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         streams::{
             StreamOutboundMessage, StreamWrapperMessage,
@@ -60,6 +61,10 @@ impl RedisAdapter {
 
 #[async_trait]
 impl StreamAdapter for RedisAdapter {
+    async fn update(&self, _stream_name: &str, _ops: Vec<UpdateOp>) -> UpdateResult {
+        todo!("Implement update method for RedisAdapter")
+    }
+
     async fn emit_event(&self, message: StreamWrapperMessage) {
         let mut conn = self.publisher.lock().await;
         tracing::debug!(msg = ?message, "Emitting event to Redis");

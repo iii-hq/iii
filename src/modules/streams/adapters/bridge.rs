@@ -12,7 +12,7 @@ use crate::{
     modules::{
         kv_server::{
             KvDeleteInput, KvSetInput,
-            structs::{KvGetInput, KvListInput, KvListKeysWithPrefixInput},
+            structs::{KvGetInput, KvListInput, KvListKeysWithPrefixInput, UpdateOp, UpdateResult},
         },
         pubsub::{PubSubInput, SubscribeTrigger},
         streams::{
@@ -66,6 +66,9 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl StreamAdapter for BridgeAdapter {
+    async fn update(&self, _stream_name: &str, _ops: Vec<UpdateOp>) -> UpdateResult {
+        todo!("Not implemented yet")
+    }
     async fn destroy(&self) -> anyhow::Result<()> {
         self.bridge.disconnect();
         Ok(())
