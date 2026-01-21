@@ -691,4 +691,319 @@ mod test {
         let should_be_none = kv_store.get(key).await;
         assert!(should_be_none.is_none());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_basic_operations() {
+        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
+
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "test:update:basic".to_string();
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        kv_store.set(key.clone(), initial.clone()).await;
+
+        // Test Set operation
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![UpdateOp::Set {
+                    path: FieldPath("name".to_string()),
+                    value: Value::String("B".to_string()),
+                }],
+            )
+            .await
+            .expect("Update should succeed");
+
+        assert_eq!(result.old_value, Some(initial));
+        assert_eq!(result.new_value["name"], "B");
+        assert_eq!(result.new_value["counter"], 0);
+
+        // Test Increment operation
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![UpdateOp::Increment {
+                    path: FieldPath("counter".to_string()),
+                    by: 5,
+                }],
+            )
+            .await
+            .expect("Update should succeed");
+
+        assert_eq!(result.new_value["counter"], 5);
+
+        // Test Decrement operation
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![UpdateOp::Decrement {
+                    path: FieldPath("counter".to_string()),
+                    by: 2,
+                }],
+            )
+            .await
+            .expect("Update should succeed");
+
+        assert_eq!(result.new_value["counter"], 3);
+
+        // Test Remove operation
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![UpdateOp::Remove {
+                    path: FieldPath("name".to_string()),
+                }],
+            )
+            .await
+            .expect("Update should succeed");
+
+        assert!(result.new_value.get("name").is_none());
+        assert_eq!(result.new_value["counter"], 3);
+
+        // Test Merge operation
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![UpdateOp::Merge {
+                    path: None,
+                    value: serde_json::json!({"name": "C", "extra": "field"}),
+                }],
+            )
+            .await
+            .expect("Update should succeed");
+
+        assert_eq!(result.new_value["name"], "C");
+        assert_eq!(result.new_value["counter"], 3);
+        assert_eq!(result.new_value["extra"], "field");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_multiple_ops_in_single_call() {
+        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
+
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "test:update:multi_ops".to_string();
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        kv_store.set(key.clone(), initial).await;
+
+        // Apply multiple operations in a single update call
+        let result = kv_store
+            .update(
+                key.clone(),
+                vec![
+                    UpdateOp::Set {
+                        path: FieldPath("name".to_string()),
+                        value: Value::String("Z".to_string()),
+                    },
+                    UpdateOp::Increment {
+                        path: FieldPath("counter".to_string()),
+                        by: 10,
+                    },
+                    UpdateOp::Set {
+                        path: FieldPath("status".to_string()),
+                        value: Value::String("active".to_string()),
+                    },
+                ],
+            )
+            .await
+            .expect("Update should succeed");
+
+        assert_eq!(result.new_value["name"], "Z");
+        assert_eq!(result.new_value["counter"], 10);
+        assert_eq!(result.new_value["status"], "active");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_sequential_500_calls() {
+        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
+
+        let kv_store = BuiltinKvStore::new(None);
+        let key = "test:update:sequential_500".to_string();
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        kv_store.set(key.clone(), initial).await;
+
+        let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+
+        // Run 500 sequential updates
+        for i in 0..500 {
+            let name_idx = i % 10;
+            kv_store
+                .update(
+                    key.clone(),
+                    vec![
+                        UpdateOp::Increment {
+                            path: FieldPath("counter".to_string()),
+                            by: 2,
+                        },
+                        UpdateOp::Set {
+                            path: FieldPath("name".to_string()),
+                            value: Value::String(names[name_idx].to_string()),
+                        },
+                    ],
+                )
+                .await;
+        }
+
+        // Verify final result
+        let final_value = kv_store.get(key).await.expect("Value should exist");
+
+        // Counter should be 500 * 2 = 1000
+        assert_eq!(
+            final_value["counter"], 1000,
+            "Counter should be 1000 after 500 increments of 2"
+        );
+
+        // Name should be "J" (index 499 % 10 = 9 = "J")
+        assert_eq!(
+            final_value["name"], "J",
+            "Name should be 'J' after 500 updates cycling A-J"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_concurrent_500_calls() {
+        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
+
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let key = "test:update:concurrent_500".to_string();
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        kv_store.set(key.clone(), initial).await;
+
+        let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+
+        // Create 500 concurrent update futures
+        let mut tasks = vec![];
+        for i in 0..500 {
+            let kv_store = Arc::clone(&kv_store);
+            let key = key.clone();
+            let name = names[i % 10].to_string();
+
+            let task = tokio::spawn(async move {
+                kv_store
+                    .update(
+                        key,
+                        vec![
+                            UpdateOp::Increment {
+                                path: FieldPath("counter".to_string()),
+                                by: 2,
+                            },
+                            UpdateOp::Set {
+                                path: FieldPath("name".to_string()),
+                                value: Value::String(name),
+                            },
+                        ],
+                    )
+                    .await
+            });
+
+            tasks.push(task);
+        }
+
+        // Wait for all tasks to complete
+        for task in tasks {
+            let _ = task.await;
+        }
+
+        // Verify final result
+        let final_value = kv_store.get(key).await.expect("Value should exist");
+
+        let counter = final_value["counter"].as_i64().unwrap_or(0);
+
+        println!(
+            "BuiltinKvStore concurrent test result: counter = {} (expected 1000)",
+            counter
+        );
+        println!("Final name: {}", final_value["name"]);
+
+        // Counter should be exactly 1000 because RwLock serializes the updates
+        assert_eq!(
+            counter, 1000,
+            "Counter should be 1000 after 500 concurrent increments of 2"
+        );
+
+        // Name should be one of A-J
+        let name = final_value["name"].as_str().unwrap_or("");
+        assert!(
+            names.contains(&name),
+            "Name should be one of A-J, got '{}'",
+            name
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_builtin_kv_store_update_concurrent_500_using_join_all() {
+        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
+
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let key = "test:update:concurrent_join_all".to_string();
+
+        // Set initial value
+        let initial = serde_json::json!({"name": "A", "counter": 0});
+        kv_store.set(key.clone(), initial).await;
+
+        let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+
+        // Create 500 update futures without spawning
+        let mut futures = vec![];
+        for i in 0..500 {
+            let kv_store = Arc::clone(&kv_store);
+            let key = key.clone();
+            let name = names[i % 10].to_string();
+
+            let future = async move {
+                kv_store
+                    .update(
+                        key,
+                        vec![
+                            UpdateOp::Increment {
+                                path: FieldPath("counter".to_string()),
+                                by: 2,
+                            },
+                            UpdateOp::Set {
+                                path: FieldPath("name".to_string()),
+                                value: Value::String(name),
+                            },
+                        ],
+                    )
+                    .await
+            };
+
+            futures.push(future);
+        }
+
+        // Execute all futures concurrently using join_all
+        futures::future::join_all(futures).await;
+
+        // Verify final result
+        let final_value = kv_store.get(key).await.expect("Value should exist");
+
+        let counter = final_value["counter"].as_i64().unwrap_or(0);
+
+        println!(
+            "BuiltinKvStore join_all test result: counter = {} (expected 1000)",
+            counter
+        );
+        println!("Final name: {}", final_value["name"]);
+
+        // Counter should be exactly 1000 because RwLock serializes the updates
+        assert_eq!(
+            counter, 1000,
+            "Counter should be 1000 after 500 concurrent increments of 2"
+        );
+
+        // Name should be one of A-J
+        let name = final_value["name"].as_str().unwrap_or("");
+        assert!(
+            names.contains(&name),
+            "Name should be one of A-J, got '{}'",
+            name
+        );
+    }
 }
