@@ -3,6 +3,7 @@
 import logging
 
 from .bridge import Bridge
+from .bridge_types import FunctionInfo, WorkerInfo
 from .context import Context, get_context, with_context
 from .logger import Logger
 from .types import ApiRequest, ApiResponse
@@ -30,5 +31,7 @@ __all__ = [
     "with_context",
     "ApiRequest",
     "ApiResponse",
+    "FunctionInfo",
+    "WorkerInfo",
     "configure_logging",
 ]

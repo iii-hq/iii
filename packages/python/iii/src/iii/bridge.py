@@ -3,13 +3,17 @@
 import asyncio
 import json
 import logging
+import os
+import platform
 import uuid
+from importlib.metadata import version
 from typing import Any, Awaitable, Callable
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .bridge_types import (
+    FunctionInfo,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
@@ -19,6 +23,7 @@ from .bridge_types import (
     RegisterTriggerTypeMessage,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
+    WorkerInfo,
 )
 from .context import Context, with_context
 from .logger import Logger
@@ -103,6 +108,9 @@ class Bridge:
         # Flush queue
         while self._queue and self._ws:
             await self._ws.send(json.dumps(self._queue.pop(0)))
+
+        # Register worker metadata
+        self._register_worker_metadata()
 
         self._receiver_task = asyncio.create_task(self._receive_loop())
 
@@ -325,3 +333,33 @@ class Bridge:
             asyncio.get_running_loop().create_task(self._send(msg))
         except RuntimeError:
             self._enqueue(msg)
+
+    async def list_functions(self) -> list[FunctionInfo]:
+        """List all registered functions from the engine."""
+        result = await self.invoke_function("engine.functions.list", {})
+        functions_data = result.get("functions", [])
+        return [FunctionInfo(**f) for f in functions_data]
+
+    async def list_workers(self) -> list[WorkerInfo]:
+        """List all connected workers from the engine."""
+        result = await self.invoke_function("engine.workers.list", {})
+        workers_data = result.get("workers", [])
+        return [WorkerInfo(**w) for w in workers_data]
+
+    def _get_worker_metadata(self) -> dict[str, Any]:
+        """Get worker metadata for registration."""
+        try:
+            sdk_version = version("iii-sdk")
+        except Exception:
+            sdk_version = "unknown"
+
+        return {
+            "runtime": "python",
+            "version": sdk_version,
+            "name": f"{platform.node()}:{os.getpid()}",
+            "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        }
+
+    def _register_worker_metadata(self) -> None:
+        """Register this worker's metadata with the engine."""
+        self.invoke_function_async("engine.workers.register", self._get_worker_metadata())

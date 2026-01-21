@@ -124,6 +124,32 @@ class InvocationResultMessage(BaseModel):
     type: MessageType = MessageType.INVOCATION_RESULT
 
 
+class FunctionInfo(BaseModel):
+    """Information about a registered function."""
+
+    function_path: str
+    description: str | None = None
+    request_format: RegisterFunctionFormat | None = None
+    response_format: RegisterFunctionFormat | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class WorkerInfo(BaseModel):
+    """Information about a connected worker."""
+
+    id: str
+    name: str | None = None
+    runtime: str | None = None
+    version: str | None = None
+    os: str | None = None
+    ip_address: str | None = None
+    status: str
+    connected_at_ms: int
+    function_count: int
+    functions: list[str]
+    active_invocations: int
+
+
 BridgeMessage = (
     RegisterFunctionMessage
     | InvokeFunctionMessage

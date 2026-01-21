@@ -19,6 +19,7 @@ import type { IStream } from './streams'
 import type { TriggerHandler } from './triggers'
 import type {
   BridgeClient,
+  FunctionsAvailableCallback,
   Invocation,
   RemoteFunctionData,
   RemoteFunctionHandler,
@@ -48,6 +49,9 @@ export class Bridge implements BridgeClient {
   private invocations = new Map<string, Invocation>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
+  private functionsAvailableCallbacks = new Set<FunctionsAvailableCallback>()
+  private functionsAvailableTrigger?: Trigger
+  private functionsAvailableFunctionPath?: string
   private messagesToSend: BridgeMessage[] = []
   private workerName: string
   private interval?: NodeJS.Timeout
@@ -127,12 +131,15 @@ export class Bridge implements BridgeClient {
   }
 
   async listFunctions(): Promise<FunctionInfo[]> {
-    const result = await this.invokeFunction<{}, { functions: FunctionInfo[] }>('engine.functions.list', {})
+    const result = await this.invokeFunction<Record<string, never>, { functions: FunctionInfo[] }>(
+      'engine.functions.list',
+      {},
+    )
     return result.functions
   }
 
   async listWorkers(): Promise<WorkerInfo[]> {
-    const result = await this.invokeFunction<{}, { workers: WorkerInfo[] }>('engine.workers.list', {})
+    const result = await this.invokeFunction<Record<string, never>, { workers: WorkerInfo[] }>('engine.workers.list', {})
     return result.workers
   }
 
@@ -151,6 +158,42 @@ export class Bridge implements BridgeClient {
     this.registerFunction({ function_path: `streams.delete(${streamName})` }, stream.delete.bind(stream))
     this.registerFunction({ function_path: `streams.getGroup(${streamName})` }, stream.getGroup.bind(stream))
     this.registerFunction({ function_path: `streams.listGroups(${streamName})` }, stream.listGroups.bind(stream))
+  }
+
+  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void {
+    this.functionsAvailableCallbacks.add(callback)
+
+    if (!this.functionsAvailableTrigger) {
+      if (!this.functionsAvailableFunctionPath) {
+        this.functionsAvailableFunctionPath = `bridge.on_functions_available.${crypto.randomUUID()}`
+      }
+
+      const function_path = this.functionsAvailableFunctionPath
+      if (!this.functions.has(function_path)) {
+        this.registerFunction({ function_path }, async (data: unknown) => {
+          console.log('data', data)
+          const functions = await this.listFunctions()
+          this.functionsAvailableCallbacks.forEach((handler) => {
+            handler(functions)
+          })
+          return null
+        })
+      }
+
+      this.functionsAvailableTrigger = this.registerTrigger({
+        trigger_type: 'engine::functions-available',
+        function_path,
+        config: {},
+      })
+    }
+
+    return () => {
+      this.functionsAvailableCallbacks.delete(callback)
+      if (this.functionsAvailableCallbacks.size === 0 && this.functionsAvailableTrigger) {
+        this.functionsAvailableTrigger.unregister()
+        this.functionsAvailableTrigger = undefined
+      }
+    }
   }
 
   // private methods
@@ -179,13 +222,23 @@ export class Bridge implements BridgeClient {
     this.clearInterval()
     this.ws?.on('message', this.onMessage.bind(this))
 
-    this.triggerTypes.forEach(({ message }) => this.sendMessage(MessageType.RegisterTriggerType, message, true))
-    this.services.forEach((service) => this.sendMessage(MessageType.RegisterService, service, true))
-    this.functions.forEach(({ message }) => this.sendMessage(MessageType.RegisterFunction, message, true))
-    this.triggers.forEach((trigger) => this.sendMessage(MessageType.RegisterTrigger, trigger, true))
+    this.triggerTypes.forEach(({ message }) => {
+      this.sendMessage(MessageType.RegisterTriggerType, message, true)
+    })
+    this.services.forEach((service) => {
+      this.sendMessage(MessageType.RegisterService, service, true)
+    })
+    this.functions.forEach(({ message }) => {
+      this.sendMessage(MessageType.RegisterFunction, message, true)
+    })
+    this.triggers.forEach((trigger) => {
+      this.sendMessage(MessageType.RegisterTrigger, trigger, true)
+    })
     this.messagesToSend
       .splice(0, this.messagesToSend.length)
-      .forEach((message) => this.ws?.send(JSON.stringify(message)))
+      .forEach((message) => {
+        this.ws?.send(JSON.stringify(message))
+      })
 
     this.registerWorkerMetadata()
   }
