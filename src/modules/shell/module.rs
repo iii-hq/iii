@@ -4,7 +4,7 @@ use anyhow::Ok;
 use serde_json::Value;
 
 use super::{config::ExecConfig, exec::Exec};
-use crate::{engine::Engine, modules::core_module::CoreModule};
+use crate::{engine::Engine, modules::module::Module};
 
 #[derive(Clone)]
 pub struct ExecCoreModule {
@@ -12,14 +12,14 @@ pub struct ExecCoreModule {
 }
 
 #[async_trait::async_trait]
-impl CoreModule for ExecCoreModule {
+impl Module for ExecCoreModule {
     fn name(&self) -> &'static str {
         "ExecModule"
     }
     async fn create(
         _engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    ) -> anyhow::Result<Box<dyn Module>> {
         let config: ExecConfig = config.map(serde_json::from_value).transpose()?.unwrap();
         let watcher = Exec::new(config);
 

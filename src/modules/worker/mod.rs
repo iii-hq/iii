@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::core_module::CoreModule,
+    modules::module::Module,
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -204,7 +204,7 @@ impl TriggerRegistrator for WorkerModule {
 }
 
 #[async_trait::async_trait]
-impl CoreModule for WorkerModule {
+impl Module for WorkerModule {
     fn name(&self) -> &'static str {
         "WorkerModule"
     }
@@ -212,7 +212,7 @@ impl CoreModule for WorkerModule {
     async fn create(
         engine: Arc<Engine>,
         _config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    ) -> anyhow::Result<Box<dyn Module>> {
         Ok(Box::new(WorkerModule::new(engine)))
     }
 

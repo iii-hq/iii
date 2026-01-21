@@ -22,7 +22,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        core_module::{AdapterFactory, ConfigurableModule, CoreModule},
+        module::{AdapterFactory, ConfigurableModule, Module},
         streams::{
             StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
             adapters::StreamAdapter,
@@ -106,14 +106,11 @@ async fn ws_handler(
 }
 
 #[async_trait::async_trait]
-impl CoreModule for StreamCoreModule {
+impl Module for StreamCoreModule {
     fn name(&self) -> &'static str {
         "StreamCoreModule"
     }
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
     }
 

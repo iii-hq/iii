@@ -11,10 +11,10 @@ pub mod workers;
 pub mod modules {
     pub mod bridge_client;
     pub mod config;
-    pub mod core_module;
     pub mod cron;
     pub mod event;
     pub mod kv_server;
+    pub mod module;
     pub mod observability;
     pub mod pubsub;
     pub mod redis;

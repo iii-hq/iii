@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::core_module::CoreModule,
+    modules::module::Module,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -61,14 +61,11 @@ pub struct RestApiCoreModule {
 }
 
 #[async_trait::async_trait]
-impl CoreModule for RestApiCoreModule {
+impl Module for RestApiCoreModule {
     fn name(&self) -> &'static str {
         "RestApiCoreModule"
     }
-    async fn create(
-        engine: Arc<Engine>,
-        config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn CoreModule>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         let config: RestApiConfig = config
             .map(serde_json::from_value)
             .transpose()?
