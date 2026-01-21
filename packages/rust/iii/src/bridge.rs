@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -112,6 +112,9 @@ type WsTx = futures_util::stream::SplitSink<
     WsMessage,
 >;
 
+/// Callback function type for functions available events
+pub type FunctionsAvailableCallback = Arc<dyn Fn(Vec<FunctionInfo>) + Send + Sync>;
+
 struct BridgeInner {
     address: String,
     outbound: mpsc::UnboundedSender<Outbound>,
@@ -124,11 +127,35 @@ struct BridgeInner {
     triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
+    functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
+    functions_available_callback_counter: AtomicUsize,
+    functions_available_function_path: Mutex<Option<String>>,
+    functions_available_trigger: Mutex<Option<Trigger>>,
 }
 
 #[derive(Clone)]
 pub struct Bridge {
     inner: Arc<BridgeInner>,
+}
+
+/// Guard that unsubscribes from functions available events when dropped
+pub struct FunctionsAvailableGuard {
+    bridge: Bridge,
+    callback_id: usize,
+}
+
+impl Drop for FunctionsAvailableGuard {
+    fn drop(&mut self) {
+        let mut callbacks = self.bridge.inner.functions_available_callbacks.lock().unwrap();
+        callbacks.remove(&self.callback_id);
+        
+        if callbacks.is_empty() {
+            let mut trigger = self.bridge.inner.functions_available_trigger.lock().unwrap();
+            if let Some(trigger) = trigger.take() {
+                trigger.unregister();
+            }
+        }
+    }
 }
 
 impl Bridge {
@@ -152,6 +179,10 @@ impl Bridge {
             triggers: Mutex::new(HashMap::new()),
             services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
+            functions_available_callbacks: Mutex::new(HashMap::new()),
+            functions_available_callback_counter: AtomicUsize::new(0),
+            functions_available_function_path: Mutex::new(None),
+            functions_available_trigger: Mutex::new(None),
         };
         Self {
             inner: Arc::new(inner),
@@ -435,6 +466,67 @@ impl Bridge {
             .unwrap_or_default();
 
         Ok(functions)
+    }
+
+    /// Subscribe to function availability events
+    /// Returns a guard that will unsubscribe when dropped
+    pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableGuard
+    where
+        F: Fn(Vec<FunctionInfo>) + Send + Sync + 'static,
+    {
+        let callback = Arc::new(callback);
+        let callback_id = self.inner.functions_available_callback_counter.fetch_add(1, Ordering::Relaxed);
+        
+        self.inner.functions_available_callbacks
+            .lock()
+            .unwrap()
+            .insert(callback_id, callback);
+        
+        // Set up trigger if not already done
+        let mut trigger_guard = self.inner.functions_available_trigger.lock().unwrap();
+        if trigger_guard.is_none() {
+            let function_path = format!("bridge.on_functions_available.{}", Uuid::new_v4());
+            *self.inner.functions_available_function_path.lock().unwrap() = Some(function_path.clone());
+            
+            // Register handler function
+            let bridge = self.clone();
+            self.register_function(function_path.clone(), move |_: Value| {
+                let bridge = bridge.clone();
+                async move {
+                    match bridge.list_functions().await {
+                        Ok(functions) => {
+                            let callbacks = bridge.inner.functions_available_callbacks.lock().unwrap();
+                            for cb in callbacks.values() {
+                                cb(functions.clone());
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "Failed to list functions in functions_available handler");
+                        }
+                    }
+                    Ok(Value::Null)
+                }
+            });
+            
+            // Register trigger
+            match self.register_trigger(
+                "engine::functions-available",
+                function_path,
+                serde_json::json!({}),
+            ) {
+                Ok(trigger) => {
+                    *trigger_guard = Some(trigger);
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "Failed to register functions_available trigger");
+                }
+            }
+        }
+        
+        FunctionsAvailableGuard {
+            bridge: self.clone(),
+            callback_id,
+        }
     }
 
     /// List all connected workers from the engine
