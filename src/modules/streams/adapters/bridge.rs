@@ -12,7 +12,10 @@ use crate::{
     modules::{
         kv_server::{
             KvDeleteInput, KvSetInput,
-            structs::{KvGetInput, KvListInput, KvListKeysWithPrefixInput, UpdateOp, UpdateResult},
+            structs::{
+                KvGetInput, KvListInput, KvListKeysWithPrefixInput, KvUpdateInput, UpdateOp,
+                UpdateResult,
+            },
         },
         pubsub::{PubSubInput, SubscribeTrigger},
         streams::{
@@ -66,8 +69,33 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl StreamAdapter for BridgeAdapter {
-    async fn update(&self, _stream_name: &str, _ops: Vec<UpdateOp>) -> UpdateResult {
-        todo!("Not implemented yet")
+    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+        let update_data = KvUpdateInput {
+            key: key.to_string(),
+            ops,
+        };
+
+        let update_result = self
+            .bridge
+            .invoke_function("kv_server.update", update_data)
+            .await;
+
+        match update_result {
+            Ok(result) => serde_json::from_value::<UpdateResult>(result).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to deserialize update result");
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
+            }),
+            Err(e) => {
+                tracing::error!(error = %e, key = %key, "Failed to update value in kv_server");
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
+            }
+        }
     }
     async fn destroy(&self) -> anyhow::Result<()> {
         self.bridge.disconnect();

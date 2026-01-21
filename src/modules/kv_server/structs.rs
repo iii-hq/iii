@@ -32,7 +32,7 @@ pub struct KvListInput {
     pub key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldPath(pub String);
 
 impl From<&str> for FieldPath {
@@ -47,7 +47,7 @@ pub struct UpdateResult {
     pub new_value: Value,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
     Set { path: FieldPath, value: Value },
@@ -67,4 +67,10 @@ pub enum UpdateOp {
 
     /// Remove a field
     Remove { path: FieldPath },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KvUpdateInput {
+    pub key: String,
+    pub ops: Vec<UpdateOp>,
 }
