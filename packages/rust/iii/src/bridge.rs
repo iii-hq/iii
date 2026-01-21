@@ -146,11 +146,21 @@ pub struct FunctionsAvailableGuard {
 
 impl Drop for FunctionsAvailableGuard {
     fn drop(&mut self) {
-        let mut callbacks = self.bridge.inner.functions_available_callbacks.lock().unwrap();
+        let mut callbacks = self
+            .bridge
+            .inner
+            .functions_available_callbacks
+            .lock()
+            .unwrap();
         callbacks.remove(&self.callback_id);
-        
+
         if callbacks.is_empty() {
-            let mut trigger = self.bridge.inner.functions_available_trigger.lock().unwrap();
+            let mut trigger = self
+                .bridge
+                .inner
+                .functions_available_trigger
+                .lock()
+                .unwrap();
             if let Some(trigger) = trigger.take() {
                 trigger.unregister();
             }
@@ -475,39 +485,60 @@ impl Bridge {
         F: Fn(Vec<FunctionInfo>) + Send + Sync + 'static,
     {
         let callback = Arc::new(callback);
-        let callback_id = self.inner.functions_available_callback_counter.fetch_add(1, Ordering::Relaxed);
-        
-        self.inner.functions_available_callbacks
+        let callback_id = self
+            .inner
+            .functions_available_callback_counter
+            .fetch_add(1, Ordering::Relaxed);
+
+        self.inner
+            .functions_available_callbacks
             .lock()
             .unwrap()
             .insert(callback_id, callback);
-        
+
         // Set up trigger if not already done
         let mut trigger_guard = self.inner.functions_available_trigger.lock().unwrap();
         if trigger_guard.is_none() {
-            let function_path = format!("bridge.on_functions_available.{}", Uuid::new_v4());
-            *self.inner.functions_available_function_path.lock().unwrap() = Some(function_path.clone());
-            
-            // Register handler function
-            let bridge = self.clone();
-            self.register_function(function_path.clone(), move |_: Value| {
-                let bridge = bridge.clone();
-                async move {
-                    match bridge.list_functions().await {
-                        Ok(functions) => {
-                            let callbacks = bridge.inner.functions_available_callbacks.lock().unwrap();
-                            for cb in callbacks.values() {
-                                cb(functions.clone());
+            // Get or create function path (reuse existing if trigger registration previously failed)
+            let function_path = {
+                let mut path_guard = self.inner.functions_available_function_path.lock().unwrap();
+                if path_guard.is_none() {
+                    let path = format!("bridge.on_functions_available.{}", Uuid::new_v4());
+                    *path_guard = Some(path.clone());
+                    path
+                } else {
+                    path_guard.clone().unwrap()
+                }
+            };
+
+            // Register handler function only if it doesn't already exist
+            let function_exists = self
+                .inner
+                .functions
+                .lock()
+                .unwrap()
+                .contains_key(&function_path);
+            if !function_exists {
+                let bridge = self.clone();
+                self.register_function(function_path.clone(), move |_: Value| {
+                    let bridge = bridge.clone();
+                    async move {
+                        match bridge.list_functions().await {
+                            Ok(functions) => {
+                                let callbacks = bridge.inner.functions_available_callbacks.lock().unwrap();
+                                for cb in callbacks.values() {
+                                    cb(functions.clone());
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, "Failed to list functions in functions_available handler");
                             }
                         }
-                        Err(err) => {
-                            tracing::warn!(error = %err, "Failed to list functions in functions_available handler");
-                        }
+                        Ok(Value::Null)
                     }
-                    Ok(Value::Null)
-                }
-            });
-            
+                });
+            }
+
             // Register trigger
             match self.register_trigger(
                 "engine::functions-available",
@@ -522,7 +553,7 @@ impl Bridge {
                 }
             }
         }
-        
+
         FunctionsAvailableGuard {
             bridge: self.clone(),
             callback_id,
