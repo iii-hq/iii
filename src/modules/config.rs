@@ -357,10 +357,30 @@ impl EngineBuilder {
     pub async fn build(mut self) -> anyhow::Result<Self> {
         let config = self.config.take().expect("No module configs founded");
 
-        tracing::info!("Building engine with {} modules", config.modules.len());
+        // Collect module classes from config
+        let config_classes: std::collections::HashSet<String> =
+            config.modules.iter().map(|m| m.class.clone()).collect();
 
-        // Create modules using the registry
-        for entry in &config.modules {
+        // Get default modules that aren't already in config
+        let default_entries: Vec<ModuleEntry> = default_module_entries()
+            .into_iter()
+            .filter(|entry| !config_classes.contains(&entry.class))
+            .collect();
+
+        let total_modules = config.modules.len() + default_entries.len();
+        tracing::info!(
+            "Building engine with {} modules ({} from config, {} default)",
+            total_modules,
+            config.modules.len(),
+            default_entries.len()
+        );
+
+        let all_entries: Vec<&ModuleEntry> = default_entries
+            .iter()
+            .chain(config.modules.iter())
+            .collect();
+
+        for entry in all_entries {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)
@@ -388,12 +408,17 @@ impl EngineBuilder {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        // Start function notification task
-        let engine_clone = engine.clone();
-        let notify_shutdown = shutdown_rx.clone();
-        tokio::spawn(async move {
-            engine_clone.notify_new_functions(5, notify_shutdown).await;
-        });
+        // Start background tasks for all modules
+        for module in self.modules.iter() {
+            let module_shutdown = shutdown_rx.clone();
+            if let Err(e) = module.start_background_tasks(module_shutdown).await {
+                tracing::warn!(
+                    module = module.name(),
+                    error = %e,
+                    "Failed to start background tasks for module"
+                );
+            }
+        }
 
         // Setup router
         let app = Router::new().route("/", get(ws_handler)).with_state(engine);
