@@ -1,5 +1,5 @@
 export { Bridge, type BridgeOptions } from './bridge'
-export type { FunctionInfo, FunctionInfo as FunctionMessage, WorkerInfo } from './bridge-types'
+export type { FunctionInfo, FunctionInfo as FunctionMessage, WorkerInfo, WorkerStatus } from './bridge-types'
 export { type Context, getContext, withContext } from './context'
 export { Logger } from './logger'
 export * from './streams'

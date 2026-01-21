@@ -142,6 +142,8 @@ export type FunctionInfo = {
   metadata?: Record<string, unknown>
 }
 
+export type WorkerStatus = 'connected' | 'available' | 'busy' | 'disconnected'
+
 export type WorkerInfo = {
   id: string
   name?: string
@@ -149,7 +151,7 @@ export type WorkerInfo = {
   version?: string
   os?: string
   ip_address?: string
-  status: string
+  status: WorkerStatus
   connected_at_ms: number
   function_count: number
   functions: string[]
