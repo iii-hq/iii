@@ -9,6 +9,8 @@ pub trait KVStoreAdapter: Send + Sync {
     async fn get(&self, key: String, config: Option<Value>) -> Option<Value>;
     async fn delete(&self, key: String) -> Option<Value>;
     async fn exists(&self, key: String) -> bool;
+    async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String>;
+    async fn list(&self, key: String) -> Vec<Value>;
 
     async fn destroy(&self) -> anyhow::Result<()>;
 }
@@ -29,6 +31,14 @@ impl KVStoreAdapter for BuiltinKvStore {
 
     async fn exists(&self, key: String) -> bool {
         self.exists(key).await
+    }
+
+    async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String> {
+        self.list_keys_with_prefix(prefix).await
+    }
+
+    async fn list(&self, key: String) -> Vec<Value> {
+        self.list(key).await
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {

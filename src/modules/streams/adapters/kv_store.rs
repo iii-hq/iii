@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::{BuiltInPubSubAdapter, BuiltinKvStore, filters::UpdateOp},
+    builtins::{BuiltInPubSubAdapter, BuiltinKvStore},
     engine::Engine,
     modules::streams::{
         StreamOutboundMessage, StreamWrapperMessage,
@@ -51,11 +51,6 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         self.pub_sub.send_msg(message);
     }
 
-    async fn update(&self, stream_name: &str, group_id: &str, ops: Vec<UpdateOp>) -> Option<Value> {
-        let key = self.gen_key(stream_name, group_id);
-        self.storage.update(key, ops).await
-    }
-
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
         //let key = (stream_name.to_string(), group_id.to_string());
         let key = self.gen_key(stream_name, group_id);
@@ -65,13 +60,29 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
                 serde_json::from_value(value).unwrap_or_default();
             exist = topic.contains_key(item_id);
             topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
+
+            match serde_json::to_value(&topic) {
+                Ok(value) => {
+                    self.storage.set(key, value).await;
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed to serialize topic");
+                    return;
+                }
+            };
         } else {
             let mut topic = HashMap::new();
             topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
+
+            match serde_json::to_value(&topic) {
+                Ok(value) => {
+                    self.storage.set(key, value).await;
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed to serialize topic");
+                    return;
+                }
+            };
         }
 
         let event = if exist {
@@ -125,19 +136,17 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
         let key = self.gen_key(stream_name, group_id);
-        self.storage.get(key).await.map_or(vec![], |v| {
-            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-            topic.values().cloned().collect()
-        })
+
+        self.storage.list(key).await
     }
 
     async fn list_groups(&self, stream_name: &str) -> Vec<String> {
-        let prefix = format!("{}::", stream_name);
+        let prefix = &format!("{}::", stream_name);
         self.storage
-            .list_keys_with_prefix(&prefix)
+            .list_keys_with_prefix(prefix.to_string())
             .await
             .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
+            .filter_map(|key| key.strip_prefix(&prefix.clone()).map(|s| s.to_string()))
             .collect()
     }
 
@@ -167,7 +176,6 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::builtins::filters::FieldPath;
 
     struct RecordingConnection {
         tx: mpsc::UnboundedSender<StreamWrapperMessage>,
@@ -287,43 +295,5 @@ mod tests {
         assert_eq!(saved_data, data2);
 
         watcher.abort();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_kv_store_adapter_concurrent_updates_increment() {
-        let builtin_adapter = Arc::new(BuiltinKvStoreAdapter::new(None));
-        let stream_name = "test_stream_concurrent";
-        let group_id = "test_group_concurrent";
-        let counter_key = "counter";
-
-        builtin_adapter
-            .set(stream_name, group_id, counter_key, serde_json::json!(0))
-            .await;
-
-        let mut handles = Vec::with_capacity(500);
-        for _ in 0..500 {
-            let adapter = Arc::clone(&builtin_adapter);
-            handles.push(tokio::spawn(async move {
-                let _ = adapter
-                    .update(
-                        stream_name,
-                        group_id,
-                        vec![UpdateOp::Increment {
-                            path: FieldPath::from(counter_key),
-                            by: 1,
-                        }],
-                    )
-                    .await;
-            }));
-        }
-
-        futures::future::join_all(handles).await;
-
-        let result = builtin_adapter
-            .get(stream_name, group_id, counter_key)
-            .await
-            .expect("Counter should exist");
-
-        assert_eq!(result, serde_json::json!(500));
     }
 }

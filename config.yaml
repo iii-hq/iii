@@ -61,6 +61,11 @@ modules:
         config:
           redis_url: redis://localhost:6379
 
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::adapters::KvAdapter
+
   - class: modules::cron::CronModule
     config:
       adapter:

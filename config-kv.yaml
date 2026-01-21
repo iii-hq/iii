@@ -1,0 +1,13 @@
+port: 49133
+modules:
+  - class: modules::kv_server::KvServer
+
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::LocalAdapter
+
+  - class: modules::observability::LoggingModule
+    config:
+      level: info
+      format: default

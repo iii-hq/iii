@@ -16,6 +16,7 @@ pub mod modules {
     pub mod event;
     pub mod kv_server;
     pub mod observability;
+    pub mod pubsub;
     pub mod redis;
     pub mod registry;
     pub mod rest_api;
