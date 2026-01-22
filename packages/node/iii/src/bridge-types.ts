@@ -158,6 +158,147 @@ export type WorkerInfo = {
   active_invocations: number
 }
 
+// =============================================================================
+// Worker Metrics - Tiered based on EKS/SRE feedback
+// =============================================================================
+
+/** Tier 1: Essential process-level metrics (Must Have) */
+export type ProcessMetrics = {
+  /** Current CPU usage percentage (0-100) */
+  cpu_percent?: number
+  /** Process memory usage in bytes */
+  memory_used_bytes?: number
+  /** Total available memory in bytes */
+  memory_total_bytes?: number
+  /** Time since worker started in seconds */
+  process_uptime_secs?: number
+}
+
+/** Tier 2: Important process-level metrics (Should Have) */
+export type PerformanceMetrics = {
+  /** Number of active threads */
+  thread_count?: number
+  /** Number of open network connections */
+  open_connections?: number
+  /** Invocations processed per second */
+  invocations_per_sec?: number
+  /** Average invocation latency in milliseconds */
+  avg_latency_ms?: number
+}
+
+/** Tier 3: Nice to have process-level metrics */
+export type ExtendedMetrics = {
+  /** Disk read bytes */
+  disk_read_bytes?: number
+  /** Disk write bytes */
+  disk_write_bytes?: number
+  /** Network bytes received */
+  network_rx_bytes?: number
+  /** Network bytes transmitted */
+  network_tx_bytes?: number
+  /** Number of open file descriptors */
+  open_file_descriptors?: number
+  /** Total failed invocations count */
+  error_count?: number
+}
+
+/** Kubernetes/EKS-specific identifiers for correlation */
+export type KubernetesIdentifiers = {
+  /** Cluster name */
+  cluster?: string
+  /** Kubernetes namespace */
+  namespace?: string
+  /** Pod name */
+  pod_name?: string
+  /** Container name */
+  container_name?: string
+  /** Node name */
+  node_name?: string
+  /** Pod UID for unique identification */
+  pod_uid?: string
+}
+
+/** Tier 1: Essential Kubernetes metrics (Must Have for EKS/K8s) */
+export type KubernetesCoreMetrics = {
+  /** CPU usage in cores (or millicores) */
+  cpu_usage_cores?: number
+  /** Memory working set bytes */
+  memory_working_set_bytes?: number
+  /** Pod phase (Pending, Running, Succeeded, Failed, Unknown) */
+  pod_phase?: string
+  /** Whether pod is ready to accept traffic */
+  pod_ready?: boolean
+  /** Total container restarts */
+  container_restarts_total?: number
+  /** Last termination reason (e.g., OOMKilled, Error) */
+  last_termination_reason?: string
+  /** Container uptime in seconds */
+  uptime_seconds?: number
+}
+
+/** Tier 2: Important Kubernetes metrics (Should Have for EKS/K8s) */
+export type KubernetesResourceMetrics = {
+  /** CPU requests in cores */
+  cpu_requests_cores?: number
+  /** CPU limits in cores */
+  cpu_limits_cores?: number
+  /** Memory requests in bytes */
+  memory_requests_bytes?: number
+  /** Memory limits in bytes */
+  memory_limits_bytes?: number
+  /** CPU throttled time in seconds */
+  cpu_throttled_seconds_total?: number
+  /** Time pod spent in pending state */
+  pod_pending_seconds?: number
+}
+
+/** Tier 3: Nice to have Kubernetes metrics */
+export type KubernetesExtendedMetrics = {
+  /** Network received bytes (pod/container) */
+  network_rx_bytes_total?: number
+  /** Network transmitted bytes (pod/container) */
+  network_tx_bytes_total?: number
+  /** Filesystem usage in bytes */
+  fs_usage_bytes?: number
+  /** Node memory pressure */
+  node_memory_pressure?: boolean
+  /** Node disk pressure */
+  node_disk_pressure?: boolean
+  /** Node PID pressure */
+  node_pid_pressure?: boolean
+}
+
+/** Complete worker metrics payload */
+export type WorkerMetrics = {
+  /** Timestamp when metrics were collected (Unix epoch ms) */
+  collected_at_ms: number
+
+  // Process-level metrics (all runtimes)
+  /** Tier 1: Essential process metrics */
+  process?: ProcessMetrics
+  /** Tier 2: Performance metrics */
+  performance?: PerformanceMetrics
+  /** Tier 3: Extended metrics */
+  extended?: ExtendedMetrics
+
+  // Kubernetes-specific (when running on K8s/EKS)
+  /** Kubernetes identifiers for correlation */
+  k8s_identifiers?: KubernetesIdentifiers
+  /** Tier 1: Essential K8s metrics */
+  k8s_core?: KubernetesCoreMetrics
+  /** Tier 2: K8s resource metrics */
+  k8s_resources?: KubernetesResourceMetrics
+  /** Tier 3: Extended K8s metrics */
+  k8s_extended?: KubernetesExtendedMetrics
+}
+
+/** Worker metrics response with worker info */
+export type WorkerMetricsInfo = {
+  worker_id: string
+  worker_name?: string
+  metrics: WorkerMetrics
+}
+
 export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage

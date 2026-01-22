@@ -12,6 +12,7 @@ use crate::{
     modules::module::Module,
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
+    workers::WorkerMetrics,
 };
 
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
@@ -61,6 +62,29 @@ pub struct RegisterWorkerInput {
     pub version: Option<String>,
     pub name: Option<String>,
     pub os: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportMetricsInput {
+    /// Worker ID injected by engine from caller context
+    #[serde(rename = "_caller_worker_id")]
+    pub worker_id: String,
+    /// The metrics payload
+    #[serde(flatten)]
+    pub metrics: WorkerMetrics,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetMetricsInput {
+    /// Optional worker ID to get metrics for a specific worker
+    pub worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkerMetricsInfo {
+    pub worker_id: String,
+    pub worker_name: Option<String>,
+    pub metrics: WorkerMetrics,
 }
 
 #[derive(Clone)]
@@ -349,6 +373,93 @@ impl WorkerModule {
             .await;
 
         FunctionResult::Success(Some(serde_json::json!({"success": true})))
+    }
+
+    #[function(
+        name = "engine.workers.report_metrics",
+        description = "Report worker metrics (CPU, memory, K8s stats, etc.)"
+    )]
+    pub async fn report_metrics(
+        &self,
+        input: ReportMetricsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let worker_id = match uuid::Uuid::parse_str(&input.worker_id) {
+            Ok(id) => id,
+            Err(_) => {
+                tracing::error!(worker_id = %input.worker_id, "Invalid worker_id format for metrics");
+                return FunctionResult::Success(Some(serde_json::json!({
+                    "success": false,
+                    "error": "Invalid worker_id format"
+                })));
+            }
+        };
+
+        self.engine
+            .worker_registry
+            .update_worker_metrics(&worker_id, input.metrics);
+
+        tracing::debug!(
+            worker_id = %worker_id,
+            "Worker metrics updated"
+        );
+
+        FunctionResult::Success(Some(serde_json::json!({"success": true})))
+    }
+
+    #[function(
+        name = "engine.workers.get_metrics",
+        description = "Get worker metrics (optionally for a specific worker)"
+    )]
+    pub async fn get_metrics(
+        &self,
+        input: GetMetricsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if let Some(worker_id_str) = input.worker_id {
+            let worker_id = match uuid::Uuid::parse_str(&worker_id_str) {
+                Ok(id) => id,
+                Err(_) => {
+                    return FunctionResult::Success(Some(serde_json::json!({
+                        "error": "Invalid worker_id format"
+                    })));
+                }
+            };
+
+            let worker = self.engine.worker_registry.get_worker(&worker_id).await;
+            let metrics = self.engine.worker_registry.get_worker_metrics(&worker_id);
+
+            match metrics {
+                Some(m) => FunctionResult::Success(Some(serde_json::json!({
+                    "worker_id": worker_id_str,
+                    "worker_name": worker.and_then(|w| w.name),
+                    "metrics": m
+                }))),
+                None => FunctionResult::Success(Some(serde_json::json!({
+                    "error": "No metrics found for worker"
+                }))),
+            }
+        } else {
+            let all_metrics = self.engine.worker_registry.get_all_metrics();
+            let workers = self.engine.worker_registry.list_workers().await;
+
+            let metrics_list: Vec<WorkerMetricsInfo> = all_metrics
+                .into_iter()
+                .map(|(worker_id, metrics)| {
+                    let worker_name = workers
+                        .iter()
+                        .find(|w| w.id == worker_id)
+                        .and_then(|w| w.name.clone());
+                    WorkerMetricsInfo {
+                        worker_id: worker_id.to_string(),
+                        worker_name,
+                        metrics,
+                    }
+                })
+                .collect();
+
+            FunctionResult::Success(Some(serde_json::json!({
+                "workers": metrics_list
+            })))
+        }
     }
 }
 

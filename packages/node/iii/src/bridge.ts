@@ -12,6 +12,8 @@ import {
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type WorkerInfo,
+  type WorkerMetrics,
+  type WorkerMetricsInfo,
 } from './bridge-types'
 import { withContext } from './context'
 import { Logger } from './logger'
@@ -133,6 +135,77 @@ export class Bridge implements BridgeClient {
 
   async listWorkers(): Promise<WorkerInfo[]> {
     const result = await this.invokeFunction<{}, { workers: WorkerInfo[] }>('engine.workers.list', {})
+    return result.workers
+  }
+
+  private metricsInterval?: NodeJS.Timeout
+
+  /**
+   * Report worker metrics to the engine.
+   * Metrics are automatically associated with this worker via the injected worker_id.
+   */
+  reportMetrics(metrics: Omit<WorkerMetrics, 'collected_at_ms'>): void {
+    const metricsWithTimestamp: WorkerMetrics = {
+      ...metrics,
+      collected_at_ms: Date.now(),
+    }
+    this.invokeFunctionAsync('engine.workers.report_metrics', metricsWithTimestamp)
+  }
+
+  /**
+   * Start automatic metrics reporting using the built-in metrics collector.
+   * @param intervalMs - Reporting interval in milliseconds (default: 5000)
+   */
+  startMetricsReporting(intervalMs: number = 5000): void {
+    if (this.metricsInterval) {
+      return // Already running
+    }
+
+    // Dynamically import metrics to avoid circular dependencies
+    import('./metrics').then(({ collectMetrics }) => {
+      // Initial warmup call
+      collectMetrics()
+
+      this.metricsInterval = setInterval(() => {
+        const metrics = collectMetrics()
+        this.reportMetrics(metrics)
+      }, intervalMs)
+    })
+  }
+
+  /**
+   * Stop automatic metrics reporting.
+   */
+  stopMetricsReporting(): void {
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval)
+      this.metricsInterval = undefined
+    }
+  }
+
+  /**
+   * Get metrics for a specific worker by ID.
+   */
+  async getWorkerMetrics(workerId: string): Promise<WorkerMetricsInfo | null> {
+    const result = await this.invokeFunction<
+      { worker_id: string },
+      WorkerMetricsInfo | { error: string }
+    >('engine.workers.get_metrics', { worker_id: workerId })
+
+    if ('error' in result) {
+      return null
+    }
+    return result
+  }
+
+  /**
+   * Get metrics for all workers.
+   */
+  async getAllWorkerMetrics(): Promise<WorkerMetricsInfo[]> {
+    const result = await this.invokeFunction<{}, { workers: WorkerMetricsInfo[] }>(
+      'engine.workers.get_metrics',
+      {},
+    )
     return result.workers
   }
 

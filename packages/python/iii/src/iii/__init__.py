@@ -5,6 +5,12 @@ import logging
 from .bridge import Bridge
 from .context import Context, get_context, with_context
 from .logger import Logger
+from .metrics import (
+    MetricsReporter,
+    collect_metrics,
+    is_kubernetes,
+    record_invocation,
+)
 from .types import ApiRequest, ApiResponse
 
 
@@ -31,4 +37,9 @@ __all__ = [
     "ApiRequest",
     "ApiResponse",
     "configure_logging",
+    # Metrics
+    "collect_metrics",
+    "record_invocation",
+    "is_kubernetes",
+    "MetricsReporter",
 ]
