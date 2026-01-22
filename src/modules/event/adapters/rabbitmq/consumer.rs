@@ -39,10 +39,10 @@ impl JobParser {
     pub fn parse_from_delivery(delivery: &Delivery) -> Result<Job> {
         let mut job: Job = serde_json::from_slice(&delivery.data)?;
 
-        if let Some(headers) = &delivery.properties.headers() {
-            if let Some(attempts) = Self::extract_attempts(headers)? {
-                job.attempts_made = attempts;
-            }
+        if let Some(headers) = &delivery.properties.headers()
+            && let Some(attempts) = Self::extract_attempts(headers)?
+        {
+            job.attempts_made = attempts;
         }
 
         Ok(job)
@@ -51,7 +51,7 @@ impl JobParser {
     fn extract_attempts(headers: &FieldTable) -> Result<Option<u32>> {
         if let Some(value) = headers.inner().get("x-iii-attempts") {
             match value {
-                AMQPValue::LongUInt(v) => Ok(Some(*v as u32)),
+                AMQPValue::LongUInt(v) => Ok(Some(*v)),
                 AMQPValue::ShortUInt(v) => Ok(Some(*v as u32)),
                 AMQPValue::LongInt(v) => Ok(Some(*v as u32)),
                 AMQPValue::ShortInt(v) => Ok(Some(*v as u32)),
@@ -66,7 +66,7 @@ impl JobParser {
     fn extract_max_attempts(headers: &FieldTable) -> Result<Option<u32>> {
         if let Some(value) = headers.inner().get("x-iii-max-attempts") {
             match value {
-                AMQPValue::LongUInt(v) => Ok(Some(*v as u32)),
+                AMQPValue::LongUInt(v) => Ok(Some(*v)),
                 AMQPValue::ShortUInt(v) => Ok(Some(*v as u32)),
                 AMQPValue::LongInt(v) => Ok(Some(*v as u32)),
                 AMQPValue::ShortInt(v) => Ok(Some(*v as u32)),

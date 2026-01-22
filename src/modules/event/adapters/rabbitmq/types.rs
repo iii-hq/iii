@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -37,24 +38,21 @@ impl Job {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum QueueMode {
+    #[default]
     Standard,
     Fifo,
 }
 
-impl Default for QueueMode {
-    fn default() -> Self {
-        QueueMode::Standard
-    }
-}
+impl FromStr for QueueMode {
+    type Err = ();
 
-impl QueueMode {
-    pub fn from_str(s: &str) -> Self {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "fifo" => QueueMode::Fifo,
-            "standard" => QueueMode::Standard,
-            _ => QueueMode::default(),
+            "fifo" => Ok(QueueMode::Fifo),
+            "standard" => Ok(QueueMode::Standard),
+            _ => Ok(QueueMode::default()),
         }
     }
 }
@@ -93,7 +91,7 @@ impl RabbitMQConfig {
                 cfg.prefetch_count = prefetch as u16;
             }
             if let Some(mode) = config.get("queue_mode").and_then(|v| v.as_str()) {
-                cfg.queue_mode = QueueMode::from_str(mode);
+                cfg.queue_mode = QueueMode::from_str(mode).unwrap_or_default();
             }
         }
 

@@ -138,7 +138,9 @@ impl Module for StreamCoreModule {
             .parse::<SocketAddr>()
             .unwrap();
         tracing::info!("Starting StreamCoreModule on {}", addr.to_string().purple());
-        let listener = TcpListener::bind(addr).await.unwrap();
+        let listener = TcpListener::bind(addr)
+            .await
+            .unwrap_or_else(|_| panic!("Failed to bind to address :{:?}", addr));
         let app = Router::new()
             .route("/", get(ws_handler))
             .with_state(socket_manager);

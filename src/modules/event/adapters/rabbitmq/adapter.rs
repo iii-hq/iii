@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use lapin::{Channel, Connection, ConnectionProperties, options::*};
@@ -169,7 +169,7 @@ impl EventAdapter for RabbitMQAdapter {
         let effective_queue_mode = queue_config
             .as_ref()
             .and_then(|c| c.queue_mode.as_ref())
-            .map(|mode| QueueMode::from_str(mode))
+            .map(|mode| QueueMode::from_str(mode).unwrap_or_default())
             .unwrap_or_else(|| self.config.queue_mode.clone());
 
         let effective_prefetch_count = queue_config

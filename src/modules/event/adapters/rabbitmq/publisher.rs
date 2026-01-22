@@ -125,11 +125,11 @@ impl Publisher {
         );
         headers.insert(
             "x-iii-attempts".into(),
-            AMQPValue::LongUInt(job.attempts_made as u32),
+            AMQPValue::LongUInt(job.attempts_made),
         );
         headers.insert(
             "x-iii-max-attempts".into(),
-            AMQPValue::LongUInt(job.max_attempts as u32),
+            AMQPValue::LongUInt(job.max_attempts),
         );
         headers.insert(
             "x-iii-created-at".into(),
