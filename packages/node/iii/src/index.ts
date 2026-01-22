@@ -3,4 +3,4 @@ export type { FunctionInfo, FunctionInfo as FunctionMessage, WorkerInfo, WorkerS
 export { type Context, getContext, withContext } from './context'
 export { Logger } from './logger'
 export * from './streams'
-export type { ApiRequest, ApiResponse, RemoteFunctionHandler } from './types'
+export type { ApiRequest, ApiResponse, FunctionsAvailableCallback, RemoteFunctionHandler } from './types'
