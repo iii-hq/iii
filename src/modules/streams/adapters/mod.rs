@@ -7,9 +7,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::modules::{
-    kv_server::structs::{UpdateOp, UpdateResult},
-    streams::StreamWrapperMessage,
+use crate::{
+    builtins::pubsub::Subscriber,
+    modules::{
+        kv_server::structs::{UpdateOp, UpdateResult},
+        streams::StreamWrapperMessage,
+    },
 };
 
 #[async_trait]
@@ -38,7 +41,6 @@ pub trait StreamAdapter: Send + Sync {
 }
 
 #[async_trait]
-pub trait StreamConnection: Send + Sync {
-    async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
+pub trait StreamConnection: Subscriber + Send + Sync {
     async fn cleanup(&self);
 }

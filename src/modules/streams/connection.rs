@@ -7,6 +7,7 @@ use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
 use crate::{
+    builtins::pubsub::Subscriber,
     engine::{Engine, EngineTrait},
     function::FunctionResult,
     modules::streams::{
@@ -258,6 +259,30 @@ impl SocketStreamConnection {
             }
         }
     }
+
+    //
+    async fn handle_messageee(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
+        let subscriptions = self.subscriptions.read().await;
+        tracing::debug!(msg = ?msg, "Sending stream message");
+
+        for subscription in subscriptions.iter() {
+            let subscription = subscription.value();
+
+            if subscription.stream_name == msg.stream_name
+                && subscription.group_id == msg.group_id
+                && (subscription.id.is_none() || subscription.id == msg.id)
+            {
+                match self.sender.send(StreamOutbound::Stream(msg.clone())).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = ?e.to_string(), "Failed to send stream message");
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -282,27 +307,19 @@ impl StreamConnection for SocketStreamConnection {
                 .await;
         }
     }
+}
 
-    async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
-        let subscriptions = self.subscriptions.read().await;
-        tracing::debug!(msg = ?msg, "Sending stream message");
-
-        for subscription in subscriptions.iter() {
-            let subscription = subscription.value();
-
-            if subscription.stream_name == msg.stream_name
-                && subscription.group_id == msg.group_id
-                && (subscription.id.is_none() || subscription.id == msg.id)
-            {
-                match self.sender.send(StreamOutbound::Stream(msg.clone())).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = ?e.to_string(), "Failed to send stream message");
-                    }
-                }
+#[async_trait]
+impl Subscriber for SocketStreamConnection {
+    async fn handle_message(&self, message: &Value) -> anyhow::Result<()> {
+        let message = match serde_json::from_value::<StreamWrapperMessage>(message.clone()) {
+            Ok(msg) => msg,
+            Err(e) => {
+                tracing::error!(error = ?e, "Failed to deserialize stream message");
+                return Err(anyhow::anyhow!("Failed to deserialize stream message"));
             }
-        }
+        };
 
-        Ok(())
+        self.handle_messageee(&message).await
     }
 }

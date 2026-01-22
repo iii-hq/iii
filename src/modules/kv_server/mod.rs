@@ -9,7 +9,7 @@ use function_macros::{function, service};
 use serde_json::Value;
 
 use crate::{
-    builtins::BuiltinKvStore,
+    builtins::kv::BuiltinKvStore,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{

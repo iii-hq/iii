@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::{BuiltInPubSubAdapter, SetResult},
+    builtins::kv::SetResult,
+    builtins::pubsub::BuiltInPubSubAdapter,
     engine::Engine,
     modules::{
         kv_server::{
