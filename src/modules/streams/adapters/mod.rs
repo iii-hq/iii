@@ -43,7 +43,7 @@ pub trait StreamAdapter: Send + Sync {
 #[async_trait]
 pub trait StreamConnection: Subscriber + Send + Sync {
     async fn cleanup(&self);
-    
+
     /// Handle a stream message that has already been deserialized.
     /// This is the optimized path - deserialize once, call many times.
     async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
