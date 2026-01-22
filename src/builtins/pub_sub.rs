@@ -33,13 +33,24 @@ impl BuiltInPubSubAdapter {
     }
 
     pub async fn send_msg(&self, message: StreamWrapperMessage) {
-        let subscribers = self.stream_subscribers.read().await;
-        for connections in subscribers.values() {
-            for connection in connections.iter() {
-                if let Err(e) = connection.handle_stream_message(&message).await {
+        let connections: Vec<Arc<dyn StreamConnection>> = {
+            let subscribers = self.stream_subscribers.read().await;
+            subscribers
+                .values()
+                .flat_map(|connections| connections.iter().cloned())
+                .collect()
+        };
+        if connections.is_empty() {
+            return;
+        }
+        let message = Arc::new(message);
+        for connection in connections {
+            let message = Arc::clone(&message);
+            tokio::spawn(async move {
+                if let Err(e) = connection.handle_stream_message(message.as_ref()).await {
                     tracing::error!(error = ?e, "Failed to handle stream message");
                 }
-            }
+            });
         }
     }
 }
