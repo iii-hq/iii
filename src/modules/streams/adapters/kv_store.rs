@@ -50,8 +50,15 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
-        match self.storage.update(key.to_string(), ops).await {
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult {
+        let key = format!("{}::{}::{}", stream_name, group_id, item_id);
+        match self.storage.update(key, ops).await {
             Some(result) => result,
             None => UpdateResult {
                 old_value: None,

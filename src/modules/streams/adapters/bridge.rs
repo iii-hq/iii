@@ -88,9 +88,16 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl StreamAdapter for BridgeAdapter {
-    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult {
+        let key = format!("{}::{}::{}", stream_name, group_id, item_id);
         let update_data = KvUpdateInput {
-            key: key.to_string(),
+            key: key.clone(),
             ops,
         };
 

@@ -61,14 +61,21 @@ impl RedisAdapter {
 
 #[async_trait]
 impl StreamAdapter for RedisAdapter {
-    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult {
+        let key = format!("stream:{}:{}:{}", stream_name, group_id, item_id);
         // Use RedisJSON commands for atomic, server-side operations
         // Each JSON.* command is atomic, and we use MULTI/EXEC to make all ops atomic together
         let mut conn = self.publisher.lock().await;
 
         // Get old value first using JSON.GET
         let old_value: Option<Value> = match redis::cmd("JSON.GET")
-            .arg(key)
+            .arg(&key)
             .arg("$")
             .query_async::<Option<String>>(&mut *conn)
             .await
@@ -90,7 +97,7 @@ impl StreamAdapter for RedisAdapter {
         // If key doesn't exist, initialize it with empty object
         if old_value.is_none()
             && let Err(e) = redis::cmd("JSON.SET")
-                .arg(key)
+                .arg(&key)
                 .arg("$")
                 .arg("{}")
                 .query_async::<()>(&mut *conn)
@@ -118,7 +125,7 @@ impl StreamAdapter for RedisAdapter {
                     let json_value =
                         serde_json::to_string(value).expect("Failed to serialize value");
                     pipe.cmd("JSON.SET")
-                        .arg(key)
+                        .arg(&key)
                         .arg(&json_path)
                         .arg(&json_value)
                         .ignore();
@@ -131,7 +138,7 @@ impl StreamAdapter for RedisAdapter {
                             let json_value =
                                 serde_json::to_string(val).expect("Failed to serialize value");
                             pipe.cmd("JSON.SET")
-                                .arg(key)
+                                .arg(&key)
                                 .arg(&json_path)
                                 .arg(&json_value)
                                 .ignore();
@@ -141,7 +148,7 @@ impl StreamAdapter for RedisAdapter {
                 UpdateOp::Increment { path, by } => {
                     let json_path = format!("$.{}", path.0);
                     pipe.cmd("JSON.NUMINCRBY")
-                        .arg(key)
+                        .arg(&key)
                         .arg(&json_path)
                         .arg(*by)
                         .ignore();
@@ -149,14 +156,14 @@ impl StreamAdapter for RedisAdapter {
                 UpdateOp::Decrement { path, by } => {
                     let json_path = format!("$.{}", path.0);
                     pipe.cmd("JSON.NUMINCRBY")
-                        .arg(key)
+                        .arg(&key)
                         .arg(&json_path)
                         .arg(-*by)
                         .ignore();
                 }
                 UpdateOp::Remove { path } => {
                     let json_path = format!("$.{}", path.0);
-                    pipe.cmd("JSON.DEL").arg(key).arg(&json_path).ignore();
+                    pipe.cmd("JSON.DEL").arg(&key).arg(&json_path).ignore();
                 }
             }
         }
@@ -172,7 +179,7 @@ impl StreamAdapter for RedisAdapter {
 
         // Get new value after operations
         let new_value: Value = match redis::cmd("JSON.GET")
-            .arg(key)
+            .arg(&key)
             .arg("$")
             .query_async::<Option<String>>(&mut *conn)
             .await

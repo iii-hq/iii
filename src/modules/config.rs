@@ -357,30 +357,12 @@ impl EngineBuilder {
     pub async fn build(mut self) -> anyhow::Result<Self> {
         let config = self.config.take().expect("No module configs founded");
 
-        // Collect module classes from config
-        let config_classes: std::collections::HashSet<String> =
-            config.modules.iter().map(|m| m.class.clone()).collect();
-
-        // Get default modules that aren't already in config
-        let default_entries: Vec<ModuleEntry> = default_module_entries()
-            .into_iter()
-            .filter(|entry| !config_classes.contains(&entry.class))
-            .collect();
-
-        let total_modules = config.modules.len() + default_entries.len();
         tracing::info!(
-            "Building engine with {} modules ({} from config, {} default)",
-            total_modules,
-            config.modules.len(),
-            default_entries.len()
+            "Building engine with {} modules from config",
+            config.modules.len()
         );
 
-        let all_entries: Vec<&ModuleEntry> = default_entries
-            .iter()
-            .chain(config.modules.iter())
-            .collect();
-
-        for entry in all_entries {
+        for entry in config.modules.iter() {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)

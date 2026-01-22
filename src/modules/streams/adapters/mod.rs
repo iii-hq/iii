@@ -34,7 +34,13 @@ pub trait StreamAdapter: Send + Sync {
 
     async fn destroy(&self) -> anyhow::Result<()>;
 
-    async fn update(&self, stream_name: &str, ops: Vec<UpdateOp>) -> UpdateResult;
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult;
 }
 
 #[async_trait]

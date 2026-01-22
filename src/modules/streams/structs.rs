@@ -129,8 +129,9 @@ pub struct StreamJoinResult {
 /// Input for atomic stream update operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {
-    /// The key to update (format: "stream_name::group_id::item_id" or custom key)
-    pub key: String,
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
     /// List of operations to apply atomically
     pub ops: Vec<UpdateOp>,
 }
