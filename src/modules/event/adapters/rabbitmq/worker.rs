@@ -1,11 +1,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use lapin::{
-    message::Delivery,
-    options::*,
-    Channel,
-};
+use lapin::{Channel, message::Delivery, options::*};
 use tokio::sync::Semaphore;
 
 use crate::engine::{Engine, EngineTrait};
@@ -35,7 +31,7 @@ impl Worker {
             QueueMode::Fifo => None,
             QueueMode::Standard => Some(Arc::new(Semaphore::new(prefetch_count as usize))),
         };
-        
+
         Self {
             channel,
             retry_handler,
@@ -109,7 +105,7 @@ impl Worker {
                                 } else {
                                     None
                                 };
-                                
+
                                 if let Err(e) = worker
                                     .process_delivery(
                                         delivery,
@@ -195,7 +191,10 @@ impl Worker {
         let event_data = job.data.clone();
 
         if let Some(condition_path) = condition_function_path {
-            match engine.invoke_function(condition_path, event_data.clone()).await {
+            match engine
+                .invoke_function(condition_path, event_data.clone())
+                .await
+            {
                 Ok(Some(result)) => {
                     if let Some(passed) = result.as_bool() {
                         if !passed {

@@ -272,10 +272,14 @@ impl EventAdapter for RedisAdapter {
     }
 
     async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
-        Err(anyhow::anyhow!("RedisAdapter does not support DLQ operations (pub/sub only)"))
+        Err(anyhow::anyhow!(
+            "RedisAdapter does not support DLQ operations (pub/sub only)"
+        ))
     }
 
     async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
-        Err(anyhow::anyhow!("RedisAdapter does not support DLQ operations (pub/sub only)"))
+        Err(anyhow::anyhow!(
+            "RedisAdapter does not support DLQ operations (pub/sub only)"
+        ))
     }
 }

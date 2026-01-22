@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
-use lapin::{
-    options::*,
-    types::FieldTable,
-    Channel,
-};
+use lapin::{Channel, options::*, types::FieldTable};
 
 use super::naming::RabbitNames;
 

@@ -95,5 +95,4 @@ impl JobParser {
             Ok(None)
         }
     }
-
 }

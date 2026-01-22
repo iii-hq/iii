@@ -31,13 +31,62 @@ impl SubscriberQueueConfig {
         let mut subscriber_config = Self::default();
         let mut has_any_value = false;
 
-        extract_field!(config, "type", subscriber_config.queue_mode, has_any_value, as_str, |v: &str| v.to_string());
-        extract_field!(config, "maxRetries", subscriber_config.max_retries, has_any_value, as_u64, |v| v as u32);
-        extract_field!(config, "concurrency", subscriber_config.concurrency, has_any_value, as_u64, |v| v as u32);
-        extract_field!(config, "visibilityTimeout", subscriber_config.visibility_timeout, has_any_value, as_u64, |v| v);
-        extract_field!(config, "delaySeconds", subscriber_config.delay_seconds, has_any_value, as_u64, |v| v);
-        extract_field!(config, "backoffType", subscriber_config.backoff_type, has_any_value, as_str, |v: &str| v.to_string());
-        extract_field!(config, "backoffDelayMs", subscriber_config.backoff_delay_ms, has_any_value, as_u64, |v| v);
+        extract_field!(
+            config,
+            "type",
+            subscriber_config.queue_mode,
+            has_any_value,
+            as_str,
+            |v: &str| v.to_string()
+        );
+        extract_field!(
+            config,
+            "maxRetries",
+            subscriber_config.max_retries,
+            has_any_value,
+            as_u64,
+            |v| v as u32
+        );
+        extract_field!(
+            config,
+            "concurrency",
+            subscriber_config.concurrency,
+            has_any_value,
+            as_u64,
+            |v| v as u32
+        );
+        extract_field!(
+            config,
+            "visibilityTimeout",
+            subscriber_config.visibility_timeout,
+            has_any_value,
+            as_u64,
+            |v| v
+        );
+        extract_field!(
+            config,
+            "delaySeconds",
+            subscriber_config.delay_seconds,
+            has_any_value,
+            as_u64,
+            |v| v
+        );
+        extract_field!(
+            config,
+            "backoffType",
+            subscriber_config.backoff_type,
+            has_any_value,
+            as_str,
+            |v: &str| v.to_string()
+        );
+        extract_field!(
+            config,
+            "backoffDelayMs",
+            subscriber_config.backoff_delay_ms,
+            has_any_value,
+            as_u64,
+            |v| v
+        );
 
         if has_any_value {
             Some(subscriber_config)
@@ -73,7 +122,10 @@ mod tests {
         assert_eq!(subscriber_config.concurrency, Some(20));
         assert_eq!(subscriber_config.visibility_timeout, Some(3000));
         assert_eq!(subscriber_config.delay_seconds, Some(10));
-        assert_eq!(subscriber_config.backoff_type, Some("exponential".to_string()));
+        assert_eq!(
+            subscriber_config.backoff_type,
+            Some("exponential".to_string())
+        );
         assert_eq!(subscriber_config.backoff_delay_ms, Some(2000));
     }
 

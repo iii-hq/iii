@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use lapin::{options::*, Channel, Connection, ConnectionProperties};
+use lapin::{Channel, Connection, ConnectionProperties, options::*};
 use serde_json::Value;
 use tokio::{sync::RwLock, task::JoinHandle};
 use uuid::Uuid;
@@ -43,7 +43,11 @@ impl RabbitMQAdapter {
         let connection = Connection::connect(&config.amqp_url, ConnectionProperties::default())
             .await
             .map_err(|e| {
-                anyhow::anyhow!("Failed to connect to RabbitMQ at {}: {}", config.amqp_url, e)
+                anyhow::anyhow!(
+                    "Failed to connect to RabbitMQ at {}: {}",
+                    config.amqp_url,
+                    e
+                )
             })?;
 
         let channel = connection
@@ -102,11 +106,7 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterF
 #[async_trait]
 impl EventAdapter for RabbitMQAdapter {
     async fn emit(&self, topic: &str, event_data: Value) {
-        let job = Job::new(
-            topic,
-            event_data,
-            self.config.max_attempts,
-        );
+        let job = Job::new(topic, event_data, self.config.max_attempts);
 
         if let Err(e) = self.topology.setup_topic(topic).await {
             tracing::error!(
@@ -264,17 +264,18 @@ impl EventAdapter for RabbitMQAdapter {
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        use lapin::options::*;
         use super::naming::RabbitNames;
+        use lapin::options::*;
         use serde_json::Value;
 
         let names = RabbitNames::new(topic);
         let dlq_name = names.dlq();
-        
+
         let mut count: u64 = 0;
 
         loop {
-            let get_result = self.channel
+            let get_result = self
+                .channel
                 .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
@@ -283,27 +284,37 @@ impl EventAdapter for RabbitMQAdapter {
                 Some(delivery) => {
                     let dlq_payload: Value = serde_json::from_slice(&delivery.delivery.data)
                         .map_err(|e| anyhow::anyhow!("Failed to parse DLQ message: {}", e))?;
-                    
+
                     let job: super::types::Job = serde_json::from_value(
-                        dlq_payload.get("job")
+                        dlq_payload
+                            .get("job")
                             .ok_or_else(|| anyhow::anyhow!("DLQ message missing 'job' field"))?
-                            .clone()
+                            .clone(),
                     )
                     .map_err(|e| anyhow::anyhow!("Failed to parse job from DLQ payload: {}", e))?;
 
                     let mut job_with_reset_attempts = job.clone();
                     job_with_reset_attempts.attempts_made = 0;
 
-                    if let Err(e) = self.publisher.publish(topic, &job_with_reset_attempts).await {
+                    if let Err(e) = self
+                        .publisher
+                        .publish(topic, &job_with_reset_attempts)
+                        .await
+                    {
                         tracing::error!(error = ?e, "Failed to republish DLQ message");
-                        delivery.delivery
-                            .nack(BasicNackOptions { requeue: true, multiple: false })
+                        delivery
+                            .delivery
+                            .nack(BasicNackOptions {
+                                requeue: true,
+                                multiple: false,
+                            })
                             .await
                             .map_err(|e| anyhow::anyhow!("Failed to nack message: {}", e))?;
                         break;
                     }
 
-                    delivery.delivery
+                    delivery
+                        .delivery
                         .ack(BasicAckOptions { multiple: false })
                         .await
                         .map_err(|e| anyhow::anyhow!("Failed to ack message: {}", e))?;
@@ -323,7 +334,8 @@ impl EventAdapter for RabbitMQAdapter {
         let names = RabbitNames::new(topic);
         let dlq_name = names.dlq();
 
-        let queue = self.channel
+        let queue = self
+            .channel
             .queue_declare(
                 &dlq_name,
                 lapin::options::QueueDeclareOptions {

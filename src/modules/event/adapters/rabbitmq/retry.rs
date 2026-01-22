@@ -32,9 +32,7 @@ pub struct RetryHandler {
 
 impl RetryHandler {
     pub fn new(publisher: Arc<Publisher>) -> Self {
-        Self {
-            publisher,
-        }
+        Self { publisher }
     }
 
     pub async fn handle_success(&self, topic: &str, job: &Job) -> Result<()> {
@@ -46,12 +44,7 @@ impl RetryHandler {
         Ok(())
     }
 
-    pub async fn handle_failure(
-        &self,
-        topic: &str,
-        job: &mut Job,
-        error: &str,
-    ) -> Result<()> {
+    pub async fn handle_failure(&self, topic: &str, job: &mut Job, error: &str) -> Result<()> {
         job.increment_attempts();
 
         if job.is_exhausted() {
