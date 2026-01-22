@@ -260,8 +260,7 @@ impl SocketStreamConnection {
         }
     }
 
-    //
-    async fn handle_messageee(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
+    async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
         let subscriptions = self.subscriptions.read().await;
         tracing::debug!(msg = ?msg, "Sending stream message");
 
@@ -320,6 +319,6 @@ impl Subscriber for SocketStreamConnection {
             }
         };
 
-        self.handle_messageee(&message).await
+        self.handle_stream_message(&message).await
     }
 }
