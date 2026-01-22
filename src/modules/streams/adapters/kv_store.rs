@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::{BuiltInPubSubAdapter, BuiltinKvStore},
+    builtins::{kv::BuiltinKvStore, pubsub::BuiltInPubSubAdapter},
     engine::Engine,
     modules::{
         kv_server::structs::{UpdateOp, UpdateResult},
@@ -188,6 +188,8 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::mpsc;
 
+    use crate::builtins::pubsub::Subscriber;
+
     use super::*;
 
     struct RecordingConnection {
@@ -196,12 +198,27 @@ mod tests {
 
     #[async_trait]
     impl StreamConnection for RecordingConnection {
+        async fn cleanup(&self) {}
+
         async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
             let _ = self.tx.send(msg.clone());
             Ok(())
         }
+    }
 
-        async fn cleanup(&self) {}
+    #[async_trait]
+    impl Subscriber for RecordingConnection {
+        async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+            let msg = match serde_json::from_value::<StreamWrapperMessage>((*message).clone()) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to deserialize stream message");
+                    return Err(anyhow::anyhow!("Failed to deserialize stream message"));
+                }
+            };
+            let _ = self.tx.send(msg);
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -289,6 +306,7 @@ mod tests {
             .await
             .expect("Timed out waiting for create event")
             .expect("Should receive create event");
+
         assert!(matches!(msg.event, StreamOutboundMessage::Create { .. }));
 
         // Update item

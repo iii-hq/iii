@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::builtins::{BuiltinKvStore, SetResult};
+use crate::builtins::kv::{BuiltinKvStore, SetResult};
 
 use super::structs::{UpdateOp, UpdateResult};
 

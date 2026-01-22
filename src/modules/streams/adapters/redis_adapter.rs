@@ -365,14 +365,14 @@ impl StreamAdapter for RedisAdapter {
             };
 
             let connections = self.connections.read().await;
-            let msg: StreamWrapperMessage =
-                match serde_json::from_str::<StreamWrapperMessage>(&payload) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to parse message as JSON");
-                        continue;
-                    }
-                };
+            // Deserialize once, reuse for all connections (optimization)
+            let msg: StreamWrapperMessage = match serde_json::from_str(&payload) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to parse message as JSON");
+                    continue;
+                }
+            };
 
             for connection in connections.values() {
                 match connection.handle_stream_message(&msg).await {

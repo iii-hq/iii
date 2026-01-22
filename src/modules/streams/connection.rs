@@ -7,6 +7,7 @@ use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
 use crate::{
+    builtins::pubsub::Subscriber,
     engine::{Engine, EngineTrait},
     function::FunctionResult,
     modules::streams::{
@@ -304,5 +305,20 @@ impl StreamConnection for SocketStreamConnection {
         }
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Subscriber for SocketStreamConnection {
+    async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+        let message = match serde_json::from_value::<StreamWrapperMessage>((*message).clone()) {
+            Ok(msg) => msg,
+            Err(e) => {
+                tracing::error!(error = ?e, "Failed to deserialize stream message");
+                return Err(anyhow::anyhow!("Failed to deserialize stream message"));
+            }
+        };
+
+        self.handle_stream_message(&message).await
     }
 }
