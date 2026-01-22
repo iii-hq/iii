@@ -4,7 +4,6 @@ export type {
   FunctionInfo as FunctionMessage,
   WorkerInfo,
   WorkerStatus,
-  // Worker Metrics types
   ProcessMetrics,
   PerformanceMetrics,
   ExtendedMetrics,
@@ -19,6 +18,4 @@ export { type Context, getContext, withContext } from './context'
 export { Logger } from './logger'
 export * from './streams'
 export type { ApiRequest, ApiResponse, RemoteFunctionHandler } from './types'
-
-// Metrics collection utilities
 export { collectMetrics, recordInvocation, createMetricsReporter } from './metrics'
