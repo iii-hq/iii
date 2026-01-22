@@ -1,6 +1,6 @@
 use std::fs;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use sysinfo::{Disks, Networks, Pid, System};
@@ -58,7 +58,9 @@ fn get_kubernetes_identifiers() -> Option<KubernetesIdentifiers> {
 
 fn read_k8s_file(filename: &str) -> Option<String> {
     let path = format!("/var/run/secrets/kubernetes.io/serviceaccount/{}", filename);
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn read_cgroup_value(v1_path: &str, v2_path: &str) -> Option<u64> {
@@ -252,8 +254,7 @@ fn get_filesystem_usage() -> Option<u64> {
     {
         if let Ok(content) = fs::read_to_string("/sys/fs/cgroup/io.stat") {
             for line in content.lines() {
-                if line.contains("wbytes=") || line.contains("rbytes=") {
-                }
+                if line.contains("wbytes=") || line.contains("rbytes=") {}
             }
         }
 
@@ -437,10 +438,7 @@ pub fn collect_metrics() -> WorkerMetrics {
 
         let mut last_stats = LAST_NETWORK_STATS.lock().unwrap();
         let delta = if let Some((last_rx, last_tx)) = *last_stats {
-            (
-                rx.saturating_sub(last_rx),
-                tx.saturating_sub(last_tx),
-            )
+            (rx.saturating_sub(last_rx), tx.saturating_sub(last_tx))
         } else {
             (0, 0)
         };
