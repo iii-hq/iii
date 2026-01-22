@@ -50,6 +50,9 @@ class Bridge:
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
         self._receiver_task: asyncio.Task[None] | None = None
+        self._functions_available_callbacks: set[Callable[[list[FunctionInfo]], None]] = set()
+        self._functions_available_trigger: Trigger | None = None
+        self._functions_available_function_path: str | None = None
 
     # Connection management
 
@@ -363,3 +366,42 @@ class Bridge:
     def _register_worker_metadata(self) -> None:
         """Register this worker's metadata with the engine."""
         self.invoke_function_async("engine.workers.register", self._get_worker_metadata())
+
+    def on_functions_available(self, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
+        """Subscribe to function availability events.
+        
+        Args:
+            callback: Function to call when functions become available. Receives list of FunctionInfo.
+            
+        Returns:
+            Unsubscribe function that removes the callback and cleans up the trigger if no callbacks remain.
+        """
+        self._functions_available_callbacks.add(callback)
+
+        if not self._functions_available_trigger:
+            if not self._functions_available_function_path:
+                self._functions_available_function_path = f"bridge.on_functions_available.{uuid.uuid4()}"
+
+            function_path = self._functions_available_function_path
+            if function_path not in self._functions:
+                async def handler(data: dict[str, Any]) -> None:
+                    functions_data = data.get("functions", [])
+                    functions = [FunctionInfo(**f) for f in functions_data]
+                    for cb in self._functions_available_callbacks:
+                        cb(functions)
+
+                self.register_function(function_path, handler)
+
+            self._functions_available_trigger = self.register_trigger(
+                "engine::functions-available",
+                function_path,
+                {}
+            )
+
+        def unsubscribe() -> None:
+            self._functions_available_callbacks.discard(callback)
+            if len(self._functions_available_callbacks) == 0 and self._functions_available_trigger:
+                self._functions_available_trigger.unregister()
+                self._functions_available_trigger = None
+
+        return unsubscribe

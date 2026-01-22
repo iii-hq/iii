@@ -248,6 +248,7 @@ impl Module for WorkerModule {
     ) -> anyhow::Result<()> {
         let engine = self.engine.clone();
         let triggers = self.triggers.clone();
+        let worker_module = self.clone();
         let duration_secs = 5u64;
 
         tokio::spawn(async move {
@@ -261,8 +262,11 @@ impl Module for WorkerModule {
                             tracing::info!("New functions detected, firing functions-available trigger");
                             current_functions_hash = new_functions_hash;
 
+                            let functions = worker_module.list_functions();
+
                             let functions_data = serde_json::json!({
                                 "event": "functions_changed",
+                                "functions": functions,
                             });
 
                             // Fire triggers directly from this module

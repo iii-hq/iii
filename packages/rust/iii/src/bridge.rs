@@ -520,19 +520,18 @@ impl Bridge {
                 .contains_key(&function_path);
             if !function_exists {
                 let bridge = self.clone();
-                self.register_function(function_path.clone(), move |_: Value| {
+                self.register_function(function_path.clone(), move |input: Value| {
                     let bridge = bridge.clone();
                     async move {
-                        match bridge.list_functions().await {
-                            Ok(functions) => {
-                                let callbacks = bridge.inner.functions_available_callbacks.lock().unwrap();
-                                for cb in callbacks.values() {
-                                    cb(functions.clone());
-                                }
-                            }
-                            Err(err) => {
-                                tracing::warn!(error = %err, "Failed to list functions in functions_available handler");
-                            }
+                        // Extract functions from trigger payload
+                        let functions = input
+                            .get("functions")
+                            .and_then(|v| serde_json::from_value::<Vec<FunctionInfo>>(v.clone()).ok())
+                            .unwrap_or_default();
+
+                        let callbacks = bridge.inner.functions_available_callbacks.lock().unwrap();
+                        for cb in callbacks.values() {
+                            cb(functions.clone());
                         }
                         Ok(Value::Null)
                     }
