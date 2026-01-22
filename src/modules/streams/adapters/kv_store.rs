@@ -193,18 +193,30 @@ mod tests {
     use super::*;
 
     struct RecordingConnection {
-        tx: mpsc::UnboundedSender<Value>,
+        tx: mpsc::UnboundedSender<StreamWrapperMessage>,
     }
 
     #[async_trait]
     impl StreamConnection for RecordingConnection {
         async fn cleanup(&self) {}
+
+        async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
+            let _ = self.tx.send(msg.clone());
+            Ok(())
+        }
     }
 
     #[async_trait]
     impl Subscriber for RecordingConnection {
-        async fn handle_message(&self, message: &Value) -> anyhow::Result<()> {
-            let _ = self.tx.send(message.clone());
+        async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+            let msg = match serde_json::from_value::<StreamWrapperMessage>((*message).clone()) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to deserialize stream message");
+                    return Err(anyhow::anyhow!("Failed to deserialize stream message"));
+                }
+            };
+            let _ = self.tx.send(msg);
             Ok(())
         }
     }
@@ -295,13 +307,6 @@ mod tests {
             .expect("Timed out waiting for create event")
             .expect("Should receive create event");
 
-        let msg = match serde_json::from_value::<StreamWrapperMessage>(msg) {
-            Ok(msg) => msg,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to deserialize stream message");
-                return;
-            }
-        };
         assert!(matches!(msg.event, StreamOutboundMessage::Create { .. }));
 
         // Update item
@@ -312,13 +317,6 @@ mod tests {
             .await
             .expect("Timed out waiting for update event")
             .expect("Should receive update event");
-        let msg = match serde_json::from_value::<StreamWrapperMessage>(msg) {
-            Ok(msg) => msg,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to deserialize stream message");
-                return;
-            }
-        };
         assert!(matches!(msg.event, StreamOutboundMessage::Update { .. }));
 
         let saved_data = builtin_adapter

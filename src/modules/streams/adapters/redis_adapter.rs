@@ -365,7 +365,8 @@ impl StreamAdapter for RedisAdapter {
             };
 
             let connections = self.connections.read().await;
-            let msg: Value = match serde_json::from_str(&payload) {
+            // Deserialize once, reuse for all connections (optimization)
+            let msg: StreamWrapperMessage = match serde_json::from_str(&payload) {
                 Ok(msg) => msg,
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to parse message as JSON");
@@ -374,7 +375,7 @@ impl StreamAdapter for RedisAdapter {
             };
 
             for connection in connections.values() {
-                match connection.handle_message(&msg).await {
+                match connection.handle_stream_message(&msg).await {
                     Ok(_) => {}
                     Err(e) => {
                         tracing::error!(error = ?e, "Failed to handle stream message");

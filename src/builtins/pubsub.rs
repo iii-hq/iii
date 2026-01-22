@@ -5,7 +5,7 @@ use tokio::sync::{RwLock, broadcast};
 
 #[async_trait::async_trait]
 pub trait Subscriber: Send + Sync {
-    async fn handle_message(&self, message: &Value) -> anyhow::Result<()>;
+    async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()>;
 }
 
 type Subscribers = Vec<Arc<dyn Subscriber>>;
@@ -56,11 +56,12 @@ impl BuiltInPubSubAdapter {
         loop {
             match rx.recv().await {
                 Ok(msg) => {
+                    let msg = Arc::new(msg);
                     tracing::debug!("Received message event: {:?}", msg);
                     let subscribers = self.subscribers.read().await;
                     for connections in subscribers.values() {
                         for connection in connections.iter() {
-                            if let Err(e) = connection.handle_message(&msg).await {
+                            if let Err(e) = connection.handle_message(msg.clone()).await {
                                 tracing::error!(error = %e, "Failed to handle message");
                             }
                         }
@@ -90,7 +91,7 @@ mod test {
         pub Subscriber {}
         #[async_trait]
         impl Subscriber for Subscriber {
-            async fn handle_message(&self, msg: &Value) -> anyhow::Result<()>;
+            async fn handle_message(&self, msg: Arc<Value>) -> anyhow::Result<()>;
         }
     }
 

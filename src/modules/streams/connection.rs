@@ -259,6 +259,30 @@ impl SocketStreamConnection {
             }
         }
     }
+}
+
+#[async_trait]
+impl StreamConnection for SocketStreamConnection {
+    async fn cleanup(&self) {
+        let subscriptions = self.subscriptions.read().await;
+
+        for subscription in subscriptions.iter() {
+            let subscription = subscription.value();
+
+            tracing::debug!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
+
+            let _ = self
+                .handle_join_leave(&StreamIncomingMessage::Leave {
+                    data: StreamIncomingMessageData {
+                        subscription_id: subscription.subscription_id.clone(),
+                        stream_name: subscription.stream_name.clone(),
+                        group_id: subscription.group_id.clone(),
+                        id: subscription.id.clone(),
+                    },
+                })
+                .await;
+        }
+    }
 
     async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
         let subscriptions = self.subscriptions.read().await;
@@ -285,33 +309,9 @@ impl SocketStreamConnection {
 }
 
 #[async_trait]
-impl StreamConnection for SocketStreamConnection {
-    async fn cleanup(&self) {
-        let subscriptions = self.subscriptions.read().await;
-
-        for subscription in subscriptions.iter() {
-            let subscription = subscription.value();
-
-            tracing::debug!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
-
-            let _ = self
-                .handle_join_leave(&StreamIncomingMessage::Leave {
-                    data: StreamIncomingMessageData {
-                        subscription_id: subscription.subscription_id.clone(),
-                        stream_name: subscription.stream_name.clone(),
-                        group_id: subscription.group_id.clone(),
-                        id: subscription.id.clone(),
-                    },
-                })
-                .await;
-        }
-    }
-}
-
-#[async_trait]
 impl Subscriber for SocketStreamConnection {
-    async fn handle_message(&self, message: &Value) -> anyhow::Result<()> {
-        let message = match serde_json::from_value::<StreamWrapperMessage>(message.clone()) {
+    async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+        let message = match serde_json::from_value::<StreamWrapperMessage>((*message).clone()) {
             Ok(msg) => msg,
             Err(e) => {
                 tracing::error!(error = ?e, "Failed to deserialize stream message");
