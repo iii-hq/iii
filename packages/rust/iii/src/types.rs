@@ -13,10 +13,6 @@ use crate::{
 pub type RemoteFunctionHandler =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, BridgeError>> + Send + Sync>;
 
-// ============================================================================
-// Stream Update Types
-// ============================================================================
-
 /// Represents a path to a field in a JSON object
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldPath(pub String);

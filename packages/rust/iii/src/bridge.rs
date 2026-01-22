@@ -77,11 +77,7 @@ pub struct WorkerMetadata {
     pub os: String,
 }
 
-// =============================================================================
-// Worker Metrics - Tiered based on EKS/SRE feedback
-// =============================================================================
-
-/// Tier 1: Essential process-level metrics (Must Have)
+/// Process-level metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProcessMetrics {
     /// Current CPU usage percentage (0-100)
@@ -94,7 +90,7 @@ pub struct ProcessMetrics {
     pub process_uptime_secs: Option<u64>,
 }
 
-/// Tier 2: Important process-level metrics (Should Have)
+/// Performance metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PerformanceMetrics {
     /// Number of active threads
@@ -107,7 +103,7 @@ pub struct PerformanceMetrics {
     pub avg_latency_ms: Option<f64>,
 }
 
-/// Tier 3: Nice to have process-level metrics
+/// Extended metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExtendedMetrics {
     /// Disk read bytes
@@ -141,7 +137,7 @@ pub struct KubernetesIdentifiers {
     pub pod_uid: Option<String>,
 }
 
-/// Tier 1: Essential Kubernetes metrics (Must Have for EKS/K8s)
+/// Kubernetes core metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KubernetesCoreMetrics {
     /// CPU usage in cores (or millicores)
@@ -160,7 +156,7 @@ pub struct KubernetesCoreMetrics {
     pub uptime_seconds: Option<u64>,
 }
 
-/// Tier 2: Important Kubernetes metrics (Should Have for EKS/K8s)
+/// Kubernetes resource metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KubernetesResourceMetrics {
     /// CPU requests in cores
@@ -177,7 +173,7 @@ pub struct KubernetesResourceMetrics {
     pub pod_pending_seconds: Option<f64>,
 }
 
-/// Tier 3: Nice to have Kubernetes metrics
+/// Kubernetes extended metrics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KubernetesExtendedMetrics {
     /// Network received bytes (pod/container)
@@ -200,26 +196,18 @@ pub struct WorkerMetrics {
     /// Timestamp when metrics were collected (Unix epoch ms)
     pub collected_at_ms: u64,
 
-    /// Tier 1: Essential process metrics
     #[serde(default)]
     pub process: ProcessMetrics,
-    /// Tier 2: Performance metrics
     #[serde(default)]
     pub performance: PerformanceMetrics,
-    /// Tier 3: Extended metrics
     #[serde(default)]
     pub extended: ExtendedMetrics,
-
-    /// Kubernetes identifiers for correlation
     #[serde(default)]
     pub k8s_identifiers: Option<KubernetesIdentifiers>,
-    /// Tier 1: Essential K8s metrics
     #[serde(default)]
     pub k8s_core: Option<KubernetesCoreMetrics>,
-    /// Tier 2: K8s resource metrics
     #[serde(default)]
     pub k8s_resources: Option<KubernetesResourceMetrics>,
-    /// Tier 3: Extended K8s metrics
     #[serde(default)]
     pub k8s_extended: Option<KubernetesExtendedMetrics>,
 }

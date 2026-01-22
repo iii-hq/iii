@@ -158,11 +158,7 @@ export type WorkerInfo = {
   active_invocations: number
 }
 
-// =============================================================================
-// Worker Metrics - Tiered based on EKS/SRE feedback
-// =============================================================================
-
-/** Tier 1: Essential process-level metrics (Must Have) */
+/** Process-level metrics */
 export type ProcessMetrics = {
   /** Current CPU usage percentage (0-100) */
   cpu_percent?: number
@@ -174,7 +170,7 @@ export type ProcessMetrics = {
   process_uptime_secs?: number
 }
 
-/** Tier 2: Important process-level metrics (Should Have) */
+/** Performance metrics */
 export type PerformanceMetrics = {
   /** Number of active threads */
   thread_count?: number
@@ -186,7 +182,7 @@ export type PerformanceMetrics = {
   avg_latency_ms?: number
 }
 
-/** Tier 3: Nice to have process-level metrics */
+/** Extended metrics */
 export type ExtendedMetrics = {
   /** Disk read bytes */
   disk_read_bytes?: number
@@ -218,7 +214,7 @@ export type KubernetesIdentifiers = {
   pod_uid?: string
 }
 
-/** Tier 1: Essential Kubernetes metrics (Must Have for EKS/K8s) */
+/** Kubernetes core metrics */
 export type KubernetesCoreMetrics = {
   /** CPU usage in cores (or millicores) */
   cpu_usage_cores?: number
@@ -236,7 +232,7 @@ export type KubernetesCoreMetrics = {
   uptime_seconds?: number
 }
 
-/** Tier 2: Important Kubernetes metrics (Should Have for EKS/K8s) */
+/** Kubernetes resource metrics */
 export type KubernetesResourceMetrics = {
   /** CPU requests in cores */
   cpu_requests_cores?: number
@@ -252,7 +248,7 @@ export type KubernetesResourceMetrics = {
   pod_pending_seconds?: number
 }
 
-/** Tier 3: Nice to have Kubernetes metrics */
+/** Kubernetes extended metrics */
 export type KubernetesExtendedMetrics = {
   /** Network received bytes (pod/container) */
   network_rx_bytes_total?: number
@@ -273,22 +269,12 @@ export type WorkerMetrics = {
   /** Timestamp when metrics were collected (Unix epoch ms) */
   collected_at_ms: number
 
-  // Process-level metrics (all runtimes)
-  /** Tier 1: Essential process metrics */
   process?: ProcessMetrics
-  /** Tier 2: Performance metrics */
   performance?: PerformanceMetrics
-  /** Tier 3: Extended metrics */
   extended?: ExtendedMetrics
-
-  // Kubernetes-specific (when running on K8s/EKS)
-  /** Kubernetes identifiers for correlation */
   k8s_identifiers?: KubernetesIdentifiers
-  /** Tier 1: Essential K8s metrics */
   k8s_core?: KubernetesCoreMetrics
-  /** Tier 2: K8s resource metrics */
   k8s_resources?: KubernetesResourceMetrics
-  /** Tier 3: Extended K8s metrics */
   k8s_extended?: KubernetesExtendedMetrics
 }
 
