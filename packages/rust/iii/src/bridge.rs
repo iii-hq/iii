@@ -526,7 +526,9 @@ impl Bridge {
                         // Extract functions from trigger payload
                         let functions = input
                             .get("functions")
-                            .and_then(|v| serde_json::from_value::<Vec<FunctionInfo>>(v.clone()).ok())
+                            .and_then(|v| {
+                                serde_json::from_value::<Vec<FunctionInfo>>(v.clone()).ok()
+                            })
                             .unwrap_or_default();
 
                         let callbacks = bridge.inner.functions_available_callbacks.lock().unwrap();
