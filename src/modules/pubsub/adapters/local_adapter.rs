@@ -22,18 +22,16 @@ pub struct LocalAdapter {
 }
 
 impl LocalAdapter {
-    pub async fn new(engine: Arc<Engine>) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new(engine: Arc<Engine>) -> Self {
+        Self {
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             engine,
-        })
+        }
     }
 }
 
 fn make_adapter(engine: Arc<Engine>, _config: Option<Value>) -> PubSubAdapterFuture {
-    Box::pin(
-        async move { Ok(Arc::new(LocalAdapter::new(engine).await?) as Arc<dyn PubSubAdapter>) },
-    )
+    Box::pin(async move { Ok(Arc::new(LocalAdapter::new(engine)) as Arc<dyn PubSubAdapter>) })
 }
 
 crate::register_adapter!(<PubSubAdapterRegistration> "modules::pubsub::LocalAdapter", make_adapter);
@@ -42,13 +40,12 @@ crate::register_adapter!(<PubSubAdapterRegistration> "modules::pubsub::LocalAdap
 impl PubSubAdapter for LocalAdapter {
     async fn publish(&self, topic: &str, event_data: Value) {
         let topic = topic.to_string();
-        let event_data = event_data.clone();
         let subscriptions = Arc::clone(&self.subscriptions);
         let subs = subscriptions.read().await;
 
         if let Some(sub_info) = subs.get(&topic) {
             for (_id, function_path) in sub_info.iter() {
-                tracing::debug!(function_path = %function_path, topic = %topic, "Event: Invoking function");
+                tracing::debug!(function_path = %function_path, topic = %topic, "PubSub: Invoking function");
                 let function_path = function_path.clone();
                 let event_data = event_data.clone();
                 let engine = Arc::clone(&self.engine);
@@ -58,7 +55,7 @@ impl PubSubAdapter for LocalAdapter {
                 });
             }
         } else {
-            tracing::debug!(topic = %topic, "Event: No subscriptions found");
+            tracing::debug!(topic = %topic, "PubSub: No subscriptions found");
         }
     }
 
@@ -80,7 +77,7 @@ impl PubSubAdapter for LocalAdapter {
         let id = id.to_string();
         let mut subs = self.subscriptions.write().await;
 
-        if let Some(mut sub_info) = subs.remove(&topic) {
+        if let Some(sub_info) = subs.get_mut(&topic) {
             sub_info.remove(&id);
 
             if sub_info.is_empty() {

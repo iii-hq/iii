@@ -6,18 +6,15 @@ use std::{
     sync::Arc,
 };
 
+mod pub_sub;
+pub use pub_sub::BuiltInPubSubAdapter;
+
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::RwLock;
 
-use crate::modules::{
-    kv_server::structs::{UpdateOp, UpdateResult},
-    streams::{StreamWrapperMessage, adapters::StreamConnection},
-};
-
-type Subscribers = Vec<Arc<dyn StreamConnection>>;
-type TopicName = String;
+use crate::modules::kv_server::structs::{UpdateOp, UpdateResult};
 
 const SCALAR_SENTINEL_KEY: &str = "__kv_store_scalar__";
 const KEY_FILE_EXTENSION: &str = "bin";
@@ -463,87 +460,9 @@ impl BuiltinKvStore {
     }
 }
 
-pub struct BuiltInPubSubAdapter {
-    subscribers: RwLock<HashMap<TopicName, Subscribers>>,
-    events_tx: tokio::sync::broadcast::Sender<StreamWrapperMessage>,
-}
-impl BuiltInPubSubAdapter {
-    pub fn new(config: Option<Value>) -> Self {
-        let channel_size = config
-            .clone()
-            .and_then(|cfg| cfg.get("channel_size").and_then(|v| v.as_u64()))
-            .unwrap_or(256) as usize;
-
-        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(channel_size);
-        Self {
-            subscribers: RwLock::new(HashMap::new()),
-            events_tx,
-        }
-    }
-    pub async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
-        let mut subscribers = self.subscribers.write().await;
-        let entry = subscribers.entry(id).or_insert_with(Vec::new);
-        entry.push(connection.clone());
-    }
-    pub async fn unsubscribe(&self, id: String) {
-        let mut subscribers = self.subscribers.write().await;
-        subscribers.remove(&id);
-    }
-
-    pub fn send_msg(&self, message: StreamWrapperMessage) {
-        let _ = self.events_tx.send(message);
-    }
-
-    pub async fn watch_events(&self) {
-        let mut rx = self.events_tx.subscribe();
-
-        loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    tracing::debug!("Received stream event: {:?}", msg);
-                    let group_id = msg.group_id.clone();
-                    let stream_name = msg.stream_name.clone();
-                    let subscribers = self.subscribers.read().await;
-                    for connections in subscribers.values() {
-                        for connection in connections.iter() {
-                            tracing::debug!(stream_name = %stream_name, group_id = %group_id, "Handling stream message for subscriber");
-                            if let Err(e) = connection.handle_stream_message(&msg).await {
-                                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to handle stream message");
-                            }
-                        }
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    tracing::warn!("Lagged in receiving stream events");
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    tracing::error!("Stream events channel closed");
-                    break;
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use async_trait::async_trait;
-    use mockall::mock;
-
     use super::*;
-    use crate::modules::streams::{
-        StreamOutboundMessage, adapters::StreamConnection as StreamConnectionTrait,
-    };
-
-    mock! {
-        pub StreamConnection {}
-        #[async_trait]
-        impl StreamConnectionTrait for StreamConnection {
-            async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
-            async fn cleanup(&self);
-        }
-    }
 
     fn temp_store_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("kv_store_{}", uuid::Uuid::new_v4()));
@@ -588,28 +507,6 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_builtin_unsubscribe() {
-        let adapter = BuiltInPubSubAdapter::new(None);
-        let connection: Arc<dyn StreamConnection> = Arc::new(MockStreamConnection::new());
-        let topic_id = "test_topic".to_string();
-
-        adapter
-            .subscribe(topic_id.clone(), connection.clone())
-            .await;
-        {
-            let subscribers = adapter.subscribers.read().await;
-            assert!(subscribers.contains_key(&topic_id));
-            assert_eq!(subscribers.get(&topic_id).unwrap().len(), 1);
-        }
-
-        adapter.unsubscribe(topic_id.clone()).await;
-        {
-            let subscribers = adapter.subscribers.read().await;
-            assert!(!subscribers.contains_key(&topic_id));
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_invalid_store_method() {
         // when this happens it should default to in_memory
         let config = serde_json::json!({
@@ -630,37 +527,6 @@ mod test {
         let kv_store = BuiltinKvStore::new(Some(config));
         assert!(kv_store.store.read().await.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_builtin_pub_sub() {
-        let adapter = BuiltInPubSubAdapter::new(None);
-
-        let stream_name = "test_stream".to_string();
-        let group_id = "test_group".to_string();
-
-        let event = StreamOutboundMessage::Create {
-            data: serde_json::json!({"key": "value"}),
-        };
-        let message = StreamWrapperMessage {
-            stream_name: stream_name.clone(),
-            group_id: group_id.clone(),
-            id: Some("item1".to_string()),
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            event: event.clone(),
-        };
-
-        let mut rx = adapter.events_tx.subscribe();
-        adapter.send_msg(message.clone());
-
-        let received = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-            .await
-            .expect("Timed out waiting for message")
-            .expect("Should receive message");
-
-        assert_eq!(received.stream_name, stream_name);
-        assert_eq!(received.group_id, group_id);
-        assert_eq!(received.id, Some("item1".to_string()));
-        assert_eq!(received.event, event);
     }
 
     #[tokio::test(flavor = "multi_thread")]

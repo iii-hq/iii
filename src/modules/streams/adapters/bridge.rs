@@ -39,12 +39,11 @@ pub const STREAMS_EVENTS_TOPIC: &str = "streams.events";
 
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubAdapter>,
-    handler_function_path: String,
     bridge: Arc<Bridge>,
 }
 
 impl BridgeAdapter {
-    pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
+    pub async fn new(engine: Arc<Engine>, bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
         let bridge = Arc::new(Bridge::new(&bridge_url));
@@ -55,11 +54,31 @@ impl BridgeAdapter {
             panic!("Failed to connect to bridge: {}", error);
         }
 
-        Ok(Self {
-            bridge,
-            pub_sub: Arc::new(BuiltInPubSubAdapter::new(None)),
-            handler_function_path,
-        })
+        let pub_sub = Arc::new(BuiltInPubSubAdapter::new(engine));
+
+        // Register handler for remote pubsub events
+        let pub_sub_for_handler = Arc::clone(&pub_sub);
+        bridge.register_function(handler_function_path.clone(), move |data| {
+            let pub_sub = Arc::clone(&pub_sub_for_handler);
+
+            async move {
+                let data = serde_json::from_value::<StreamWrapperMessage>(data).unwrap();
+                tracing::debug!(data = ?data.clone(), "Event: Received event from bridge");
+                pub_sub.send_msg(data).await;
+                Ok(Value::Null)
+            }
+        });
+
+        // Subscribe to remote stream events topic
+        let _ = bridge.register_trigger(
+            "subscribe",
+            handler_function_path.clone(),
+            SubscribeTrigger {
+                topic: STREAMS_EVENTS_TOPIC.to_string(),
+            },
+        );
+
+        Ok(Self { bridge, pub_sub })
     }
 
     fn gen_key(&self, stream_name: &str, group_id: &str) -> String {
@@ -248,44 +267,19 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
-        self.pub_sub.subscribe(id, connection).await;
+        self.pub_sub.subscribe_connection(id, connection).await;
     }
+
     async fn unsubscribe(&self, id: String) {
-        self.pub_sub.unsubscribe(id).await;
+        self.pub_sub.unsubscribe_connection(id).await;
     }
 
     async fn watch_events(&self) {
-        let handler_function_path = self.handler_function_path.clone();
-        let pub_sub = self.pub_sub.clone();
-        let _ = self
-            .bridge
-            .register_function(handler_function_path.clone(), move |data| {
-                let pub_sub = pub_sub.clone();
-
-                async move {
-                    let data = serde_json::from_value::<StreamWrapperMessage>(data).unwrap();
-
-                    tracing::debug!(data = ?data.clone(), "Event: Received event");
-
-                    let _ = pub_sub.send_msg(data);
-
-                    Ok(Value::Null)
-                }
-            });
-
-        let _ = self.bridge.register_trigger(
-            "subscribe",
-            handler_function_path,
-            SubscribeTrigger {
-                topic: STREAMS_EVENTS_TOPIC.to_string(),
-            },
-        );
-
-        self.pub_sub.watch_events().await;
+        // No-op: events are delivered via bridge subscription registered in constructor
     }
 }
 
-fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
+fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
     Box::pin(async move {
         let bridge_url = config
             .as_ref()
@@ -293,7 +287,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
             .and_then(|v| v.as_str())
             .unwrap_or("ws://localhost:49134")
             .to_string();
-        Ok(Arc::new(BridgeAdapter::new(bridge_url).await?) as Arc<dyn StreamAdapter>)
+        Ok(Arc::new(BridgeAdapter::new(engine, bridge_url).await?) as Arc<dyn StreamAdapter>)
     })
 }
 

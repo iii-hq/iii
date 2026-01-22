@@ -33,9 +33,9 @@ pub struct BuiltinKvStoreAdapter {
 }
 
 impl BuiltinKvStoreAdapter {
-    pub fn new(config: Option<Value>) -> Self {
-        let storage = BuiltinKvStore::new(config.clone());
-        let pub_sub = BuiltInPubSubAdapter::new(config);
+    pub fn new(engine: Arc<Engine>, config: Option<Value>) -> Self {
+        let storage = BuiltinKvStore::new(config);
+        let pub_sub = BuiltInPubSubAdapter::new(engine);
         Self { storage, pub_sub }
     }
 
@@ -61,7 +61,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn emit_event(&self, message: StreamWrapperMessage) {
-        self.pub_sub.send_msg(message);
+        self.pub_sub.send_msg(message).await;
     }
 
     async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
@@ -164,21 +164,22 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
-        self.pub_sub.subscribe(id, connection).await;
+        self.pub_sub.subscribe_connection(id, connection).await;
     }
+
     async fn unsubscribe(&self, id: String) {
-        self.pub_sub.unsubscribe(id).await;
+        self.pub_sub.unsubscribe_connection(id).await;
     }
 
     async fn watch_events(&self) {
-        self.pub_sub.watch_events().await;
+        // No-op: events are delivered synchronously via send_msg
     }
 }
 
-fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
-    Box::pin(
-        async move { Ok(Arc::new(BuiltinKvStoreAdapter::new(config)) as Arc<dyn StreamAdapter>) },
-    )
+fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
+    Box::pin(async move {
+        Ok(Arc::new(BuiltinKvStoreAdapter::new(engine, config)) as Arc<dyn StreamAdapter>)
+    })
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::KvStore", make_adapter);
@@ -206,7 +207,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kv_store_adapter_set_get_delete() {
-        let builtin_adapter = BuiltinKvStoreAdapter::new(None);
+        let engine = Arc::new(Engine::new());
+        let builtin_adapter = BuiltinKvStoreAdapter::new(engine, None);
 
         let stream_name = "test_stream";
         let group_id = "test_group";
@@ -238,7 +240,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kv_store_adapter_get_group() {
-        let builtin_adapter = BuiltinKvStoreAdapter::new(None);
+        let engine = Arc::new(Engine::new());
+        let builtin_adapter = BuiltinKvStoreAdapter::new(engine, None);
         let stream_name = "test_stream";
         let group_id = "test_group";
         let item1_id = "item1";
@@ -261,7 +264,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_kv_store_adapter_update_item() {
-        let builtin_adapter = Arc::new(BuiltinKvStoreAdapter::new(None));
+        let engine = Arc::new(Engine::new());
+        let builtin_adapter = BuiltinKvStoreAdapter::new(engine, None);
         let stream_name = "test_stream";
         let group_id = "test_group";
         let item_id = "item1";
@@ -275,17 +279,12 @@ mod tests {
                 Arc::new(RecordingConnection { tx }),
             )
             .await;
-        let watcher_adapter = Arc::clone(&builtin_adapter);
-        let watcher = tokio::spawn(async move {
-            watcher_adapter.watch_events().await;
-        });
-        tokio::task::yield_now().await;
 
-        // Set initial item
+        // Set initial item - message is delivered synchronously now
         builtin_adapter
             .set(stream_name, group_id, item_id, data1.clone())
             .await;
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
             .await
             .expect("Timed out waiting for create event")
             .expect("Should receive create event");
@@ -295,7 +294,7 @@ mod tests {
         builtin_adapter
             .set(stream_name, group_id, item_id, data2.clone())
             .await;
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
             .await
             .expect("Timed out waiting for update event")
             .expect("Should receive update event");
@@ -306,7 +305,5 @@ mod tests {
             .await
             .expect("Data should exist");
         assert_eq!(saved_data, data2);
-
-        watcher.abort();
     }
 }
