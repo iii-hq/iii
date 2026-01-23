@@ -356,8 +356,4 @@ impl WorkerModule {
     }
 }
 
-crate::register_module!(
-    "modules::worker::WorkerModule",
-    WorkerModule,
-    enabled_by_default = true
-);
+crate::register_module!("modules::worker::WorkerModule", WorkerModule, mandatory);
