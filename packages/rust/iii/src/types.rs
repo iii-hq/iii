@@ -122,6 +122,14 @@ pub struct UpdateResult {
     pub new_value: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetResult {
+    /// The value before the update (None if key didn't exist)
+    pub old_value: Option<Value>,
+    /// The value after the update
+    pub new_value: Value,
+}
+
 /// Input for the stream update function
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {

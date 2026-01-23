@@ -1,23 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::{
-        kv::{BuiltinKvStore, SetResult},
-        pubsub::BuiltInPubSubAdapter,
-    },
+    builtins::{kv::BuiltinKvStore, pubsub::BuiltInPubSubAdapter},
     engine::Engine,
-    modules::{
-        kv_server::structs::{UpdateOp, UpdateResult},
-        streams::{
-            StreamOutboundMessage, StreamWrapperMessage,
-            adapters::{StreamAdapter, StreamConnection},
-            registry::{StreamAdapterFuture, StreamAdapterRegistration},
-        },
+    modules::streams::{
+        StreamOutboundMessage, StreamWrapperMessage,
+        adapters::{StreamAdapter, StreamConnection},
+        registry::{StreamAdapterFuture, StreamAdapterRegistration},
     },
 };
 
@@ -59,22 +54,14 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult {
-        match self
-            .storage
+    ) -> Option<UpdateResult> {
+        self.storage
             .update(
                 self.gen_key(stream_name, group_id),
                 item_id.to_string(),
                 ops,
             )
             .await
-        {
-            Some(result) => result,
-            None => UpdateResult {
-                old_value: None,
-                new_value: Value::Null,
-            },
-        }
     }
 
     async fn emit_event(&self, message: StreamWrapperMessage) {

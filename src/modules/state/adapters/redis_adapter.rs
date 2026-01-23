@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
 use serde_json::Value;
 use tokio::{sync::Mutex, time::timeout};
@@ -44,19 +45,36 @@ impl StateRedisAdapter {
 
 #[async_trait]
 impl StateAdapter for StateRedisAdapter {
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) {
+    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> SetResult {
+        let key = format!("state:{}:{}", group_id, item_id);
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
 
-        if let Err(e) = conn
-            .hset::<_, _, String, ()>(group_id, item_id, value)
-            .await
-        {
+        let old_value = redis::cmd("HSET")
+            .arg(&key)
+            .arg(&value)
+            .arg("GET")
+            .query_async::<Option<String>>(&mut *conn)
+            .await;
+
+        if let Err(e) = old_value {
             tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to set value in Redis");
-            return;
+
+            return SetResult {
+                old_value: None,
+                new_value: Value::Null,
+            };
         }
 
-        tracing::debug!(group_id = %group_id, item_id = %item_id, "Value set in Redis");
+        let old_value = old_value
+            .unwrap_or(None)
+            .map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
+        let new_value = data.clone();
+
+        SetResult {
+            old_value,
+            new_value,
+        }
     }
 
     async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
@@ -70,6 +88,143 @@ impl StateAdapter for StateRedisAdapter {
                 None
             }
         }
+    }
+
+    async fn update(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> Option<UpdateResult> {
+        // Use RedisJSON commands for atomic, server-side operations
+        // Each JSON.* command is atomic, and we use MULTI/EXEC to make all ops atomic together
+        let mut conn = self.publisher.lock().await;
+        let key = format!("state:{}:{}", group_id, item_id);
+
+        // Get old value first using JSON.GET
+        let old_value: Option<Value> = match redis::cmd("JSON.GET")
+            .arg(key.clone())
+            .arg("$")
+            .query_async::<Option<String>>(&mut *conn)
+            .await
+        {
+            Ok(Some(json_array)) => {
+                // JSON.GET with $ returns an array, parse and get first element
+                serde_json::from_str::<Vec<Value>>(&json_array)
+                    .ok()
+                    .and_then(|arr| arr.into_iter().next())
+            }
+            Ok(None) => None,
+            Err(e) => {
+                // Key doesn't exist or other error - try to initialize it
+                tracing::debug!(error = %e, key = %key.clone(), "JSON.GET failed, key may not exist");
+                None
+            }
+        };
+
+        // If key doesn't exist, initialize it with empty object
+        if old_value.is_none()
+            && let Err(e) = redis::cmd("JSON.SET")
+                .arg(key.clone())
+                .arg("$")
+                .arg("{}")
+                .query_async::<()>(&mut *conn)
+                .await
+        {
+            tracing::error!(error = %e, key = %key, "Failed to initialize JSON key");
+            return None;
+        }
+
+        // Build a pipeline with all RedisJSON operations
+        let mut pipe = redis::pipe();
+        pipe.atomic(); // Use MULTI/EXEC for atomicity
+
+        for op in &ops {
+            match op {
+                UpdateOp::Set { path, value } => {
+                    let json_path = if path.0.is_empty() {
+                        "$".to_string()
+                    } else {
+                        format!("$.{}", path.0)
+                    };
+                    let json_value =
+                        serde_json::to_string(value).expect("Failed to serialize value");
+                    pipe.cmd("JSON.SET")
+                        .arg(key.clone())
+                        .arg(&json_path)
+                        .arg(&json_value)
+                        .ignore();
+                }
+                UpdateOp::Merge { path: _, value } => {
+                    // For merge, set each field individually
+                    if let Value::Object(map) = value {
+                        for (field, val) in map {
+                            let json_path = format!("$.{}", field);
+                            let json_value =
+                                serde_json::to_string(&val).expect("Failed to serialize value");
+                            pipe.cmd("JSON.SET")
+                                .arg(key.clone())
+                                .arg(&json_path)
+                                .arg(&json_value)
+                                .ignore();
+                        }
+                    }
+                }
+                UpdateOp::Increment { path, by } => {
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.NUMINCRBY")
+                        .arg(key.clone())
+                        .arg(&json_path)
+                        .arg(*by)
+                        .ignore();
+                }
+                UpdateOp::Decrement { path, by } => {
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.NUMINCRBY")
+                        .arg(key.clone())
+                        .arg(&json_path)
+                        .arg(-*by)
+                        .ignore();
+                }
+                UpdateOp::Remove { path } => {
+                    let json_path = format!("$.{}", path.0);
+                    pipe.cmd("JSON.DEL")
+                        .arg(key.clone())
+                        .arg(&json_path)
+                        .ignore();
+                }
+            }
+        }
+
+        // Execute all operations atomically
+        if let Err(e) = pipe.query_async::<()>(&mut *conn).await {
+            tracing::error!(error = %e, key = %key, "Failed to execute RedisJSON operations");
+
+            return None;
+        }
+
+        // Get new value after operations
+        let new_value: Value = match redis::cmd("JSON.GET")
+            .arg(key.clone())
+            .arg("$")
+            .query_async::<Option<String>>(&mut *conn)
+            .await
+        {
+            Ok(Some(json_array)) => serde_json::from_str::<Vec<Value>>(&json_array)
+                .ok()
+                .and_then(|arr| arr.into_iter().next())
+                .unwrap_or(Value::Null),
+            Ok(None) => Value::Null,
+            Err(e) => {
+                tracing::error!(error = %e, key = %key, "Failed to get new value after update");
+                Value::Null
+            }
+        };
+
+        Some(UpdateResult {
+            old_value,
+            new_value,
+        })
     }
 
     async fn delete(&self, group_id: &str, item_id: &str) {
