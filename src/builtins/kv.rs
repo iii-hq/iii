@@ -13,33 +13,7 @@ use tokio::sync::RwLock;
 
 use crate::modules::kv_server::structs::{UpdateOp, UpdateResult};
 
-const SCALAR_SENTINEL_KEY: &str = "__kv_store_scalar__";
 const KEY_FILE_EXTENSION: &str = "bin";
-
-fn is_scalar_map(map: &HashMap<String, Value>) -> bool {
-    map.len() == 1 && map.contains_key(SCALAR_SENTINEL_KEY)
-}
-
-fn map_to_value(map: &HashMap<String, Value>) -> Value {
-    if let Some(value) = map.get(SCALAR_SENTINEL_KEY)
-        && is_scalar_map(map)
-    {
-        return value.clone();
-    }
-
-    Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-}
-
-fn value_to_map(value: Value) -> HashMap<String, Value> {
-    match value {
-        Value::Object(map) => map.into_iter().collect(),
-        other => {
-            let mut map = HashMap::new();
-            map.insert(SCALAR_SENTINEL_KEY.to_string(), other);
-            map
-        }
-    }
-}
 
 #[derive(Archive, RkyvSerialize, RkyvDeserialize)]
 struct KeyStorage(String);
@@ -50,9 +24,9 @@ enum DirtyOp {
     Delete,
 }
 
-fn encode_key(key: &str) -> String {
-    let mut out = String::with_capacity(key.len());
-    for byte in key.bytes() {
+fn encode_index(index: &str) -> String {
+    let mut out = String::with_capacity(index.len());
+    for byte in index.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => {
                 out.push(byte as char);
@@ -63,7 +37,7 @@ fn encode_key(key: &str) -> String {
     out
 }
 
-fn decode_key(encoded: &str) -> Option<String> {
+fn decode_index(encoded: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(encoded.len());
     let mut iter = encoded.as_bytes().iter().copied();
     while let Some(byte) = iter.next() {
@@ -80,14 +54,14 @@ fn decode_key(encoded: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn key_file_name(key: &str) -> String {
-    format!("{}.{}", encode_key(key), KEY_FILE_EXTENSION)
+fn index_file_name(index: &str) -> String {
+    format!("{}.{}", encode_index(index), KEY_FILE_EXTENSION)
 }
 
-fn key_from_path(path: &Path) -> Option<String> {
+fn index_from_path(path: &Path) -> Option<String> {
     let file_name = path.file_name()?.to_string_lossy();
     let file_name = file_name.strip_suffix(&format!(".{}", KEY_FILE_EXTENSION))?;
-    decode_key(file_name)
+    decode_index(file_name)
 }
 
 fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
@@ -108,43 +82,43 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
         if path.extension() != Some(OsStr::new(KEY_FILE_EXTENSION)) {
             continue;
         }
-        let key = match key_from_path(&path) {
-            Some(key) => key,
+        let index = match index_from_path(&path) {
+            Some(index) => index,
             None => {
-                tracing::warn!(path = %path.display(), "invalid key filename, skipping");
+                tracing::warn!(path = %path.display(), "invalid index filename, skipping");
                 continue;
             }
         };
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(err) => {
-                tracing::warn!(error = ?err, path = %path.display(), "failed to read key file");
+                tracing::warn!(error = ?err, path = %path.display(), "failed to read index file");
                 continue;
             }
         };
         let storage = match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
             Ok(storage) => storage,
             Err(err) => {
-                tracing::warn!(error = ?err, path = %path.display(), "failed to parse key file");
+                tracing::warn!(error = ?err, path = %path.display(), "failed to parse index file");
                 continue;
             }
         };
-        let value = match serde_json::from_str::<Value>(&storage.0) {
+        let value = match serde_json::from_str::<HashMap<String, Value>>(&storage.0) {
             Ok(value) => value,
             Err(err) => {
-                tracing::warn!(error = ?err, path = %path.display(), "failed to decode key value");
+                tracing::warn!(error = ?err, path = %path.display(), "failed to decode index value");
                 continue;
             }
         };
-        store.insert(key, value_to_map(value));
+        store.insert(index, value);
     }
 
     store
 }
 
-async fn persist_key_to_disk(
+async fn persist_index_to_disk(
     dir: &Path,
-    key: &str,
+    index: &str,
     value: &HashMap<String, Value>,
 ) -> anyhow::Result<()> {
     if let Err(err) = tokio::fs::create_dir_all(dir).await {
@@ -152,11 +126,10 @@ async fn persist_key_to_disk(
         return Err(err.into());
     }
 
-    let file_name = key_file_name(key);
+    let file_name = index_file_name(index);
     let path = dir.join(&file_name);
     let temp_path = dir.join(format!("{}.tmp", file_name));
-    let value = map_to_value(value);
-    let json = serde_json::to_string(&value)?;
+    let json = serde_json::to_string(value)?;
     let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json))?;
 
     tokio::fs::write(&temp_path, bytes).await?;
@@ -165,8 +138,8 @@ async fn persist_key_to_disk(
     Ok(())
 }
 
-async fn delete_key_from_disk(dir: &Path, key: &str) -> anyhow::Result<()> {
-    let path = dir.join(key_file_name(key));
+async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
+    let path = dir.join(index_file_name(index));
     match tokio::fs::remove_file(&path).await {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
@@ -272,26 +245,26 @@ impl BuiltinKvStore {
                 dirty.drain().collect::<Vec<_>>()
             };
 
-            for (key, op) in batch {
+            for (index, op) in batch {
                 match op {
                     DirtyOp::Upsert => {
                         let value = {
                             let store = store.read().await;
-                            store.get(&key).cloned()
+                            store.get(&index).cloned()
                         };
                         if let Some(value) = value
-                            && let Err(err) = persist_key_to_disk(&dir, &key, &value).await
+                            && let Err(err) = persist_index_to_disk(&dir, &index, &value).await
                         {
-                            tracing::error!(error = ?err, key = %key, "failed to persist key");
+                            tracing::error!(error = ?err, index = %index, "failed to persist index");
                             let mut dirty = dirty.write().await;
-                            dirty.insert(key, DirtyOp::Upsert);
+                            dirty.insert(index, DirtyOp::Upsert);
                         }
                     }
                     DirtyOp::Delete => {
-                        if let Err(err) = delete_key_from_disk(&dir, &key).await {
-                            tracing::error!(error = ?err, key = %key, "failed to delete key");
+                        if let Err(err) = delete_index_from_disk(&dir, &index).await {
+                            tracing::error!(error = ?err, index = %index, "failed to delete index");
                             let mut dirty = dirty.write().await;
-                            dirty.insert(key, DirtyOp::Delete);
+                            dirty.insert(index, DirtyOp::Delete);
                         }
                     }
                 }
@@ -299,53 +272,81 @@ impl BuiltinKvStore {
         }
     }
 
-    pub async fn set(&self, key: String, data: Value) -> SetResult {
+    pub async fn set(&self, index: String, key: String, data: Value) -> SetResult {
         let mut store = self.store.write().await;
-        let old_value = store.get(&key).map(map_to_value);
-        store.insert(key.clone(), value_to_map(data.clone()));
-        drop(store);
+        let index_map = store.get_mut(&index);
+
+        if let Some(index_map) = index_map {
+            let old_value = index_map.get(&key).cloned();
+            index_map.insert(key.clone(), data.clone());
+
+            if self.file_store_dir.is_some() {
+                let mut dirty = self.dirty.write().await;
+                dirty.insert(index.clone(), DirtyOp::Upsert);
+            }
+
+            return SetResult {
+                old_value,
+                new_value: data,
+            };
+        }
+
+        let mut index_map = HashMap::new();
+        index_map.insert(key, data.clone());
+        store.insert(index.clone(), index_map);
 
         if self.file_store_dir.is_some() {
             let mut dirty = self.dirty.write().await;
-            dirty.insert(key.clone(), DirtyOp::Upsert);
+            dirty.insert(index, DirtyOp::Upsert);
         }
 
-        SetResult {
-            old_value,
+        return SetResult {
+            old_value: None,
             new_value: data,
-        }
+        };
     }
 
-    pub async fn get(&self, key: String) -> Option<Value> {
+    pub async fn get(&self, index: String, key: String) -> Option<Value> {
         let store = self.store.read().await;
-        store.get(&key).map(map_to_value)
-    }
+        let index = store.get(&index);
 
-    pub async fn delete(&self, key: String) -> Option<Value> {
-        let mut store = self.store.write().await;
-        let result = store.remove(&key).map(|value| map_to_value(&value));
-        drop(store);
-        if result.is_some() && self.file_store_dir.is_some() {
-            let mut dirty = self.dirty.write().await;
-            dirty.insert(key.clone(), DirtyOp::Delete);
+        if let Some(index) = index {
+            return index.get(&key).cloned();
         }
-        result
+
+        None
     }
 
-    pub async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String> {
-        let store = self.store.read().await;
-        store
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .cloned()
-            .collect()
-    }
-
-    pub async fn update(&self, key: String, ops: Vec<UpdateOp>) -> Option<UpdateResult> {
+    pub async fn delete(&self, index: String, key: String) -> Option<Value> {
         let mut store = self.store.write().await;
-        if let Some(existing_value) = store.get_mut(&key) {
-            let old_value = map_to_value(existing_value);
-            let mut updated_value = map_to_value(existing_value);
+        let index_map = store.get_mut(&index);
+
+        if let Some(index_map) = index_map {
+            let removed = index_map.remove(&key);
+
+            if removed.is_some() && self.file_store_dir.is_some() {
+                let mut dirty = self.dirty.write().await;
+                dirty.insert(index, DirtyOp::Delete);
+            }
+
+            return if removed.is_some() { removed } else { None };
+        }
+
+        None
+    }
+
+    pub async fn update(
+        &self,
+        index: String,
+        key: String,
+        ops: Vec<UpdateOp>,
+    ) -> Option<UpdateResult> {
+        let mut store = self.store.write().await;
+        let index_map = store.get_mut(&index)?;
+
+        if let Some(existing_value) = index_map.get_mut(&key) {
+            let old_value = existing_value.clone();
+            let mut updated_value = existing_value.clone();
 
             for op in ops {
                 match op {
@@ -429,13 +430,15 @@ impl BuiltinKvStore {
                 }
             }
 
-            *existing_value = value_to_map(updated_value.clone());
-            drop(store);
+            // Write the updated value back to the store
+            *existing_value = updated_value.clone();
 
             if self.file_store_dir.is_some() {
                 let mut dirty = self.dirty.write().await;
-                dirty.insert(key.clone(), DirtyOp::Upsert);
+                dirty.insert(index.clone(), DirtyOp::Upsert);
             }
+
+            drop(store);
 
             Some(UpdateResult {
                 old_value: Some(old_value),
@@ -446,14 +449,20 @@ impl BuiltinKvStore {
         }
     }
 
-    pub async fn list(&self, key: String) -> Vec<Value> {
+    pub async fn list_keys_with_prefix(&self, prefix: String) -> Vec<String> {
         let store = self.store.read().await;
-        store.get(&key).map_or(vec![], |topic| {
-            if is_scalar_map(topic) {
-                return vec![];
-            }
-            topic.values().cloned().collect()
-        })
+        store
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
+    pub async fn list(&self, index: String) -> Vec<Value> {
+        let store = self.store.read().await;
+        store
+            .get(&index)
+            .map_or(vec![], |topic| topic.values().cloned().collect())
     }
 }
 
@@ -470,13 +479,15 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_file_based_load_set_delete() {
         let dir = temp_store_dir();
-        let key = "test::test_group::item1";
+        let index = "test";
+        let key = "test_group::item1";
         let data = serde_json::json!({"key": "value"});
-        let file_path = dir.join(key_file_name(key));
+        let index_data = HashMap::from([(key.to_string(), data.clone())]);
+        let file_path = dir.join(index_file_name(index));
 
-        let json = serde_json::to_string(&data).unwrap();
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json)).unwrap();
-        std::fs::write(&file_path, bytes).unwrap();
+        persist_index_to_disk(&dir, index, &index_data.clone())
+            .await
+            .unwrap();
 
         let config = serde_json::json!({
             "store_method": "file_based",
@@ -485,18 +496,21 @@ mod test {
         });
         let kv_store = BuiltinKvStore::new(Some(config));
 
-        let loaded = kv_store.get(key.to_string()).await;
+        let loaded = kv_store.get(index.to_string(), key.to_string()).await;
         assert_eq!(loaded, Some(data.clone()));
 
         let updated = serde_json::json!({"key": "updated"});
-        kv_store.set(key.to_string(), updated.clone()).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), updated.clone())
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let bytes = std::fs::read(&file_path).unwrap();
         let storage = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
-        let on_disk = serde_json::from_str::<Value>(&storage.0).unwrap();
-        assert_eq!(on_disk, updated);
+        let on_disk_index_map: HashMap<String, Value> = serde_json::from_str(&storage.0).unwrap();
+        let on_disk_value = on_disk_index_map.get(key).unwrap();
+        assert_eq!(on_disk_value, &updated);
 
-        kv_store.delete(key.to_string()).await;
+        kv_store.delete(index.to_string(), key.to_string()).await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(!file_path.exists());
 
@@ -530,23 +544,29 @@ mod test {
     async fn test_builtin_kv_store_set_get_delete() {
         let kv_store = BuiltinKvStore::new(None);
         let data = serde_json::json!({"key": "value"});
-        let key = "test_key".to_string();
+        let index = "test";
+        let key = "test_key";
         // Test set
-        kv_store.set(key.clone(), data.clone()).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), data.clone())
+            .await;
 
         // Test get
-        let retrieved = kv_store.get(key.clone()).await.expect("Item should exist");
+        let retrieved = kv_store
+            .get(index.to_string(), key.to_string())
+            .await
+            .expect("Item should exist");
         assert_eq!(retrieved, data);
 
         // Test delete
         let deleted = kv_store
-            .delete(key.clone())
+            .delete(index.to_string(), key.to_string())
             .await
             .expect("Item should exist for deletion");
         assert_eq!(deleted, data);
 
         // Ensure item is deleted
-        let should_be_none = kv_store.get(key).await;
+        let should_be_none = kv_store.get(index.to_string(), key.to_string()).await;
         assert!(should_be_none.is_none());
     }
 
@@ -555,16 +575,20 @@ mod test {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
 
         let kv_store = BuiltinKvStore::new(None);
-        let key = "test:update:basic".to_string();
+        let index = "test";
+        let key = "update:basic";
 
         // Set initial value
         let initial = serde_json::json!({"name": "A", "counter": 0});
-        kv_store.set(key.clone(), initial.clone()).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), initial.clone())
+            .await;
 
         // Test Set operation
         let result = kv_store
             .update(
-                key.clone(),
+                index.to_string(),
+                key.to_string(),
                 vec![UpdateOp::Set {
                     path: FieldPath("name".to_string()),
                     value: Value::String("B".to_string()),
@@ -580,7 +604,8 @@ mod test {
         // Test Increment operation
         let result = kv_store
             .update(
-                key.clone(),
+                index.to_string(),
+                key.to_string(),
                 vec![UpdateOp::Increment {
                     path: FieldPath("counter".to_string()),
                     by: 5,
@@ -594,7 +619,8 @@ mod test {
         // Test Decrement operation
         let result = kv_store
             .update(
-                key.clone(),
+                index.to_string(),
+                key.to_string(),
                 vec![UpdateOp::Decrement {
                     path: FieldPath("counter".to_string()),
                     by: 2,
@@ -608,7 +634,8 @@ mod test {
         // Test Remove operation
         let result = kv_store
             .update(
-                key.clone(),
+                index.to_string(),
+                key.to_string(),
                 vec![UpdateOp::Remove {
                     path: FieldPath("name".to_string()),
                 }],
@@ -622,7 +649,8 @@ mod test {
         // Test Merge operation
         let result = kv_store
             .update(
-                key.clone(),
+                index.to_string(),
+                key.to_string(),
                 vec![UpdateOp::Merge {
                     path: None,
                     value: serde_json::json!({"name": "C", "extra": "field"}),
@@ -641,16 +669,20 @@ mod test {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
 
         let kv_store = BuiltinKvStore::new(None);
-        let key = "test:update:multi_ops".to_string();
+        let index = "test";
+        let key = "update:multi_ops";
 
         // Set initial value
         let initial = serde_json::json!({"name": "A", "counter": 0});
-        kv_store.set(key.clone(), initial).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), initial.clone())
+            .await;
 
         // Apply multiple operations in a single update call
         let result = kv_store
             .update(
-                key.clone(),
+                index.to_string(),
+                key.to_string(),
                 vec![
                     UpdateOp::Set {
                         path: FieldPath("name".to_string()),
@@ -679,20 +711,23 @@ mod test {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
 
         let kv_store = Arc::new(BuiltinKvStore::new(None));
-        let key = "test:update:two_threads".to_string();
+        let index = "test";
+        let key = "update:two_threads";
 
         let initial = serde_json::json!({"name": "A", "counter": 0});
-        kv_store.set(key.clone(), initial).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), initial.clone())
+            .await;
 
         let names: Vec<String> = ('A'..='Z').map(|c| c.to_string()).collect();
 
         let kv_counter = Arc::clone(&kv_store);
-        let key_counter = key.clone();
         let counter_handle = tokio::spawn(async move {
             let mut tasks = vec![];
             for _ in 0..500 {
                 let task = kv_counter.update(
-                    key_counter.clone(),
+                    index.to_string(),
+                    key.to_string(),
                     vec![UpdateOp::Increment {
                         path: FieldPath("counter".to_string()),
                         by: 2,
@@ -704,12 +739,12 @@ mod test {
         });
 
         let kv_name = Arc::clone(&kv_store);
-        let key_name = key.clone();
         let name_handle = tokio::spawn(async move {
             for name in names {
                 kv_name
                     .update(
-                        key_name.clone(),
+                        index.to_string(),
+                        key.to_string(),
                         vec![UpdateOp::Set {
                             path: FieldPath("name".to_string()),
                             value: Value::String(name),
@@ -724,7 +759,10 @@ mod test {
         counter_result.expect("Counter spawn failed");
         name_result.expect("Name spawn failed");
 
-        let final_value = kv_store.get(key).await.expect("Value should exist");
+        let final_value = kv_store
+            .get(index.to_string(), key.to_string())
+            .await
+            .expect("Value should exist");
 
         assert_eq!(
             final_value["counter"], 1000,
@@ -735,16 +773,32 @@ mod test {
         assert_eq!("Z", name);
     }
 
+    #[tokio::test()]
+    async fn test_get_set() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let index = "test";
+        let key = "test_key";
+        let data = serde_json::json!({"key": "value"});
+        kv_store
+            .set(index.to_string(), key.to_string(), data.clone())
+            .await;
+        let retrieved = kv_store.get(index.to_string(), key.to_string()).await;
+        assert_eq!(retrieved, Some(data));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_concurrent_500_calls() {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
 
         let kv_store = Arc::new(BuiltinKvStore::new(None));
-        let key = "test:update:concurrent_500".to_string();
+        let index = "test";
+        let key = "update:concurrent_500";
 
         // Set initial value
         let initial = serde_json::json!({"name": "A", "counter": 0});
-        kv_store.set(key.clone(), initial).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), initial.clone())
+            .await;
 
         let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
@@ -752,13 +806,13 @@ mod test {
         let mut tasks = vec![];
         for i in 0..500 {
             let kv_store = Arc::clone(&kv_store);
-            let key = key.clone();
             let name = names[i % 10].to_string();
 
             let task = tokio::spawn(async move {
                 kv_store
                     .update(
-                        key,
+                        index.to_string(),
+                        key.to_string(),
                         vec![
                             UpdateOp::Increment {
                                 path: FieldPath("counter".to_string()),
@@ -782,7 +836,10 @@ mod test {
         }
 
         // Verify final result
-        let final_value = kv_store.get(key).await.expect("Value should exist");
+        let final_value = kv_store
+            .get(index.to_string(), key.to_string())
+            .await
+            .expect("Value should exist");
 
         let counter = final_value["counter"].as_i64().unwrap_or(0);
 
@@ -812,11 +869,14 @@ mod test {
         use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
 
         let kv_store = Arc::new(BuiltinKvStore::new(None));
-        let key = "test:update:concurrent_join_all".to_string();
+        let index = "test";
+        let key = "update:concurrent_join_all";
 
         // Set initial value
         let initial = serde_json::json!({"name": "A", "counter": 0});
-        kv_store.set(key.clone(), initial).await;
+        kv_store
+            .set(index.to_string(), key.to_string(), initial.clone())
+            .await;
 
         let names = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
@@ -824,13 +884,13 @@ mod test {
         let mut futures = vec![];
         for i in 0..500 {
             let kv_store = Arc::clone(&kv_store);
-            let key = key.clone();
             let name = names[i % 10].to_string();
 
             let future = async move {
                 kv_store
                     .update(
-                        key,
+                        index.to_string(),
+                        key.to_string(),
                         vec![
                             UpdateOp::Increment {
                                 path: FieldPath("counter".to_string()),
@@ -852,7 +912,10 @@ mod test {
         futures::future::join_all(futures).await;
 
         // Verify final result
-        let final_value = kv_store.get(key).await.expect("Value should exist");
+        let final_value = kv_store
+            .get(index.to_string(), key.to_string())
+            .await
+            .expect("Value should exist");
 
         let counter = final_value["counter"].as_i64().unwrap_or(0);
 

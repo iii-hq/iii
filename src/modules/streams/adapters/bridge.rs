@@ -70,9 +70,17 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl StreamAdapter for BridgeAdapter {
-    async fn update(&self, key: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult {
+        let key = self.gen_key(group_id, item_id);
         let update_data = KvUpdateInput {
-            key: key.to_string(),
+            key: key.clone(),
+            index: stream_name.to_string(),
             ops,
         };
 
@@ -117,48 +125,72 @@ impl StreamAdapter for BridgeAdapter {
         let _ = self.bridge.invoke_function("publish", data).await;
     }
 
-    async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value) {
+    async fn set(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        data: Value,
+    ) -> SetResult {
         let set_data = KvSetInput {
-            key: format!("{}::{}::{}", stream_name, group_id, item_id),
+            index: stream_name.to_string(),
+            key: format!("{}::{}", group_id, item_id),
             value: data,
         };
         let set_result = self.bridge.invoke_function("kv_server.set", set_data).await;
 
-        match set_result {
-            Ok(set_result) => {
-                let set_result = serde_json::from_value::<Option<SetResult>>(set_result)
-                    .unwrap_or_else(|e| {
-                        tracing::error!(error = %e, "Failed to deserialize set result");
-                        None
-                    });
+        if let Err(e) = set_result {
+            tracing::error!(error = %e, "Failed to set value in kv_server");
 
-                if let Some(set_result) = set_result {
-                    let data = set_result.new_value;
-                    let event = if set_result.old_value.is_some() {
-                        StreamOutboundMessage::Update { data }
-                    } else {
-                        StreamOutboundMessage::Create { data }
-                    };
-                    let message = StreamWrapperMessage {
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                        stream_name: stream_name.to_string(),
-                        group_id: group_id.to_string(),
-                        id: Some(item_id.to_string()),
-                        event,
-                    };
-                    self.emit_event(message).await;
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to set value in kv_server");
-                return;
-            }
+            return SetResult {
+                old_value: None,
+                new_value: Value::Null,
+            };
         }
+
+        let set_result = match set_result {
+            Ok(set_result) => serde_json::from_value::<SetResult>(set_result).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to deserialize set result");
+                SetResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
+            }),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to deserialize set result");
+
+                return SetResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                };
+            }
+        };
+
+        let data = set_result.new_value.clone();
+        let event = if set_result.old_value.is_some() {
+            StreamOutboundMessage::Update { data }
+        } else {
+            StreamOutboundMessage::Create { data }
+        };
+        let message = StreamWrapperMessage {
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            stream_name: stream_name.to_string(),
+            group_id: group_id.to_string(),
+            id: Some(item_id.to_string()),
+            event,
+        };
+
+        self.emit_event(message).await;
+
+        set_result
     }
 
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
-        let key = format!("{}::{}::{}", stream_name, group_id, item_id);
-        let data = KvGetInput { key };
+        let key = format!("{}::{}", group_id, item_id);
+        let data = KvGetInput {
+            index: stream_name.to_string(),
+            key,
+        };
         let value = self.bridge.invoke_function("kv_server.get", data).await;
 
         match value {
@@ -174,8 +206,11 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
-        let key = format!("{}::{}::{}", stream_name, group_id, item_id);
-        let delete_data = KvDeleteInput { key };
+        let key = format!("{}::{}", group_id, item_id);
+        let delete_data = KvDeleteInput {
+            index: stream_name.to_string(),
+            key,
+        };
         let delete_result = self
             .bridge
             .invoke_function("kv_server.delete", delete_data)
@@ -210,7 +245,7 @@ impl StreamAdapter for BridgeAdapter {
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
         let data = KvListInput {
-            key: self.gen_key(stream_name, group_id),
+            index: self.gen_key(stream_name, group_id),
         };
 
         let value = self.bridge.invoke_function("kv_server.list", data).await;
