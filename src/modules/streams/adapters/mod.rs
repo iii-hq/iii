@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
-    builtins::pubsub::Subscriber,
+    builtins::{kv::SetResult, pubsub::Subscriber},
     modules::{
         kv_server::structs::{UpdateOp, UpdateResult},
         streams::StreamWrapperMessage,
@@ -17,7 +17,8 @@ use crate::{
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
-    async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value);
+    async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value)
+    -> SetResult;
 
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value>;
 
@@ -37,7 +38,13 @@ pub trait StreamAdapter: Send + Sync {
 
     async fn destroy(&self) -> anyhow::Result<()>;
 
-    async fn update(&self, stream_name: &str, ops: Vec<UpdateOp>) -> UpdateResult;
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult;
 }
 
 #[async_trait]

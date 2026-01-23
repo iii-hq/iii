@@ -34,50 +34,25 @@ impl StateAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn set(&self, group_id: &str, item_id: &str, data: Value) {
-        let key: String = group_id.into();
-
-        if let Some(value) = self.storage.get(key.clone()).await {
-            let mut topic: HashMap<String, Value> =
-                serde_json::from_value(value).unwrap_or_default();
-            topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
-        } else {
-            let mut topic = HashMap::new();
-            topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
-        }
+        self.storage
+            .set(group_id.to_string(), item_id.to_string(), data.clone())
+            .await;
     }
 
     async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
-        let value = self.storage.get(group_id.into()).await;
-        match value {
-            Some(v) => {
-                let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-                topic.get(item_id).cloned()
-            }
-            None => None,
-        }
+        self.storage
+            .get(group_id.to_string(), item_id.to_string())
+            .await
     }
 
     async fn delete(&self, group_id: &str, item_id: &str) {
-        let value = self.storage.get(group_id.into()).await;
-        if let Some(v) = value {
-            let mut topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-
-            if topic.remove(item_id).is_some() {
-                let data = serde_json::to_value(&topic).unwrap();
-                self.storage.set(group_id.into(), data).await;
-            }
-        }
+        self.storage
+            .delete(group_id.to_string(), item_id.to_string())
+            .await;
     }
 
     async fn list(&self, group_id: &str) -> Vec<Value> {
-        self.storage.get(group_id.into()).await.map_or(vec![], |v| {
-            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-            topic.values().cloned().collect()
-        })
+        self.storage.list(group_id.to_string()).await
     }
 }
 

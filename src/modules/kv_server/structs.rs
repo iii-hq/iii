@@ -3,17 +3,20 @@ use serde_json::Value;
 
 #[derive(Serialize, Deserialize)]
 pub struct KvSetInput {
+    pub index: String,
     pub key: String,
     pub value: Value,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct KvDeleteInput {
+    pub index: String,
     pub key: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct KvGetInput {
+    pub index: String,
     pub key: String,
 }
 
@@ -29,7 +32,7 @@ pub struct KvListKeysWithPrefixInput {
 
 #[derive(Serialize, Deserialize)]
 pub struct KvListInput {
-    pub key: String,
+    pub index: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +74,7 @@ pub enum UpdateOp {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KvUpdateInput {
+    pub index: String,
     pub key: String,
     pub ops: Vec<UpdateOp>,
 }
