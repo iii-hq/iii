@@ -366,7 +366,7 @@ impl EngineBuilder {
             .collect::<HashSet<String>>();
 
         for registration in inventory::iter::<ModuleRegistration> {
-            if registration.mandatory && !module_classes.contains(&registration.class.to_string()) {
+            if registration.mandatory && !module_classes.contains(registration.class) {
                 modules.push(ModuleEntry {
                     class: registration.class.to_string(),
                     config: None,
