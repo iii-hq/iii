@@ -112,15 +112,8 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
         let index = self.gen_key(stream_name, group_id);
-        let value = self.storage.get(index.clone(), item_id.to_string()).await;
 
-        match value {
-            Some(v) => {
-                let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-                topic.get(item_id).cloned()
-            }
-            None => None,
-        }
+        self.storage.get(index, item_id.to_string()).await
     }
 
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
@@ -174,3 +167,105 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::KvStore", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use tokio::sync::mpsc;
+
+    use crate::builtins::pubsub::Subscriber;
+
+    use super::*;
+
+    struct RecordingConnection {
+        tx: mpsc::UnboundedSender<StreamWrapperMessage>,
+    }
+
+    #[async_trait]
+    impl StreamConnection for RecordingConnection {
+        async fn cleanup(&self) {}
+
+        async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
+            let _ = self.tx.send(msg.clone());
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Subscriber for RecordingConnection {
+        async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+            let msg = match serde_json::from_value::<StreamWrapperMessage>((*message).clone()) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to deserialize stream message");
+                    return Err(anyhow::anyhow!("Failed to deserialize stream message"));
+                }
+            };
+            let _ = self.tx.send(msg);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_kv_store_adapter_update_item() {
+        let builtin_adapter = Arc::new(BuiltinKvStoreAdapter::new(None));
+        let stream_name = "test_stream";
+        let group_id = "test_group";
+        let item_id = "item1";
+        let data1 = serde_json::json!({"key": "value1"});
+        let data2 = serde_json::json!({"key": "value2"});
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        builtin_adapter
+            .subscribe(
+                "test-subscriber".to_string(),
+                Arc::new(RecordingConnection { tx }),
+            )
+            .await;
+        let watcher_adapter = Arc::clone(&builtin_adapter);
+        let watcher = tokio::spawn(async move {
+            watcher_adapter.watch_events().await;
+        });
+        tokio::task::yield_now().await;
+
+        // Set initial item
+        builtin_adapter
+            .set(stream_name, group_id, item_id, data1.clone())
+            .await;
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for create event")
+            .expect("Should receive create event");
+
+        assert!(matches!(msg.event, StreamOutboundMessage::Create { .. }));
+
+        // Update item
+        builtin_adapter
+            .set(stream_name, group_id, item_id, data2.clone())
+            .await;
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for update event")
+            .expect("Should receive update event");
+        assert!(matches!(msg.event, StreamOutboundMessage::Update { .. }));
+
+        let saved_data = builtin_adapter
+            .get(stream_name, group_id, item_id)
+            .await
+            .expect("Data should exist");
+        assert_eq!(saved_data, data2);
+
+        builtin_adapter.delete(stream_name, group_id, item_id).await;
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for delete event")
+            .expect("Should receive delete event");
+        assert!(matches!(msg.event, StreamOutboundMessage::Delete { .. }));
+
+        let saved_data = builtin_adapter.get(stream_name, group_id, item_id).await;
+        assert!(saved_data.is_none());
+
+        watcher.abort();
+    }
+}
