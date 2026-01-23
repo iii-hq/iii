@@ -12,7 +12,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        kv_server::structs::{KvListInput, KvListKeysWithPrefixInput},
+        kv_server::structs::{KvListInput, KvListKeysWithPrefixInput, KvUpdateInput},
         module::Module,
     },
     protocol::ErrorBody,
@@ -91,6 +91,19 @@ impl KvServer {
             Some(value) => FunctionResult::Success(Some(value)),
             None => FunctionResult::NoResult,
         }
+    }
+
+    #[function(
+        name = "kv_server.update",
+        description = "Update a value by key in the KV store"
+    )]
+    pub async fn update(&self, data: KvUpdateInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        tracing::debug!(index = %data.index, key = %data.key, ops_count = data.ops.len(), "Updating value in KV store");
+        let result = self.storage.update(data.index, data.key, data.ops).await;
+        FunctionResult::Success(Some(serde_json::to_value(result).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to serialize update result");
+            Value::Null
+        })))
     }
 
     #[function(

@@ -45,6 +45,7 @@ impl From<String> for FieldPath {
 
 /// Operations that can be performed atomically on a stream value
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
     Set { path: FieldPath, value: Value },
