@@ -239,7 +239,7 @@ impl StreamAdapter for RedisAdapter {
 
         let old_value = redis::cmd("HSET")
             .arg(&key)
-            .arg(&item_id)
+            .arg(item_id)
             .arg(&value)
             .arg("GET")
             .query_async::<Option<String>>(&mut *conn)

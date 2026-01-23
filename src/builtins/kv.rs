@@ -300,10 +300,10 @@ impl BuiltinKvStore {
             dirty.insert(index, DirtyOp::Upsert);
         }
 
-        return SetResult {
+        SetResult {
             old_value: None,
             new_value: data,
-        };
+        }
     }
 
     pub async fn get(&self, index: String, key: String) -> Option<Value> {

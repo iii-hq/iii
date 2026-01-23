@@ -52,8 +52,8 @@ export type StreamListGroupsInput = {
 }
 
 export type StreamSetResult<TData> = {
-  existed: boolean
-  data?: TData
+  old_value?: TData
+  new_value?: TData
 }
 
 export interface IStream<TData> {
