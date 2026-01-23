@@ -460,7 +460,7 @@ impl BuiltinKvStore {
 
 #[cfg(test)]
 mod test {
-    use iii_sdk::FieldPath;
+    use iii_sdk::{FieldPath, UpdateOp};
 
     use super::*;
 
@@ -566,8 +566,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_basic_operations() {
-        use iii_sdk::{FieldPath, UpdateOp};
-
         let kv_store = BuiltinKvStore::new(None);
         let index = "test";
         let key = "update:basic";
@@ -660,8 +658,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_multiple_ops_in_single_call() {
-        use iii_sdk::{FieldPath, UpdateOp};
-
         let kv_store = BuiltinKvStore::new(None);
         let index = "test";
         let key = "update:multi_ops";
@@ -780,8 +776,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_concurrent_500_calls() {
-        use iii_sdk::{FieldPath, UpdateOp};
-
         let kv_store = Arc::new(BuiltinKvStore::new(None));
         let index = "test";
         let key = "update:concurrent_500";
@@ -858,8 +852,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_concurrent_500_using_join_all() {
-        use iii_sdk::{FieldPath, UpdateOp};
-
         let kv_store = Arc::new(BuiltinKvStore::new(None));
         let index = "test";
         let key = "update:concurrent_join_all";
