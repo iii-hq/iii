@@ -77,10 +77,10 @@ impl StreamAdapter for BridgeAdapter {
         item_id: &str,
         ops: Vec<UpdateOp>,
     ) -> UpdateResult {
-        let key = self.gen_key(group_id, item_id);
+        let index = self.gen_key(stream_name, group_id);
         let update_data = KvUpdateInput {
-            key: key.clone(),
-            index: stream_name.to_string(),
+            index: index.clone(),
+            key: item_id.to_string(),
             ops,
         };
 
@@ -98,7 +98,7 @@ impl StreamAdapter for BridgeAdapter {
                 }
             }),
             Err(e) => {
-                tracing::error!(error = %e, key = %key, "Failed to update value in kv_server");
+                tracing::error!(error = %e, index = %index, "Failed to update value in kv_server");
                 UpdateResult {
                     old_value: None,
                     new_value: Value::Null,
@@ -133,8 +133,8 @@ impl StreamAdapter for BridgeAdapter {
         data: Value,
     ) -> SetResult {
         let set_data = KvSetInput {
-            index: stream_name.to_string(),
-            key: format!("{}::{}", group_id, item_id),
+            index: self.gen_key(stream_name, group_id),
+            key: item_id.to_string(),
             value: data,
         };
         let set_result = self.bridge.invoke_function("kv_server.set", set_data).await;
@@ -186,10 +186,9 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
-        let key = format!("{}::{}", group_id, item_id);
         let data = KvGetInput {
-            index: stream_name.to_string(),
-            key,
+            index: self.gen_key(stream_name, group_id),
+            key: item_id.to_string(),
         };
         let value = self.bridge.invoke_function("kv_server.get", data).await;
 
@@ -206,10 +205,9 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
-        let key = format!("{}::{}", group_id, item_id);
         let delete_data = KvDeleteInput {
-            index: stream_name.to_string(),
-            key,
+            index: self.gen_key(stream_name, group_id),
+            key: item_id.to_string(),
         };
         let delete_result = self
             .bridge

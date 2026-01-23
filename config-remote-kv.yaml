@@ -30,17 +30,3 @@ modules:
     config:
       level: debug
       format: default
-
-  - class: modules::event::EventModule
-    config:
-      adapter:
-        class: modules::event::RedisAdapter
-        config:
-          redis_url: redis://localhost:6379
-
-  - class: modules::cron::CronModule
-    config:
-      adapter:
-        class: modules::cron::RedisCronAdapter
-        config:
-          redis_url: redis://localhost:6379
