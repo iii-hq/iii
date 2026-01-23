@@ -4,7 +4,7 @@ use axum::extract::ws::Message as WsMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::modules::kv_server::structs::UpdateOp;
+use iii_sdk::UpdateOp;
 
 pub struct Subscription {
     pub subscription_id: String,

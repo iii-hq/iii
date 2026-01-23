@@ -10,10 +10,8 @@ use tokio::{
 };
 
 use crate::{
-    builtins::kv::SetResult,
     engine::Engine,
     modules::{
-        kv_server::structs::{UpdateOp, UpdateResult},
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         streams::{
             StreamOutboundMessage, StreamWrapperMessage,
@@ -22,6 +20,7 @@ use crate::{
         },
     },
 };
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 
 const STREAM_TOPIC: &str = "stream::events";
 
@@ -68,7 +67,7 @@ impl StreamAdapter for RedisAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult {
+    ) -> Option<UpdateResult> {
         // Use RedisJSON commands for atomic, server-side operations
         // Each JSON.* command is atomic, and we use MULTI/EXEC to make all ops atomic together
         let mut conn = self.publisher.lock().await;
@@ -106,10 +105,7 @@ impl StreamAdapter for RedisAdapter {
                 .await
         {
             tracing::error!(error = %e, key = %key, "Failed to initialize JSON key");
-            return UpdateResult {
-                old_value: None,
-                new_value: Value::Null,
-            };
+            return None;
         }
 
         // Build a pipeline with all RedisJSON operations
@@ -138,7 +134,7 @@ impl StreamAdapter for RedisAdapter {
                         for (field, val) in map {
                             let json_path = format!("$.{}", field);
                             let json_value =
-                                serde_json::to_string(val).expect("Failed to serialize value");
+                                serde_json::to_string(&val).expect("Failed to serialize value");
                             pipe.cmd("JSON.SET")
                                 .arg(key.clone())
                                 .arg(&json_path)
@@ -177,10 +173,7 @@ impl StreamAdapter for RedisAdapter {
         if let Err(e) = pipe.query_async::<()>(&mut *conn).await {
             tracing::error!(error = %e, key = %key, "Failed to execute RedisJSON operations");
 
-            return UpdateResult {
-                old_value,
-                new_value: Value::Null,
-            };
+            return None;
         }
 
         // Get new value after operations
@@ -201,10 +194,10 @@ impl StreamAdapter for RedisAdapter {
             }
         };
 
-        UpdateResult {
+        Some(UpdateResult {
             old_value,
             new_value,
-        }
+        })
     }
 
     async fn emit_event(&self, message: StreamWrapperMessage) {

@@ -45,6 +45,7 @@ impl From<String> for FieldPath {
 
 /// Operations that can be performed atomically on a stream value
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
     Set { path: FieldPath, value: Value },
@@ -115,6 +116,14 @@ impl UpdateOp {
 /// Result of an atomic update operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateResult {
+    /// The value before the update (None if key didn't exist)
+    pub old_value: Option<Value>,
+    /// The value after the update
+    pub new_value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
     /// The value after the update

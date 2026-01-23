@@ -22,7 +22,6 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        kv_server::structs::UpdateResult,
         module::{AdapterFactory, ConfigurableModule, Module},
         streams::{
             StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
@@ -453,21 +452,25 @@ impl StreamCoreModule {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let result: UpdateResult = adapter.update(&stream_name, &group_id, &item_id, ops).await;
+        let result = adapter.update(&stream_name, &group_id, &item_id, ops).await;
 
-        adapter
-            .emit_event(StreamWrapperMessage {
-                id: Some(item_id),
-                timestamp: Utc::now().timestamp_millis(),
-                stream_name,
-                group_id,
-                event: StreamOutboundMessage::Update {
-                    data: result.new_value.clone(),
-                },
-            })
-            .await;
+        if let Some(result) = result {
+            adapter
+                .emit_event(StreamWrapperMessage {
+                    id: Some(item_id),
+                    timestamp: Utc::now().timestamp_millis(),
+                    stream_name,
+                    group_id,
+                    event: StreamOutboundMessage::Update {
+                        data: result.new_value.clone(),
+                    },
+                })
+                .await;
 
-        FunctionResult::Success(serde_json::to_value(result).ok())
+            return FunctionResult::Success(serde_json::to_value(result).ok());
+        }
+
+        FunctionResult::Success(None)
     }
 }
 

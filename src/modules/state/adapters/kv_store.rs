@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -33,10 +34,10 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) {
+    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> SetResult {
         self.storage
             .set(group_id.to_string(), item_id.to_string(), data.clone())
-            .await;
+            .await
     }
 
     async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
@@ -49,6 +50,17 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         self.storage
             .delete(group_id.to_string(), item_id.to_string())
             .await;
+    }
+
+    async fn update(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> Option<UpdateResult> {
+        self.storage
+            .update(group_id.to_string(), item_id.to_string(), ops)
+            .await
     }
 
     async fn list(&self, group_id: &str) -> Vec<Value> {

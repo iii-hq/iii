@@ -5,15 +5,10 @@ pub mod redis_adapter;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use serde_json::Value;
 
-use crate::{
-    builtins::{kv::SetResult, pubsub::Subscriber},
-    modules::{
-        kv_server::structs::{UpdateOp, UpdateResult},
-        streams::StreamWrapperMessage,
-    },
-};
+use crate::{builtins::pubsub::Subscriber, modules::streams::StreamWrapperMessage};
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
@@ -44,7 +39,7 @@ pub trait StreamAdapter: Send + Sync {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult;
+    ) -> Option<UpdateResult>;
 }
 
 #[async_trait]

@@ -6,12 +6,10 @@ use std::{
     sync::Arc,
 };
 
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
-
-use crate::modules::kv_server::structs::{UpdateOp, UpdateResult};
 
 const KEY_FILE_EXTENSION: &str = "bin";
 
@@ -145,12 +143,6 @@ async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err.into()),
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SetResult {
-    pub old_value: Option<Value>,
-    pub new_value: Value,
 }
 
 pub struct BuiltinKvStore {
@@ -468,6 +460,8 @@ impl BuiltinKvStore {
 
 #[cfg(test)]
 mod test {
+    use iii_sdk::{FieldPath, UpdateOp};
+
     use super::*;
 
     fn temp_store_dir() -> PathBuf {
@@ -572,8 +566,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_basic_operations() {
-        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
-
         let kv_store = BuiltinKvStore::new(None);
         let index = "test";
         let key = "update:basic";
@@ -666,8 +658,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_multiple_ops_in_single_call() {
-        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
-
         let kv_store = BuiltinKvStore::new(None);
         let index = "test";
         let key = "update:multi_ops";
@@ -708,8 +698,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_two_threads_counter_and_name() {
-        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
-
         let kv_store = Arc::new(BuiltinKvStore::new(None));
         let index = "test";
         let key = "update:two_threads";
@@ -788,8 +776,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_concurrent_500_calls() {
-        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
-
         let kv_store = Arc::new(BuiltinKvStore::new(None));
         let index = "test";
         let key = "update:concurrent_500";
@@ -866,8 +852,6 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_builtin_kv_store_update_concurrent_500_using_join_all() {
-        use crate::modules::kv_server::structs::{FieldPath, UpdateOp};
-
         let kv_store = Arc::new(BuiltinKvStore::new(None));
         let index = "test";
         let key = "update:concurrent_join_all";

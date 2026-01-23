@@ -1,22 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use iii_sdk::Bridge;
+use iii_sdk::{Bridge, UpdateOp, UpdateResult, types::SetResult};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::kv::SetResult,
     builtins::pubsub::BuiltInPubSubAdapter,
     engine::Engine,
     modules::{
         kv_server::{
             KvDeleteInput, KvSetInput,
-            structs::{
-                KvGetInput, KvListInput, KvListKeysWithPrefixInput, KvUpdateInput, UpdateOp,
-                UpdateResult,
-            },
+            structs::{KvGetInput, KvListInput, KvListKeysWithPrefixInput, KvUpdateInput},
         },
         pubsub::{PubSubInput, SubscribeTrigger},
         streams::{
@@ -76,7 +72,7 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult {
+    ) -> Option<UpdateResult> {
         let index = self.gen_key(stream_name, group_id);
         let update_data = KvUpdateInput {
             index: index.clone(),
@@ -90,22 +86,19 @@ impl StreamAdapter for BridgeAdapter {
             .await;
 
         match update_result {
-            Ok(result) => serde_json::from_value::<UpdateResult>(result).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to deserialize update result");
-                UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                }
-            }),
+            Ok(result) => {
+                serde_json::from_value::<Option<UpdateResult>>(result).unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "Failed to deserialize update result");
+                    None
+                })
+            }
             Err(e) => {
                 tracing::error!(error = %e, index = %index, "Failed to update value in kv_server");
-                UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                }
+                None
             }
         }
     }
+
     async fn destroy(&self) -> anyhow::Result<()> {
         self.bridge.disconnect();
         Ok(())
