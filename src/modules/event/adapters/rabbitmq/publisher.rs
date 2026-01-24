@@ -6,7 +6,7 @@ use lapin::{
     types::{AMQPValue, FieldTable},
 };
 
-use super::naming::RabbitNames;
+use super::naming::{RabbitNames, EXCHANGE_PREFIX};
 use super::types::Job;
 
 pub type Result<T> = std::result::Result<T, PublisherError>;
@@ -120,19 +120,19 @@ impl Publisher {
     fn build_headers(&self, job: &Job) -> FieldTable {
         let mut headers = FieldTable::default();
         headers.insert(
-            "x-iii-job-id".into(),
+            format!("x-{}-job-id", EXCHANGE_PREFIX).into(),
             AMQPValue::LongString(job.id.clone().into()),
         );
         headers.insert(
-            "x-iii-attempts".into(),
+            format!("x-{}-attempts", EXCHANGE_PREFIX).into(),
             AMQPValue::LongUInt(job.attempts_made),
         );
         headers.insert(
-            "x-iii-max-attempts".into(),
+            format!("x-{}-max-attempts", EXCHANGE_PREFIX).into(),
             AMQPValue::LongUInt(job.max_attempts),
         );
         headers.insert(
-            "x-iii-created-at".into(),
+            format!("x-{}-created-at", EXCHANGE_PREFIX).into(),
             AMQPValue::LongString(job.created_at.to_string().into()),
         );
         headers
