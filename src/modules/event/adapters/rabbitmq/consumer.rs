@@ -11,17 +11,12 @@ pub type Result<T> = std::result::Result<T, ConsumerError>;
 #[derive(Debug)]
 pub enum ConsumerError {
     Serialization(serde_json::Error),
-    #[allow(dead_code)]
-    MissingHeader(&'static str),
-    InvalidHeaderValue(String),
 }
 
 impl std::fmt::Display for ConsumerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConsumerError::Serialization(e) => write!(f, "Serialization error: {}", e),
-            ConsumerError::MissingHeader(header) => write!(f, "Missing header: {}", header),
-            ConsumerError::InvalidHeaderValue(msg) => write!(f, "Invalid header value: {}", msg),
         }
     }
 }

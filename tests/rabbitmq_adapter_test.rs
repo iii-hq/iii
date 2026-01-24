@@ -2,8 +2,12 @@ use futures::Future;
 use iii::engine::{Engine, EngineTrait, RegisterFunctionRequest};
 use iii::function::{FunctionHandler, FunctionResult};
 use iii::modules::event::{EventAdapter, SubscriberQueueConfig};
+use iii::modules::event::adapters::rabbitmq::{
+    RabbitMQAdapter,
+    types::{QueueMode, RabbitMQConfig},
+};
 use iii::protocol::ErrorBody;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -11,12 +15,6 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use uuid::Uuid;
-
-#[cfg(feature = "rabbitmq")]
-use iii::modules::event::adapters::rabbitmq::{
-    RabbitMQAdapter,
-    types::{QueueMode, RabbitMQConfig},
-};
 
 const TEST_AMQP_URL: &str = "amqp://motia:motia123@localhost:5672";
 
@@ -108,7 +106,6 @@ fn unique_topic() -> String {
     format!("test-{}", uuid::Uuid::new_v4())
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_emit_and_subscribe() {
     let engine = setup_engine();
@@ -148,7 +145,6 @@ async fn test_emit_and_subscribe() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_multiple_subscribers() {
     let engine = setup_engine();
@@ -212,7 +208,6 @@ async fn test_multiple_subscribers() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_subscribe_unsubscribe() {
     let engine = setup_engine();
@@ -258,7 +253,6 @@ async fn test_subscribe_unsubscribe() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_standard_mode_concurrency() {
     let engine = setup_engine();
@@ -303,7 +297,6 @@ async fn test_standard_mode_concurrency() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_fifo_mode_ordering() {
     let engine = setup_engine();
@@ -368,7 +361,6 @@ async fn test_fifo_mode_ordering() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_retry_on_failure() {
     let engine = setup_engine();
@@ -415,7 +407,6 @@ async fn test_retry_on_failure() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_max_attempts_dlq() {
     let engine = setup_engine();
@@ -467,7 +458,6 @@ async fn test_max_attempts_dlq() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_dlq_count() {
     let engine = setup_engine();
@@ -520,7 +510,6 @@ async fn test_dlq_count() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_redrive_dlq() {
     let engine = setup_engine();
@@ -586,7 +575,6 @@ async fn test_redrive_dlq() {
     cleanup_topic(&adapter, &topic).await;
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_connection_failure() {
     let engine = setup_engine();
@@ -601,7 +589,6 @@ async fn test_connection_failure() {
     assert!(result.is_err(), "Should fail to connect with invalid URL");
 }
 
-#[cfg(feature = "rabbitmq")]
 #[tokio::test]
 async fn test_invalid_config() {
     let engine = setup_engine();
