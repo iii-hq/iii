@@ -11,6 +11,7 @@ pub mod invocation;
 pub mod logging;
 pub mod protocol;
 pub mod services;
+pub mod telemetry;
 pub mod trigger;
 pub mod workers;
 

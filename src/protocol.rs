@@ -45,6 +45,12 @@ pub enum Message {
         invocation_id: Option<Uuid>,
         function_path: String,
         data: Value,
+        /// W3C trace-context traceparent header for distributed tracing
+        #[serde(skip_serializing_if = "Option::is_none")]
+        traceparent: Option<String>,
+        /// W3C baggage header for cross-cutting context propagation
+        #[serde(skip_serializing_if = "Option::is_none")]
+        baggage: Option<String>,
     },
     InvocationResult {
         invocation_id: Uuid,
@@ -53,6 +59,12 @@ pub enum Message {
         result: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
+        /// W3C trace-context traceparent header for distributed tracing
+        #[serde(skip_serializing_if = "Option::is_none")]
+        traceparent: Option<String>,
+        /// W3C baggage header for cross-cutting context propagation
+        #[serde(skip_serializing_if = "Option::is_none")]
+        baggage: Option<String>,
     },
     RegisterService {
         id: String,
@@ -62,6 +74,40 @@ pub enum Message {
     },
     Ping,
     Pong,
+    WorkerRegistered {
+        worker_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerMetrics {
+    // Memory metrics (bytes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_heap_used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_heap_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_rss: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_external: Option<u64>,
+
+    // CPU metrics
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_user_micros: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_system_micros: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<f64>,
+
+    // Runtime metrics
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_loop_lag_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_seconds: Option<u64>,
+
+    // Metadata
+    pub timestamp_ms: u64,
+    pub runtime: String, // "node", "rust", "python", etc.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
