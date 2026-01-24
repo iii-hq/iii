@@ -6,7 +6,7 @@ use lapin::{
     types::{AMQPValue, FieldTable},
 };
 
-use super::naming::{RabbitNames, EXCHANGE_PREFIX};
+use super::naming::{EXCHANGE_PREFIX, RabbitNames};
 use super::types::Job;
 
 pub type Result<T> = std::result::Result<T, PublisherError>;
