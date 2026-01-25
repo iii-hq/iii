@@ -1,13 +1,13 @@
 use futures::Future;
 use iii::engine::{Engine, EngineTrait, RegisterFunctionRequest};
 use iii::function::{FunctionHandler, FunctionResult};
-use iii::modules::event::{EventAdapter, SubscriberQueueConfig};
 use iii::modules::event::adapters::rabbitmq::{
     RabbitMQAdapter,
     types::{QueueMode, RabbitMQConfig},
 };
+use iii::modules::event::{EventAdapter, SubscriberQueueConfig};
 use iii::protocol::ErrorBody;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
