@@ -39,7 +39,7 @@ pub trait StreamAdapter: Send + Sync {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult>;
+    ) -> UpdateResult;
 }
 
 #[async_trait]

@@ -46,29 +46,37 @@ impl StateRedisAdapter {
 #[async_trait]
 impl StateAdapter for StateRedisAdapter {
     async fn set(&self, group_id: &str, item_id: &str, data: Value) -> SetResult {
-        let key = format!("state:{}:{}", group_id, item_id);
+        let key: String = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
 
-        let old_value = redis::cmd("HSET")
-            .arg(&key)
+        // Use Lua script for atomic get-and-set operation
+        // This script atomically gets the old value and sets the new value
+        let script = redis::Script::new(
+            r#"
+                local old_value = redis.call('HGET', KEYS[1], ARGV[1])
+                redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+                return old_value
+            "#,
+        );
+
+        let result: redis::RedisResult<Option<String>> = script
+            .key(&key)
+            .arg(item_id)
             .arg(&value)
-            .arg("GET")
-            .query_async::<Option<String>>(&mut *conn)
+            .invoke_async(&mut *conn)
             .await;
 
-        if let Err(e) = old_value {
-            tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to set value in Redis");
-
-            return SetResult {
-                old_value: None,
-                new_value: Value::Null,
-            };
-        }
-
-        let old_value = old_value
-            .unwrap_or(None)
-            .map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
+        let old_value = match result {
+            Ok(old) => old.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null)),
+            Err(e) => {
+                tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to atomically set value in Redis");
+                return SetResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                };
+            }
+        };
         let new_value = data.clone();
 
         SetResult {
@@ -78,9 +86,10 @@ impl StateAdapter for StateRedisAdapter {
     }
 
     async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
+        let key = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
 
-        match conn.hget::<_, _, Option<String>>(&group_id, &item_id).await {
+        match conn.hget::<_, _, Option<String>>(&key, &item_id).await {
             Ok(Some(s)) => serde_json::from_str(&s).ok(),
             Ok(None) => None,
             Err(e) => {
@@ -90,161 +99,199 @@ impl StateAdapter for StateRedisAdapter {
         }
     }
 
-    async fn update(
-        &self,
-        group_id: &str,
-        item_id: &str,
-        ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
-        // Use RedisJSON commands for atomic, server-side operations
-        // Each JSON.* command is atomic, and we use MULTI/EXEC to make all ops atomic together
+    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> UpdateResult {
         let mut conn = self.publisher.lock().await;
-        let key = format!("state:{}:{}", group_id, item_id);
+        let key = format!("state:{}", group_id);
 
-        // Get old value first using JSON.GET
-        let old_value: Option<Value> = match redis::cmd("JSON.GET")
-            .arg(key.clone())
-            .arg("$")
-            .query_async::<Option<String>>(&mut *conn)
-            .await
-        {
-            Ok(Some(json_array)) => {
-                // JSON.GET with $ returns an array, parse and get first element
-                serde_json::from_str::<Vec<Value>>(&json_array)
-                    .ok()
-                    .and_then(|arr| arr.into_iter().next())
-            }
-            Ok(None) => None,
+        // Serialize operations to JSON
+        let ops_json = match serde_json::to_string(&ops) {
+            Ok(json) => json,
             Err(e) => {
-                // Key doesn't exist or other error - try to initialize it
-                tracing::debug!(error = %e, key = %key.clone(), "JSON.GET failed, key may not exist");
-                None
+                tracing::error!(error = %e, "Failed to serialize update operations");
+                return UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                };
             }
         };
 
-        // If key doesn't exist, initialize it with empty object
-        if old_value.is_none()
-            && let Err(e) = redis::cmd("JSON.SET")
-                .arg(key.clone())
-                .arg("$")
-                .arg("{}")
-                .query_async::<()>(&mut *conn)
-                .await
-        {
-            tracing::error!(error = %e, key = %key, "Failed to initialize JSON key");
-            return None;
-        }
+        // Use a single Lua script that atomically gets, applies operations, and sets
+        // Try using cjson as a global (available in most Redis installations)
+        // If cjson is not available, fall back to Rust-based approach
+        let script = redis::Script::new(
+            r#"
+                -- Try to use cjson if available (as global, not via require)
+                local json_decode, json_encode
+                if cjson then
+                    json_decode = cjson.decode
+                    json_encode = cjson.encode
+                else
+                    -- Fallback: return error so Rust can handle it
+                    return {false, 'cjson not available'}
+                end
+                
+                local key = KEYS[1]
+                local field = ARGV[1]
+                local ops_json = ARGV[2]
+                
+                -- Get old value
+                local old_value_str = redis.call('HGET', key, field)
+                local old_value = {}
+                if old_value_str then
+                    local ok, decoded = pcall(json_decode, old_value_str)
+                    if ok then
+                        old_value = decoded
+                    end
+                end
+                
+                -- Parse operations
+                local ops = json_decode(ops_json)
+                local current = json_decode(json_encode(old_value)) -- Deep copy
+                
+                -- Helper to extract path string
+                local function get_path(path)
+                    if path == nil then
+                        return nil
+                    end
+                    if type(path) == 'string' then
+                        return path
+                    end
+                    if type(path) == 'table' then
+                        if path[1] then
+                            return path[1]
+                        end
+                        if path['0'] then
+                            return path['0']
+                        end
+                    end
+                    return path
+                end
+                
+                -- Apply all operations
+                for i, op in ipairs(ops) do
+                    if op.type == 'set' then
+                        local path = get_path(op.path)
+                        if (path == '' or path == nil) and op.value ~= nil then
+                            current = op.value
+                        else
+                            if type(current) ~= 'table' or current == nil then
+                                current = {}
+                            end
+                            current[path] = op.value or cjson.null
+                        end
+                    elseif op.type == 'merge' then
+                        local path = get_path(op.path)
+                        if (path == nil or path == '') and type(current) == 'table' and type(op.value) == 'table' then
+                            for k, v in pairs(op.value) do
+                                current[k] = v
+                            end
+                        end
+                    elseif op.type == 'increment' then
+                        local path = get_path(op.path)
+                        if type(current) ~= 'table' or current == nil then
+                            current = {}
+                        end
+                        local val = current[path]
+                        if type(val) == 'number' then
+                            current[path] = val + op.by
+                        else
+                            current[path] = op.by
+                        end
+                    elseif op.type == 'decrement' then
+                        local path = get_path(op.path)
+                        if type(current) ~= 'table' or current == nil then
+                            current = {}
+                        end
+                        local val = current[path]
+                        if type(val) == 'number' then
+                            current[path] = val - op.by
+                        else
+                            current[path] = -op.by
+                        end
+                    elseif op.type == 'remove' then
+                        local path = get_path(op.path)
+                        if type(current) == 'table' and current ~= nil then
+                            current[path] = nil
+                        end
+                    end
+                end
+                
+                -- Set new value
+                local new_value_str = json_encode(current)
+                redis.call('HSET', key, field, new_value_str)
+                
+                -- Return [success, old_value_json, new_value_json]
+                return {true, old_value_str or '', new_value_str}
+            "#,
+        );
 
-        // Build a pipeline with all RedisJSON operations
-        let mut pipe = redis::pipe();
-        pipe.atomic(); // Use MULTI/EXEC for atomicity
+        let result: redis::RedisResult<Vec<String>> = script
+            .key(&key)
+            .arg(item_id)
+            .arg(&ops_json)
+            .invoke_async(&mut *conn)
+            .await;
 
-        for op in &ops {
-            match op {
-                UpdateOp::Set { path, value } => {
-                    let json_path = if path.0.is_empty() {
-                        "$".to_string()
-                    } else {
-                        format!("$.{}", path.0)
-                    };
-                    let json_value =
-                        serde_json::to_string(value).expect("Failed to serialize value");
-                    pipe.cmd("JSON.SET")
-                        .arg(key.clone())
-                        .arg(&json_path)
-                        .arg(&json_value)
-                        .ignore();
+        match result {
+            Ok(values) if values.len() >= 2 => {
+                // Check if cjson was available
+                if values[0] == "false" {
+                    tracing::warn!(values = ?values, "cjson not available, falling back to Rust-based update");
+
+                    // Fall back to Rust-based approach
+                    return self.update_rust_based(group_id, item_id, ops).await;
                 }
-                UpdateOp::Merge { path: _, value } => {
-                    // For merge, set each field individually
-                    if let Value::Object(map) = value {
-                        for (field, val) in map {
-                            let json_path = format!("$.{}", field);
-                            let json_value =
-                                serde_json::to_string(&val).expect("Failed to serialize value");
-                            pipe.cmd("JSON.SET")
-                                .arg(key.clone())
-                                .arg(&json_path)
-                                .arg(&json_value)
-                                .ignore();
-                        }
+
+                if values.len() == 3 {
+                    let old_value = if values[1].is_empty() {
+                        None
+                    } else {
+                        serde_json::from_str(&values[1]).ok()
+                    };
+
+                    let new_value = serde_json::from_str(&values[2]).unwrap_or(Value::Null);
+
+                    UpdateResult {
+                        old_value,
+                        new_value,
+                    }
+                } else {
+                    tracing::error!("Unexpected return value from update script");
+                    UpdateResult {
+                        old_value: None,
+                        new_value: Value::Null,
                     }
                 }
-                UpdateOp::Increment { path, by } => {
-                    let json_path = format!("$.{}", path.0);
-                    pipe.cmd("JSON.NUMINCRBY")
-                        .arg(key.clone())
-                        .arg(&json_path)
-                        .arg(*by)
-                        .ignore();
-                }
-                UpdateOp::Decrement { path, by } => {
-                    let json_path = format!("$.{}", path.0);
-                    pipe.cmd("JSON.NUMINCRBY")
-                        .arg(key.clone())
-                        .arg(&json_path)
-                        .arg(-*by)
-                        .ignore();
-                }
-                UpdateOp::Remove { path } => {
-                    let json_path = format!("$.{}", path.0);
-                    pipe.cmd("JSON.DEL")
-                        .arg(key.clone())
-                        .arg(&json_path)
-                        .ignore();
-                }
             }
-        }
-
-        // Execute all operations atomically
-        if let Err(e) = pipe.query_async::<()>(&mut *conn).await {
-            tracing::error!(error = %e, key = %key, "Failed to execute RedisJSON operations");
-
-            return None;
-        }
-
-        // Get new value after operations
-        let new_value: Value = match redis::cmd("JSON.GET")
-            .arg(key.clone())
-            .arg("$")
-            .query_async::<Option<String>>(&mut *conn)
-            .await
-        {
-            Ok(Some(json_array)) => serde_json::from_str::<Vec<Value>>(&json_array)
-                .ok()
-                .and_then(|arr| arr.into_iter().next())
-                .unwrap_or(Value::Null),
-            Ok(None) => Value::Null,
             Err(e) => {
-                tracing::error!(error = %e, key = %key, "Failed to get new value after update");
-                Value::Null
+                // If script fails, try Rust-based fallback
+                tracing::debug!(error = %e, "Lua script failed, falling back to Rust-based update");
+                self.update_rust_based(group_id, item_id, ops).await
             }
-        };
-
-        Some(UpdateResult {
-            old_value,
-            new_value,
-        })
+            _ => {
+                tracing::error!("Unexpected return value from update script");
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
+            }
+        }
     }
 
     async fn delete(&self, group_id: &str, item_id: &str) {
+        let key = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
 
-        if let Err(e) = conn
-            .hdel::<String, String, ()>(group_id.into(), item_id.into())
-            .await
-        {
+        if let Err(e) = conn.hdel::<_, String, ()>(&key, item_id.to_string()).await {
             tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to delete value from Redis");
         }
     }
 
     async fn list(&self, group_id: &str) -> Vec<Value> {
+        let key = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
 
-        match conn
-            .hgetall::<String, HashMap<String, String>>(group_id.into())
-            .await
-        {
+        match conn.hgetall::<String, HashMap<String, String>>(key).await {
             Ok(values) => values
                 .into_values()
                 .map(|v| serde_json::from_str(&v).unwrap())
@@ -259,6 +306,132 @@ impl StateAdapter for StateRedisAdapter {
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::debug!("Destroying StateRedisAdapter");
         Ok(())
+    }
+}
+
+impl StateRedisAdapter {
+    // Fallback method that does JSON manipulation in Rust
+    async fn update_rust_based(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> UpdateResult {
+        let mut conn = self.publisher.lock().await;
+        let key = format!("state:{}", group_id);
+
+        // Simple atomic get-and-set approach
+        // Get old value
+        let old_value_str: Option<String> =
+            match conn.hget::<_, _, Option<String>>(&key, item_id).await {
+                Ok(val) => val,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get old value");
+                    return UpdateResult {
+                        old_value: None,
+                        new_value: Value::Null,
+                    };
+                }
+            };
+
+        // Parse and apply operations
+        let old_value: Option<Value> = old_value_str
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok());
+
+        let mut updated_value = old_value
+            .clone()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+
+        // Apply operations (same logic as before)
+        for op in &ops {
+            match op {
+                UpdateOp::Set { path, value } => {
+                    if path.0.is_empty() && value.is_some() {
+                        updated_value = value.clone().unwrap();
+                    } else if let Value::Object(ref mut map) = updated_value {
+                        map.insert(path.0.clone(), value.clone().unwrap_or(Value::Null));
+                    }
+                }
+                UpdateOp::Merge { path, value } => {
+                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
+                        match (&mut updated_value, value) {
+                            (Value::Object(existing_map), Value::Object(new_map)) => {
+                                for (k, v) in new_map {
+                                    existing_map.insert(k.clone(), v.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                UpdateOp::Increment { path, by } => {
+                    if let Value::Object(ref mut map) = updated_value {
+                        if let Some(existing_val) = map.get_mut(&path.0) {
+                            if let Some(num) = existing_val.as_i64() {
+                                *existing_val = Value::Number(serde_json::Number::from(num + by));
+                            }
+                        } else {
+                            map.insert(
+                                path.0.clone(),
+                                Value::Number(serde_json::Number::from(*by)),
+                            );
+                        }
+                    }
+                }
+                UpdateOp::Decrement { path, by } => {
+                    if let Value::Object(ref mut map) = updated_value {
+                        if let Some(existing_val) = map.get_mut(&path.0) {
+                            if let Some(num) = existing_val.as_i64() {
+                                *existing_val = Value::Number(serde_json::Number::from(num - by));
+                            }
+                        } else {
+                            map.insert(
+                                path.0.clone(),
+                                Value::Number(serde_json::Number::from(-*by)),
+                            );
+                        }
+                    }
+                }
+                UpdateOp::Remove { path } => {
+                    if let Value::Object(ref mut map) = updated_value {
+                        map.remove(&path.0);
+                    }
+                }
+            }
+        }
+
+        // Serialize and atomically set
+        let new_value_str = match serde_json::to_string(&updated_value) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to serialize");
+                return UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                };
+            }
+        };
+
+        let script = redis::Script::new(
+            r#"
+                local old_value = redis.call('HGET', KEYS[1], ARGV[1])
+                redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+                return old_value or ''
+            "#,
+        );
+
+        let _: redis::RedisResult<String> = script
+            .key(&key)
+            .arg(item_id)
+            .arg(&new_value_str)
+            .invoke_async(&mut *conn)
+            .await;
+
+        UpdateResult {
+            old_value,
+            new_value: updated_value,
+        }
     }
 }
 

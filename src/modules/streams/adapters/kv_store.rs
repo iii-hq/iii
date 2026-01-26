@@ -54,7 +54,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
+    ) -> UpdateResult {
         self.storage
             .update(
                 self.gen_key(stream_name, group_id),

@@ -53,9 +53,13 @@ export type StreamListGroupsInput = {
 
 export type StreamSetResult<TData> = {
   old_value?: TData
-  new_value?: TData
+  new_value: TData
 }
 
+export type StreamUpdateResult<TData> = {
+  old_value?: TData
+  new_value: TData
+}
 
 export type UpdateSet = {
   type: 'set'
@@ -101,5 +105,5 @@ export interface IStream<TData> {
   delete(input: StreamDeleteInput): Promise<void>
   getGroup(input: StreamGetGroupInput): Promise<TData[]>
   listGroups(input: StreamListGroupsInput): Promise<string[]>
-  update(input: StreamUpdateInput): Promise<StreamSetResult<TData> | null>
+  update(input: StreamUpdateInput): Promise<StreamUpdateResult<TData> | null>
 }

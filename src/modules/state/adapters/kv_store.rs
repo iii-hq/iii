@@ -52,12 +52,7 @@ impl StateAdapter for BuiltinKvStoreAdapter {
             .await;
     }
 
-    async fn update(
-        &self,
-        group_id: &str,
-        item_id: &str,
-        ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
+    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> UpdateResult {
         self.storage
             .update(group_id.to_string(), item_id.to_string(), ops)
             .await

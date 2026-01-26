@@ -454,23 +454,19 @@ impl StreamCoreModule {
 
         let result = adapter.update(&stream_name, &group_id, &item_id, ops).await;
 
-        if let Some(result) = result {
-            adapter
-                .emit_event(StreamWrapperMessage {
-                    id: Some(item_id),
-                    timestamp: Utc::now().timestamp_millis(),
-                    stream_name,
-                    group_id,
-                    event: StreamOutboundMessage::Update {
-                        data: result.new_value.clone(),
-                    },
-                })
-                .await;
+        adapter
+            .emit_event(StreamWrapperMessage {
+                id: Some(item_id),
+                timestamp: Utc::now().timestamp_millis(),
+                stream_name,
+                group_id,
+                event: StreamOutboundMessage::Update {
+                    data: result.new_value.clone(),
+                },
+            })
+            .await;
 
-            return FunctionResult::Success(serde_json::to_value(result).ok());
-        }
-
-        FunctionResult::Success(None)
+        FunctionResult::Success(serde_json::to_value(result).ok())
     }
 }
 

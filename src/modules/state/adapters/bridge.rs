@@ -43,12 +43,7 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl StateAdapter for BridgeAdapter {
-    async fn update(
-        &self,
-        group_id: &str,
-        item_id: &str,
-        ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
+    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> UpdateResult {
         let index = self.gen_key(group_id);
         let update_data = KvUpdateInput {
             index: index.clone(),
@@ -62,15 +57,19 @@ impl StateAdapter for BridgeAdapter {
             .await;
 
         match update_result {
-            Ok(result) => {
-                serde_json::from_value::<Option<UpdateResult>>(result).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Failed to deserialize update result");
-                    None
-                })
-            }
+            Ok(result) => serde_json::from_value::<UpdateResult>(result).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to deserialize update result");
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
+            }),
             Err(e) => {
                 tracing::error!(error = %e, index = %index, "Failed to update value in kv_server");
-                None
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
             }
         }
     }

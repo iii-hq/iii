@@ -72,7 +72,7 @@ impl StreamAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
+    ) -> UpdateResult {
         let index = self.gen_key(stream_name, group_id);
         let update_data = KvUpdateInput {
             index: index.clone(),
@@ -86,15 +86,19 @@ impl StreamAdapter for BridgeAdapter {
             .await;
 
         match update_result {
-            Ok(result) => {
-                serde_json::from_value::<Option<UpdateResult>>(result).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Failed to deserialize update result");
-                    None
-                })
-            }
+            Ok(result) => serde_json::from_value::<UpdateResult>(result).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "Failed to deserialize update result");
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
+            }),
             Err(e) => {
                 tracing::error!(error = %e, index = %index, "Failed to update value in kv_server");
-                None
+                UpdateResult {
+                    old_value: None,
+                    new_value: Value::Null,
+                }
             }
         }
     }
