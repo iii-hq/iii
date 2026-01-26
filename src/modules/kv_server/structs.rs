@@ -48,3 +48,46 @@ pub struct KvUpdateInput {
     pub key: String,
     pub ops: Vec<UpdateOp>,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct KvLpushInput {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KvRpopInput {
+    pub key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KvLremInput {
+    pub key: String,
+    pub count: i32,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KvLlenInput {
+    pub key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KvZaddInput {
+    pub key: String,
+    pub score: i64,
+    pub member: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KvZremInput {
+    pub key: String,
+    pub member: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct KvZrangebyscoreInput {
+    pub key: String,
+    pub min: i64,
+    pub max: i64,
+}
