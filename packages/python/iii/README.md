@@ -25,6 +25,12 @@ async def my_function(data):
 result = await bridge.invoke_function("other.function", {"param": "value"})
 ```
 
+### Build & Publish
+```bash
+python -m build
+uv publish --index cloudsmith dist/*
+```
+
 ## Features
 
 - WebSocket-based communication with III Engine
