@@ -527,14 +527,12 @@ impl RedisAdapter {
                     }
                 }
                 UpdateOp::Merge { path, value } => {
-                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
-                        match (&mut updated_value, value) {
-                            (Value::Object(existing_map), Value::Object(new_map)) => {
-                                for (k, v) in new_map {
-                                    existing_map.insert(k.clone(), v.clone());
-                                }
-                            }
-                            _ => {}
+                    if (path.is_none() || path.as_ref().unwrap().0.is_empty())
+                        && let (Value::Object(existing_map), Value::Object(new_map)) =
+                            (&mut updated_value, value)
+                    {
+                        for (k, v) in new_map {
+                            existing_map.insert(k.clone(), v.clone());
                         }
                     }
                 }

@@ -344,8 +344,10 @@ impl BuiltinKvStore {
         for op in ops {
             match op {
                 UpdateOp::Set { path, value } => {
-                    if path.0.is_empty() && value.is_some() {
-                        updated_value = value.unwrap();
+                    if path.0.is_empty()
+                        && let Some(value) = value
+                    {
+                        updated_value = value;
                     } else if let Value::Object(ref mut map) = updated_value {
                         map.insert(path.0, value.unwrap_or(Value::Null));
                     } else {
@@ -428,7 +430,7 @@ impl BuiltinKvStore {
         drop(store);
 
         UpdateResult {
-            old_value: old_value,
+            old_value,
             new_value: updated_value,
         }
     }
