@@ -97,10 +97,7 @@ async fn persist_lists_to_disk(
     Ok(())
 }
 
-async fn persist_sorted_sets_to_disk(
-    dir: &Path,
-    sorted_sets: &SortedSetMap,
-) -> anyhow::Result<()> {
+async fn persist_sorted_sets_to_disk(dir: &Path, sorted_sets: &SortedSetMap) -> anyhow::Result<()> {
     if let Err(err) = tokio::fs::create_dir_all(dir).await {
         tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
         return Err(err.into());
