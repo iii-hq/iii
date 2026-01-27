@@ -2,6 +2,7 @@
 name = "iii"
 version = "0.2.0"
 edition = "2024"
+license = "Elastic-2.0"
 
 [lib]
 name = "iii"
