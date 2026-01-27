@@ -357,16 +357,14 @@ impl StateRedisAdapter {
                 }
                 UpdateOp::Increment { path, by } => {
                     if let Value::Object(ref mut map) = updated_value {
-                        if let Some(existing_val) = map.get_mut(&path.0) {
-                            if let Some(num) = existing_val.as_i64() {
-                                *existing_val = Value::Number(serde_json::Number::from(num + by));
-                            }
-                        } else {
-                            map.insert(
-                                path.0.clone(),
-                                Value::Number(serde_json::Number::from(*by)),
-                            );
-                        }
+                        let next = match map.get(&path.0).and_then(|v| v.as_i64()) {
+                            Some(num) => num + by,
+                            None => *by,
+                        };
+                        map.insert(
+                            path.0.clone(),
+                            Value::Number(serde_json::Number::from(next)),
+                        );
                     }
                 }
                 UpdateOp::Decrement { path, by } => {

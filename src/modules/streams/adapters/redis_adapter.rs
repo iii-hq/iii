@@ -208,8 +208,9 @@ impl StreamAdapter for RedisAdapter {
                     let old_value = if values[1].is_empty() {
                         None
                     } else {
-                        Some(serde_json::from_str::<Value>(&values[1])
-                            .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e))?)
+                        Some(serde_json::from_str::<Value>(&values[1]).map_err(|e| {
+                            anyhow::anyhow!("Failed to deserialize old value: {}", e)
+                        })?)
                     };
 
                     let new_value = serde_json::from_str(&values[2])
@@ -220,7 +221,10 @@ impl StreamAdapter for RedisAdapter {
                         new_value,
                     })
                 } else {
-                    Err(anyhow::anyhow!("Unexpected return value from update script: expected 3 values, got {}", values.len()))
+                    Err(anyhow::anyhow!(
+                        "Unexpected return value from update script: expected 3 values, got {}",
+                        values.len()
+                    ))
                 }
             }
             Err(e) => {
@@ -229,9 +233,9 @@ impl StreamAdapter for RedisAdapter {
                 self.update_rust_based(stream_name, group_id, item_id, ops)
                     .await
             }
-            _ => {
-                Err(anyhow::anyhow!("Unexpected return value from update script"))
-            }
+            _ => Err(anyhow::anyhow!(
+                "Unexpected return value from update script"
+            )),
         }
     }
 
@@ -242,9 +246,10 @@ impl StreamAdapter for RedisAdapter {
         let event_json = serde_json::to_string(&message)
             .map_err(|e| anyhow::anyhow!("Failed to serialize event data: {}", e))?;
 
-        conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json).await
+        conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to publish event to Redis: {}", e))?;
-        
+
         tracing::debug!("Event published to Redis");
         Ok(())
     }
@@ -278,11 +283,17 @@ impl StreamAdapter for RedisAdapter {
             .await;
 
         let old_value = match result {
-            Ok(old) => old.map(|s| serde_json::from_str(&s)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e)))
+            Ok(old) => old
+                .map(|s| {
+                    serde_json::from_str(&s)
+                        .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e))
+                })
                 .transpose()?,
             Err(e) => {
-                return Err(anyhow::anyhow!("Failed to atomically set value in Redis: {}", e));
+                return Err(anyhow::anyhow!(
+                    "Failed to atomically set value in Redis: {}",
+                    e
+                ));
             }
         };
         let new_value = data.clone();
@@ -311,7 +322,12 @@ impl StreamAdapter for RedisAdapter {
         })
     }
 
-    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
+    async fn get(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
         let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
@@ -320,9 +336,7 @@ impl StreamAdapter for RedisAdapter {
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize value: {}", e))
                 .map(Some),
             Ok(None) => Ok(None),
-            Err(e) => {
-                Err(anyhow::anyhow!("Failed to get value from Redis: {}", e))
-            }
+            Err(e) => Err(anyhow::anyhow!("Failed to get value from Redis: {}", e)),
         }
     }
 
@@ -335,7 +349,8 @@ impl StreamAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        conn.hdel::<String, String, ()>(key, item_id.clone()).await
+        conn.hdel::<String, String, ()>(key, item_id.clone())
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
 
         drop(conn); // Release the lock
@@ -350,7 +365,7 @@ impl StreamAdapter for RedisAdapter {
             },
         })
         .await?;
-        
+
         Ok(())
     }
 
@@ -365,15 +380,16 @@ impl StreamAdapter for RedisAdapter {
                     match serde_json::from_str(&v) {
                         Ok(value) => result.push(value),
                         Err(e) => {
-                            return Err(anyhow::anyhow!("Failed to deserialize value in group: {}", e));
+                            return Err(anyhow::anyhow!(
+                                "Failed to deserialize value in group: {}",
+                                e
+                            ));
                         }
                     }
                 }
                 Ok(result)
             }
-            Err(e) => {
-                Err(anyhow::anyhow!("Failed to get group from Redis: {}", e))
-            }
+            Err(e) => Err(anyhow::anyhow!("Failed to get group from Redis: {}", e)),
         }
     }
 
@@ -387,13 +403,15 @@ impl StreamAdapter for RedisAdapter {
                 .into_iter()
                 .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
                 .collect()),
-            Err(e) => {
-                Err(anyhow::anyhow!("Failed to list groups from Redis: {}", e))
-            }
+            Err(e) => Err(anyhow::anyhow!("Failed to list groups from Redis: {}", e)),
         }
     }
 
-    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) -> anyhow::Result<()> {
+    async fn subscribe(
+        &self,
+        id: String,
+        connection: Arc<dyn StreamConnection>,
+    ) -> anyhow::Result<()> {
         let mut connections = self.connections.write().await;
         connections.insert(id, connection.clone());
         Ok(())
@@ -408,10 +426,15 @@ impl StreamAdapter for RedisAdapter {
     async fn watch_events(&self) -> anyhow::Result<()> {
         tracing::debug!("Watching events");
 
-        let mut pubsub = self.subscriber.get_async_pubsub().await
+        let mut pubsub = self
+            .subscriber
+            .get_async_pubsub()
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get async pubsub connection: {}", e))?;
 
-        pubsub.subscribe(&STREAM_TOPIC).await
+        pubsub
+            .subscribe(&STREAM_TOPIC)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to subscribe to Redis channel: {}", e))?;
 
         let mut msg = pubsub.into_on_message();
@@ -482,7 +505,9 @@ impl RedisAdapter {
 
         // Simple atomic get-and-set approach
         // Get old value
-        let old_value_str: Option<String> = conn.hget::<_, _, Option<String>>(&key, item_id).await
+        let old_value_str: Option<String> = conn
+            .hget::<_, _, Option<String>>(&key, item_id)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get old value: {}", e))?;
 
         // Parse and apply operations
@@ -516,16 +541,14 @@ impl RedisAdapter {
                 }
                 UpdateOp::Increment { path, by } => {
                     if let Value::Object(ref mut map) = updated_value {
-                        if let Some(existing_val) = map.get_mut(&path.0) {
-                            if let Some(num) = existing_val.as_i64() {
-                                *existing_val = Value::Number(serde_json::Number::from(num + by));
-                            }
-                        } else {
-                            map.insert(
-                                path.0.clone(),
-                                Value::Number(serde_json::Number::from(*by)),
-                            );
-                        }
+                        let next = match map.get(&path.0).and_then(|v| v.as_i64()) {
+                            Some(num) => num + by,
+                            None => *by, // non-numeric or missing => set to by
+                        };
+                        map.insert(
+                            path.0.clone(),
+                            Value::Number(serde_json::Number::from(next)),
+                        );
                     }
                 }
                 UpdateOp::Decrement { path, by } => {
