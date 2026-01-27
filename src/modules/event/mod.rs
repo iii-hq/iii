@@ -1,4 +1,4 @@
-mod adapters;
+pub mod adapters;
 mod config;
 #[allow(clippy::module_inception)]
 mod event;
