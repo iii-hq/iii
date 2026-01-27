@@ -243,9 +243,7 @@ impl QueueKvStore {
     }
 
     pub async fn set_job(&self, key: &str, value: Value) {
-        self.kv
-            .set(key.to_string(), String::new(), value)
-            .await;
+        self.kv.set(key.to_string(), String::new(), value).await;
     }
 
     pub async fn get_job(&self, key: &str) -> Option<Value> {

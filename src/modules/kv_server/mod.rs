@@ -141,7 +141,6 @@ impl KvServer {
             }),
         }
     }
-
 }
 
 crate::register_module!(

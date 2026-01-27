@@ -117,7 +117,10 @@ impl EventAdapter for BuiltinQueueAdapter {
             backoff_ms: c.backoff_delay_ms,
         });
 
-        let handle = self.queue.subscribe(topic, handler, subscription_config).await;
+        let handle = self
+            .queue
+            .subscribe(topic, handler, subscription_config)
+            .await;
 
         let mut subs = self.subscriptions.write().await;
         subs.insert(format!("{}:{}", topic, id), handle);
