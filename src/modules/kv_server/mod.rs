@@ -1,10 +1,7 @@
 use std::sync::Arc;
 pub mod structs;
 
-pub use self::structs::{
-    KvDeleteInput, KvGetInput, KvLlenInput, KvLpushInput, KvLremInput, KvRpopInput, KvSetInput,
-    KvZaddInput, KvZrangebyscoreInput, KvZremInput,
-};
+pub use self::structs::{KvDeleteInput, KvGetInput, KvSetInput};
 
 use async_trait::async_trait;
 use function_macros::{function, service};
@@ -145,84 +142,6 @@ impl KvServer {
         }
     }
 
-    #[function(
-        name = "kv_server.lpush",
-        description = "Push a value to the head of a list"
-    )]
-    pub async fn lpush(&self, data: KvLpushInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, "Pushing value to list");
-        self.storage.lpush(&data.key, data.value).await;
-        FunctionResult::Success(None)
-    }
-
-    #[function(
-        name = "kv_server.rpop",
-        description = "Pop a value from the tail of a list"
-    )]
-    pub async fn rpop(&self, data: KvRpopInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, "Popping value from list");
-        let result = self.storage.rpop(&data.key).await;
-        match result {
-            Some(value) => FunctionResult::Success(Some(Value::String(value))),
-            None => FunctionResult::NoResult,
-        }
-    }
-
-    #[function(name = "kv_server.lrem", description = "Remove elements from a list")]
-    pub async fn lrem(&self, data: KvLremInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, count = data.count, "Removing elements from list");
-        let removed = self.storage.lrem(&data.key, data.count, &data.value).await;
-        FunctionResult::Success(Some(Value::Number(serde_json::Number::from(removed))))
-    }
-
-    #[function(name = "kv_server.llen", description = "Get the length of a list")]
-    pub async fn llen(&self, data: KvLlenInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, "Getting list length");
-        let len = self.storage.llen(&data.key).await;
-        FunctionResult::Success(Some(Value::Number(serde_json::Number::from(len))))
-    }
-
-    #[function(
-        name = "kv_server.zadd",
-        description = "Add a member with score to a sorted set"
-    )]
-    pub async fn zadd(&self, data: KvZaddInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, score = data.score, "Adding member to sorted set");
-        self.storage.zadd(&data.key, data.score, data.member).await;
-        FunctionResult::Success(None)
-    }
-
-    #[function(
-        name = "kv_server.zrem",
-        description = "Remove a member from a sorted set"
-    )]
-    pub async fn zrem(&self, data: KvZremInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, "Removing member from sorted set");
-        let removed = self.storage.zrem(&data.key, &data.member).await;
-        FunctionResult::Success(Some(Value::Bool(removed)))
-    }
-
-    #[function(
-        name = "kv_server.zrangebyscore",
-        description = "Get members from a sorted set within a score range"
-    )]
-    pub async fn zrangebyscore(
-        &self,
-        data: KvZrangebyscoreInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, min = data.min, max = data.max, "Getting members by score range");
-        let result = self
-            .storage
-            .zrangebyscore(&data.key, data.min, data.max)
-            .await;
-        match serde_json::to_value(result) {
-            Ok(value) => FunctionResult::Success(Some(value)),
-            Err(err) => FunctionResult::Failure(ErrorBody {
-                code: "serialization_error".into(),
-                message: format!("Failed to serialize result: {}", err),
-            }),
-        }
-    }
 }
 
 crate::register_module!(

@@ -14,7 +14,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use super::{kv::BuiltinKvStore, pubsub::BuiltInPubSubAdapter};
+use super::{pubsub::BuiltInPubSubAdapter, queue_kv::QueueKvStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -133,7 +133,7 @@ pub trait JobHandler: Send + Sync {
 }
 
 pub struct BuiltinQueue {
-    kv_store: Arc<BuiltinKvStore>,
+    kv_store: Arc<QueueKvStore>,
     pubsub: Arc<BuiltInPubSubAdapter>,
     config: QueueConfig,
     subscriptions: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
@@ -141,7 +141,7 @@ pub struct BuiltinQueue {
 
 impl BuiltinQueue {
     pub fn new(
-        kv_store: Arc<BuiltinKvStore>,
+        kv_store: Arc<QueueKvStore>,
         pubsub: Arc<BuiltInPubSubAdapter>,
         config: QueueConfig,
     ) -> Self {
@@ -154,21 +154,18 @@ impl BuiltinQueue {
     }
 
     pub async fn rebuild_from_storage(&self) -> anyhow::Result<()> {
-        let has_persisted_state = self.kv_store.has_queue_state_with_prefix("queue:").await;
+        let has_persisted_state = self.kv_store.has_queue_state("queue:").await;
 
         if !has_persisted_state {
             tracing::info!("No persisted queue state found, rebuilding from job records");
 
-            let job_keys = self
-                .kv_store
-                .list_keys_with_prefix("queue:".to_string())
-                .await;
+            let job_keys = self.kv_store.list_job_keys("queue:").await;
 
             let mut queue_jobs: HashMap<String, Vec<Job>> = HashMap::new();
 
             for key in job_keys {
                 if key.contains(":jobs:") {
-                    if let Some(job_value) = self.kv_store.get(key.clone(), String::new()).await {
+                    if let Some(job_value) = self.kv_store.get_job(&key).await {
                         if let Ok(job) = serde_json::from_value::<Job>(job_value) {
                             queue_jobs
                                 .entry(job.queue.clone())
@@ -211,10 +208,7 @@ impl BuiltinQueue {
             tracing::info!("Queue state loaded from persisted lists/sorted_sets");
 
             let queue_names_set: std::collections::HashSet<String> = {
-                let job_keys = self
-                    .kv_store
-                    .list_keys_with_prefix("queue:".to_string())
-                    .await;
+                let job_keys = self.kv_store.list_job_keys("queue:").await;
                 job_keys
                     .iter()
                     .filter(|k| k.contains(":jobs:"))
@@ -270,7 +264,7 @@ impl BuiltinQueue {
 
         let job_key = self.job_key(queue, &job.id);
         let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
-        self.kv_store.set(job_key, String::new(), job_json).await;
+        self.kv_store.set_job(&job_key, job_json).await;
 
         let waiting_key = self.waiting_key(queue);
         self.kv_store.lpush(&waiting_key, job.id.clone()).await;
@@ -305,7 +299,7 @@ impl BuiltinQueue {
 
         let job_key = self.job_key(queue, &job.id);
         let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
-        self.kv_store.set(job_key, String::new(), job_json).await;
+        self.kv_store.set_job(&job_key, job_json).await;
 
         let delayed_key = self.delayed_key(queue);
         self.kv_store
@@ -325,7 +319,7 @@ impl BuiltinQueue {
         self.kv_store.lpush(&active_key, job_id.clone()).await;
 
         let job_key = self.job_key(queue, &job_id);
-        let job_value = self.kv_store.get(job_key, String::new()).await?;
+        let job_value = self.kv_store.get_job(&job_key).await?;
         let job: Job = serde_json::from_value(job_value).ok()?;
 
         Some(job)
@@ -336,7 +330,7 @@ impl BuiltinQueue {
         self.kv_store.lrem(&active_key, 1, job_id).await;
 
         let job_key = self.job_key(queue, job_id);
-        self.kv_store.delete(job_key, String::new()).await;
+        self.kv_store.delete_job(&job_key).await;
 
         tracing::debug!(queue = %queue, job_id = %job_id, "Job acknowledged");
         Ok(())
@@ -347,7 +341,7 @@ impl BuiltinQueue {
         self.kv_store.lrem(&active_key, 1, job_id).await;
 
         let job_key = self.job_key(queue, job_id);
-        let job_value = self.kv_store.get(job_key.clone(), String::new()).await;
+        let job_value = self.kv_store.get_job(&job_key).await;
 
         let Some(job_value) = job_value else {
             tracing::warn!(queue = %queue, job_id = %job_id, "Job not found for nack");
@@ -370,7 +364,7 @@ impl BuiltinQueue {
 
             let failed_json = serde_json::to_string(&failed_data)?;
             self.kv_store.lpush(&dlq_key, failed_json).await;
-            self.kv_store.delete(job_key, String::new()).await;
+            self.kv_store.delete_job(&job_key).await;
 
             tracing::warn!(queue = %queue, job_id = %job_id, attempts = job.attempts_made, "Job exhausted, moved to DLQ");
         } else {
@@ -385,7 +379,7 @@ impl BuiltinQueue {
             job.process_at = Some(process_at);
 
             let job_json = serde_json::to_value(&job)?;
-            self.kv_store.set(job_key, String::new(), job_json).await;
+            self.kv_store.set_job(&job_key, job_json).await;
             self.kv_store
                 .zadd(&delayed_key, process_at as i64, job_id.to_string())
                 .await;
@@ -482,7 +476,7 @@ impl BuiltinQueue {
 
                         let job_key = self.job_key(queue, &job.id);
                         let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
-                        self.kv_store.set(job_key, String::new(), job_json).await;
+                        self.kv_store.set_job(&job_key, job_json).await;
 
                         let waiting_key = self.waiting_key(queue);
                         self.kv_store.lpush(&waiting_key, job.id).await;
@@ -605,11 +599,18 @@ impl Worker {
 
 #[cfg(test)]
 mod tests {
+    use crate::builtins::{kv::BuiltinKvStore, queue_kv::QueueKvStore};
+
     use super::*;
 
     #[allow(dead_code)]
     struct TestHandler {
         should_fail: bool,
+    }
+
+    fn make_queue_kv(config: Option<Value>) -> Arc<QueueKvStore> {
+        let base_kv = Arc::new(BuiltinKvStore::new(config.clone()));
+        Arc::new(QueueKvStore::new(base_kv, config))
     }
 
     #[async_trait]
@@ -625,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_push_and_pop() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store, pubsub, config);
@@ -644,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ack_removes_job() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
@@ -656,13 +657,13 @@ mod tests {
         queue.ack("test_queue", &job.id).await.unwrap();
 
         let job_key = queue.job_key("test_queue", &job_id);
-        let result = kv_store.get(job_key, String::new()).await;
+        let result = kv_store.get_job(&job_key).await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_nack_with_retry() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig {
             max_attempts: 3,
@@ -687,7 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_nack_exhausted_moves_to_dlq() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig {
             max_attempts: 1,
@@ -711,7 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_push_delayed() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
@@ -730,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_move_delayed_to_waiting() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
@@ -748,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dlq_redrive() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig {
             max_attempts: 1,
@@ -808,7 +809,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebuild_from_storage_waiting_jobs() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config.clone());
@@ -836,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebuild_from_storage_delayed_jobs() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config.clone());
@@ -858,7 +859,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebuild_from_storage_with_retry() {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = make_queue_kv(None);
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig {
             max_attempts: 3,
@@ -895,7 +896,7 @@ mod tests {
             "save_interval_ms": 5
         });
 
-        let kv_store = Arc::new(BuiltinKvStore::new(Some(config_json.clone())));
+        let kv_store = make_queue_kv(Some(config_json.clone()));
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let config = QueueConfig {
             max_attempts: 3,
@@ -918,7 +919,7 @@ mod tests {
         drop(queue);
         drop(kv_store);
 
-        let new_kv_store = Arc::new(BuiltinKvStore::new(Some(config_json)));
+        let new_kv_store = make_queue_kv(Some(config_json));
         let new_pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let new_queue = BuiltinQueue::new(new_kv_store, new_pubsub, config);
         new_queue.rebuild_from_storage().await.unwrap();
@@ -941,7 +942,7 @@ mod tests {
             "save_interval_ms": 5
         });
 
-        let kv_store = Arc::new(BuiltinKvStore::new(Some(config_json.clone())));
+        let kv_store = make_queue_kv(Some(config_json.clone()));
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let queue_config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), queue_config.clone());
@@ -956,15 +957,15 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        let lists_file = dir.join("_lists.bin");
-        let sorted_sets_file = dir.join("_sorted_sets.bin");
+        let lists_file = dir.join("_queue_lists.bin");
+        let sorted_sets_file = dir.join("_queue_sorted_sets.bin");
         assert!(lists_file.exists(), "Lists should be persisted");
         assert!(sorted_sets_file.exists(), "Sorted sets should be persisted");
 
         drop(queue);
         drop(kv_store);
 
-        let new_kv_store = Arc::new(BuiltinKvStore::new(Some(config_json)));
+        let new_kv_store = make_queue_kv(Some(config_json));
         let new_pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let new_queue = BuiltinQueue::new(new_kv_store.clone(), new_pubsub, queue_config);
 
