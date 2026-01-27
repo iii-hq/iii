@@ -164,15 +164,11 @@ impl BuiltinQueue {
             let mut queue_jobs: HashMap<String, Vec<Job>> = HashMap::new();
 
             for key in job_keys {
-                if key.contains(":jobs:") {
-                    if let Some(job_value) = self.kv_store.get_job(&key).await {
-                        if let Ok(job) = serde_json::from_value::<Job>(job_value) {
-                            queue_jobs
-                                .entry(job.queue.clone())
-                                .or_insert_with(Vec::new)
-                                .push(job);
-                        }
-                    }
+                if key.contains(":jobs:")
+                    && let Some(job_value) = self.kv_store.get_job(&key).await
+                    && let Ok(job) = serde_json::from_value::<Job>(job_value)
+                {
+                    queue_jobs.entry(job.queue.clone()).or_default().push(job);
                 }
             }
 
@@ -469,21 +465,20 @@ impl BuiltinQueue {
         let mut count = 0;
 
         while let Some(item) = self.kv_store.rpop(&dlq_key).await {
-            if let Ok(failed_data) = serde_json::from_str::<Value>(&item) {
-                if let Some(job_value) = failed_data.get("job") {
-                    if let Ok(mut job) = serde_json::from_value::<Job>(job_value.clone()) {
-                        job.attempts_made = 0;
+            if let Ok(failed_data) = serde_json::from_str::<Value>(&item)
+                && let Some(job_value) = failed_data.get("job")
+                && let Ok(mut job) = serde_json::from_value::<Job>(job_value.clone())
+            {
+                job.attempts_made = 0;
 
-                        let job_key = self.job_key(queue, &job.id);
-                        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
-                        self.kv_store.set_job(&job_key, job_json).await;
+                let job_key = self.job_key(queue, &job.id);
+                let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+                self.kv_store.set_job(&job_key, job_json).await;
 
-                        let waiting_key = self.waiting_key(queue);
-                        self.kv_store.lpush(&waiting_key, job.id).await;
+                let waiting_key = self.waiting_key(queue);
+                self.kv_store.lpush(&waiting_key, job.id).await;
 
-                        count += 1;
-                    }
-                }
+                count += 1;
             }
         }
 

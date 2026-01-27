@@ -13,6 +13,8 @@ use super::kv::BuiltinKvStore;
 const LISTS_FILE_NAME: &str = "_queue_lists.bin";
 const SORTED_SETS_FILE_NAME: &str = "_queue_sorted_sets.bin";
 
+type SortedSetMap = HashMap<String, BTreeMap<i64, HashSet<String>>>;
+
 #[derive(Archive, RkyvSerialize, RkyvDeserialize)]
 struct KeyStorage(String);
 
@@ -48,7 +50,7 @@ fn load_lists_from_dir(dir: &Path) -> HashMap<String, VecDeque<String>> {
     }
 }
 
-fn load_sorted_sets_from_dir(dir: &Path) -> HashMap<String, BTreeMap<i64, HashSet<String>>> {
+fn load_sorted_sets_from_dir(dir: &Path) -> SortedSetMap {
     let sorted_sets_file = dir.join(SORTED_SETS_FILE_NAME);
     if !sorted_sets_file.exists() {
         return HashMap::new();
@@ -97,7 +99,7 @@ async fn persist_lists_to_disk(
 
 async fn persist_sorted_sets_to_disk(
     dir: &Path,
-    sorted_sets: &HashMap<String, BTreeMap<i64, HashSet<String>>>,
+    sorted_sets: &SortedSetMap,
 ) -> anyhow::Result<()> {
     if let Err(err) = tokio::fs::create_dir_all(dir).await {
         tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
@@ -118,7 +120,7 @@ async fn persist_sorted_sets_to_disk(
 pub struct QueueKvStore {
     kv: Arc<BuiltinKvStore>,
     lists: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
-    sorted_sets: Arc<RwLock<HashMap<String, BTreeMap<i64, HashSet<String>>>>>,
+    sorted_sets: Arc<RwLock<SortedSetMap>>,
     file_store_dir: Option<PathBuf>,
     dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
     #[allow(dead_code)]
@@ -198,7 +200,7 @@ impl QueueKvStore {
 
     async fn save_loop(
         lists: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
-        sorted_sets: Arc<RwLock<HashMap<String, BTreeMap<i64, HashSet<String>>>>>,
+        sorted_sets: Arc<RwLock<SortedSetMap>>,
         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
         polling_interval: u64,
         dir: PathBuf,
