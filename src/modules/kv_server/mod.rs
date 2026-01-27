@@ -168,20 +168,14 @@ impl KvServer {
         }
     }
 
-    #[function(
-        name = "kv_server.lrem",
-        description = "Remove elements from a list"
-    )]
+    #[function(name = "kv_server.lrem", description = "Remove elements from a list")]
     pub async fn lrem(&self, data: KvLremInput) -> FunctionResult<Option<Value>, ErrorBody> {
         tracing::debug!(key = %data.key, count = data.count, "Removing elements from list");
         let removed = self.storage.lrem(&data.key, data.count, &data.value).await;
         FunctionResult::Success(Some(Value::Number(serde_json::Number::from(removed))))
     }
 
-    #[function(
-        name = "kv_server.llen",
-        description = "Get the length of a list"
-    )]
+    #[function(name = "kv_server.llen", description = "Get the length of a list")]
     pub async fn llen(&self, data: KvLlenInput) -> FunctionResult<Option<Value>, ErrorBody> {
         tracing::debug!(key = %data.key, "Getting list length");
         let len = self.storage.llen(&data.key).await;
@@ -217,7 +211,10 @@ impl KvServer {
         data: KvZrangebyscoreInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         tracing::debug!(key = %data.key, min = data.min, max = data.max, "Getting members by score range");
-        let result = self.storage.zrangebyscore(&data.key, data.min, data.max).await;
+        let result = self
+            .storage
+            .zrangebyscore(&data.key, data.min, data.max)
+            .await;
         match serde_json::to_value(result) {
             Ok(value) => FunctionResult::Success(Some(value)),
             Err(err) => FunctionResult::Failure(ErrorBody {

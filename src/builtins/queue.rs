@@ -10,7 +10,7 @@ use serde_json::Value;
 use tokio::{
     sync::{RwLock, Semaphore},
     task::JoinHandle,
-    time::{interval, Duration},
+    time::{Duration, interval},
 };
 use uuid::Uuid;
 
@@ -159,15 +159,19 @@ impl BuiltinQueue {
         if !has_persisted_state {
             tracing::info!("No persisted queue state found, rebuilding from job records");
 
-            let job_keys = self.kv_store.list_keys_with_prefix("queue:".to_string()).await;
-            
+            let job_keys = self
+                .kv_store
+                .list_keys_with_prefix("queue:".to_string())
+                .await;
+
             let mut queue_jobs: HashMap<String, Vec<Job>> = HashMap::new();
-            
+
             for key in job_keys {
                 if key.contains(":jobs:") {
                     if let Some(job_value) = self.kv_store.get(key.clone(), String::new()).await {
                         if let Ok(job) = serde_json::from_value::<Job>(job_value) {
-                            queue_jobs.entry(job.queue.clone())
+                            queue_jobs
+                                .entry(job.queue.clone())
                                 .or_insert_with(Vec::new)
                                 .push(job);
                         }
@@ -181,11 +185,13 @@ impl BuiltinQueue {
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as u64;
-                    
+
                     if let Some(process_at) = job.process_at {
                         if process_at > now {
                             let delayed_key = self.delayed_key(&queue_name);
-                            self.kv_store.zadd(&delayed_key, process_at as i64, job.id.clone()).await;
+                            self.kv_store
+                                .zadd(&delayed_key, process_at as i64, job.id.clone())
+                                .await;
                             tracing::debug!(queue = %queue_name, job_id = %job.id, "Rebuilt job into delayed queue");
                         } else {
                             let waiting_key = self.waiting_key(&queue_name);
@@ -203,10 +209,14 @@ impl BuiltinQueue {
             tracing::info!("Queue state rebuilt from storage");
         } else {
             tracing::info!("Queue state loaded from persisted lists/sorted_sets");
-            
+
             let queue_names_set: std::collections::HashSet<String> = {
-                let job_keys = self.kv_store.list_keys_with_prefix("queue:".to_string()).await;
-                job_keys.iter()
+                let job_keys = self
+                    .kv_store
+                    .list_keys_with_prefix("queue:".to_string())
+                    .await;
+                job_keys
+                    .iter()
                     .filter(|k| k.contains(":jobs:"))
                     .filter_map(|k| {
                         let parts: Vec<&str> = k.split(':').collect();
@@ -250,7 +260,12 @@ impl BuiltinQueue {
     }
 
     pub async fn push(&self, queue: &str, data: Value) -> String {
-        let job = Job::new(queue, data, self.config.max_attempts, self.config.backoff_ms);
+        let job = Job::new(
+            queue,
+            data,
+            self.config.max_attempts,
+            self.config.backoff_ms,
+        );
         let job_id = job.id.clone();
 
         let job_key = self.job_key(queue, &job.id);
@@ -272,7 +287,12 @@ impl BuiltinQueue {
     }
 
     pub async fn push_delayed(&self, queue: &str, data: Value, delay_ms: u64) -> String {
-        let mut job = Job::new(queue, data, self.config.max_attempts, self.config.backoff_ms);
+        let mut job = Job::new(
+            queue,
+            data,
+            self.config.max_attempts,
+            self.config.backoff_ms,
+        );
         let job_id = job.id.clone();
 
         let process_at = SystemTime::now()
@@ -288,7 +308,9 @@ impl BuiltinQueue {
         self.kv_store.set(job_key, String::new(), job_json).await;
 
         let delayed_key = self.delayed_key(queue);
-        self.kv_store.zadd(&delayed_key, process_at as i64, job.id.clone()).await;
+        self.kv_store
+            .zadd(&delayed_key, process_at as i64, job.id.clone())
+            .await;
 
         tracing::debug!(queue = %queue, job_id = %job_id, delay_ms = %delay_ms, "Job scheduled with delay");
 
@@ -364,7 +386,9 @@ impl BuiltinQueue {
 
             let job_json = serde_json::to_value(&job)?;
             self.kv_store.set(job_key, String::new(), job_json).await;
-            self.kv_store.zadd(&delayed_key, process_at as i64, job_id.to_string()).await;
+            self.kv_store
+                .zadd(&delayed_key, process_at as i64, job_id.to_string())
+                .await;
 
             tracing::debug!(queue = %queue, job_id = %job_id, attempts = job.attempts_made, delay_ms = delay, "Job scheduled for retry");
         }
@@ -404,8 +428,9 @@ impl BuiltinQueue {
         config: Option<SubscriptionConfig>,
     ) -> SubscriptionHandle {
         let handle_id = Uuid::new_v4().to_string();
-        
-        let effective_concurrency = config.as_ref()
+
+        let effective_concurrency = config
+            .as_ref()
             .and_then(|c| c.concurrency)
             .unwrap_or(self.config.concurrency);
 
@@ -523,7 +548,11 @@ impl Worker {
         loop {
             poll_interval.tick().await;
 
-            if let Err(e) = self.queue_impl.move_delayed_to_waiting(&self.queue_name).await {
+            if let Err(e) = self
+                .queue_impl
+                .move_delayed_to_waiting(&self.queue_name)
+                .await
+            {
                 tracing::error!(error = ?e, queue = %self.queue_name, "Failed to move delayed jobs");
             }
 
@@ -556,7 +585,7 @@ impl Worker {
 
             tokio::spawn(async move {
                 let _permit = permit;
-                
+
                 match handler.handle(&job).await {
                     Ok(()) => {
                         if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
@@ -622,7 +651,7 @@ mod tests {
 
         let data = serde_json::json!({"key": "value"});
         let job_id = queue.push("test_queue", data).await;
-        
+
         let job = queue.pop("test_queue").await.unwrap();
         queue.ack("test_queue", &job.id).await.unwrap();
 
@@ -646,7 +675,10 @@ mod tests {
         queue.push("test_queue", data).await;
 
         let job = queue.pop("test_queue").await.unwrap();
-        queue.nack("test_queue", &job.id, "Test error").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "Test error")
+            .await
+            .unwrap();
 
         let delayed_key = queue.delayed_key("test_queue");
         let delayed_jobs = kv_store.zrangebyscore(&delayed_key, 0, i64::MAX).await;
@@ -668,7 +700,10 @@ mod tests {
         queue.push("test_queue", data).await;
 
         let job = queue.pop("test_queue").await.unwrap();
-        queue.nack("test_queue", &job.id, "Test error").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "Test error")
+            .await
+            .unwrap();
 
         let dlq_count = queue.dlq_count("test_queue").await;
         assert_eq!(dlq_count, 1);
@@ -726,7 +761,10 @@ mod tests {
         queue.push("test_queue", data).await;
 
         let job = queue.pop("test_queue").await.unwrap();
-        queue.nack("test_queue", &job.id, "Test error").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "Test error")
+            .await
+            .unwrap();
 
         assert_eq!(queue.dlq_count("test_queue").await, 1);
 
@@ -742,15 +780,15 @@ mod tests {
     #[tokio::test]
     async fn test_exponential_backoff_calculation() {
         let mut job = Job::new("test", serde_json::json!({}), 5, 1000);
-        
+
         assert_eq!(job.calculate_backoff(), 1000);
-        
+
         job.increment_attempts();
         assert_eq!(job.calculate_backoff(), 1000);
-        
+
         job.increment_attempts();
         assert_eq!(job.calculate_backoff(), 2000);
-        
+
         job.increment_attempts();
         assert_eq!(job.calculate_backoff(), 4000);
     }
@@ -777,7 +815,7 @@ mod tests {
 
         let data1 = serde_json::json!({"key": "value1"});
         let data2 = serde_json::json!({"key": "value2"});
-        
+
         let job1_id = queue.push("test_queue", data1.clone()).await;
         let job2_id = queue.push("test_queue", data2.clone()).await;
 
@@ -833,7 +871,10 @@ mod tests {
         queue.push("test_queue", data).await;
 
         let job = queue.pop("test_queue").await.unwrap();
-        queue.nack("test_queue", &job.id, "Test error").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "Test error")
+            .await
+            .unwrap();
 
         let new_queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config);
         new_queue.rebuild_from_storage().await.unwrap();
@@ -867,7 +908,10 @@ mod tests {
         queue.push("test_queue", data).await;
 
         let job = queue.pop("test_queue").await.unwrap();
-        queue.nack("test_queue", &job.id, "Test error").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "Test error")
+            .await
+            .unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -923,7 +967,7 @@ mod tests {
         let new_kv_store = Arc::new(BuiltinKvStore::new(Some(config_json)));
         let new_pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
         let new_queue = BuiltinQueue::new(new_kv_store.clone(), new_pubsub, queue_config);
-        
+
         new_queue.rebuild_from_storage().await.unwrap();
 
         let popped1 = new_queue.pop("work_queue").await;

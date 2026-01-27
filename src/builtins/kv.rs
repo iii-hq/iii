@@ -121,23 +121,19 @@ fn load_lists_from_dir(dir: &Path) -> HashMap<String, VecDeque<String>> {
     }
 
     match std::fs::read(&list_file) {
-        Ok(bytes) => {
-            match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
-                Ok(storage) => {
-                    match serde_json::from_str(&storage.0) {
-                        Ok(lists) => lists,
-                        Err(err) => {
-                            tracing::warn!(error = ?err, "failed to decode lists from disk");
-                            HashMap::new()
-                        }
-                    }
-                }
+        Ok(bytes) => match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
+            Ok(storage) => match serde_json::from_str(&storage.0) {
+                Ok(lists) => lists,
                 Err(err) => {
-                    tracing::warn!(error = ?err, "failed to parse lists file");
+                    tracing::warn!(error = ?err, "failed to decode lists from disk");
                     HashMap::new()
                 }
+            },
+            Err(err) => {
+                tracing::warn!(error = ?err, "failed to parse lists file");
+                HashMap::new()
             }
-        }
+        },
         Err(err) => {
             tracing::warn!(error = ?err, "failed to read lists file");
             HashMap::new()
@@ -152,23 +148,19 @@ fn load_sorted_sets_from_dir(dir: &Path) -> HashMap<String, BTreeMap<i64, HashSe
     }
 
     match std::fs::read(&sorted_sets_file) {
-        Ok(bytes) => {
-            match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
-                Ok(storage) => {
-                    match serde_json::from_str(&storage.0) {
-                        Ok(sorted_sets) => sorted_sets,
-                        Err(err) => {
-                            tracing::warn!(error = ?err, "failed to decode sorted_sets from disk");
-                            HashMap::new()
-                        }
-                    }
-                }
+        Ok(bytes) => match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
+            Ok(storage) => match serde_json::from_str(&storage.0) {
+                Ok(sorted_sets) => sorted_sets,
                 Err(err) => {
-                    tracing::warn!(error = ?err, "failed to parse sorted_sets file");
+                    tracing::warn!(error = ?err, "failed to decode sorted_sets from disk");
                     HashMap::new()
                 }
+            },
+            Err(err) => {
+                tracing::warn!(error = ?err, "failed to parse sorted_sets file");
+                HashMap::new()
             }
-        }
+        },
         Err(err) => {
             tracing::warn!(error = ?err, "failed to read sorted_sets file");
             HashMap::new()
@@ -376,7 +368,8 @@ impl BuiltinKvStore {
                         let sorted_sets = sorted_sets.read().await;
                         sorted_sets.clone()
                     };
-                    if let Err(err) = persist_sorted_sets_to_disk(&dir, &sorted_sets_snapshot).await {
+                    if let Err(err) = persist_sorted_sets_to_disk(&dir, &sorted_sets_snapshot).await
+                    {
                         tracing::error!(error = ?err, "failed to persist sorted_sets");
                         let mut dirty = dirty.write().await;
                         dirty.insert("_sorted_sets".to_string(), DirtyOp::Upsert);
@@ -604,7 +597,8 @@ impl BuiltinKvStore {
 
     pub async fn lpush(&self, key: &str, value: String) {
         let mut lists = self.lists.write().await;
-        lists.entry(key.to_string())
+        lists
+            .entry(key.to_string())
             .or_insert_with(VecDeque::new)
             .push_front(value);
 
@@ -654,7 +648,7 @@ impl BuiltinKvStore {
             let count = count.unsigned_abs() as usize;
             let original_len = list.len();
             let mut indices_to_remove = Vec::new();
-            
+
             for i in (0..original_len).rev() {
                 if removed >= count {
                     break;
@@ -664,7 +658,7 @@ impl BuiltinKvStore {
                     removed += 1;
                 }
             }
-            
+
             indices_to_remove.sort_unstable();
             for &idx in indices_to_remove.iter().rev() {
                 list.remove(idx);
@@ -695,18 +689,17 @@ impl BuiltinKvStore {
 
     pub async fn zadd(&self, key: &str, score: i64, member: String) {
         let mut sorted_sets = self.sorted_sets.write().await;
-        let set = sorted_sets.entry(key.to_string())
+        let set = sorted_sets
+            .entry(key.to_string())
             .or_insert_with(BTreeMap::new);
-        
+
         for (_, members) in set.iter_mut() {
             members.remove(&member);
         }
-        
+
         set.retain(|_, members| !members.is_empty());
-        
-        set.entry(score)
-            .or_insert_with(HashSet::new)
-            .insert(member);
+
+        set.entry(score).or_insert_with(HashSet::new).insert(member);
 
         if self.file_store_dir.is_some() {
             drop(sorted_sets);
@@ -760,10 +753,10 @@ impl BuiltinKvStore {
     pub async fn has_queue_state_with_prefix(&self, prefix: &str) -> bool {
         let lists = self.lists.read().await;
         let sorted_sets = self.sorted_sets.read().await;
-        
+
         let has_lists = lists.keys().any(|k| k.starts_with(prefix));
         let has_sorted_sets = sorted_sets.keys().any(|k| k.starts_with(prefix));
-        
+
         has_lists || has_sorted_sets
     }
 }
@@ -1305,12 +1298,12 @@ mod test {
 
         let sorted_sets = kv_store.sorted_sets.read().await;
         let set = sorted_sets.get(key).unwrap();
-        
+
         assert!(set.get(&100).is_none());
         assert!(set.get(&400).is_some());
         assert_eq!(set.get(&400).unwrap().len(), 1);
         assert!(set.get(&400).unwrap().contains("member1"));
-        
+
         assert_eq!(set.len(), 3);
     }
 
@@ -1324,10 +1317,16 @@ mod test {
         });
 
         let kv_store = BuiltinKvStore::new(Some(config.clone()));
-        
-        kv_store.lpush("queue:test:waiting", "job1".to_string()).await;
-        kv_store.lpush("queue:test:waiting", "job2".to_string()).await;
-        kv_store.lpush("queue:test:active", "job3".to_string()).await;
+
+        kv_store
+            .lpush("queue:test:waiting", "job1".to_string())
+            .await;
+        kv_store
+            .lpush("queue:test:waiting", "job2".to_string())
+            .await;
+        kv_store
+            .lpush("queue:test:active", "job3".to_string())
+            .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
@@ -1355,19 +1354,30 @@ mod test {
         });
 
         let kv_store = BuiltinKvStore::new(Some(config.clone()));
-        
-        kv_store.zadd("queue:test:delayed", 1000, "job1".to_string()).await;
-        kv_store.zadd("queue:test:delayed", 2000, "job2".to_string()).await;
-        kv_store.zadd("queue:test:delayed", 1500, "job3".to_string()).await;
+
+        kv_store
+            .zadd("queue:test:delayed", 1000, "job1".to_string())
+            .await;
+        kv_store
+            .zadd("queue:test:delayed", 2000, "job2".to_string())
+            .await;
+        kv_store
+            .zadd("queue:test:delayed", 1500, "job3".to_string())
+            .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let sorted_sets_file = dir.join("_sorted_sets.bin");
-        assert!(sorted_sets_file.exists(), "Sorted sets file should be persisted");
+        assert!(
+            sorted_sets_file.exists(),
+            "Sorted sets file should be persisted"
+        );
 
         let new_kv_store = BuiltinKvStore::new(Some(config));
 
-        let range = new_kv_store.zrangebyscore("queue:test:delayed", 0, 3000).await;
+        let range = new_kv_store
+            .zrangebyscore("queue:test:delayed", 0, 3000)
+            .await;
         assert_eq!(range.len(), 3);
         assert!(range.contains(&"job1".to_string()));
         assert!(range.contains(&"job2".to_string()));
@@ -1418,6 +1428,14 @@ mod test {
             items.push(item);
         }
 
-        assert_eq!(items, vec!["d".to_string(), "b".to_string(), "c".to_string(), "a".to_string()]);
+        assert_eq!(
+            items,
+            vec![
+                "d".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "a".to_string()
+            ]
+        );
     }
 }

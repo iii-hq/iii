@@ -8,11 +8,11 @@ use crate::{
     builtins::{
         kv::BuiltinKvStore,
         pubsub::BuiltInPubSubAdapter,
-        queue::{BuiltinQueue, JobHandler, QueueConfig, SubscriptionConfig, SubscriptionHandle},
+        queue::{BuiltinQueue, JobHandler, QueueConfig, SubscriptionHandle},
     },
     engine::{Engine, EngineTrait},
     modules::event::{
-        EventAdapter, SubscriberQueueConfig,
+        EventAdapter,
         registry::{EventAdapterFuture, EventAdapterRegistration},
     },
 };
@@ -31,7 +31,11 @@ struct FunctionHandler {
 #[async_trait]
 impl JobHandler for FunctionHandler {
     async fn handle(&self, job: &crate::builtins::queue::Job) -> Result<(), String> {
-        match self.engine.invoke_function(&self.function_path, job.data.clone()).await {
+        match self
+            .engine
+            .invoke_function(&self.function_path, job.data.clone())
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }
@@ -67,21 +71,21 @@ impl Clone for BuiltinQueueAdapter {
 pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
     Box::pin(async move {
         let queue_config = QueueConfig::from_value(config.as_ref());
-        
+
         let kv_store = Arc::new(BuiltinKvStore::new(config.clone()));
         let pubsub = Arc::new(BuiltInPubSubAdapter::new(config.clone()));
-        
+
         let adapter = Arc::new(BuiltinQueueAdapter::new(
             kv_store,
             pubsub,
             engine,
             queue_config,
         ));
-        
+
         if let Err(e) = adapter.queue.rebuild_from_storage().await {
             tracing::error!(error = ?e, "Failed to rebuild queue state from storage");
         }
-        
+
         Ok(adapter as Arc<dyn EventAdapter>)
     })
 }
@@ -98,20 +102,13 @@ impl EventAdapter for BuiltinQueueAdapter {
         id: &str,
         function_path: &str,
         _condition_function_path: Option<String>,
-        queue_config: Option<SubscriberQueueConfig>,
     ) {
         let handler = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
             function_path: function_path.to_string(),
         });
 
-        let subscription_config = queue_config.map(|c| SubscriptionConfig {
-            concurrency: c.concurrency,
-            max_attempts: c.max_retries,
-            backoff_ms: c.backoff_delay_ms,
-        });
-
-        let handle = self.queue.subscribe(topic, handler, subscription_config).await;
+        let handle = self.queue.subscribe(topic, handler, None).await;
 
         let mut subs = self.subscriptions.write().await;
         subs.insert(format!("{}:{}", topic, id), handle);
@@ -129,14 +126,6 @@ impl EventAdapter for BuiltinQueueAdapter {
         } else {
             tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
         }
-    }
-
-    async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.queue.dlq_redrive(topic).await)
-    }
-
-    async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.queue.dlq_count(topic).await)
     }
 }
 
