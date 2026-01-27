@@ -1,42 +1,19 @@
 PATENT NOTICE
 
-This software is covered by patents owned by Motia LLC. Patent rights are
-licensed under the terms of the Elastic License 2.0. See the LICENSE file
-for full terms.
+This software is covered by patents owned by Motia LLC.
+Patent rights are licensed under the terms of the Elastic License 2.0.
 
 COVERED PATENTS
 
 US Patent Application 63/968,323
-  Title:      Methods of and Systems for Distributed Polyglot Function
-              Orchestration with Dynamic Runtime Registration and
-              Correlated Invocation
-  Type:       Provisional Application (35 USC 111(b))
+  Type:       Provisional Application
   Filed:      January 26, 2026
-  Docket:     MOTIA.003PUS0
-  Inventors:  Michael Piccolo, Sergio Marcelino Nobrega de Castro Filho
   Assignee:   Motia LLC
   Status:     Pending
 
-PATENT COVERAGE
-
-The above patent application covers core technologies in III Engine including:
-
-  1. Centralized orchestration engine for distributed function execution
-  2. Unified invocation model for local and remote functions
-  3. Dynamic runtime registration of functions, triggers, and trigger types
-  4. Request-response correlation using unique invocation identifiers
-  5. Recursive orchestration (engine-as-worker patterns)
-  6. Polyglot function execution across heterogeneous runtimes
-  7. Bridge layer protocols for language-agnostic worker participation
-
-PATENT LICENSE
-
-The Elastic License 2.0 grants you a patent license to make, have made, use,
-sell, offer for sale, import and have imported the software, subject to the
-license limitations. This patent license terminates immediately if you or
-your company make any written claim that the software infringes patents.
-
 COMMERCIAL LICENSING
 
-For use cases requiring managed service rights to third parties:
-Contact: licensing@motia.dev
+We're open to discussing licensing options for your use case.
+Please reach out - we'd love to hear from you.
+
+Contact: support@motia.dev
