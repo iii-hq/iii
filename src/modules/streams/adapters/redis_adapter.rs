@@ -67,21 +67,13 @@ impl StreamAdapter for RedisAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult {
+    ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
         let key = format!("stream:{}:{}", stream_name, group_id);
 
         // Serialize operations to JSON
-        let ops_json = match serde_json::to_string(&ops) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize update operations");
-                return UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
-            }
-        };
+        let ops_json = serde_json::to_string(&ops)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize update operations: {}", e))?;
 
         // Use a single Lua script that atomically gets, applies operations, and sets
         // Try using cjson as a global (available in most Redis installations)
@@ -216,21 +208,19 @@ impl StreamAdapter for RedisAdapter {
                     let old_value = if values[1].is_empty() {
                         None
                     } else {
-                        serde_json::from_str(&values[1]).ok()
+                        Some(serde_json::from_str::<Value>(&values[1])
+                            .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e))?)
                     };
 
-                    let new_value = serde_json::from_str(&values[2]).unwrap_or(Value::Null);
+                    let new_value = serde_json::from_str(&values[2])
+                        .map_err(|e| anyhow::anyhow!("Failed to deserialize new value: {}", e))?;
 
-                    UpdateResult {
+                    Ok(UpdateResult {
                         old_value,
                         new_value,
-                    }
+                    })
                 } else {
-                    tracing::error!("Unexpected return value from update script");
-                    UpdateResult {
-                        old_value: None,
-                        new_value: Value::Null,
-                    }
+                    Err(anyhow::anyhow!("Unexpected return value from update script: expected 3 values, got {}", values.len()))
                 }
             }
             Err(e) => {
@@ -240,32 +230,23 @@ impl StreamAdapter for RedisAdapter {
                     .await
             }
             _ => {
-                tracing::error!("Unexpected return value from update script");
-                UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                }
+                Err(anyhow::anyhow!("Unexpected return value from update script"))
             }
         }
     }
 
-    async fn emit_event(&self, message: StreamWrapperMessage) {
+    async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()> {
         let mut conn = self.publisher.lock().await;
         tracing::debug!(msg = ?message, "Emitting event to Redis");
 
-        let event_json = match serde_json::to_string(&message) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize event data");
-                return;
-            }
-        };
+        let event_json = serde_json::to_string(&message)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize event data: {}", e))?;
 
-        if let Err(e) = conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json).await {
-            tracing::error!(error = %e, "Failed to publish event to Redis");
-        } else {
-            tracing::debug!("Event published to Redis");
-        }
+        conn.publish::<_, _, ()>(&STREAM_TOPIC, &event_json).await
+            .map_err(|e| anyhow::anyhow!("Failed to publish event to Redis: {}", e))?;
+        
+        tracing::debug!("Event published to Redis");
+        Ok(())
     }
 
     async fn set(
@@ -274,7 +255,7 @@ impl StreamAdapter for RedisAdapter {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> SetResult {
+    ) -> anyhow::Result<SetResult> {
         let key: String = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data).unwrap_or_default();
@@ -297,13 +278,11 @@ impl StreamAdapter for RedisAdapter {
             .await;
 
         let old_value = match result {
-            Ok(old) => old.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null)),
+            Ok(old) => old.map(|s| serde_json::from_str(&s)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e)))
+                .transpose()?,
             Err(e) => {
-                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Failed to atomically set value in Redis");
-                return SetResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
+                return Err(anyhow::anyhow!("Failed to atomically set value in Redis: {}", e));
             }
         };
         let new_value = data.clone();
@@ -322,31 +301,32 @@ impl StreamAdapter for RedisAdapter {
                 StreamOutboundMessage::Create { data }
             },
         })
-        .await;
+        .await?;
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Value set in Redis");
 
-        SetResult {
+        Ok(SetResult {
             old_value,
             new_value,
-        }
+        })
     }
 
-    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
+    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
         let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
         match conn.hget::<_, _, Option<String>>(&key, &item_id).await {
-            Ok(Some(s)) => serde_json::from_str(&s).ok(),
-            Ok(None) => None,
+            Ok(Some(s)) => serde_json::from_str(&s)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize value: {}", e))
+                .map(Some),
+            Ok(None) => Ok(None),
             Err(e) => {
-                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Failed to get value from Redis");
-                None
+                Err(anyhow::anyhow!("Failed to get value from Redis: {}", e))
             }
         }
     }
 
-    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
+    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<()> {
         let stream_name = stream_name.to_string();
         let group_id = group_id.to_string();
         let item_id = item_id.to_string();
@@ -355,9 +335,8 @@ impl StreamAdapter for RedisAdapter {
         let mut conn = self.publisher.lock().await;
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        if let Err(e) = conn.hdel::<String, String, ()>(key, item_id.clone()).await {
-            tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Failed to delete value from Redis");
-        }
+        conn.hdel::<String, String, ()>(key, item_id.clone()).await
+            .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
 
         drop(conn); // Release the lock
 
@@ -370,71 +349,78 @@ impl StreamAdapter for RedisAdapter {
                 data: serde_json::json!({ "id": item_id }),
             },
         })
-        .await;
+        .await?;
+        
+        Ok(())
     }
 
-    async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
+    async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {
         let key = format!("stream:{}:{}", stream_name, group_id);
         let mut conn = self.publisher.lock().await;
 
         match conn.hgetall::<String, HashMap<String, String>>(key).await {
-            Ok(values) => values
-                .into_values()
-                .map(|v| serde_json::from_str(&v).unwrap())
-                .collect(),
+            Ok(values) => {
+                let mut result = Vec::new();
+                for v in values.into_values() {
+                    match serde_json::from_str(&v) {
+                        Ok(value) => result.push(value),
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("Failed to deserialize value in group: {}", e));
+                        }
+                    }
+                }
+                Ok(result)
+            }
             Err(e) => {
-                tracing::error!(error = %e, stream_name = %stream_name, group_id = %group_id, "Failed to get group from Redis");
-                Vec::new()
+                Err(anyhow::anyhow!("Failed to get group from Redis: {}", e))
             }
         }
     }
 
-    async fn list_groups(&self, stream_name: &str) -> Vec<String> {
+    async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
         let mut conn = self.publisher.lock().await;
         let pattern = format!("stream:{}:*", stream_name);
         let prefix = format!("stream:{}:", stream_name);
 
         match conn.keys::<_, Vec<String>>(pattern).await {
-            Ok(keys) => keys
+            Ok(keys) => Ok(keys
                 .into_iter()
                 .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
-                .collect(),
+                .collect()),
             Err(e) => {
-                tracing::error!(error = %e, stream_name = %stream_name, "Failed to list groups from Redis");
-                Vec::new()
+                Err(anyhow::anyhow!("Failed to list groups from Redis: {}", e))
             }
         }
     }
 
-    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
+    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) -> anyhow::Result<()> {
         let mut connections = self.connections.write().await;
         connections.insert(id, connection.clone());
+        Ok(())
     }
 
-    async fn unsubscribe(&self, id: String) {
+    async fn unsubscribe(&self, id: String) -> anyhow::Result<()> {
         let mut connections = self.connections.write().await;
         connections.remove(&id);
+        Ok(())
     }
 
-    async fn watch_events(&self) {
+    async fn watch_events(&self) -> anyhow::Result<()> {
         tracing::debug!("Watching events");
 
-        let mut pubsub = match self.subscriber.get_async_pubsub().await {
-            Ok(pubsub) => pubsub,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to get async pubsub connection");
-                return;
-            }
-        };
+        let mut pubsub = self.subscriber.get_async_pubsub().await
+            .map_err(|e| anyhow::anyhow!("Failed to get async pubsub connection: {}", e))?;
 
-        if let Err(e) = pubsub.subscribe(&STREAM_TOPIC).await {
-            tracing::error!(error = %e, "Failed to subscribe to Redis channel");
-            return;
-        }
+        pubsub.subscribe(&STREAM_TOPIC).await
+            .map_err(|e| anyhow::anyhow!("Failed to subscribe to Redis channel: {}", e))?;
 
         let mut msg = pubsub.into_on_message();
 
-        while let Some(msg) = msg.next().await {
+        loop {
+            let msg = match msg.next().await {
+                Some(msg) => msg,
+                None => break,
+            };
             let payload: String = match msg.get_payload() {
                 Ok(payload) => payload,
                 Err(e) => {
@@ -462,6 +448,7 @@ impl StreamAdapter for RedisAdapter {
                 }
             }
         }
+        Ok(())
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
@@ -489,23 +476,14 @@ impl RedisAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult {
+    ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
         let key = format!("stream:{}:{}", stream_name, group_id);
 
         // Simple atomic get-and-set approach
         // Get old value
-        let old_value_str: Option<String> =
-            match conn.hget::<_, _, Option<String>>(&key, item_id).await {
-                Ok(val) => val,
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to get old value");
-                    return UpdateResult {
-                        old_value: None,
-                        new_value: Value::Null,
-                    };
-                }
-            };
+        let old_value_str: Option<String> = conn.hget::<_, _, Option<String>>(&key, item_id).await
+            .map_err(|e| anyhow::anyhow!("Failed to get old value: {}", e))?;
 
         // Parse and apply operations
         let old_value: Option<Value> = old_value_str
@@ -573,16 +551,8 @@ impl RedisAdapter {
         }
 
         // Serialize and atomically set
-        let new_value_str = match serde_json::to_string(&updated_value) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize");
-                return UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
-            }
-        };
+        let new_value_str = serde_json::to_string(&updated_value)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize: {}", e))?;
 
         let script = redis::Script::new(
             r#"
@@ -599,10 +569,10 @@ impl RedisAdapter {
             .invoke_async(&mut *conn)
             .await;
 
-        UpdateResult {
+        Ok(UpdateResult {
             old_value,
             new_value: updated_value,
-        }
+        })
     }
 }
 

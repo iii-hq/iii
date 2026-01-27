@@ -8,10 +8,10 @@ use serde_json::Value;
 
 #[async_trait]
 pub trait StateAdapter: Send + Sync {
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> SetResult;
-    async fn get(&self, group_id: &str, item_id: &str) -> Option<Value>;
-    async fn delete(&self, group_id: &str, item_id: &str);
-    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> UpdateResult;
-    async fn list(&self, group_id: &str) -> Vec<Value>;
+    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult>;
+    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>>;
+    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()>;
+    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> anyhow::Result<UpdateResult>;
+    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>>;
     async fn destroy(&self) -> anyhow::Result<()>;
 }

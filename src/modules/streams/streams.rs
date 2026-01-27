@@ -179,7 +179,9 @@ impl Module for StreamCoreModule {
 
         let adapter = self.adapter.clone();
         tokio::spawn(async move {
-            adapter.watch_events().await;
+            if let Err(e) = adapter.watch_events().await {
+                tracing::error!(error = %e, "Failed to watch events");
+            }
         });
 
         Ok(())
@@ -255,7 +257,7 @@ impl StreamCoreModule {
                             StreamOutboundMessage::Create { data }
                         };
 
-                        adapter
+                        if let Err(e) = adapter
                             .emit_event(StreamWrapperMessage {
                                 id: Some(item_id.clone()),
                                 timestamp: Utc::now().timestamp_millis(),
@@ -263,7 +265,9 @@ impl StreamCoreModule {
                                 group_id: group_id.clone(),
                                 event,
                             })
-                            .await;
+                            .await {
+                            tracing::error!(error = %e, "Failed to emit event");
+                        }
                     }
                     Err(error) => {
                         return FunctionResult::Failure(error);
@@ -271,9 +275,18 @@ impl StreamCoreModule {
                 }
             }
             None => {
-                let _ = adapter
+                match adapter
                     .set(&stream_name, &group_id, &item_id, data.clone())
-                    .await;
+                    .await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to set value in stream");
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to set value: {}", e),
+                            code: "STREAM_SET_ERROR".to_string(),
+                        });
+                    }
+                }
             }
         }
 
@@ -305,7 +318,18 @@ impl StreamCoreModule {
                     Err(error) => FunctionResult::Failure(error),
                 }
             }
-            None => FunctionResult::Success(adapter.get(&stream_name, &group_id, &item_id).await),
+            None => {
+                match adapter.get(&stream_name, &group_id, &item_id).await {
+                    Ok(value) => FunctionResult::Success(value),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to get value from stream");
+                        FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to get value: {}", e),
+                            code: "STREAM_GET_ERROR".to_string(),
+                        })
+                    }
+                }
+            }
         }
     }
 
@@ -341,7 +365,7 @@ impl StreamCoreModule {
 
                 match result {
                     Ok(_) => {
-                        adapter
+                        if let Err(e) = adapter
                             .emit_event(StreamWrapperMessage {
                                 id: Some(item_id.clone()),
                                 timestamp: Utc::now().timestamp_millis(),
@@ -351,7 +375,9 @@ impl StreamCoreModule {
                                     data: serde_json::json!({ "id": item_id }),
                                 },
                             })
-                            .await;
+                            .await {
+                            tracing::error!(error = %e, "Failed to emit delete event");
+                        }
                     }
                     Err(error) => {
                         return FunctionResult::Failure(error);
@@ -359,7 +385,13 @@ impl StreamCoreModule {
                 }
             }
             None => {
-                let _ = adapter.delete(&stream_name, &group_id, &item_id).await;
+                if let Err(e) = adapter.delete(&stream_name, &group_id, &item_id).await {
+                    tracing::error!(error = %e, "Failed to delete value from stream");
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to delete value: {}", e),
+                        code: "STREAM_DELETE_ERROR".to_string(),
+                    });
+                }
             }
         }
 
@@ -394,8 +426,16 @@ impl StreamCoreModule {
                 }
             }
             None => {
-                let values = adapter.get_group(&stream_name, &group_id).await;
-                FunctionResult::Success(serde_json::to_value(values).ok())
+                match adapter.get_group(&stream_name, &group_id).await {
+                    Ok(values) => FunctionResult::Success(serde_json::to_value(values).ok()),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to get group from stream");
+                        FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to get group: {}", e),
+                            code: "STREAM_GET_GROUP_ERROR".to_string(),
+                        })
+                    }
+                }
             }
         }
     }
@@ -430,8 +470,16 @@ impl StreamCoreModule {
                 }
             }
             None => {
-                let groups = adapter.list_groups(&stream_name).await;
-                FunctionResult::Success(serde_json::to_value(groups).ok())
+                match adapter.list_groups(&stream_name).await {
+                    Ok(groups) => FunctionResult::Success(serde_json::to_value(groups).ok()),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to list groups from stream");
+                        FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to list groups: {}", e),
+                            code: "STREAM_LIST_GROUPS_ERROR".to_string(),
+                        })
+                    }
+                }
             }
         }
     }
@@ -452,9 +500,18 @@ impl StreamCoreModule {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let result = adapter.update(&stream_name, &group_id, &item_id, ops).await;
+        let result = match adapter.update(&stream_name, &group_id, &item_id, ops).await {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to update value in stream");
+                return FunctionResult::Failure(ErrorBody {
+                    message: format!("Failed to update value: {}", e),
+                    code: "STREAM_UPDATE_ERROR".to_string(),
+                });
+            }
+        };
 
-        adapter
+        if let Err(e) = adapter
             .emit_event(StreamWrapperMessage {
                 id: Some(item_id),
                 timestamp: Utc::now().timestamp_millis(),
@@ -464,7 +521,9 @@ impl StreamCoreModule {
                     data: result.new_value.clone(),
                 },
             })
-            .await;
+            .await {
+            tracing::error!(error = %e, "Failed to emit update event");
+        }
 
         FunctionResult::Success(serde_json::to_value(result).ok())
     }

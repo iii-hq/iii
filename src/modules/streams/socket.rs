@@ -78,9 +78,12 @@ impl StreamSocketManager {
         let connection_id = connection.id.to_string();
         let connection = Arc::new(connection);
 
-        self.adapter
+        if let Err(e) = self.adapter
             .subscribe(connection_id.clone(), connection.clone())
-            .await;
+            .await {
+            tracing::error!(error = %e, "Failed to subscribe connection");
+            return Err(anyhow::anyhow!("Failed to subscribe connection: {}", e));
+        }
 
         while let Some(frame) = ws_rx.next().await {
             match frame {
@@ -119,7 +122,9 @@ impl StreamSocketManager {
         }
 
         writer.abort();
-        self.adapter.unsubscribe(connection_id).await;
+        if let Err(e) = self.adapter.unsubscribe(connection_id).await {
+            tracing::error!(error = %e, "Failed to unsubscribe connection");
+        }
         connection.cleanup().await;
 
         Ok(())

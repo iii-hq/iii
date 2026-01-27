@@ -45,10 +45,11 @@ impl StateRedisAdapter {
 
 #[async_trait]
 impl StateAdapter for StateRedisAdapter {
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> SetResult {
+    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
         let key: String = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
-        let value = serde_json::to_string(&data).unwrap_or_default();
+        let value = serde_json::to_string(&data)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize data: {}", e))?;
 
         // Use Lua script for atomic get-and-set operation
         // This script atomically gets the old value and sets the new value
@@ -65,55 +66,51 @@ impl StateAdapter for StateRedisAdapter {
             .arg(item_id)
             .arg(&value)
             .invoke_async(&mut *conn)
-            .await;
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to atomically set value in Redis: {}", e))?;
 
-        let old_value = match result {
-            Ok(old) => old.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null)),
-            Err(e) => {
-                tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to atomically set value in Redis");
-                return SetResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
+        match result {
+            Ok(s) => {
+                let old_value = s.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
+                let new_value = data.clone();
+
+                Ok(SetResult {
+                    old_value,
+                    new_value,
+                })
             }
-        };
-        let new_value = data.clone();
-
-        SetResult {
-            old_value,
-            new_value,
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to atomically set value in Redis: {}",
+                e
+            )),
         }
     }
 
-    async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
+    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
         let key = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
 
         match conn.hget::<_, _, Option<String>>(&key, &item_id).await {
-            Ok(Some(s)) => serde_json::from_str(&s).ok(),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to get value from Redis");
-                None
-            }
+            Ok(Some(s)) => serde_json::from_str(&s)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize value from Redis: {}", e))
+                .map(Some),
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("Failed to get value from Redis: {}", e)),
         }
     }
 
-    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> UpdateResult {
+    async fn update(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
         let key = format!("state:{}", group_id);
 
         // Serialize operations to JSON
-        let ops_json = match serde_json::to_string(&ops) {
-            Ok(json) => json,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize update operations");
-                return UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
-            }
-        };
+        let ops_json = serde_json::to_string(&ops)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize update operations: {}", e))?;
 
         // Use a single Lua script that atomically gets, applies operations, and sets
         // Try using cjson as a global (available in most Redis installations)
@@ -246,21 +243,23 @@ impl StateAdapter for StateRedisAdapter {
                     let old_value = if values[1].is_empty() {
                         None
                     } else {
-                        serde_json::from_str(&values[1]).ok()
+                        serde_json::from_str(&values[1]).map_err(|e| {
+                            anyhow::anyhow!("Failed to deserialize old value: {}", e)
+                        })?
                     };
 
-                    let new_value = serde_json::from_str(&values[2]).unwrap_or(Value::Null);
+                    let new_value = serde_json::from_str(&values[2])
+                        .map_err(|e| anyhow::anyhow!("Failed to deserialize new value: {}", e))?;
 
-                    UpdateResult {
+                    Ok(UpdateResult {
                         old_value,
                         new_value,
-                    }
+                    })
                 } else {
-                    tracing::error!("Unexpected return value from update script");
-                    UpdateResult {
-                        old_value: None,
-                        new_value: Value::Null,
-                    }
+                    Err(anyhow::anyhow!(
+                        "Unexpected return value from update script: expected 3 values, got {}",
+                        values.len()
+                    ))
                 }
             }
             Err(e) => {
@@ -268,39 +267,39 @@ impl StateAdapter for StateRedisAdapter {
                 tracing::debug!(error = %e, "Lua script failed, falling back to Rust-based update");
                 self.update_rust_based(group_id, item_id, ops).await
             }
-            _ => {
-                tracing::error!("Unexpected return value from update script");
-                UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                }
-            }
+            _ => Err(anyhow::anyhow!(
+                "Unexpected return value from update script"
+            )),
         }
     }
 
-    async fn delete(&self, group_id: &str, item_id: &str) {
+    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()> {
         let key = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
 
-        if let Err(e) = conn.hdel::<_, String, ()>(&key, item_id.to_string()).await {
-            tracing::error!(error = %e, group_id = %group_id, item_id = %item_id, "Failed to delete value from Redis");
-        }
+        conn.hdel::<_, String, ()>(&key, item_id.to_string())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
+        Ok(())
     }
 
-    async fn list(&self, group_id: &str) -> Vec<Value> {
+    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
         let key = format!("state:{}", group_id);
         let mut conn = self.publisher.lock().await;
 
-        match conn.hgetall::<String, HashMap<String, String>>(key).await {
-            Ok(values) => values
-                .into_values()
-                .map(|v| serde_json::from_str(&v).unwrap())
-                .collect(),
-            Err(e) => {
-                tracing::error!(error = %e, group_id = %group_id, "Failed to get group from Redis");
-                Vec::new()
-            }
+        let values = conn
+            .hgetall::<String, HashMap<String, String>>(key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get group from Redis: {}", e))?;
+
+        let mut result = Vec::new();
+        for v in values.into_values() {
+            result.push(
+                serde_json::from_str(&v)
+                    .map_err(|e| anyhow::anyhow!("Failed to deserialize value: {}", e))?,
+            );
         }
+        Ok(result)
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
@@ -316,23 +315,16 @@ impl StateRedisAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> UpdateResult {
+    ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
         let key = format!("state:{}", group_id);
 
         // Simple atomic get-and-set approach
         // Get old value
-        let old_value_str: Option<String> =
-            match conn.hget::<_, _, Option<String>>(&key, item_id).await {
-                Ok(val) => val,
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to get old value");
-                    return UpdateResult {
-                        old_value: None,
-                        new_value: Value::Null,
-                    };
-                }
-            };
+        let old_value_str: Option<String> = conn
+            .hget::<_, _, Option<String>>(&key, item_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get old value: {}", e))?;
 
         // Parse and apply operations
         let old_value: Option<Value> = old_value_str
@@ -400,16 +392,8 @@ impl StateRedisAdapter {
         }
 
         // Serialize and atomically set
-        let new_value_str = match serde_json::to_string(&updated_value) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize");
-                return UpdateResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
-            }
-        };
+        let new_value_str = serde_json::to_string(&updated_value)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize updated value: {}", e))?;
 
         let script = redis::Script::new(
             r#"
@@ -419,16 +403,22 @@ impl StateRedisAdapter {
             "#,
         );
 
-        let _: redis::RedisResult<String> = script
+        let result: redis::RedisResult<()> = script
             .key(&key)
             .arg(item_id)
             .arg(&new_value_str)
             .invoke_async(&mut *conn)
             .await;
 
-        UpdateResult {
-            old_value,
-            new_value: updated_value,
+        match result {
+            Ok(_) => Ok(UpdateResult {
+                old_value,
+                new_value: updated_value,
+            }),
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to set updated value in Redis: {}",
+                e
+            )),
         }
     }
 }
