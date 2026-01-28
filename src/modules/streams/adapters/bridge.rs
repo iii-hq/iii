@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::pubsub::BuiltInPubSubAdapter,
+    builtins::pubsub_lite::BuiltInPubSubLite,
     engine::Engine,
     modules::{
         kv_server::{
@@ -35,7 +35,7 @@ pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
 pub const STREAMS_EVENTS_TOPIC: &str = "streams.events";
 
 pub struct BridgeAdapter {
-    pub_sub: Arc<BuiltInPubSubAdapter>,
+    pub_sub: Arc<BuiltInPubSubLite>,
     handler_function_path: String,
     bridge: Arc<Bridge>,
 }
@@ -54,7 +54,7 @@ impl BridgeAdapter {
 
         Ok(Self {
             bridge,
-            pub_sub: Arc::new(BuiltInPubSubAdapter::new(None)),
+            pub_sub: Arc::new(BuiltInPubSubLite::new(None)),
             handler_function_path,
         })
     }

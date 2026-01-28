@@ -15,15 +15,22 @@ use crate::{
         state::{
             adapters::StateAdapter,
             config::StateModuleConfig,
-            structs::{StateDeleteInput, StateGetGroupInput, StateGetInput, StateSetInput},
+            structs::{
+                StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput,
+                StateGetInput, StateSetInput, StateUpdateInput,
+            },
+            trigger::{StateTriggers, TRIGGER_TYPE},
         },
     },
     protocol::ErrorBody,
+    trigger::{Trigger, TriggerType},
 };
 
 #[derive(Clone)]
 pub struct StateCoreModule {
     adapter: Arc<dyn StateAdapter>,
+    engine: Arc<Engine>,
+    pub triggers: Arc<StateTriggers>,
 }
 
 #[async_trait::async_trait]
@@ -47,6 +54,17 @@ impl Module for StateCoreModule {
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing StateCoreModule");
+
+        let _ = self
+            .engine
+            .register_trigger_type(TriggerType {
+                id: TRIGGER_TYPE.to_string(),
+                _description: "State trigger".to_string(),
+                registrator: Box::new(self.clone()),
+                worker_id: None,
+            })
+            .await;
+
         Ok(())
     }
 }
@@ -64,8 +82,12 @@ impl ConfigurableModule for StateCoreModule {
         &REGISTRY
     }
 
-    fn build(_engine: Arc<Engine>, _config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
-        Self { adapter }
+    fn build(engine: Arc<Engine>, _config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        Self {
+            adapter,
+            engine,
+            triggers: Arc::new(StateTriggers::new()),
+        }
     }
 
     fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
@@ -74,6 +96,106 @@ impl ConfigurableModule for StateCoreModule {
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
         config.adapter.as_ref().and_then(|a| a.config.clone())
+    }
+}
+
+impl StateCoreModule {
+    /// Invoke triggers for a given event type with condition checks
+    async fn invoke_triggers(&self, event_data: StateEventData) {
+        // Collect triggers into Vec to release the lock before spawning
+        let triggers: Vec<Trigger> = {
+            let triggers_guard = self.triggers.list.read().await;
+            triggers_guard.values().cloned().collect()
+        };
+        let engine = self.engine.clone();
+        let event_type = event_data.event_type.clone();
+
+        if let Ok(event_data) = serde_json::to_value(event_data) {
+            tokio::spawn(async move {
+                tracing::info!("Invoking triggers for event type {:?}", event_type);
+
+                for trigger in triggers {
+                    let trigger = trigger.clone();
+
+                    // Check condition if specified
+                    let condition_function_path = trigger
+                        .config
+                        .get("condition_function_path")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    if let Some(condition_function_path) = condition_function_path {
+                        tracing::debug!(
+                            condition_function_path = %condition_function_path,
+                            "Checking trigger conditions"
+                        );
+
+                        match engine
+                            .invoke_function(&condition_function_path, event_data.clone())
+                            .await
+                        {
+                            Ok(Some(result)) => {
+                                tracing::debug!(
+                                    condition_function_path = %condition_function_path,
+                                    result = ?result,
+                                    "Condition function result"
+                                );
+                                if let Some(passed) = result.as_bool() {
+                                    if !passed {
+                                        tracing::debug!(
+                                            function_path = %trigger.function_path,
+                                            "Condition check failed, skipping handler"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    condition_function_path = %condition_function_path,
+                                    "Condition function returned no result"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    condition_function_path = %condition_function_path,
+                                    error = ?err,
+                                    "Error invoking condition function"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Invoke the handler function
+                    tracing::debug!(
+                        function_path = %trigger.function_path,
+                        "Invoking trigger"
+                    );
+
+                    let call_result = engine
+                        .invoke_function(&trigger.function_path, event_data.clone())
+                        .await;
+
+                    match call_result {
+                        Ok(_) => {
+                            tracing::debug!(
+                                function_path = %trigger.function_path,
+                                "Trigger handler invoked successfully"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                function_path = %trigger.function_path,
+                                error = ?err,
+                                "Error invoking trigger handler"
+                            );
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -86,7 +208,28 @@ impl StateCoreModule {
             .set(&input.group_id, &input.item_id, input.data.clone())
             .await
         {
-            Ok(_) => FunctionResult::Success(Some(input.data)),
+            Ok(value) => {
+                let old_value = value.old_value.clone();
+                let new_value = value.new_value.clone();
+                let is_create = old_value.is_none();
+                // Invoke triggers after successful set
+                let event_data = StateEventData {
+                    message_type: "state".to_string(),
+                    event_type: if is_create {
+                        StateEventType::Created
+                    } else {
+                        StateEventType::Updated
+                    },
+                    group_id: input.group_id,
+                    item_id: input.item_id,
+                    old_value: old_value,
+                    new_value: new_value.clone(),
+                };
+
+                self.invoke_triggers(event_data).await;
+
+                FunctionResult::Success(Some(serde_json::to_value(new_value).unwrap()))
+            }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to set value: {}", e),
                 code: "SET_ERROR".to_string(),
@@ -121,10 +264,62 @@ impl StateCoreModule {
         };
 
         match self.adapter.delete(&input.group_id, &input.item_id).await {
-            Ok(_) => FunctionResult::Success(value),
+            Ok(_) => {
+                // Invoke triggers after successful delete
+                let event_data = StateEventData {
+                    message_type: "state".to_string(),
+                    event_type: StateEventType::Deleted,
+                    group_id: input.group_id,
+                    item_id: input.item_id,
+                    old_value: value.clone(),
+                    new_value: Value::Null,
+                };
+
+                self.invoke_triggers(event_data).await;
+
+                FunctionResult::Success(value)
+            }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to delete value: {}", e),
                 code: "DELETE_ERROR".to_string(),
+            }),
+        }
+    }
+
+    #[function(name = "state.update", description = "Update a value in state")]
+    pub async fn update(
+        &self,
+        input: StateUpdateInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self
+            .adapter
+            .update(&input.group_id, &input.item_id, input.ops)
+            .await
+        {
+            Ok(value) => {
+                let old_value = value.old_value.clone();
+                let new_value = value.new_value.clone();
+                let is_create = old_value.is_none();
+                let event_data = StateEventData {
+                    message_type: "state".to_string(),
+                    event_type: if is_create {
+                        StateEventType::Created
+                    } else {
+                        StateEventType::Updated
+                    },
+                    group_id: input.group_id,
+                    item_id: input.item_id,
+                    old_value: old_value,
+                    new_value: new_value,
+                };
+
+                self.invoke_triggers(event_data).await;
+
+                FunctionResult::Success(Some(serde_json::to_value(value).unwrap()))
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to update value: {}", e),
+                code: "UPDATE_ERROR".to_string(),
             }),
         }
     }
