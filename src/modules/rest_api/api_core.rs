@@ -56,7 +56,7 @@ impl PathRouter {
 pub struct RestApiCoreModule {
     engine: Arc<Engine>,
     config: RestApiConfig,
-    pub routers_registry: Arc<RwLock<DashMap<String, PathRouter>>>,
+    pub routers_registry: Arc<DashMap<String, PathRouter>>,
     shared_routers: Arc<RwLock<Router>>,
 }
 
@@ -71,7 +71,7 @@ impl Module for RestApiCoreModule {
             .transpose()?
             .unwrap_or_default();
 
-        let routers_registry = Arc::new(RwLock::new(DashMap::new()));
+        let routers_registry = Arc::new(DashMap::new());
 
         // Create an empty router initially, it will be updated when routes are registered
         let empty_router = Router::new();
@@ -130,13 +130,11 @@ impl RestApiCoreModule {
         let cors_layer = self.build_cors_layer();
 
         // Read the routers_registry and build the router
-        let routers_registry_guard = self.routers_registry.read().await;
         let mut new_router = Self::build_routers_from_routers_registry(
             self.engine.clone(),
             Arc::new(self.clone()),
-            &routers_registry_guard,
+            &self.routers_registry,
         );
-        drop(routers_registry_guard); // Release the lock explicitly
 
         // Apply CORS layer to the router
         new_router = new_router.layer(cors_layer);
@@ -281,7 +279,7 @@ impl RestApiCoreModule {
         cors.allow_headers(HTTP_Any)
     }
 
-    pub async fn get_router(
+    pub fn get_router(
         &self,
         http_method: &str,
         http_path: &str,
@@ -300,9 +298,9 @@ impl RestApiCoreModule {
         };
         let key = format!("{}:{}", method, http_path);
         tracing::debug!("Looking up router for key: {}", key);
-        let routers = self.routers_registry.read().await;
-        let router = routers.get(&key);
-        router.map(|r| (r.function_path.clone(), r.condition_function_path.clone()))
+        self.routers_registry
+            .get(&key)
+            .map(|r| (r.function_path.clone(), r.condition_function_path.clone()))
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
@@ -311,7 +309,7 @@ impl RestApiCoreModule {
         let method = router.http_method.to_uppercase();
         let key = format!("{}:{}", method, router.http_path);
         tracing::debug!("Registering router {}", key.purple());
-        self.routers_registry.write().await.insert(key, router);
+        self.routers_registry.insert(key, router);
 
         tracing::info!(
             "{} Endpoint {} → {}",
@@ -333,7 +331,7 @@ impl RestApiCoreModule {
     ) -> anyhow::Result<bool> {
         let key = format!("{}:{}", http_method.to_uppercase(), http_path);
         tracing::debug!("Unregistering router {}", key.purple());
-        let removed = self.routers_registry.write().await.remove(&key).is_some();
+        let removed = self.routers_registry.remove(&key).is_some();
 
         if removed {
             // Update routes after unregistering
