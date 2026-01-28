@@ -308,20 +308,32 @@ impl BuiltinKvStore {
     }
 
     pub async fn delete(&self, index: String, key: String) -> Option<Value> {
-        let (removed, should_mark_dirty) = {
+        let (removed, dirty_op) = {
             let mut store = self.store.write().await;
             let index_map = store.get_mut(&index);
 
             if let Some(index_map) = index_map {
                 let removed = index_map.remove(&key);
-                (removed, true)
+                let dirty_op = if removed.is_some() {
+                    if index_map.is_empty() {
+                        Some(DirtyOp::Delete)
+                    } else {
+                        Some(DirtyOp::Upsert)
+                    }
+                } else {
+                    None
+                };
+                (removed, dirty_op)
             } else {
-                (None, false)
+                (None, None)
             }
         };
 
-        if removed.is_some() && should_mark_dirty && self.file_store_dir.is_some() {
-            self.dirty.write().await.insert(index, DirtyOp::Delete);
+        if removed.is_some()
+            && self.file_store_dir.is_some()
+            && let Some(dirty_op) = dirty_op
+        {
+            self.dirty.write().await.insert(index, dirty_op);
         }
 
         removed
