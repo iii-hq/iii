@@ -6,6 +6,7 @@ import logging
 import os
 import platform
 import uuid
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from typing import Any, Awaitable, Callable
 
@@ -27,6 +28,7 @@ from .bridge_types import (
 )
 from .context import Context, with_context
 from .logger import Logger
+from .streams import IStream
 from .triggers import Trigger, TriggerConfig, TriggerHandler
 from .types import RemoteFunctionData, RemoteTriggerTypeData
 
@@ -35,11 +37,19 @@ RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
 log = logging.getLogger("iii.bridge")
 
 
+@dataclass
+class BridgeOptions:
+    """Options for configuring the Bridge."""
+
+    worker_name: str | None = None
+
+
 class Bridge:
     """WebSocket bridge for communication with the III Engine."""
 
-    def __init__(self, address: str) -> None:
+    def __init__(self, address: str, options: BridgeOptions | None = None) -> None:
         self._address = address
+        self._options = options or BridgeOptions()
         self._ws: ClientConnection | None = None
         self._functions: dict[str, RemoteFunctionData] = {}
         self._services: dict[str, RegisterServiceMessage] = {}
@@ -356,10 +366,12 @@ class Bridge:
         except Exception:
             sdk_version = "unknown"
 
+        worker_name = self._options.worker_name or f"{platform.node()}:{os.getpid()}"
+
         return {
             "runtime": "python",
             "version": sdk_version,
-            "name": f"{platform.node()}:{os.getpid()}",
+            "name": worker_name,
             "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
         }
 
@@ -369,10 +381,10 @@ class Bridge:
 
     def on_functions_available(self, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
         """Subscribe to function availability events.
-        
+
         Args:
             callback: Function to call when functions become available. Receives list of FunctionInfo.
-            
+
         Returns:
             Unsubscribe function that removes the callback and cleans up the trigger if no callbacks remain.
         """
@@ -405,3 +417,75 @@ class Bridge:
                 self._functions_available_trigger = None
 
         return unsubscribe
+
+    def on(self, event: str, callback: Callable[..., None]) -> Callable[[], None]:
+        """Subscribe to an event.
+
+        This is a no-op in Python due to the different event model of websockets.
+        Provided for API compatibility with Node.js client.
+
+        Args:
+            event: The event name to subscribe to.
+            callback: The callback function to call when the event occurs.
+
+        Returns:
+            An unsubscribe function (no-op).
+        """
+        def unsubscribe() -> None:
+            pass
+
+        return unsubscribe
+
+    def create_stream(self, stream_name: str, stream: IStream[Any]) -> None:
+        """Register stream functions for a given stream.
+
+        This registers the following functions for the stream:
+        - {stream_name}.get
+        - {stream_name}.set
+        - {stream_name}.delete
+        - {stream_name}.getGroup
+        - {stream_name}.listGroups
+        - {stream_name}.update
+
+        Args:
+            stream_name: The name of the stream.
+            stream: The stream implementation.
+        """
+        async def get_handler(data: Any) -> Any:
+            from .streams import StreamGetInput
+            input_data = StreamGetInput(**data) if isinstance(data, dict) else data
+            return await stream.get(input_data)
+
+        async def set_handler(data: Any) -> Any:
+            from .streams import StreamSetInput
+            input_data = StreamSetInput(**data) if isinstance(data, dict) else data
+            result = await stream.set(input_data)
+            return result.model_dump() if result else None
+
+        async def delete_handler(data: Any) -> None:
+            from .streams import StreamDeleteInput
+            input_data = StreamDeleteInput(**data) if isinstance(data, dict) else data
+            await stream.delete(input_data)
+
+        async def get_group_handler(data: Any) -> list[Any]:
+            from .streams import StreamGetGroupInput
+            input_data = StreamGetGroupInput(**data) if isinstance(data, dict) else data
+            return await stream.get_group(input_data)
+
+        async def list_groups_handler(data: Any) -> list[str]:
+            from .streams import StreamListGroupsInput
+            input_data = StreamListGroupsInput(**data) if isinstance(data, dict) else data
+            return await stream.list_groups(input_data)
+
+        async def update_handler(data: Any) -> Any:
+            from .streams import StreamUpdateInput
+            input_data = StreamUpdateInput(**data) if isinstance(data, dict) else data
+            result = await stream.update(input_data)
+            return result.model_dump() if result else None
+
+        self.register_function(f"{stream_name}.get", get_handler)
+        self.register_function(f"{stream_name}.set", set_handler)
+        self.register_function(f"{stream_name}.delete", delete_handler)
+        self.register_function(f"{stream_name}.getGroup", get_group_handler)
+        self.register_function(f"{stream_name}.listGroups", list_groups_handler)
+        self.register_function(f"{stream_name}.update", update_handler)
