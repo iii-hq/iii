@@ -327,117 +327,111 @@ impl BuiltinKvStore {
         None
     }
 
-    pub async fn update(
-        &self,
-        index: String,
-        key: String,
-        ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
+    pub async fn update(&self, index: String, key: String, ops: Vec<UpdateOp>) -> UpdateResult {
         let mut store = self.store.write().await;
-        let index_map = store.get_mut(&index)?;
 
-        if let Some(existing_value) = index_map.get_mut(&key) {
-            let old_value = existing_value.clone();
-            let mut updated_value = existing_value.clone();
+        // Automatically create index_map if it doesn't exist
+        let index_map = store.entry(index.clone()).or_insert_with(HashMap::new);
 
-            for op in ops {
-                match op {
-                    UpdateOp::Set { path, value } => {
-                        if path.0.is_empty() {
-                            updated_value = value;
-                        } else if let Value::Object(ref mut map) = updated_value {
-                            map.insert(path.0, value);
-                        } else {
-                            tracing::warn!(
-                                "Set operation with path requires existing value to be a JSON object"
-                            );
-                        }
+        let old_value = index_map.get(&key).cloned();
+        // Automatically create key entry with empty object if it doesn't exist
+        let existing_value = index_map
+            .entry(key.clone())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+        let mut updated_value = existing_value.clone();
+
+        for op in ops {
+            match op {
+                UpdateOp::Set { path, value } => {
+                    if path.0.is_empty()
+                        && let Some(value) = value
+                    {
+                        updated_value = value;
+                    } else if let Value::Object(ref mut map) = updated_value {
+                        map.insert(path.0, value.unwrap_or(Value::Null));
+                    } else {
+                        tracing::warn!(
+                            "Set operation with path requires existing value to be a JSON object"
+                        );
                     }
-                    UpdateOp::Merge { path, value } => {
-                        if path.is_none() || path.as_ref().unwrap().0.is_empty() {
-                            if let (Value::Object(existing_map), Value::Object(new_map)) =
-                                (&mut updated_value, value)
-                            {
-                                for (k, v) in new_map {
-                                    existing_map.insert(k, v);
-                                }
-                            } else {
-                                tracing::warn!(
-                                    "Merge operation requires both existing and new values to be JSON objects"
-                                );
-                            }
-                        } else {
-                            tracing::warn!("Only root-level merge is supported");
-                        }
-                    }
-                    UpdateOp::Increment { path, by } => {
-                        if let Value::Object(ref mut map) = updated_value {
-                            if let Some(existing_val) = map.get_mut(&path.0) {
-                                if let Some(num) = existing_val.as_i64() {
-                                    *existing_val =
-                                        Value::Number(serde_json::Number::from(num + by));
-                                } else {
-                                    tracing::warn!(
-                                        "Increment operation requires existing value to be a number"
-                                    );
-                                }
-                            } else {
-                                map.insert(path.0, Value::Number(serde_json::Number::from(by)));
+                }
+                UpdateOp::Merge { path, value } => {
+                    if path.is_none() || path.as_ref().unwrap().0.is_empty() {
+                        if let (Value::Object(existing_map), Value::Object(new_map)) =
+                            (&mut updated_value, value)
+                        {
+                            for (k, v) in new_map {
+                                existing_map.insert(k, v);
                             }
                         } else {
                             tracing::warn!(
-                                "Increment operation requires existing value to be a JSON object"
+                                "Merge operation requires both existing and new values to be JSON objects"
                             );
                         }
+                    } else {
+                        tracing::warn!("Only root-level merge is supported");
                     }
-                    UpdateOp::Decrement { path, by } => {
-                        if let Value::Object(ref mut map) = updated_value {
-                            if let Some(existing_val) = map.get_mut(&path.0) {
-                                if let Some(num) = existing_val.as_i64() {
-                                    *existing_val =
-                                        Value::Number(serde_json::Number::from(num - by));
-                                } else {
-                                    tracing::warn!(
-                                        "Decrement operation requires existing value to be a number"
-                                    );
-                                }
+                }
+                UpdateOp::Increment { path, by } => {
+                    if let Value::Object(ref mut map) = updated_value {
+                        if let Some(existing_val) = map.get_mut(&path.0) {
+                            if let Some(num) = existing_val.as_i64() {
+                                *existing_val = Value::Number(serde_json::Number::from(num + by));
                             } else {
-                                map.insert(path.0, Value::Number(serde_json::Number::from(-by)));
+                                *existing_val = Value::Number(serde_json::Number::from(by));
                             }
                         } else {
-                            tracing::warn!(
-                                "Decrement operation requires existing value to be a JSON object"
-                            );
+                            map.insert(path.0, Value::Number(serde_json::Number::from(by)));
                         }
+                    } else {
+                        tracing::warn!(
+                            "Increment operation requires existing value to be a JSON object"
+                        );
                     }
-                    UpdateOp::Remove { path } => {
-                        if let Value::Object(ref mut map) = updated_value {
-                            map.remove(&path.0);
+                }
+                UpdateOp::Decrement { path, by } => {
+                    if let Value::Object(ref mut map) = updated_value {
+                        if let Some(existing_val) = map.get_mut(&path.0) {
+                            if let Some(num) = existing_val.as_i64() {
+                                *existing_val = Value::Number(serde_json::Number::from(num - by));
+                            } else {
+                                *existing_val = Value::Number(serde_json::Number::from(0));
+                            }
                         } else {
-                            tracing::warn!(
-                                "Remove operation requires existing value to be a JSON object"
-                            );
+                            map.insert(path.0, Value::Number(serde_json::Number::from(-by)));
                         }
+                    } else {
+                        tracing::warn!(
+                            "Decrement operation requires existing value to be a JSON object"
+                        );
+                    }
+                }
+                UpdateOp::Remove { path } => {
+                    if let Value::Object(ref mut map) = updated_value {
+                        map.remove(&path.0);
+                    } else {
+                        tracing::warn!(
+                            "Remove operation requires existing value to be a JSON object"
+                        );
                     }
                 }
             }
+        }
 
-            // Write the updated value back to the store
-            *existing_value = updated_value.clone();
+        // Write the updated value back to the store
+        *existing_value = updated_value.clone();
 
-            if self.file_store_dir.is_some() {
-                let mut dirty = self.dirty.write().await;
-                dirty.insert(index.clone(), DirtyOp::Upsert);
-            }
+        if self.file_store_dir.is_some() {
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(index.clone(), DirtyOp::Upsert);
+        }
 
-            drop(store);
+        drop(store);
 
-            Some(UpdateResult {
-                old_value: Some(old_value),
-                new_value: updated_value,
-            })
-        } else {
-            None
+        UpdateResult {
+            old_value,
+            new_value: updated_value,
         }
     }
 
@@ -583,11 +577,10 @@ mod test {
                 key.to_string(),
                 vec![UpdateOp::Set {
                     path: FieldPath("name".to_string()),
-                    value: Value::String("B".to_string()),
+                    value: Some(serde_json::json!("B")),
                 }],
             )
-            .await
-            .expect("Update should succeed");
+            .await;
 
         assert_eq!(result.old_value, Some(initial));
         assert_eq!(result.new_value["name"], "B");
@@ -603,8 +596,7 @@ mod test {
                     by: 5,
                 }],
             )
-            .await
-            .expect("Update should succeed");
+            .await;
 
         assert_eq!(result.new_value["counter"], 5);
 
@@ -618,8 +610,7 @@ mod test {
                     by: 2,
                 }],
             )
-            .await
-            .expect("Update should succeed");
+            .await;
 
         assert_eq!(result.new_value["counter"], 3);
 
@@ -632,8 +623,7 @@ mod test {
                     path: FieldPath("name".to_string()),
                 }],
             )
-            .await
-            .expect("Update should succeed");
+            .await;
 
         assert!(result.new_value.get("name").is_none());
         assert_eq!(result.new_value["counter"], 3);
@@ -648,8 +638,7 @@ mod test {
                     value: serde_json::json!({"name": "C", "extra": "field"}),
                 }],
             )
-            .await
-            .expect("Update should succeed");
+            .await;
 
         assert_eq!(result.new_value["name"], "C");
         assert_eq!(result.new_value["counter"], 3);
@@ -676,7 +665,7 @@ mod test {
                 vec![
                     UpdateOp::Set {
                         path: FieldPath("name".to_string()),
-                        value: Value::String("Z".to_string()),
+                        value: Some(Value::String("Z".to_string())),
                     },
                     UpdateOp::Increment {
                         path: FieldPath("counter".to_string()),
@@ -684,16 +673,34 @@ mod test {
                     },
                     UpdateOp::Set {
                         path: FieldPath("status".to_string()),
-                        value: Value::String("active".to_string()),
+                        value: Some(Value::String("active".to_string())),
                     },
                 ],
             )
-            .await
-            .expect("Update should succeed");
+            .await;
 
         assert_eq!(result.new_value["name"], "Z");
         assert_eq!(result.new_value["counter"], 10);
         assert_eq!(result.new_value["status"], "active");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_update_new_object_with_increment() {
+        let kv_store = BuiltinKvStore::new(None);
+        let index = "test";
+        let key = "update:new_object_with_increment";
+        let result = kv_store
+            .update(
+                index.to_string(),
+                key.to_string(),
+                vec![UpdateOp::Increment {
+                    path: FieldPath("counter".to_string()),
+                    by: 1,
+                }],
+            )
+            .await;
+        assert_eq!(result.new_value["counter"], 1);
+        assert_eq!(result.old_value, None);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -735,7 +742,7 @@ mod test {
                         key.to_string(),
                         vec![UpdateOp::Set {
                             path: FieldPath("name".to_string()),
-                            value: Value::String(name),
+                            value: Some(Value::String(name)),
                         }],
                     )
                     .await;
@@ -806,7 +813,7 @@ mod test {
                             },
                             UpdateOp::Set {
                                 path: FieldPath("name".to_string()),
-                                value: Value::String(name),
+                                value: Some(Value::String(name)),
                             },
                         ],
                     )
@@ -882,7 +889,7 @@ mod test {
                             },
                             UpdateOp::Set {
                                 path: FieldPath("name".to_string()),
-                                value: Value::String(name),
+                                value: Some(Value::String(name)),
                             },
                         ],
                     )

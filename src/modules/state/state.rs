@@ -41,7 +41,7 @@ impl Module for StateCoreModule {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying StateCoreModule");
-        let _ = self.adapter.destroy().await;
+        self.adapter.destroy().await?;
         Ok(())
     }
 
@@ -81,19 +81,28 @@ impl ConfigurableModule for StateCoreModule {
 impl StateCoreModule {
     #[function(name = "state.set", description = "Set a value in state")]
     pub async fn set(&self, input: StateSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        let _ = self
+        match self
             .adapter
             .set(&input.group_id, &input.item_id, input.data.clone())
-            .await;
-
-        FunctionResult::Success(Some(input.data))
+            .await
+        {
+            Ok(_) => FunctionResult::Success(Some(input.data)),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to set value: {}", e),
+                code: "SET_ERROR".to_string(),
+            }),
+        }
     }
 
     #[function(name = "state.get", description = "Get a value from state")]
     pub async fn get(&self, input: StateGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        let value = self.adapter.get(&input.group_id, &input.item_id).await;
-
-        FunctionResult::Success(value)
+        match self.adapter.get(&input.group_id, &input.item_id).await {
+            Ok(value) => FunctionResult::Success(value),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to get value: {}", e),
+                code: "GET_ERROR".to_string(),
+            }),
+        }
     }
 
     #[function(name = "state.delete", description = "Delete a value from state")]
@@ -101,10 +110,23 @@ impl StateCoreModule {
         &self,
         input: StateDeleteInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let value = self.adapter.get(&input.group_id, &input.item_id).await;
-        let _ = self.adapter.delete(&input.group_id, &input.item_id).await;
+        let value = match self.adapter.get(&input.group_id, &input.item_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                return FunctionResult::Failure(ErrorBody {
+                    message: format!("Failed to get value before delete: {}", e),
+                    code: "GET_ERROR".to_string(),
+                });
+            }
+        };
 
-        FunctionResult::Success(value)
+        match self.adapter.delete(&input.group_id, &input.item_id).await {
+            Ok(_) => FunctionResult::Success(value),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to delete value: {}", e),
+                code: "DELETE_ERROR".to_string(),
+            }),
+        }
     }
 
     #[function(name = "state.list", description = "Get a group from state")]
@@ -112,9 +134,13 @@ impl StateCoreModule {
         &self,
         input: StateGetGroupInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let values = self.adapter.list(&input.group_id).await;
-
-        FunctionResult::Success(serde_json::to_value(values).ok())
+        match self.adapter.list(&input.group_id).await {
+            Ok(values) => FunctionResult::Success(serde_json::to_value(values).ok()),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to list values: {}", e),
+                code: "LIST_ERROR".to_string(),
+            }),
+        }
     }
 }
 
