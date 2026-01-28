@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
@@ -26,7 +26,7 @@ pub struct SocketStreamConnection {
     pub id: String,
     pub sender: mpsc::Sender<StreamOutbound>,
     pub triggers: Arc<StreamTriggers>,
-    subscriptions: Arc<RwLock<DashMap<String, Subscription>>>,
+    subscriptions: Arc<DashMap<String, Subscription>>,
     stream_module: Arc<StreamCoreModule>,
     context: Option<StreamAuthContext>,
     engine: Arc<Engine>,
@@ -42,7 +42,7 @@ impl SocketStreamConnection {
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            subscriptions: Arc::new(RwLock::new(DashMap::new())),
+            subscriptions: Arc::new(DashMap::new()),
             sender,
             stream_module,
             context,
@@ -53,22 +53,42 @@ impl SocketStreamConnection {
 
     pub async fn handle_join_leave(&self, message: &StreamIncomingMessage) -> StreamJoinResult {
         let (stream_name, group_id, id, subscription_id, event_type, triggers) = match message {
-            StreamIncomingMessage::Join { data } => (
-                data.stream_name.clone(),
-                data.group_id.clone(),
-                data.id.clone(),
-                data.subscription_id.clone(),
-                JOIN_TRIGGER_TYPE,
-                self.triggers.join_triggers.read().await,
-            ),
-            StreamIncomingMessage::Leave { data } => (
-                data.stream_name.clone(),
-                data.group_id.clone(),
-                data.id.clone(),
-                data.subscription_id.clone(),
-                LEAVE_TRIGGER_TYPE,
-                self.triggers.leave_triggers.read().await,
-            ),
+            StreamIncomingMessage::Join { data } => {
+                let triggers: Vec<_> = self
+                    .triggers
+                    .join_triggers
+                    .read()
+                    .await
+                    .iter()
+                    .cloned()
+                    .collect();
+                (
+                    data.stream_name.clone(),
+                    data.group_id.clone(),
+                    data.id.clone(),
+                    data.subscription_id.clone(),
+                    JOIN_TRIGGER_TYPE,
+                    triggers,
+                )
+            }
+            StreamIncomingMessage::Leave { data } => {
+                let triggers: Vec<_> = self
+                    .triggers
+                    .leave_triggers
+                    .read()
+                    .await
+                    .iter()
+                    .cloned()
+                    .collect();
+                (
+                    data.stream_name.clone(),
+                    data.group_id.clone(),
+                    data.id.clone(),
+                    data.subscription_id.clone(),
+                    LEAVE_TRIGGER_TYPE,
+                    triggers,
+                )
+            }
         };
 
         let event = StreamJoinLeaveEvent {
@@ -93,10 +113,8 @@ impl SocketStreamConnection {
             }
         };
 
-        for trigger in triggers.iter() {
+        for trigger in triggers {
             if trigger.trigger_type == event_type {
-                let trigger = trigger.clone();
-
                 tracing::debug!(function_path = %trigger.function_path, event_type = ?event_type, "Invoking trigger");
 
                 let call_result = self
@@ -166,7 +184,7 @@ impl SocketStreamConnection {
                     return Ok(());
                 }
 
-                self.subscriptions.write().await.insert(
+                self.subscriptions.insert(
                     subscription_id.clone(),
                     Subscription {
                         subscription_id,
@@ -251,10 +269,7 @@ impl SocketStreamConnection {
             }
             StreamIncomingMessage::Leave { data } => {
                 self.handle_join_leave(msg).await;
-                self.subscriptions
-                    .write()
-                    .await
-                    .remove(&data.subscription_id);
+                self.subscriptions.remove(&data.subscription_id);
                 Ok(())
             }
         }
@@ -264,11 +279,21 @@ impl SocketStreamConnection {
 #[async_trait]
 impl StreamConnection for SocketStreamConnection {
     async fn cleanup(&self) {
-        let subscriptions = self.subscriptions.read().await;
+        let subscriptions: Vec<Subscription> = self
+            .subscriptions
+            .iter()
+            .map(|entry| {
+                let subscription = entry.value();
+                Subscription {
+                    subscription_id: subscription.subscription_id.clone(),
+                    stream_name: subscription.stream_name.clone(),
+                    group_id: subscription.group_id.clone(),
+                    id: subscription.id.clone(),
+                }
+            })
+            .collect();
 
-        for subscription in subscriptions.iter() {
-            let subscription = subscription.value();
-
+        for subscription in subscriptions {
             tracing::debug!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
 
             let _ = self
@@ -285,22 +310,23 @@ impl StreamConnection for SocketStreamConnection {
     }
 
     async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
-        let subscriptions = self.subscriptions.read().await;
         tracing::debug!(msg = ?msg, "Sending stream message");
 
-        for subscription in subscriptions.iter() {
-            let subscription = subscription.value();
+        let matching_senders: Vec<_> = self
+            .subscriptions
+            .iter()
+            .filter(|entry| {
+                let subscription = entry.value();
+                subscription.stream_name == msg.stream_name
+                    && subscription.group_id == msg.group_id
+                    && (subscription.id.is_none() || subscription.id == msg.id)
+            })
+            .map(|_| self.sender.clone())
+            .collect();
 
-            if subscription.stream_name == msg.stream_name
-                && subscription.group_id == msg.group_id
-                && (subscription.id.is_none() || subscription.id == msg.id)
-            {
-                match self.sender.send(StreamOutbound::Stream(msg.clone())).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = ?e.to_string(), "Failed to send stream message");
-                    }
-                }
+        for sender in matching_senders {
+            if let Err(e) = sender.send(StreamOutbound::Stream(msg.clone())).await {
+                tracing::error!(error = ?e.to_string(), "Failed to send stream message");
             }
         }
 
