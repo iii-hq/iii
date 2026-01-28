@@ -48,7 +48,7 @@ impl StateAdapter for BridgeAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
+    ) -> anyhow::Result<UpdateResult> {
         let index = self.gen_key(group_id);
         let update_data = KvUpdateInput {
             index: index.clone(),
@@ -59,20 +59,11 @@ impl StateAdapter for BridgeAdapter {
         let update_result = self
             .bridge
             .invoke_function("kv_server.update", update_data)
-            .await;
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to update value in kv_server: {}", e))?;
 
-        match update_result {
-            Ok(result) => {
-                serde_json::from_value::<Option<UpdateResult>>(result).unwrap_or_else(|e| {
-                    tracing::error!(error = %e, "Failed to deserialize update result");
-                    None
-                })
-            }
-            Err(e) => {
-                tracing::error!(error = %e, index = %index, "Failed to update value in kv_server");
-                None
-            }
-        }
+        serde_json::from_value::<UpdateResult>(update_result)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize update result: {}", e))
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
@@ -80,93 +71,62 @@ impl StateAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> SetResult {
+    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
         let set_data = KvSetInput {
             index: self.gen_key(group_id),
             key: item_id.to_string(),
             value: data,
         };
-        let set_result = self.bridge.invoke_function("kv_server.set", set_data).await;
+        let set_result = self
+            .bridge
+            .invoke_function("kv_server.set", set_data)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
-        if let Err(e) = set_result {
-            tracing::error!(error = %e, "Failed to set value in kv_server");
-
-            return SetResult {
-                old_value: None,
-                new_value: Value::Null,
-            };
-        }
-
-        match set_result {
-            Ok(set_result) => serde_json::from_value::<SetResult>(set_result).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to deserialize set result");
-                SetResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                }
-            }),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to deserialize set result");
-
-                return SetResult {
-                    old_value: None,
-                    new_value: Value::Null,
-                };
-            }
-        }
+        serde_json::from_value::<SetResult>(set_result)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 
-    async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
+    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
         let data = KvGetInput {
             index: self.gen_key(group_id),
             key: item_id.to_string(),
         };
-        let value = self.bridge.invoke_function("kv_server.get", data).await;
+        let value = self
+            .bridge
+            .invoke_function("kv_server.get", data)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
 
-        match value {
-            Ok(value) => serde_json::from_value::<Option<Value>>(value).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to deserialize get result");
-                None
-            }),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to get value from kv_server");
-                None
-            }
-        }
+        serde_json::from_value::<Option<Value>>(value)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize get result: {}", e))
     }
 
-    async fn delete(&self, group_id: &str, item_id: &str) {
+    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()> {
         let delete_data = KvDeleteInput {
             index: self.gen_key(group_id),
             key: item_id.to_string(),
         };
-        let delete_result = self
-            .bridge
+        self.bridge
             .invoke_function("kv_server.delete", delete_data)
-            .await;
-
-        if let Err(e) = delete_result {
-            tracing::error!(error = %e, "Failed to delete value from kv_server");
-        }
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
+        Ok(())
     }
 
-    async fn list(&self, group_id: &str) -> Vec<Value> {
+    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
         let data = KvListInput {
             index: self.gen_key(group_id),
         };
 
-        let value = self.bridge.invoke_function("kv_server.list", data).await;
+        let value = self
+            .bridge
+            .invoke_function("kv_server.list", data)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list values from kv_server: {}", e))?;
 
-        match value {
-            Ok(value) => serde_json::from_value::<Vec<Value>>(value).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "Failed to deserialize list result");
-                Vec::new()
-            }),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to list values from kv_server");
-                Vec::new()
-            }
-        }
+        serde_json::from_value::<Vec<Value>>(value)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize list result: {}", e))
     }
 }
 

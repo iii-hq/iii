@@ -54,18 +54,20 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         group_id: &str,
         item_id: &str,
         ops: Vec<UpdateOp>,
-    ) -> Option<UpdateResult> {
-        self.storage
+    ) -> anyhow::Result<UpdateResult> {
+        Ok(self
+            .storage
             .update(
                 self.gen_key(stream_name, group_id),
                 item_id.to_string(),
                 ops,
             )
-            .await
+            .await)
     }
 
-    async fn emit_event(&self, message: StreamWrapperMessage) {
+    async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()> {
         self.pub_sub.send_msg(message);
+        Ok(())
     }
 
     async fn set(
@@ -74,7 +76,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         group_id: &str,
         item_id: &str,
         data: Value,
-    ) -> SetResult {
+    ) -> anyhow::Result<SetResult> {
         let index = self.gen_key(stream_name, group_id);
         let result = self
             .storage
@@ -92,18 +94,22 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
                 StreamOutboundMessage::Create { data }
             },
         };
-        self.emit_event(message).await;
+        self.emit_event(message).await?;
 
-        result
+        Ok(result)
     }
 
-    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value> {
+    async fn get(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
         let index = self.gen_key(stream_name, group_id);
-
-        self.storage.get(index, item_id.to_string()).await
+        Ok(self.storage.get(index, item_id.to_string()).await)
     }
 
-    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) {
+    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<()> {
         let index = self.gen_key(stream_name, group_id);
 
         self.storage.delete(index, item_id.to_string()).await;
@@ -116,34 +122,43 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
                 data: serde_json::json!({ "id": item_id }),
             },
         })
-        .await;
+        .await?;
+        Ok(())
     }
 
-    async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value> {
+    async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {
         let index = self.gen_key(stream_name, group_id);
-        self.storage.list(index).await
+        Ok(self.storage.list(index).await)
     }
 
-    async fn list_groups(&self, stream_name: &str) -> Vec<String> {
+    async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
         let prefix = self.gen_key(stream_name, "");
 
-        self.storage
+        Ok(self
+            .storage
             .list_keys_with_prefix(prefix.to_string())
             .await
             .into_iter()
             .filter_map(|key| key.strip_prefix(&prefix.clone()).map(|s| s.to_string()))
-            .collect()
+            .collect())
     }
 
-    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) {
+    async fn subscribe(
+        &self,
+        id: String,
+        connection: Arc<dyn StreamConnection>,
+    ) -> anyhow::Result<()> {
         self.pub_sub.subscribe(id, connection).await;
+        Ok(())
     }
-    async fn unsubscribe(&self, id: String) {
+    async fn unsubscribe(&self, id: String) -> anyhow::Result<()> {
         self.pub_sub.unsubscribe(id).await;
+        Ok(())
     }
 
-    async fn watch_events(&self) {
+    async fn watch_events(&self) -> anyhow::Result<()> {
         self.pub_sub.watch_events().await;
+        Ok(())
     }
 }
 
@@ -208,17 +223,19 @@ mod tests {
                 "test-subscriber".to_string(),
                 Arc::new(RecordingConnection { tx }),
             )
-            .await;
+            .await
+            .expect("Should subscribe successfully");
         let watcher_adapter = Arc::clone(&builtin_adapter);
         let watcher = tokio::spawn(async move {
-            watcher_adapter.watch_events().await;
+            let _ = watcher_adapter.watch_events().await;
         });
         tokio::task::yield_now().await;
 
         // Set initial item
         builtin_adapter
             .set(stream_name, group_id, item_id, data1.clone())
-            .await;
+            .await
+            .expect("Should set value successfully");
         let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
             .expect("Timed out waiting for create event")
@@ -229,7 +246,8 @@ mod tests {
         // Update item
         builtin_adapter
             .set(stream_name, group_id, item_id, data2.clone())
-            .await;
+            .await
+            .expect("Should set value successfully");
         let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
             .expect("Timed out waiting for update event")
@@ -239,10 +257,14 @@ mod tests {
         let saved_data = builtin_adapter
             .get(stream_name, group_id, item_id)
             .await
+            .expect("Should get value successfully")
             .expect("Data should exist");
         assert_eq!(saved_data, data2);
 
-        builtin_adapter.delete(stream_name, group_id, item_id).await;
+        builtin_adapter
+            .delete(stream_name, group_id, item_id)
+            .await
+            .expect("Should delete value successfully");
 
         let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
@@ -250,7 +272,10 @@ mod tests {
             .expect("Should receive delete event");
         assert!(matches!(msg.event, StreamOutboundMessage::Delete { .. }));
 
-        let saved_data = builtin_adapter.get(stream_name, group_id, item_id).await;
+        let saved_data = builtin_adapter
+            .get(stream_name, group_id, item_id)
+            .await
+            .expect("Should get value successfully");
         assert!(saved_data.is_none());
 
         watcher.abort();
