@@ -69,12 +69,6 @@ impl TriggerRegistry {
             .map(|pair| pair.key().clone())
             .collect();
 
-        for trigger_type_id in worker_trigger_type_ids {
-            tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
-            self.trigger_types.remove(&trigger_type_id);
-            tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
-        }
-
         let worker_triggers: Vec<Trigger> = self
             .triggers
             .iter()
@@ -99,6 +93,12 @@ impl TriggerRegistry {
             }
 
             tracing::debug!(trigger_id = trigger.id, "Trigger removed");
+        }
+
+        for trigger_type_id in worker_trigger_type_ids {
+            tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
+            self.trigger_types.remove(&trigger_type_id);
+            tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
         }
     }
 
