@@ -35,13 +35,15 @@ impl StateAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
-        Ok(self.storage
+        Ok(self
+            .storage
             .set(group_id.to_string(), item_id.to_string(), data.clone())
             .await)
     }
 
     async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
-        Ok(self.storage
+        Ok(self
+            .storage
             .get(group_id.to_string(), item_id.to_string())
             .await)
     }
@@ -53,8 +55,14 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> anyhow::Result<UpdateResult> {
-        Ok(self.storage
+    async fn update(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> anyhow::Result<UpdateResult> {
+        Ok(self
+            .storage
             .update(group_id.to_string(), item_id.to_string(), ops)
             .await)
     }
@@ -85,7 +93,10 @@ mod tests {
         let data = serde_json::json!({"key": "value"});
 
         // Test set
-        builtin_adapter.set(group_id, item_id, data.clone()).await.expect("Set should succeed");
+        builtin_adapter
+            .set(group_id, item_id, data.clone())
+            .await
+            .expect("Set should succeed");
 
         // Test get
         let saved_data = builtin_adapter
@@ -97,12 +108,21 @@ mod tests {
         assert_eq!(saved_data, data);
 
         // Test delete
-        let deleted_data = builtin_adapter.get(group_id, item_id).await.expect("Get should succeed");
+        let deleted_data = builtin_adapter
+            .get(group_id, item_id)
+            .await
+            .expect("Get should succeed");
         assert!(deleted_data.is_some());
 
-        builtin_adapter.delete(group_id, item_id).await.expect("Delete should succeed");
+        builtin_adapter
+            .delete(group_id, item_id)
+            .await
+            .expect("Delete should succeed");
 
-        let deleted_data = builtin_adapter.get(group_id, item_id).await.expect("Get should succeed");
+        let deleted_data = builtin_adapter
+            .get(group_id, item_id)
+            .await
+            .expect("Get should succeed");
         assert!(deleted_data.is_none());
     }
 
@@ -115,10 +135,19 @@ mod tests {
         let data1 = serde_json::json!({"key1": "value1"});
         let data2 = serde_json::json!({"key2": "value2"});
         // Set items
-        builtin_adapter.set(group_id, item1_id, data1.clone()).await.expect("Set should succeed");
-        builtin_adapter.set(group_id, item2_id, data2.clone()).await.expect("Set should succeed");
+        builtin_adapter
+            .set(group_id, item1_id, data1.clone())
+            .await
+            .expect("Set should succeed");
+        builtin_adapter
+            .set(group_id, item2_id, data2.clone())
+            .await
+            .expect("Set should succeed");
 
-        let list = builtin_adapter.list(group_id).await.expect("List should succeed");
+        let list = builtin_adapter
+            .list(group_id)
+            .await
+            .expect("List should succeed");
         assert_eq!(list.len(), 2);
         assert!(list.contains(&data1));
         assert!(list.contains(&data2));
@@ -133,9 +162,15 @@ mod tests {
         let data2 = serde_json::json!({"key": "value2"});
 
         // Set initial item
-        builtin_adapter.set(group_id, item_id, data1.clone()).await.expect("Set should succeed");
+        builtin_adapter
+            .set(group_id, item_id, data1.clone())
+            .await
+            .expect("Set should succeed");
         // Update item
-        builtin_adapter.set(group_id, item_id, data2.clone()).await.expect("Set should succeed");
+        builtin_adapter
+            .set(group_id, item_id, data2.clone())
+            .await
+            .expect("Set should succeed");
 
         let saved_data = builtin_adapter
             .get(group_id, item_id)

@@ -12,10 +12,20 @@ use crate::{builtins::pubsub::Subscriber, modules::streams::StreamWrapperMessage
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
-    async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value)
-    -> anyhow::Result<SetResult>;
+    async fn set(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        data: Value,
+    ) -> anyhow::Result<SetResult>;
 
-    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>>;
+    async fn get(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<Option<Value>>;
 
     async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<()>;
 
@@ -25,7 +35,11 @@ pub trait StreamAdapter: Send + Sync {
 
     async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()>;
 
-    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) -> anyhow::Result<()>;
+    async fn subscribe(
+        &self,
+        id: String,
+        connection: Arc<dyn StreamConnection>,
+    ) -> anyhow::Result<()>;
 
     async fn unsubscribe(&self, id: String) -> anyhow::Result<()>;
 

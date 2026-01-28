@@ -43,7 +43,12 @@ impl BridgeAdapter {
 
 #[async_trait]
 impl StateAdapter for BridgeAdapter {
-    async fn update(&self, group_id: &str, item_id: &str, ops: Vec<UpdateOp>) -> anyhow::Result<UpdateResult> {
+    async fn update(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> anyhow::Result<UpdateResult> {
         let index = self.gen_key(group_id);
         let update_data = KvUpdateInput {
             index: index.clone(),
@@ -72,7 +77,10 @@ impl StateAdapter for BridgeAdapter {
             key: item_id.to_string(),
             value: data,
         };
-        let set_result = self.bridge.invoke_function("kv_server.set", set_data).await
+        let set_result = self
+            .bridge
+            .invoke_function("kv_server.set", set_data)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
         serde_json::from_value::<SetResult>(set_result)
@@ -84,7 +92,10 @@ impl StateAdapter for BridgeAdapter {
             index: self.gen_key(group_id),
             key: item_id.to_string(),
         };
-        let value = self.bridge.invoke_function("kv_server.get", data).await
+        let value = self
+            .bridge
+            .invoke_function("kv_server.get", data)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
 
         serde_json::from_value::<Option<Value>>(value)
@@ -108,7 +119,10 @@ impl StateAdapter for BridgeAdapter {
             index: self.gen_key(group_id),
         };
 
-        let value = self.bridge.invoke_function("kv_server.list", data).await
+        let value = self
+            .bridge
+            .invoke_function("kv_server.list", data)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to list values from kv_server: {}", e))?;
 
         serde_json::from_value::<Vec<Value>>(value)

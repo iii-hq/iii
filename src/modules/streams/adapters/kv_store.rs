@@ -55,7 +55,8 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         item_id: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
-        Ok(self.storage
+        Ok(self
+            .storage
             .update(
                 self.gen_key(stream_name, group_id),
                 item_id.to_string(),
@@ -98,7 +99,12 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         Ok(result)
     }
 
-    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
+    async fn get(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<Option<Value>> {
         let index = self.gen_key(stream_name, group_id);
         Ok(self.storage.get(index, item_id.to_string()).await)
     }
@@ -128,7 +134,8 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>> {
         let prefix = self.gen_key(stream_name, "");
 
-        Ok(self.storage
+        Ok(self
+            .storage
             .list_keys_with_prefix(prefix.to_string())
             .await
             .into_iter()
@@ -136,7 +143,11 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
             .collect())
     }
 
-    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>) -> anyhow::Result<()> {
+    async fn subscribe(
+        &self,
+        id: String,
+        connection: Arc<dyn StreamConnection>,
+    ) -> anyhow::Result<()> {
         self.pub_sub.subscribe(id, connection).await;
         Ok(())
     }
@@ -250,7 +261,9 @@ mod tests {
             .expect("Data should exist");
         assert_eq!(saved_data, data2);
 
-        builtin_adapter.delete(stream_name, group_id, item_id).await
+        builtin_adapter
+            .delete(stream_name, group_id, item_id)
+            .await
             .expect("Should delete value successfully");
 
         let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
@@ -259,7 +272,9 @@ mod tests {
             .expect("Should receive delete event");
         assert!(matches!(msg.event, StreamOutboundMessage::Delete { .. }));
 
-        let saved_data = builtin_adapter.get(stream_name, group_id, item_id).await
+        let saved_data = builtin_adapter
+            .get(stream_name, group_id, item_id)
+            .await
             .expect("Should get value successfully");
         assert!(saved_data.is_none());
 

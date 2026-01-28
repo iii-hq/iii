@@ -78,9 +78,11 @@ impl StreamSocketManager {
         let connection_id = connection.id.to_string();
         let connection = Arc::new(connection);
 
-        if let Err(e) = self.adapter
+        if let Err(e) = self
+            .adapter
             .subscribe(connection_id.clone(), connection.clone())
-            .await {
+            .await
+        {
             tracing::error!(error = %e, "Failed to subscribe connection");
             return Err(anyhow::anyhow!("Failed to subscribe connection: {}", e));
         }
