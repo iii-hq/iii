@@ -113,8 +113,9 @@ impl WorkerModule {
     }
 
     async fn list_trigger_infos(&self) -> Vec<TriggerInfo> {
-        let triggers_map = self.engine.trigger_registry.triggers.read().await;
-        triggers_map
+        self.engine
+            .trigger_registry
+            .triggers
             .iter()
             .map(|entry| {
                 let t = entry.value();
@@ -129,7 +130,7 @@ impl WorkerModule {
     }
 
     async fn list_worker_infos(&self) -> Vec<WorkerInfo> {
-        let workers = self.engine.worker_registry.list_workers().await;
+        let workers = self.engine.worker_registry.list_workers();
         let mut worker_infos = Vec::with_capacity(workers.len());
 
         for w in workers {
@@ -165,10 +166,13 @@ impl WorkerModule {
 
         let runtime = input.runtime.unwrap_or_else(|| "unknown".to_string());
 
-        self.engine
-            .worker_registry
-            .update_worker_metadata(&worker_id, runtime, input.version, input.name, input.os)
-            .await;
+        self.engine.worker_registry.update_worker_metadata(
+            &worker_id,
+            runtime,
+            input.version,
+            input.name,
+            input.os,
+        );
     }
 }
 

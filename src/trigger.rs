@@ -4,7 +4,6 @@ use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub struct TriggerType {
@@ -50,70 +49,56 @@ impl std::hash::Hash for Trigger {
 
 #[derive(Default)]
 pub struct TriggerRegistry {
-    pub trigger_types: Arc<RwLock<DashMap<String, TriggerType>>>,
-    pub triggers: Arc<RwLock<DashMap<String, Trigger>>>,
+    pub trigger_types: Arc<DashMap<String, TriggerType>>,
+    pub triggers: Arc<DashMap<String, Trigger>>,
 }
 
 impl TriggerRegistry {
     pub fn new() -> Self {
         Self {
-            trigger_types: Arc::new(RwLock::new(DashMap::new())),
-            triggers: Arc::new(RwLock::new(DashMap::new())),
+            trigger_types: Arc::new(DashMap::new()),
+            triggers: Arc::new(DashMap::new()),
         }
     }
 
     pub async fn unregister_worker(&self, worker_id: &Uuid) {
-        {
-            let worker_trigger_types = self
-                .trigger_types
-                .read()
-                .await
-                .iter()
-                .filter(|pair| pair.value().worker_id == Some(*worker_id))
-                .map(|pair| pair.key().clone())
-                .collect::<Vec<_>>();
+        let worker_trigger_type_ids: Vec<String> = self
+            .trigger_types
+            .iter()
+            .filter(|pair| pair.value().worker_id == Some(*worker_id))
+            .map(|pair| pair.key().clone())
+            .collect();
 
-            if !worker_trigger_types.is_empty() {
-                let write_lock = self.trigger_types.write().await;
-                for trigger_type_id in worker_trigger_types {
-                    tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
-                    write_lock.remove(&trigger_type_id.to_string());
-                    tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
-                }
-            }
+        for trigger_type_id in worker_trigger_type_ids {
+            tracing::debug!(trigger_type_id = %trigger_type_id, "Removing trigger type");
+            self.trigger_types.remove(&trigger_type_id);
+            tracing::debug!(trigger_type_id = %trigger_type_id, "Trigger type removed");
         }
 
-        let worker_triggers = self
+        let worker_triggers: Vec<Trigger> = self
             .triggers
-            .read()
-            .await
             .iter()
             .filter(|pair| pair.value().worker_id == Some(*worker_id))
             .map(|pair| pair.value().clone())
-            .collect::<Vec<Trigger>>();
+            .collect();
 
-        if !worker_triggers.is_empty() {
-            let write_lock = self.triggers.write().await;
-            for trigger in worker_triggers {
-                tracing::debug!(trigger_id = trigger.id, "Removing trigger");
-                write_lock.remove(&trigger.id);
+        for trigger in worker_triggers {
+            tracing::debug!(trigger_id = trigger.id, "Removing trigger");
+            self.triggers.remove(&trigger.id);
 
-                if let Some(trigger_type) =
-                    self.trigger_types.read().await.get(&trigger.trigger_type)
-                {
-                    tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
+            if let Some(trigger_type) = self.trigger_types.get(&trigger.trigger_type) {
+                tracing::debug!(trigger_type_id = trigger_type.id, "Unregistering trigger");
 
-                    let result: Result<(), anyhow::Error> = trigger_type
-                        .registrator
-                        .unregister_trigger(trigger.clone())
-                        .await;
-                    if let Err(err) = result {
-                        tracing::error!(error = %err, "Error unregistering trigger");
-                    }
+                let result: Result<(), anyhow::Error> = trigger_type
+                    .registrator
+                    .unregister_trigger(trigger.clone())
+                    .await;
+                if let Err(err) = result {
+                    tracing::error!(error = %err, "Error unregistering trigger");
                 }
-
-                tracing::debug!(trigger_id = trigger.id, "Trigger removed");
             }
+
+            tracing::debug!(trigger_id = trigger.id, "Trigger removed");
         }
     }
 
@@ -121,7 +106,7 @@ impl TriggerRegistry {
         &self,
         trigger_type: TriggerType,
     ) -> Result<(), anyhow::Error> {
-        let trigger_type_id = &trigger_type.id;
+        let trigger_type_id = trigger_type.id.clone();
 
         tracing::info!(
             "{} Trigger Type {}",
@@ -129,23 +114,24 @@ impl TriggerRegistry {
             trigger_type_id.purple()
         );
 
-        for pair in self.triggers.read().await.iter() {
-            let trigger = pair.value();
+        let matching_triggers: Vec<Trigger> = self
+            .triggers
+            .iter()
+            .filter(|pair| pair.value().trigger_type == trigger_type_id)
+            .map(|pair| pair.value().clone())
+            .collect();
 
-            if &trigger.trigger_type == trigger_type_id {
-                let result = trigger_type
-                    .registrator
-                    .register_trigger(trigger.clone())
-                    .await;
-                if let Err(err) = result {
-                    tracing::error!(error = %err, "Error registering trigger");
-                }
+        for trigger in matching_triggers {
+            let result = trigger_type
+                .registrator
+                .register_trigger(trigger.clone())
+                .await;
+            if let Err(err) = result {
+                tracing::error!(error = %err, "Error registering trigger");
             }
         }
 
         self.trigger_types
-            .write()
-            .await
             .insert(trigger_type.id.clone(), trigger_type);
 
         Ok(())
@@ -153,9 +139,7 @@ impl TriggerRegistry {
 
     pub async fn register_trigger(&self, trigger: Trigger) -> Result<(), anyhow::Error> {
         let trigger_type_id = trigger.trigger_type.clone();
-        let lock = self.trigger_types.read().await;
-
-        let Some(trigger_type) = lock.get(&trigger_type_id) else {
+        let Some(trigger_type) = self.trigger_types.get(&trigger_type_id) else {
             tracing::error!(
                 trigger_type_id = %trigger_type_id.purple(),
                 "Trigger type not found"
@@ -168,12 +152,11 @@ impl TriggerRegistry {
             .register_trigger(trigger.clone())
             .await;
 
+        drop(trigger_type);
+
         tracing::debug!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
 
-        self.triggers
-            .write()
-            .await
-            .insert(trigger.id.clone(), trigger);
+        self.triggers.insert(trigger.id.clone(), trigger);
 
         Ok(())
     }
@@ -189,21 +172,20 @@ impl TriggerRegistry {
             trigger_type.purple()
         );
 
-        let trigger_lock = self.triggers.read().await;
-        let Some(trigger) = trigger_lock.get(&id) else {
+        let Some(trigger_entry) = self.triggers.get(&id) else {
             return Err(anyhow::anyhow!("Trigger not found"));
         };
-        let trigger_type_lock = self.trigger_types.read().await;
-        let trigger_type = trigger_type_lock.get(&trigger_type.clone());
+        let trigger = trigger_entry.value().clone();
+        drop(trigger_entry);
 
-        if let Some(tt) = trigger_type {
+        if let Some(tt) = self.trigger_types.get(&trigger_type) {
             let result: Result<(), anyhow::Error> =
                 tt.registrator.unregister_trigger(trigger.clone()).await;
 
             result?
         }
 
-        self.triggers.write().await.remove(&trigger.id);
+        self.triggers.remove(&id);
 
         Ok(())
     }

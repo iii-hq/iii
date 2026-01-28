@@ -1,20 +1,18 @@
 use std::{collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
-use tokio::sync::RwLock;
-
 #[derive(Default)]
 pub struct ServicesRegistry {
-    pub services: Arc<RwLock<DashMap<String, Service>>>,
+    pub services: Arc<DashMap<String, Service>>,
 }
 impl ServicesRegistry {
     pub fn new() -> Self {
         ServicesRegistry {
-            services: Arc::new(RwLock::new(DashMap::new())),
+            services: Arc::new(DashMap::new()),
         }
     }
 
-    pub async fn remove_function_from_services(&self, func_path: &str) {
+    pub fn remove_function_from_services(&self, func_path: &str) {
         let service_name = match Self::get_service_name_from_func_path(func_path) {
             Some(name) => name,
             None => {
@@ -30,9 +28,8 @@ impl ServicesRegistry {
             }
         };
 
-        let services_write = self.services.write().await;
-
-        if let Some(mut service) = services_write.get_mut(&service_name) {
+        let mut should_remove_service = false;
+        if let Some(mut service) = self.services.get_mut(&service_name) {
             tracing::debug!(
                 service_name = %service_name,
                 function_name = %function_name,
@@ -40,18 +37,15 @@ impl ServicesRegistry {
             );
 
             service.remove_function_from_service(&function_name);
-            let is_functions_empty = service.functions.is_empty();
+            should_remove_service = service.functions.is_empty();
+        }
 
-            drop(service); // important to drop the service before removing it
-
-            if is_functions_empty {
-                tracing::debug!(
-                    service_name = %service_name,
-                    "Removing service as it has no more functions"
-                );
-
-                services_write.remove(&service_name);
-            }
+        if should_remove_service {
+            tracing::debug!(
+                service_name = %service_name,
+                "Removing service as it has no more functions"
+            );
+            self.services.remove(&service_name);
         }
     }
 
@@ -71,7 +65,7 @@ impl ServicesRegistry {
         Some(parts[1..].join("."))
     }
 
-    pub async fn register_service_from_func_path(&self, func_path: &str) {
+    pub fn register_service_from_func_path(&self, func_path: &str) {
         let parts: Vec<&str> = func_path.split(".").collect();
         if parts.len() < 2 {
             return;
@@ -79,31 +73,27 @@ impl ServicesRegistry {
         let service_name = parts[0].to_string();
         let function_name = parts[1..].join(".");
 
-        if !self.services.read().await.contains_key(&service_name) {
+        if !self.services.contains_key(&service_name) {
             let service = Service::new(service_name.clone(), "".to_string());
-            self.insert_service(service).await;
+            self.insert_service(service);
         }
 
-        self.insert_function_to_service(&service_name, &function_name)
-            .await;
+        self.insert_function_to_service(&service_name, &function_name);
     }
 
-    pub async fn insert_service(&self, service: Service) {
-        if self.services.read().await.contains_key(&service.name) {
+    pub fn insert_service(&self, service: Service) {
+        if self.services.contains_key(&service.name) {
             tracing::warn!(service_name = %service.name, "Service already exists");
         }
-        self.services
-            .write()
-            .await
-            .insert(service.name.clone(), service);
+        self.services.insert(service.name.clone(), service);
     }
 
-    pub async fn _remove_service(&self, service: &Service) {
-        self.services.write().await.remove(&service.name);
+    pub fn _remove_service(&self, service: &Service) {
+        self.services.remove(&service.name);
     }
 
-    pub async fn insert_function_to_service(&self, service_name: &String, function: &str) {
-        if let Some(mut service) = self.services.write().await.get_mut(service_name) {
+    pub fn insert_function_to_service(&self, service_name: &String, function: &str) {
+        if let Some(mut service) = self.services.get_mut(service_name) {
             service.insert_function(function.to_string());
         }
     }
