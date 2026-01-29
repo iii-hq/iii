@@ -271,7 +271,7 @@ impl BuiltinQueue {
         Ok(())
     }
 
-    pub fn job_key(&self, queue: &str, job_id: &str) -> String {
+    pub(crate) fn job_key(&self, queue: &str, job_id: &str) -> String {
         format!("queue:{}:jobs:{}", queue, job_id)
     }
 
