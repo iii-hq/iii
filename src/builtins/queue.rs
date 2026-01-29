@@ -490,27 +490,41 @@ impl BuiltinQueue {
     ) -> SubscriptionHandle {
         let handle_id = Uuid::new_v4().to_string();
 
-        let effective_concurrency = config
+        let effective_mode = config
             .as_ref()
-            .and_then(|c| c.concurrency)
-            .unwrap_or(self.config.concurrency);
+            .and_then(|c| c.mode)
+            .unwrap_or(self.config.mode);
 
-        let worker = Worker::new(
-            Arc::new(self.clone()),
-            queue.to_string(),
-            handler,
-            config,
-            effective_concurrency,
-        );
+        let task_handle = match effective_mode {
+            QueueMode::Fifo => {
+                let worker = FifoWorker::new(Arc::new(self.clone()), queue.to_string(), handler);
+                tokio::spawn(async move {
+                    worker.run().await;
+                })
+            }
+            QueueMode::Concurrent => {
+                let effective_concurrency = config
+                    .as_ref()
+                    .and_then(|c| c.concurrency)
+                    .unwrap_or(self.config.concurrency);
 
-        let task_handle = tokio::spawn(async move {
-            worker.run().await;
-        });
+                let worker = Worker::new(
+                    Arc::new(self.clone()),
+                    queue.to_string(),
+                    handler,
+                    config,
+                    effective_concurrency,
+                );
+                tokio::spawn(async move {
+                    worker.run().await;
+                })
+            }
+        };
 
         let mut subs = self.subscriptions.write().await;
         subs.insert(handle_id.clone(), task_handle);
 
-        tracing::info!(queue = %queue, handle_id = %handle_id, "Subscribed to queue");
+        tracing::info!(queue = %queue, handle_id = %handle_id, mode = ?effective_mode, "Subscribed to queue");
 
         SubscriptionHandle {
             id: handle_id,
@@ -659,6 +673,72 @@ impl Worker {
                     }
                 }
             });
+        }
+    }
+}
+
+struct FifoWorker {
+    queue_impl: Arc<BuiltinQueue>,
+    queue_name: String,
+    handler: Arc<dyn JobHandler>,
+    poll_interval_ms: u64,
+}
+
+impl FifoWorker {
+    fn new(
+        queue_impl: Arc<BuiltinQueue>,
+        queue_name: String,
+        handler: Arc<dyn JobHandler>,
+    ) -> Self {
+        Self {
+            poll_interval_ms: queue_impl.config.poll_interval_ms,
+            queue_impl,
+            queue_name,
+            handler,
+        }
+    }
+
+    async fn run(self) {
+        let mut poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
+
+        loop {
+            poll_interval.tick().await;
+
+            if let Err(e) = self
+                .queue_impl
+                .move_delayed_to_waiting(&self.queue_name)
+                .await
+            {
+                tracing::error!(error = ?e, queue = %self.queue_name, "Failed to move delayed jobs");
+            }
+
+            // Process one job at a time, wait for completion
+            self.process_next_job().await;
+        }
+    }
+
+    async fn process_next_job(&self) {
+        let job = match self.queue_impl.pop(&self.queue_name).await {
+            Some(job) => job,
+            None => return,
+        };
+
+        // Process synchronously - wait for completion before returning
+        match self.handler.handle(&job).await {
+            Ok(()) => {
+                if let Err(e) = self.queue_impl.ack(&self.queue_name, &job.id).await {
+                    tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                }
+            }
+            Err(error) => {
+                if let Err(e) = self
+                    .queue_impl
+                    .nack(&self.queue_name, &job.id, &error)
+                    .await
+                {
+                    tracing::error!(error = ?e, job_id = %job.id, "Failed to nack job");
+                }
+            }
         }
     }
 }
@@ -1147,5 +1227,85 @@ mod tests {
         let job: Job = serde_json::from_value(job_value).unwrap();
 
         assert_eq!(job.group_id, Some("group-a".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fifo_mode_processes_in_order() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push jobs
+        let job1_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 1}))
+            .await;
+        let job2_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 2}))
+            .await;
+        let job3_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 3}))
+            .await;
+
+        // Track processing order
+        let processed_order = Arc::new(RwLock::new(Vec::<String>::new()));
+        let processed_clone = Arc::clone(&processed_order);
+
+        struct OrderTracker {
+            processed: Arc<RwLock<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for OrderTracker {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                // Variable delay based on job order to expose concurrent processing
+                let order = job.data.get("order").and_then(|v| v.as_u64()).unwrap_or(0);
+                // First job takes longest, so if concurrent, order would be 3,2,1
+                let delay = match order {
+                    1 => 50,
+                    2 => 30,
+                    3 => 10,
+                    _ => 10,
+                };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                self.processed.write().await.push(job.id.clone());
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(OrderTracker {
+            processed: processed_clone,
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("fifo_queue", handler, Some(subscription_config))
+            .await;
+
+        // Wait for processing
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        queue.unsubscribe(handle).await;
+
+        let order = processed_order.read().await;
+        assert_eq!(
+            order.len(),
+            3,
+            "Expected 3 jobs to be processed, got {}",
+            order.len()
+        );
+        assert_eq!(order[0], job1_id, "First job should be job1");
+        assert_eq!(order[1], job2_id, "Second job should be job2");
+        assert_eq!(order[2], job3_id, "Third job should be job3");
     }
 }
