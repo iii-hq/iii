@@ -271,7 +271,7 @@ impl BuiltinQueue {
         Ok(())
     }
 
-    fn job_key(&self, queue: &str, job_id: &str) -> String {
+    pub fn job_key(&self, queue: &str, job_id: &str) -> String {
         format!("queue:{}:jobs:{}", queue, job_id)
     }
 
@@ -314,6 +314,35 @@ impl BuiltinQueue {
         }));
 
         tracing::debug!(queue = %queue, job_id = %job_id, "Job pushed to queue");
+
+        job_id
+    }
+
+    pub async fn push_fifo(&self, queue: &str, data: Value, group_id: &str) -> String {
+        let job = Job::new_with_group(
+            queue,
+            data,
+            self.config.max_attempts,
+            self.config.backoff_ms,
+            Some(group_id.to_string()),
+        );
+        let job_id = job.id.clone();
+
+        let job_key = self.job_key(queue, &job.id);
+        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+        self.kv_store.set_job(&job_key, job_json).await;
+
+        let waiting_key = self.waiting_key(queue);
+        self.kv_store.lpush(&waiting_key, job.id.clone()).await;
+
+        self.pubsub.send_msg(serde_json::json!({
+            "topic": format!("queue:job:{}", queue),
+            "type": "available",
+            "job_id": &job.id,
+            "group_id": group_id,
+        }));
+
+        tracing::debug!(queue = %queue, job_id = %job_id, group_id = %group_id, "FIFO job pushed to queue");
 
         job_id
     }
@@ -1100,5 +1129,23 @@ mod tests {
     async fn test_job_without_group_id() {
         let job = Job::new("test_queue", serde_json::json!({}), 3, 1000);
         assert_eq!(job.group_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_push_fifo_with_group() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig::default();
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        let job_id = queue
+            .push_fifo("test_queue", serde_json::json!({"order": 1}), "group-a")
+            .await;
+
+        let job_key = queue.job_key("test_queue", &job_id);
+        let job_value = kv_store.get_job(&job_key).await.unwrap();
+        let job: Job = serde_json::from_value(job_value).unwrap();
+
+        assert_eq!(job.group_id, Some("group-a".to_string()));
     }
 }
