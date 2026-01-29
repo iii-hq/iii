@@ -1,59 +1,41 @@
-# =============================================================================
-# III Engine - Debug Dockerfile (with shell access for troubleshooting)
-# =============================================================================
-#
-# Use this image for debugging/troubleshooting only.
-# For production, use the main Dockerfile.
-#
-# =============================================================================
+ARG VERSION=latest
 
-# Build stage
-FROM rust:slim@sha256:df6ca8f96d338697ccdbe3ccac57a85d2172e03a2429c2d243e74f3bb83ba2f5 AS builder
+FROM alpine:3.21 AS downloader
+ARG VERSION
+ARG TARGETARCH
+RUN apk add --no-cache curl tar
+WORKDIR /download
+RUN set -ex; \
+    case "${TARGETARCH}" in \
+        amd64) RUST_TARGET="x86_64-unknown-linux-musl" ;; \
+        arm64) RUST_TARGET="aarch64-unknown-linux-gnu" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/MotiaDev/iii-engine/releases/download/${VERSION}/iii-${RUST_TARGET}.tar.gz" | tar xz; \
+    chmod 550 iii
 
-WORKDIR /build
+FROM alpine:3.21 AS runtime-amd64
+RUN apk add --no-cache ca-certificates curl procps net-tools htop vim bash
 
+FROM debian:bookworm-slim AS runtime-arm64
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
+    ca-certificates curl procps net-tools htop vim-tiny \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
-RUN cargo build --release && strip target/release/iii
+ARG TARGETARCH
+FROM runtime-${TARGETARCH}
 
-# Runtime stage - includes debug tools
-FROM debian:trixie-slim@sha256:77ba0164de17b88dd0bf6cdc8f65569e6e5fa6cd256562998b62553134a00ef0
-
-# Install runtime dependencies + debug tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl3t64 \
-    curl \
-    procps \
-    net-tools \
-    htop \
-    vim-tiny \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user with home directory for debugging
-RUN useradd --system --create-home --shell /bin/bash iii \
-    && mkdir -p /app \
-    && chown iii:iii /app
-
-USER iii
+RUN adduser --system --create-home --shell /bin/sh iii
 WORKDIR /app
+COPY --from=downloader --chown=iii:iii /download/iii /app/iii
+USER iii
 
-COPY --from=builder --chown=iii:iii /build/target/release/iii /app/iii
-
-RUN chmod 550 /app/iii
-
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:3111/health || curl -sf http://localhost:3111/ || /app/iii --version
+    CMD curl -sf http://localhost:3111/health || /app/iii --version
 
 EXPOSE 49134 3111 3112 9464
-
 ENTRYPOINT ["/app/iii"]
 CMD ["--config", "/app/config.yaml"]
 
 LABEL org.opencontainers.image.title="III Engine (Debug)" \
-      org.opencontainers.image.description="Debug build with shell access - NOT for production"
+      org.opencontainers.image.description="Debug build with shell access"
