@@ -140,14 +140,13 @@ impl StateCoreModule {
                                     result = ?result,
                                     "Condition function result"
                                 );
-                                if let Some(passed) = result.as_bool() {
-                                    if !passed {
-                                        tracing::debug!(
-                                            function_path = %trigger.function_path,
-                                            "Condition check failed, skipping handler"
-                                        );
-                                        continue;
-                                    }
+
+                                if let Some(passed) = result.as_bool() && !passed {
+                                    tracing::debug!(
+                                        function_path = %trigger.function_path,
+                                        "Condition check failed, skipping handler"
+                                    );
+                                    continue;
                                 }
                             }
                             Ok(None) => {
@@ -224,7 +223,7 @@ impl StateCoreModule {
                     },
                     group_id: input.group_id,
                     item_id: input.item_id,
-                    old_value: old_value,
+                    old_value,
                     new_value: new_value.clone(),
                 };
 
@@ -317,8 +316,8 @@ impl StateCoreModule {
                     },
                     group_id: input.group_id,
                     item_id: input.item_id,
-                    old_value: old_value,
-                    new_value: new_value,
+                    old_value,
+                    new_value,
                 };
 
                 self.invoke_triggers(event_data).await;
