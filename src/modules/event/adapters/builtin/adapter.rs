@@ -6,10 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     builtins::{
-        kv::BuiltinKvStore,
-        pubsub::BuiltInPubSubAdapter,
-        queue::{BuiltinQueue, JobHandler, QueueConfig, SubscriptionConfig, SubscriptionHandle},
-        queue_kv::QueueKvStore,
+        kv::BuiltinKvStore, pubsub_lite::BuiltInPubSubLite, queue::{BuiltinQueue, JobHandler, QueueConfig, SubscriptionConfig, SubscriptionHandle}, queue_kv::QueueKvStore
     },
     engine::{Engine, EngineTrait},
     modules::event::{
@@ -46,7 +43,7 @@ impl JobHandler for FunctionHandler {
 impl BuiltinQueueAdapter {
     pub fn new(
         kv_store: Arc<QueueKvStore>,
-        pubsub: Arc<BuiltInPubSubAdapter>,
+        pubsub: Arc<BuiltInPubSubLite>,
         engine: Arc<Engine>,
         config: QueueConfig,
     ) -> Self {
@@ -75,7 +72,7 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterF
 
         let base_kv = Arc::new(BuiltinKvStore::new(config.clone()));
         let kv_store = Arc::new(QueueKvStore::new(base_kv, config.clone()));
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(config.clone()));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(config.clone()));
 
         let adapter = Arc::new(BuiltinQueueAdapter::new(
             kv_store,
