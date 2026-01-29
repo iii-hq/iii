@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -724,7 +724,7 @@ struct GroupedFifoWorker {
     queue_impl: Arc<BuiltinQueue>,
     queue_name: String,
     handler: Arc<dyn JobHandler>,
-    active_groups: Arc<RwLock<HashMap<String, bool>>>,
+    active_groups: Arc<RwLock<HashSet<String>>>,
     max_concurrent_groups: usize,
     poll_interval_ms: u64,
 }
@@ -741,7 +741,7 @@ impl GroupedFifoWorker {
             queue_impl,
             queue_name,
             handler,
-            active_groups: Arc::new(RwLock::new(HashMap::new())),
+            active_groups: Arc::new(RwLock::new(HashSet::new())),
             max_concurrent_groups,
         }
     }
@@ -785,7 +785,7 @@ impl GroupedFifoWorker {
             // Atomic check-and-insert to avoid TOCTOU race condition
             {
                 let mut active = self.active_groups.write().await;
-                if active.contains_key(&group_id) {
+                if active.contains(&group_id) {
                     drop(active);
                     // Put job back - this group is busy
                     let waiting_key = self.queue_impl.waiting_key(&self.queue_name);
@@ -797,7 +797,7 @@ impl GroupedFifoWorker {
                     self.queue_impl.kv_store.lrem(&active_key, 1, &job.id).await;
                     continue;
                 }
-                active.insert(group_id.clone(), true);
+                active.insert(group_id.clone());
             }
 
             // Process job in background
