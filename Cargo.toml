@@ -68,6 +68,10 @@ dirs = "6"
 hostname = "0.4"
 sha2 = "0.10"
 iana-time-zone = "0.1"
+ring = "0.17.14"
+glob = "0.3.3"
+base64 = "0.22.1"
+subtle = "2.6"
 
 [dev-dependencies]
 mockall = "0.13"
