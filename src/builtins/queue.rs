@@ -634,6 +634,64 @@ impl Clone for BuiltinQueue {
     }
 }
 
+/// Shared helper for processing a FIFO job with inline retry.
+/// This function handles the retry loop until the job succeeds or is exhausted.
+/// Used by both FifoWorker (single-threaded FIFO) and GroupedFifoWorker (grouped FIFO).
+async fn process_job_with_inline_retry(
+    queue_impl: &BuiltinQueue,
+    queue_name: &str,
+    handler: &dyn JobHandler,
+    mut job: Job,
+    group_id_for_logging: Option<&str>,
+) {
+    loop {
+        match handler.handle(&job).await {
+            Ok(()) => {
+                if let Err(e) = queue_impl.ack(queue_name, &job.id).await {
+                    tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                }
+                return;
+            }
+            Err(error) => {
+                job.increment_attempts();
+
+                if job.is_exhausted() {
+                    if let Err(e) = queue_impl.move_to_dlq(queue_name, &job, &error).await {
+                        tracing::error!(error = ?e, job_id = %job.id, "Failed to move job to DLQ");
+                    }
+                    return;
+                }
+
+                let delay = job.calculate_backoff();
+                if let Some(gid) = group_id_for_logging {
+                    tracing::debug!(
+                        queue = %queue_name,
+                        job_id = %job.id,
+                        group_id = %gid,
+                        attempts = job.attempts_made,
+                        delay_ms = delay,
+                        "FIFO job scheduled for inline retry"
+                    );
+                } else {
+                    tracing::debug!(
+                        queue = %queue_name,
+                        job_id = %job.id,
+                        attempts = job.attempts_made,
+                        delay_ms = delay,
+                        "FIFO job scheduled for inline retry"
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+
+                let job_key = queue_impl.job_key(queue_name, &job.id);
+                if let Ok(job_json) = serde_json::to_value(&job) {
+                    queue_impl.kv_store.set_job(&job_key, job_json).await;
+                }
+            }
+        }
+    }
+}
+
 struct Worker {
     queue_impl: Arc<BuiltinQueue>,
     queue_name: String,
@@ -807,53 +865,15 @@ impl GroupedFifoWorker {
             let active_groups = Arc::clone(&self.active_groups);
 
             tokio::spawn(async move {
-                let mut job = job;
+                process_job_with_inline_retry(
+                    &queue_impl,
+                    &queue_name,
+                    handler.as_ref(),
+                    job,
+                    Some(&group_id),
+                )
+                .await;
 
-                // In grouped FIFO mode, retry the job inline until success or exhaustion.
-                // This ensures subsequent jobs in the same group are blocked until this job completes.
-                loop {
-                    match handler.handle(&job).await {
-                        Ok(()) => {
-                            if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
-                                tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
-                            }
-                            break;
-                        }
-                        Err(error) => {
-                            job.increment_attempts();
-
-                            if job.is_exhausted() {
-                                // Move to DLQ
-                                if let Err(e) =
-                                    queue_impl.move_to_dlq(&queue_name, &job, &error).await
-                                {
-                                    tracing::error!(error = ?e, job_id = %job.id, "Failed to move job to DLQ");
-                                }
-                                break;
-                            }
-
-                            // Wait for backoff, then retry inline
-                            let delay = job.calculate_backoff();
-                            tracing::debug!(
-                                queue = %queue_name,
-                                job_id = %job.id,
-                                group_id = %group_id,
-                                attempts = job.attempts_made,
-                                delay_ms = delay,
-                                "Grouped FIFO job scheduled for inline retry"
-                            );
-                            tokio::time::sleep(Duration::from_millis(delay)).await;
-
-                            // Update job in storage with new attempt count
-                            let job_key = queue_impl.job_key(&queue_name, &job.id);
-                            if let Ok(job_json) = serde_json::to_value(&job) {
-                                queue_impl.kv_store.set_job(&job_key, job_json).await;
-                            }
-                        }
-                    }
-                }
-
-                // Mark group as available
                 active_groups.write().await.remove(&group_id);
             });
         }
@@ -901,55 +921,19 @@ impl FifoWorker {
     }
 
     async fn process_next_job(&self) {
-        let mut job = match self.queue_impl.pop(&self.queue_name).await {
+        let job = match self.queue_impl.pop(&self.queue_name).await {
             Some(job) => job,
             None => return,
         };
 
-        // In FIFO mode, retry the job inline until success or exhaustion.
-        // This ensures subsequent jobs are blocked until this job completes.
-        loop {
-            match self.handler.handle(&job).await {
-                Ok(()) => {
-                    if let Err(e) = self.queue_impl.ack(&self.queue_name, &job.id).await {
-                        tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
-                    }
-                    return;
-                }
-                Err(error) => {
-                    job.increment_attempts();
-
-                    if job.is_exhausted() {
-                        // Move to DLQ
-                        if let Err(e) = self
-                            .queue_impl
-                            .move_to_dlq(&self.queue_name, &job, &error)
-                            .await
-                        {
-                            tracing::error!(error = ?e, job_id = %job.id, "Failed to move job to DLQ");
-                        }
-                        return;
-                    }
-
-                    // Wait for backoff, then retry inline
-                    let delay = job.calculate_backoff();
-                    tracing::debug!(
-                        queue = %self.queue_name,
-                        job_id = %job.id,
-                        attempts = job.attempts_made,
-                        delay_ms = delay,
-                        "FIFO job scheduled for inline retry"
-                    );
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-
-                    // Update job in storage with new attempt count
-                    let job_key = self.queue_impl.job_key(&self.queue_name, &job.id);
-                    if let Ok(job_json) = serde_json::to_value(&job) {
-                        self.queue_impl.kv_store.set_job(&job_key, job_json).await;
-                    }
-                }
-            }
-        }
+        process_job_with_inline_retry(
+            &self.queue_impl,
+            &self.queue_name,
+            self.handler.as_ref(),
+            job,
+            None,
+        )
+        .await;
     }
 }
 
