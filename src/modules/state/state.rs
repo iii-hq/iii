@@ -141,7 +141,9 @@ impl StateCoreModule {
                                     "Condition function result"
                                 );
 
-                                if let Some(passed) = result.as_bool() && !passed {
+                                if let Some(passed) = result.as_bool()
+                                    && !passed
+                                {
                                     tracing::debug!(
                                         function_path = %trigger.function_path,
                                         "Condition check failed, skipping handler"
