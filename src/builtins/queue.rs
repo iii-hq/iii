@@ -782,10 +782,11 @@ impl GroupedFifoWorker {
                 .clone()
                 .unwrap_or_else(|| "default".to_string());
 
-            // Check if group is already being processed
+            // Atomic check-and-insert to avoid TOCTOU race condition
             {
-                let active = self.active_groups.read().await;
+                let mut active = self.active_groups.write().await;
                 if active.contains_key(&group_id) {
+                    drop(active);
                     // Put job back - this group is busy
                     let waiting_key = self.queue_impl.waiting_key(&self.queue_name);
                     self.queue_impl
@@ -796,13 +797,8 @@ impl GroupedFifoWorker {
                     self.queue_impl.kv_store.lrem(&active_key, 1, &job.id).await;
                     continue;
                 }
+                active.insert(group_id.clone(), true);
             }
-
-            // Mark group as active
-            self.active_groups
-                .write()
-                .await
-                .insert(group_id.clone(), true);
 
             // Process job in background
             let queue_impl = Arc::clone(&self.queue_impl);
@@ -1696,5 +1692,81 @@ mod tests {
         assert_eq!(processed.len(), 2);
         assert_eq!(processed[0], job1_id);
         assert_eq!(processed[1], job2_id);
+    }
+
+    #[tokio::test]
+    async fn test_grouped_fifo_no_duplicate_group_processing() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            poll_interval_ms: 1, // Fast polling to increase race likelihood
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push many jobs to the same group
+        for i in 0..20 {
+            queue
+                .push_fifo("race_queue", serde_json::json!({"order": i}), "same-group")
+                .await;
+        }
+
+        let concurrent_count = Arc::new(RwLock::new(0_i32));
+        let max_concurrent = Arc::new(RwLock::new(0_i32));
+        let concurrent_clone = Arc::clone(&concurrent_count);
+        let max_clone = Arc::clone(&max_concurrent);
+
+        struct ConcurrencyTracker {
+            concurrent: Arc<RwLock<i32>>,
+            max_concurrent: Arc<RwLock<i32>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for ConcurrencyTracker {
+            async fn handle(&self, _job: &Job) -> Result<(), String> {
+                {
+                    let mut count = self.concurrent.write().await;
+                    *count += 1;
+                    let mut max = self.max_concurrent.write().await;
+                    if *count > *max {
+                        *max = *count;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                {
+                    let mut count = self.concurrent.write().await;
+                    *count -= 1;
+                }
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(ConcurrencyTracker {
+            concurrent: concurrent_clone,
+            max_concurrent: max_clone,
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: Some(5), // Allow multiple groups, but same group should serialize
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("race_queue", handler, Some(subscription_config))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        queue.unsubscribe(handle).await;
+
+        // For a single group, max concurrent should be 1
+        let max = *max_concurrent.read().await;
+        assert_eq!(
+            max, 1,
+            "Same group should never have concurrent processing, got {}",
+            max
+        );
     }
 }
