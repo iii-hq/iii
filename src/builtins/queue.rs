@@ -301,7 +301,10 @@ impl BuiltinQueue {
         let job_id = job.id.clone();
 
         let job_key = self.job_key(queue, &job.id);
-        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+        // Job serialization should never fail as all fields are basic types.
+        // If it does fail, it indicates a bug in the code that should be fixed.
+        let job_json =
+            serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
         self.kv_store.set_job(&job_key, job_json).await;
 
         let waiting_key = self.waiting_key(queue);
@@ -329,7 +332,10 @@ impl BuiltinQueue {
         let job_id = job.id.clone();
 
         let job_key = self.job_key(queue, &job.id);
-        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+        // Job serialization should never fail as all fields are basic types.
+        // If it does fail, it indicates a bug in the code that should be fixed.
+        let job_json =
+            serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
         self.kv_store.set_job(&job_key, job_json).await;
 
         let waiting_key = self.waiting_key(queue);
@@ -365,7 +371,10 @@ impl BuiltinQueue {
         job.process_at = Some(process_at);
 
         let job_key = self.job_key(queue, &job.id);
-        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+        // Job serialization should never fail as all fields are basic types.
+        // If it does fail, it indicates a bug in the code that should be fixed.
+        let job_json =
+            serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
         self.kv_store.set_job(&job_key, job_json).await;
 
         let delayed_key = self.delayed_key(queue);
@@ -600,7 +609,10 @@ impl BuiltinQueue {
                 job.attempts_made = 0;
 
                 let job_key = self.job_key(queue, &job.id);
-                let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+                // Job serialization should never fail as all fields are basic types.
+                // If it does fail, it indicates a bug in the code that should be fixed.
+                let job_json =
+                    serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
                 self.kv_store.set_job(&job_key, job_json).await;
 
                 let waiting_key = self.waiting_key(queue);
