@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::builtins::pubsub_lite::BuiltInPubSubLite;
 
-use super::{queue_kv::QueueKvStore};
+use super::queue_kv::QueueKvStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {

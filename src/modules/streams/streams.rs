@@ -399,7 +399,10 @@ impl StreamCoreModule {
         data
     }
 
-    #[function(name = "streams.list", description = "List all items in a stream group")]
+    #[function(
+        name = "streams.list",
+        description = "List all items in a stream group"
+    )]
     pub async fn list(
         &self,
         input: StreamGetGroupInput,
