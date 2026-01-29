@@ -1765,4 +1765,70 @@ mod tests {
             max
         );
     }
+
+    #[tokio::test]
+    async fn test_grouped_fifo_requeue_preserves_order() {
+        // This test verifies that when jobs are skipped (group already active),
+        // they are requeued in FIFO order, not reversed.
+        //
+        // Setup: Push 3 jobs for the same group (A, B, C in order)
+        // Then simulate what process_available_groups does:
+        // 1. Pop A (oldest), mark group active
+        // 2. Pop B, group busy -> should be requeued
+        // 3. Pop C, group busy -> should be requeued
+        // After requeue, order should still be B, C (not C, B)
+
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig::default();
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        // Push 3 jobs with same group_id
+        let job_a_id = queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A"}), "group1")
+            .await;
+        let job_b_id = queue
+            .push_fifo("test_queue", serde_json::json!({"name": "B"}), "group1")
+            .await;
+        let job_c_id = queue
+            .push_fifo("test_queue", serde_json::json!({"name": "C"}), "group1")
+            .await;
+
+        // Pop A - this would be processed (oldest)
+        let job_a = queue.pop("test_queue").await.unwrap();
+        assert_eq!(job_a.id, job_a_id);
+
+        // Pop B and C - these would be skipped and need requeue
+        let job_b = queue.pop("test_queue").await.unwrap();
+        assert_eq!(job_b.id, job_b_id);
+        let job_c = queue.pop("test_queue").await.unwrap();
+        assert_eq!(job_c.id, job_c_id);
+
+        // Simulate the CORRECT requeue behavior: lpush in pop-order
+        // This puts B at back (next to process), C at front
+        let waiting_key = queue.waiting_key("test_queue");
+        let active_key = queue.active_key("test_queue");
+
+        // Requeue in the order they were popped (B first, then C)
+        // lpush(B) -> [B]
+        // lpush(C) -> [C, B]
+        // Now rpop gets B first (correct FIFO)
+        kv_store.lpush(&waiting_key, job_b.id.clone()).await;
+        kv_store.lrem(&active_key, 1, &job_b.id).await;
+        kv_store.lpush(&waiting_key, job_c.id.clone()).await;
+        kv_store.lrem(&active_key, 1, &job_c.id).await;
+
+        // Verify FIFO order: B should come before C
+        let next_job = queue.pop("test_queue").await.unwrap();
+        assert_eq!(
+            next_job.id, job_b_id,
+            "Expected B to be next (FIFO), but got different job"
+        );
+
+        let last_job = queue.pop("test_queue").await.unwrap();
+        assert_eq!(
+            last_job.id, job_c_id,
+            "Expected C to be last (FIFO), but got different job"
+        );
+    }
 }
