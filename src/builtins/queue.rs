@@ -35,10 +35,22 @@ pub struct Job {
     pub created_at: u64,
     #[serde(default)]
     pub process_at: Option<u64>,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 impl Job {
     pub fn new(queue: &str, data: Value, max_attempts: u32, backoff_delay_ms: u64) -> Self {
+        Self::new_with_group(queue, data, max_attempts, backoff_delay_ms, None)
+    }
+
+    pub fn new_with_group(
+        queue: &str,
+        data: Value,
+        max_attempts: u32,
+        backoff_delay_ms: u64,
+        group_id: Option<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             queue: queue.to_string(),
@@ -51,6 +63,7 @@ impl Job {
                 .unwrap()
                 .as_millis() as u64,
             process_at: None,
+            group_id,
         }
     }
 
@@ -1069,5 +1082,23 @@ mod tests {
             config.effective_mode(QueueMode::Concurrent),
             QueueMode::Concurrent
         );
+    }
+
+    #[tokio::test]
+    async fn test_job_with_group_id() {
+        let job = Job::new_with_group(
+            "test_queue",
+            serde_json::json!({"key": "value"}),
+            3,
+            1000,
+            Some("user-123".to_string()),
+        );
+        assert_eq!(job.group_id, Some("user-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_job_without_group_id() {
+        let job = Job::new("test_queue", serde_json::json!({}), 3, 1000);
+        assert_eq!(job.group_id, None);
     }
 }
