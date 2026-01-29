@@ -59,9 +59,10 @@ impl BuiltInPubSubLite {
                     let msg = Arc::new(msg);
                     tracing::debug!("Received message event: {:?}", msg);
                     let subscribers = self.subscribers.read().await;
+                    let subscribers = subscribers.values().collect::<Vec<_>>();
                     let mut promises = Vec::new();
 
-                    for connection in subscribers.values() {
+                    for connection in subscribers {
                         promises.push(connection.handle_message(msg.clone()));
                     }
 

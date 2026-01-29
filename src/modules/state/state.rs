@@ -195,6 +195,8 @@ impl StateCoreModule {
                     }
                 }
             });
+        } else {
+            tracing::error!("Failed to convert event data to value");
         }
     }
 }
@@ -228,7 +230,7 @@ impl StateCoreModule {
 
                 self.invoke_triggers(event_data).await;
 
-                FunctionResult::Success(Some(serde_json::to_value(new_value).unwrap()))
+                FunctionResult::Success(Some(serde_json::to_value(value).unwrap()))
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to set value: {}", e),
