@@ -61,6 +61,11 @@ rand = "0.8"
 rkyv = "0.8.12"
 nix = { version = "0.30.1", features = ["signal", "process"] }
 winapi = { version = "0.3.9", features = ["minwindef", "wincon", "winbase", "consoleapi"] }
+reqwest = "0.13.1"
+ring = "0.17.14"
+hex = "0.4.3"
+glob = "0.3.3"
+base64 = "0.22.1"
 
 [dev-dependencies]
 mockall = "0.13"

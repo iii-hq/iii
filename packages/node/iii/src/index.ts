@@ -15,6 +15,7 @@ export { registerWorkerGauges, stopWorkerGauges, type WorkerGaugesOptions } from
 export { type Context, getContext, withContext } from './context'
 export { Logger } from './logger'
 export * from './streams'
+export { EngineClient, ServerlessWorker, parseInvocation, parseTrigger, verifySignature } from './serverless'
 export {
   currentSpanId,
   currentTraceId,

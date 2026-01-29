@@ -16,7 +16,7 @@ use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{EventAdapter, SubscriberQueueConfig, config::EventModuleConfig};
 use crate::{
@@ -56,7 +56,31 @@ impl EventCoreModule {
         }
 
         tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-        let _ = adapter.emit(&topic, event_data).await;
+        let _ = adapter.emit(&topic, event_data.clone()).await;
+
+        let http_triggers = self.engine.http_triggers.list_event_triggers(&topic);
+        for trigger in http_triggers {
+            let dispatcher = self.engine.webhook_dispatcher.clone();
+            let trigger_id = trigger.trigger_id.clone();
+            let function_path = trigger.function_path.clone();
+            let topic_value = topic.clone();
+            let event_value = event_data.clone();
+            let payload = json!({
+                "trigger": {
+                    "type": "event",
+                    "id": trigger_id,
+                    "topic": topic_value.clone(),
+                    "function_path": function_path,
+                },
+                "event": {
+                    "topic": topic_value,
+                    "data": event_value,
+                }
+            });
+            tokio::spawn(async move {
+                let _ = dispatcher.deliver(&trigger, payload).await;
+            });
+        }
 
         FunctionResult::Success(None)
     }

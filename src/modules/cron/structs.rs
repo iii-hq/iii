@@ -9,6 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use colored::Colorize;
 use cron::Schedule;
+use serde_json::json;
 use tokio::{task::JoinHandle, time::sleep};
 
 use crate::engine::{Engine, EngineTrait};
@@ -155,7 +156,27 @@ impl CronAdapter {
                         }
                     }
 
-                    // Invoke the function
+                    let http_triggers = engine.http_triggers.list_cron_triggers(&job_id);
+                    for trigger in http_triggers {
+                        let dispatcher = engine.webhook_dispatcher.clone();
+                        let trigger_id = trigger.trigger_id.clone();
+                        let function_path = trigger.function_path.clone();
+                        let config = trigger.config.clone();
+                        let payload = json!({
+                            "trigger": {
+                                "type": "cron",
+                                "id": trigger_id,
+                                "scheduled_at": next.to_rfc3339(),
+                                "fired_at": chrono::Utc::now().to_rfc3339(),
+                                "function_path": function_path,
+                            },
+                            "config": config,
+                        });
+                        tokio::spawn(async move {
+                            let _ = dispatcher.deliver(&trigger, payload).await;
+                        });
+                    }
+
                     let _ = engine.invoke_function(&func_path, event_data).await;
 
                     // Release the lock

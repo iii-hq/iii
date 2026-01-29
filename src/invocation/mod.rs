@@ -16,9 +16,15 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
+    invocation::{http_invoker::HttpInvoker, method::InvocationMethod},
     protocol::ErrorBody,
     telemetry::SpanExt,
 };
+
+pub mod http_invoker;
+pub mod method;
+pub mod signature;
+pub mod url_validator;
 
 pub struct Invocation {
     pub id: Uuid,
@@ -33,14 +39,15 @@ pub struct Invocation {
 
 type Invocations = Arc<DashMap<Uuid, Invocation>>;
 
-#[derive(Default)]
 pub struct InvocationHandler {
     invocations: Invocations,
+    http_invoker: Arc<HttpInvoker>,
 }
 impl InvocationHandler {
-    pub fn new() -> Self {
+    pub fn new(http_invoker: Arc<HttpInvoker>) -> Self {
         Self {
             invocations: Arc::new(DashMap::new()),
+            http_invoker,
         }
     }
 
@@ -90,6 +97,16 @@ impl InvocationHandler {
         async {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
+
+        if let InvocationMethod::Http { .. } = &function_handler.invocation_method {
+            let result = self
+                .http_invoker
+                .invoke(&function_handler, invocation_id, body, None, None)
+                .await;
+            return Ok(result);
+        }
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
             let invocation = Invocation {
                 id: invocation_id,
                 function_path: function_path.clone(),

@@ -237,6 +237,7 @@ impl Module for CustomEventModule {
                 })),
                 response_format: None,
                 metadata: None,
+                worker_id: None,
             },
             Box::new(self.clone()),
         );

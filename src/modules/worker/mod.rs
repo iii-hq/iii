@@ -114,8 +114,8 @@ impl WorkerModule {
             .map(|entry| {
                 let f = entry.value();
                 FunctionInfo {
-                    function_path: f._function_path.clone(),
-                    description: f._description.clone(),
+                    function_path: f.function_path.clone(),
+                    description: f.description.clone(),
                     request_format: f.request_format.clone(),
                     response_format: f.response_format.clone(),
                     metadata: f.metadata.clone(),

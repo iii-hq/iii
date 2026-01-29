@@ -203,7 +203,9 @@ impl RestApiCoreModule {
     ) -> Router {
         use axum::routing::{delete, get, post, put};
 
-        let mut router = Router::new();
+        let mut router = Router::new().with_state(engine.clone());
+        let admin_router = crate::admin_api::create_router(engine.clone());
+        router = router.merge(admin_router);
 
         for entry in routers_registry.iter() {
             let path = Self::build_router_for_axum(&entry.http_path);
