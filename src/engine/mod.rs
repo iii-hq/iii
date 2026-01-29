@@ -346,8 +346,7 @@ impl Engine {
                 );
 
                 self.service_registry
-                    .register_service_from_func_path(function_path)
-                    .await;
+                    .register_service_from_func_path(function_path);
 
                 self.register_function(
                     RegisterFunctionRequest {
@@ -374,14 +373,16 @@ impl Engine {
                     description = ?description,
                     "RegisterService"
                 );
-                {
-                    let services = self.service_registry.services.read().await;
-                    tracing::debug!(services = ?services, "Current services");
-                }
+                let services = self
+                    .service_registry
+                    .services
+                    .iter()
+                    .map(|entry| entry.key().clone())
+                    .collect::<Vec<_>>();
+                tracing::debug!(services = ?services, "Current services");
 
                 self.service_registry
-                    .insert_service(Service::new(name.clone(), id.clone()))
-                    .await;
+                    .insert_service(Service::new(name.clone(), id.clone()));
 
                 Ok(())
             }
@@ -397,8 +398,6 @@ impl Engine {
         let triggers: Vec<crate::trigger::Trigger> = self
             .trigger_registry
             .triggers
-            .read()
-            .await
             .iter()
             .filter(|entry| entry.value().trigger_type == trigger_type)
             .map(|entry| entry.value().clone())
@@ -441,7 +440,7 @@ impl Engine {
         let worker = Worker::with_ip(tx.clone(), peer.ip().to_string());
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
-        self.worker_registry.register_worker(worker.clone()).await;
+        self.worker_registry.register_worker(worker.clone());
 
         let workers_data = serde_json::json!({
             "event": "worker_connected",
@@ -498,8 +497,7 @@ impl Engine {
         for function_path in worker_functions.iter() {
             self.remove_function(function_path);
             self.service_registry
-                .remove_function_from_services(function_path)
-                .await;
+                .remove_function_from_services(function_path);
         }
 
         let worker_invocations = worker.invocations.read().await;
@@ -510,7 +508,7 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
-        self.worker_registry.unregister_worker(&worker.id).await;
+        self.worker_registry.unregister_worker(&worker.id);
 
         let workers_data = serde_json::json!({
             "event": "worker_disconnected",
@@ -554,12 +552,14 @@ impl EngineTrait for Engine {
 
     async fn register_trigger_type(&self, trigger_type: TriggerType) {
         let trigger_type_id = &trigger_type.id;
-        let existing = self.trigger_registry.trigger_types.read().await;
-        if existing.contains_key(trigger_type_id) {
+        if self
+            .trigger_registry
+            .trigger_types
+            .contains_key(trigger_type_id)
+        {
             tracing::warn!(trigger_type_id = %trigger_type_id, "Trigger type already registered");
             return;
         }
-        drop(existing);
 
         let _ = self
             .trigger_registry

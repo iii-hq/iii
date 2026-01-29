@@ -265,37 +265,35 @@ impl BuiltinKvStore {
     }
 
     pub async fn set(&self, index: String, key: String, data: Value) -> SetResult {
-        let mut store = self.store.write().await;
-        let index_map = store.get_mut(&index);
+        let result = {
+            let mut store = self.store.write().await;
+            let index_map = store.get_mut(&index);
 
-        if let Some(index_map) = index_map {
-            let old_value = index_map.get(&key).cloned();
-            index_map.insert(key.clone(), data.clone());
+            if let Some(index_map) = index_map {
+                let old_value = index_map.get(&key).cloned();
+                index_map.insert(key.clone(), data.clone());
 
-            if self.file_store_dir.is_some() {
-                let mut dirty = self.dirty.write().await;
-                dirty.insert(index.clone(), DirtyOp::Upsert);
+                SetResult {
+                    old_value,
+                    new_value: data.clone(),
+                }
+            } else {
+                let mut index_map = HashMap::new();
+                index_map.insert(key, data.clone());
+                store.insert(index.clone(), index_map);
+
+                SetResult {
+                    old_value: None,
+                    new_value: data.clone(),
+                }
             }
-
-            return SetResult {
-                old_value,
-                new_value: data,
-            };
-        }
-
-        let mut index_map = HashMap::new();
-        index_map.insert(key, data.clone());
-        store.insert(index.clone(), index_map);
+        };
 
         if self.file_store_dir.is_some() {
-            let mut dirty = self.dirty.write().await;
-            dirty.insert(index, DirtyOp::Upsert);
+            self.dirty.write().await.insert(index, DirtyOp::Upsert);
         }
 
-        SetResult {
-            old_value: None,
-            new_value: data,
-        }
+        result
     }
 
     pub async fn get(&self, index: String, key: String) -> Option<Value> {
@@ -310,21 +308,35 @@ impl BuiltinKvStore {
     }
 
     pub async fn delete(&self, index: String, key: String) -> Option<Value> {
-        let mut store = self.store.write().await;
-        let index_map = store.get_mut(&index);
+        let (removed, dirty_op) = {
+            let mut store = self.store.write().await;
+            let index_map = store.get_mut(&index);
 
-        if let Some(index_map) = index_map {
-            let removed = index_map.remove(&key);
-
-            if removed.is_some() && self.file_store_dir.is_some() {
-                let mut dirty = self.dirty.write().await;
-                dirty.insert(index, DirtyOp::Delete);
+            if let Some(index_map) = index_map {
+                let removed = index_map.remove(&key);
+                let dirty_op = if removed.is_some() {
+                    if index_map.is_empty() {
+                        Some(DirtyOp::Delete)
+                    } else {
+                        Some(DirtyOp::Upsert)
+                    }
+                } else {
+                    None
+                };
+                (removed, dirty_op)
+            } else {
+                (None, None)
             }
+        };
 
-            return if removed.is_some() { removed } else { None };
+        if removed.is_some()
+            && self.file_store_dir.is_some()
+            && let Some(dirty_op) = dirty_op
+        {
+            self.dirty.write().await.insert(index, dirty_op);
         }
 
-        None
+        removed
     }
 
     pub async fn update(&self, index: String, key: String, ops: Vec<UpdateOp>) -> UpdateResult {
@@ -422,12 +434,14 @@ impl BuiltinKvStore {
         // Write the updated value back to the store
         *existing_value = updated_value.clone();
 
-        if self.file_store_dir.is_some() {
-            let mut dirty = self.dirty.write().await;
-            dirty.insert(index.clone(), DirtyOp::Upsert);
-        }
-
         drop(store);
+
+        if self.file_store_dir.is_some() {
+            self.dirty
+                .write()
+                .await
+                .insert(index.clone(), DirtyOp::Upsert);
+        }
 
         UpdateResult {
             old_value,
