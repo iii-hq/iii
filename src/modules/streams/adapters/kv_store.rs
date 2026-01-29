@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::{kv::BuiltinKvStore, pubsub::BuiltInPubSubAdapter},
+    builtins::{kv::BuiltinKvStore, pubsub_lite::BuiltInPubSubLite},
     engine::Engine,
     modules::streams::{
         StreamOutboundMessage, StreamWrapperMessage,
@@ -27,13 +27,13 @@ pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
 
 pub struct BuiltinKvStoreAdapter {
     storage: BuiltinKvStore,
-    pub_sub: BuiltInPubSubAdapter,
+    pub_sub: BuiltInPubSubLite,
 }
 
 impl BuiltinKvStoreAdapter {
     pub fn new(config: Option<Value>) -> Self {
         let storage = BuiltinKvStore::new(config.clone());
-        let pub_sub = BuiltInPubSubAdapter::new(config);
+        let pub_sub = BuiltInPubSubLite::new(config);
         Self { storage, pub_sub }
     }
 
@@ -151,6 +151,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         self.pub_sub.subscribe(id, connection).await;
         Ok(())
     }
+
     async fn unsubscribe(&self, id: String) -> anyhow::Result<()> {
         self.pub_sub.unsubscribe(id).await;
         Ok(())
@@ -175,7 +176,7 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::mpsc;
 
-    use crate::builtins::pubsub::Subscriber;
+    use crate::builtins::pubsub_lite::Subscriber;
 
     use super::*;
 
