@@ -1,15 +1,15 @@
 name: Docker
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Image tag (e.g., latest, v0.2.0)'
+      version:
+        description: 'Release version to build (e.g., v0.2.0)'
         required: true
-        default: 'latest'
 
 env:
   GHCR_REPO: ghcr.io/${{ github.repository_owner }}/iii
@@ -19,14 +19,41 @@ jobs:
   build-and-push:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
       packages: write
-      security-events: write  # For security scanning results
+      security-events: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${{ github.event.workflow_run.head_branch }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building Docker image for version: ${VERSION}"
+
+      - name: Wait for release assets
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Waiting for release assets to be available..."
+          for i in {1..30}; do
+            if curl -sf "https://github.com/MotiaDev/iii-engine/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz" -o /dev/null; then
+              echo "Release assets available!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Assets not ready, waiting 10s..."
+            sleep 10
+          done
+          echo "Timeout waiting for release assets"
+          exit 1
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -42,13 +69,8 @@ jobs:
             ${{ env.GHCR_REPO }}
             ${{ env.DOCKERHUB_REPO }}
           tags: |
-            # For tag pushes: v0.2.0 -> 0.2.0, 0.2, 0, latest
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
-            # For manual dispatch: use the provided tag
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -64,7 +86,6 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true
 
-      # Build for local scanning first (single platform for speed)
       - name: Build for scanning
         uses: docker/build-push-action@v6
         with:
@@ -72,10 +93,11 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: ${{ env.GHCR_REPO }}:scan
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Security scanning with Trivy
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -100,7 +122,6 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
 
-      # Build and push multi-platform images
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
@@ -110,14 +131,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Build provenance and SBOM for supply chain security
           provenance: true
           sbom: true
 
       - name: Generate image summary
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           echo "## Docker Image Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Images" >> $GITHUB_STEP_SUMMARY
@@ -146,7 +169,7 @@ jobs:
           echo "  --cap-drop=ALL --cap-add=NET_BIND_SERVICE \\" >> $GITHUB_STEP_SUMMARY
           echo "  --security-opt=no-new-privileges:true \\" >> $GITHUB_STEP_SUMMARY
           echo "  -v ./config.yaml:/app/config.yaml:ro \\" >> $GITHUB_STEP_SUMMARY
-          echo "  ${{ env.DOCKERHUB_REPO }}:${{ github.event.inputs.tag || github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "  ${{ env.DOCKERHUB_REPO }}:${VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Notify Slack - Docker Published
@@ -158,13 +181,13 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "🐳 Docker image published: ${{ github.event.inputs.tag || github.ref_name }}",
+              "text": "🐳 Docker image published: ${{ steps.version.outputs.version }}",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Docker Image Published* 🐳\n\nVersion: `${{ github.event.inputs.tag || github.ref_name }}`\nPlatforms: `linux/amd64`, `linux/arm64`\nSecurity: ✅ Scanned with Trivy\n\n*Images:*\n• `${{ env.DOCKERHUB_REPO }}:${{ github.event.inputs.tag || github.ref_name }}`\n• `${{ env.GHCR_REPO }}:${{ github.event.inputs.tag || github.ref_name }}`"
+                    "text": "*Docker Image Published* 🐳\n\nVersion: `${{ steps.version.outputs.version }}`\nPlatforms: `linux/amd64`, `linux/arm64`\nSecurity: ✅ Scanned with Trivy\n\n*Images:*\n• `${{ env.DOCKERHUB_REPO }}:${{ steps.version.outputs.version }}`\n• `${{ env.GHCR_REPO }}:${{ steps.version.outputs.version }}`"
                   }
                 },
                 {
@@ -188,13 +211,13 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "❌ Docker build failed: ${{ github.event.inputs.tag || github.ref_name }}",
+              "text": "❌ Docker build failed: ${{ steps.version.outputs.version }}",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Docker Build Failed* ❌\n\nVersion: `${{ github.event.inputs.tag || github.ref_name }}`\nTriggered by: ${{ github.actor }}"
+                    "text": "*Docker Build Failed* ❌\n\nVersion: `${{ steps.version.outputs.version }}`\nTriggered by: ${{ github.actor }}"
                   }
                 },
                 {

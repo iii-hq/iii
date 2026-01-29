@@ -1,6 +1,12 @@
 # =============================================================================
-# III Engine - Hardened Production Dockerfile
+# III Engine - Production Dockerfile (uses pre-built release binaries)
 # =============================================================================
+#
+# Downloads pre-built binaries from GitHub releases instead of compiling.
+# This ensures consistency with release artifacts and faster builds.
+#
+# Build with version:
+#   docker build --build-arg VERSION=v0.2.0 -t iii:v0.2.0 .
 #
 # Security runtime flags (REQUIRED for production):
 #   --read-only --tmpfs /tmp:rw,noexec,nosuid
@@ -16,75 +22,73 @@
 #
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Stage 1: Build
-# -----------------------------------------------------------------------------
-# Pin to digest for supply chain security (update periodically)
-FROM rust:slim@sha256:df6ca8f96d338697ccdbe3ccac57a85d2172e03a2429c2d243e74f3bb83ba2f5 AS builder
+ARG VERSION=latest
 
-WORKDIR /build
+# -----------------------------------------------------------------------------
+# Stage 1: Download binary from GitHub releases
+# -----------------------------------------------------------------------------
+FROM alpine:3.21 AS downloader
 
-# Install build dependencies
+ARG VERSION
+ARG TARGETARCH
+
+RUN apk add --no-cache curl tar
+
+WORKDIR /download
+
+RUN set -ex; \
+    case "${TARGETARCH}" in \
+        amd64) RUST_TARGET="x86_64-unknown-linux-musl" ;; \
+        arm64) RUST_TARGET="aarch64-unknown-linux-gnu" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    DOWNLOAD_URL="https://github.com/MotiaDev/iii-engine/releases/download/${VERSION}/iii-${RUST_TARGET}.tar.gz"; \
+    echo "Downloading from: ${DOWNLOAD_URL}"; \
+    curl -fsSL "${DOWNLOAD_URL}" | tar xz; \
+    chmod 550 iii
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime (Alpine for amd64/musl, Debian for arm64/gnu)
+# -----------------------------------------------------------------------------
+FROM alpine:3.21 AS runtime-amd64
+RUN apk add --no-cache ca-certificates curl
+
+FROM debian:bookworm-slim AS runtime-arm64
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
+    ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy source
-COPY . .
-
-# Build release binary with optimizations and strip to reduce size
-RUN cargo build --release && strip target/release/iii
-
 # -----------------------------------------------------------------------------
-# Stage 2: Runtime (minimal Debian with security hardening)
+# Stage 3: Final image (select runtime based on architecture)
 # -----------------------------------------------------------------------------
-# Pin to digest for supply chain security
-FROM debian:trixie-slim@sha256:77ba0164de17b88dd0bf6cdc8f65569e6e5fa6cd256562998b62553134a00ef0 AS runtime
+ARG TARGETARCH
+FROM runtime-${TARGETARCH} AS runtime
 
-# Install only required runtime dependencies
-# curl is needed for health checks
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libssl3t64 \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && rm -rf /var/cache/apt/*
+# Create non-root user
+RUN adduser --system --no-create-home --shell /sbin/nologin iii
 
-# Create non-root user and set up app directory
-RUN useradd --system --no-create-home --shell /usr/sbin/nologin iii \
-    && mkdir -p /app \
-    && chown iii:iii /app
-
-# Switch to non-root user before copying binary
-USER iii
 WORKDIR /app
 
-# Copy binary with correct ownership
-COPY --from=builder --chown=iii:iii /build/target/release/iii /app/iii
+# Copy binary from downloader
+COPY --from=downloader --chown=iii:iii /download/iii /app/iii
 
-# Ensure binary is executable but not writable
-RUN chmod 550 /app/iii
+USER iii
 
-# Health check that verifies service is actually responding
-# Falls back to version check if health endpoint doesn't exist
+# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -sf http://localhost:3111/health || curl -sf http://localhost:3111/ || /app/iii --version
 
 # Engine ports
 # 49134 - WebSocket server (worker connections)
 # 3111  - REST API
-# 3112  - Streams API  
+# 3112  - Streams API
 # 9464  - Prometheus metrics
 EXPOSE 49134 3111 3112 9464
 
 ENTRYPOINT ["/app/iii"]
-# Use environment variable for config path flexibility
 CMD ["--config", "/app/config.yaml"]
 
-# =============================================================================
-# Labels for container metadata and security scanning
-# =============================================================================
+# Labels
 LABEL org.opencontainers.image.title="III Engine" \
       org.opencontainers.image.description="WebSocket-based process communication engine" \
       org.opencontainers.image.vendor="iiidev" \
