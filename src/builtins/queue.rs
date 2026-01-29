@@ -1340,7 +1340,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_fifo_with_group() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
@@ -1358,7 +1358,7 @@ mod tests {
     #[tokio::test]
     async fn test_fifo_mode_parallel_groups() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             mode: QueueMode::Fifo,
             ..Default::default()
@@ -1457,7 +1457,7 @@ mod tests {
     #[tokio::test]
     async fn test_fifo_mode_processes_in_order() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             mode: QueueMode::Fifo,
             poll_interval_ms: 10,
