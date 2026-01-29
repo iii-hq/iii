@@ -230,7 +230,13 @@ impl StateCoreModule {
 
                 self.invoke_triggers(event_data).await;
 
-                FunctionResult::Success(Some(serde_json::to_value(value).unwrap()))
+                match serde_json::to_value(value) {
+                    Ok(value) => FunctionResult::Success(Some(value)),
+                    Err(e) => FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert value to JSON: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    }),
+                }
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to set value: {}", e),
@@ -317,7 +323,13 @@ impl StateCoreModule {
 
                 self.invoke_triggers(event_data).await;
 
-                FunctionResult::Success(Some(serde_json::to_value(value).unwrap()))
+                match serde_json::to_value(value) {
+                    Ok(value) => FunctionResult::Success(Some(value)),
+                    Err(e) => FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert value to JSON: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    }),
+                }
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to update value: {}", e),
