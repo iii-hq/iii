@@ -497,10 +497,25 @@ impl BuiltinQueue {
 
         let task_handle = match effective_mode {
             QueueMode::Fifo => {
-                let worker = FifoWorker::new(Arc::new(self.clone()), queue.to_string(), handler);
-                tokio::spawn(async move {
-                    worker.run().await;
-                })
+                let concurrency = config.as_ref().and_then(|c| c.concurrency).unwrap_or(1) as usize;
+
+                if concurrency > 1 {
+                    let worker = GroupedFifoWorker::new(
+                        Arc::new(self.clone()),
+                        queue.to_string(),
+                        handler,
+                        concurrency,
+                    );
+                    tokio::spawn(async move {
+                        worker.run().await;
+                    })
+                } else {
+                    let worker =
+                        FifoWorker::new(Arc::new(self.clone()), queue.to_string(), handler);
+                    tokio::spawn(async move {
+                        worker.run().await;
+                    })
+                }
             }
             QueueMode::Concurrent => {
                 let effective_concurrency = config
@@ -672,6 +687,117 @@ impl Worker {
                         }
                     }
                 }
+            });
+        }
+    }
+}
+
+struct GroupedFifoWorker {
+    queue_impl: Arc<BuiltinQueue>,
+    queue_name: String,
+    handler: Arc<dyn JobHandler>,
+    active_groups: Arc<RwLock<HashMap<String, bool>>>,
+    max_concurrent_groups: usize,
+    poll_interval_ms: u64,
+}
+
+impl GroupedFifoWorker {
+    fn new(
+        queue_impl: Arc<BuiltinQueue>,
+        queue_name: String,
+        handler: Arc<dyn JobHandler>,
+        max_concurrent_groups: usize,
+    ) -> Self {
+        Self {
+            poll_interval_ms: queue_impl.config.poll_interval_ms,
+            queue_impl,
+            queue_name,
+            handler,
+            active_groups: Arc::new(RwLock::new(HashMap::new())),
+            max_concurrent_groups,
+        }
+    }
+
+    async fn run(self) {
+        let mut poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
+
+        loop {
+            poll_interval.tick().await;
+
+            if let Err(e) = self
+                .queue_impl
+                .move_delayed_to_waiting(&self.queue_name)
+                .await
+            {
+                tracing::error!(error = ?e, queue = %self.queue_name, "Failed to move delayed jobs");
+            }
+
+            self.process_available_groups().await;
+        }
+    }
+
+    async fn process_available_groups(&self) {
+        loop {
+            let active_count = self.active_groups.read().await.len();
+            if active_count >= self.max_concurrent_groups {
+                break;
+            }
+
+            // Pop a job
+            let job = match self.queue_impl.pop(&self.queue_name).await {
+                Some(job) => job,
+                None => break,
+            };
+
+            let group_id = job
+                .group_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+
+            // Check if group is already being processed
+            {
+                let active = self.active_groups.read().await;
+                if active.contains_key(&group_id) {
+                    // Put job back - this group is busy
+                    let waiting_key = self.queue_impl.waiting_key(&self.queue_name);
+                    self.queue_impl
+                        .kv_store
+                        .lpush(&waiting_key, job.id.clone())
+                        .await;
+                    let active_key = self.queue_impl.active_key(&self.queue_name);
+                    self.queue_impl.kv_store.lrem(&active_key, 1, &job.id).await;
+                    continue;
+                }
+            }
+
+            // Mark group as active
+            self.active_groups
+                .write()
+                .await
+                .insert(group_id.clone(), true);
+
+            // Process job in background
+            let queue_impl = Arc::clone(&self.queue_impl);
+            let queue_name = self.queue_name.clone();
+            let handler = Arc::clone(&self.handler);
+            let active_groups = Arc::clone(&self.active_groups);
+
+            tokio::spawn(async move {
+                match handler.handle(&job).await {
+                    Ok(()) => {
+                        if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
+                            tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                        }
+                    }
+                    Err(error) => {
+                        if let Err(e) = queue_impl.nack(&queue_name, &job.id, &error).await {
+                            tracing::error!(error = ?e, job_id = %job.id, "Failed to nack job");
+                        }
+                    }
+                }
+
+                // Mark group as available
+                active_groups.write().await.remove(&group_id);
             });
         }
     }
@@ -1227,6 +1353,105 @@ mod tests {
         let job: Job = serde_json::from_value(job_value).unwrap();
 
         assert_eq!(job.group_id, Some("group-a".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fifo_mode_parallel_groups() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push jobs to different groups
+        let group_a_1 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "a", "order": 1}),
+                "group-a",
+            )
+            .await;
+        let group_b_1 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "b", "order": 1}),
+                "group-b",
+            )
+            .await;
+        let group_a_2 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "a", "order": 2}),
+                "group-a",
+            )
+            .await;
+        let group_b_2 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "b", "order": 2}),
+                "group-b",
+            )
+            .await;
+
+        let processed_order = Arc::new(RwLock::new(Vec::<(String, String)>::new())); // (group, job_id)
+        let processed_clone = Arc::clone(&processed_order);
+
+        struct GroupOrderTracker {
+            processed: Arc<RwLock<Vec<(String, String)>>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for GroupOrderTracker {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let group = job.group_id.clone().unwrap_or_default();
+                self.processed.write().await.push((group, job.id.clone()));
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(GroupOrderTracker {
+            processed: processed_clone,
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: Some(2), // Allow 2 groups to process in parallel
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("fifo_queue", handler, Some(subscription_config))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        queue.unsubscribe(handle).await;
+
+        let order = processed_order.read().await;
+
+        // Verify within each group, jobs are in order
+        let group_a: Vec<_> = order
+            .iter()
+            .filter(|(g, _)| g == "group-a")
+            .map(|(_, id)| id.clone())
+            .collect();
+        let group_b: Vec<_> = order
+            .iter()
+            .filter(|(g, _)| g == "group-b")
+            .map(|(_, id)| id.clone())
+            .collect();
+
+        assert_eq!(group_a.len(), 2);
+        assert_eq!(group_a[0], group_a_1);
+        assert_eq!(group_a[1], group_a_2);
+
+        assert_eq!(group_b.len(), 2);
+        assert_eq!(group_b[0], group_b_1);
+        assert_eq!(group_b[1], group_b_2);
     }
 
     #[tokio::test]
