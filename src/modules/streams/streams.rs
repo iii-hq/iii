@@ -399,6 +399,17 @@ impl StreamCoreModule {
         data
     }
 
+    #[function(
+        name = "streams.list",
+        description = "List all items in a stream group"
+    )]
+    pub async fn list(
+        &self,
+        input: StreamGetGroupInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        self.get_group(input).await
+    }
+
     #[function(name = "streams.getGroup", description = "Get a group from a stream")]
     pub async fn get_group(
         &self,
