@@ -5,40 +5,62 @@ pub mod redis_adapter;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use serde_json::Value;
 
-use crate::modules::{
-    kv_server::structs::{UpdateOp, UpdateResult},
-    streams::StreamWrapperMessage,
-};
+use crate::{builtins::pubsub::Subscriber, modules::streams::StreamWrapperMessage};
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
-    async fn set(&self, stream_name: &str, group_id: &str, item_id: &str, data: Value);
+    async fn set(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        data: Value,
+    ) -> anyhow::Result<SetResult>;
 
-    async fn get(&self, stream_name: &str, group_id: &str, item_id: &str) -> Option<Value>;
+    async fn get(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<Option<Value>>;
 
-    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str);
+    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<()>;
 
-    async fn get_group(&self, stream_name: &str, group_id: &str) -> Vec<Value>;
+    async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>>;
 
-    async fn list_groups(&self, stream_name: &str) -> Vec<String>;
+    async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>>;
 
-    async fn emit_event(&self, message: StreamWrapperMessage);
+    async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()>;
 
-    async fn subscribe(&self, id: String, connection: Arc<dyn StreamConnection>);
+    async fn subscribe(
+        &self,
+        id: String,
+        connection: Arc<dyn StreamConnection>,
+    ) -> anyhow::Result<()>;
 
-    async fn unsubscribe(&self, id: String);
+    async fn unsubscribe(&self, id: String) -> anyhow::Result<()>;
 
-    async fn watch_events(&self);
+    async fn watch_events(&self) -> anyhow::Result<()>;
 
     async fn destroy(&self) -> anyhow::Result<()>;
 
-    async fn update(&self, stream_name: &str, ops: Vec<UpdateOp>) -> UpdateResult;
+    async fn update(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> anyhow::Result<UpdateResult>;
 }
 
 #[async_trait]
-pub trait StreamConnection: Send + Sync {
-    async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
+pub trait StreamConnection: Subscriber + Send + Sync {
     async fn cleanup(&self);
+
+    /// Handle a stream message that has already been deserialized.
+    /// This is the optimized path - deserialize once, call many times.
+    async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()>;
 }

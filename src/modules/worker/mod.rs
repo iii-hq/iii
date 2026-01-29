@@ -137,8 +137,9 @@ impl WorkerModule {
     }
 
     async fn list_trigger_infos(&self) -> Vec<TriggerInfo> {
-        let triggers_map = self.engine.trigger_registry.triggers.read().await;
-        triggers_map
+        self.engine
+            .trigger_registry
+            .triggers
             .iter()
             .map(|entry| {
                 let t = entry.value();
@@ -153,7 +154,7 @@ impl WorkerModule {
     }
 
     async fn list_worker_infos(&self) -> Vec<WorkerInfo> {
-        let workers = self.engine.worker_registry.list_workers().await;
+        let workers = self.engine.worker_registry.list_workers();
         let mut worker_infos = Vec::with_capacity(workers.len());
 
         for w in workers {
@@ -189,10 +190,13 @@ impl WorkerModule {
 
         let runtime = input.runtime.unwrap_or_else(|| "unknown".to_string());
 
-        self.engine
-            .worker_registry
-            .update_worker_metadata(&worker_id, runtime, input.version, input.name, input.os)
-            .await;
+        self.engine.worker_registry.update_worker_metadata(
+            &worker_id,
+            runtime,
+            input.version,
+            input.name,
+            input.os,
+        );
     }
 }
 
@@ -272,6 +276,7 @@ impl Module for WorkerModule {
     ) -> anyhow::Result<()> {
         let engine = self.engine.clone();
         let triggers = self.triggers.clone();
+        let worker_module = self.clone();
         let duration_secs = 5u64;
 
         tokio::spawn(async move {
@@ -285,8 +290,11 @@ impl Module for WorkerModule {
                             tracing::info!("New functions detected, firing functions-available trigger");
                             current_functions_hash = new_functions_hash;
 
+                            let functions = worker_module.list_functions();
+
                             let functions_data = serde_json::json!({
                                 "event": "functions_changed",
+                                "functions": functions,
                             });
 
                             // Fire triggers directly from this module
@@ -463,8 +471,4 @@ impl WorkerModule {
     }
 }
 
-crate::register_module!(
-    "modules::worker::WorkerModule",
-    WorkerModule,
-    enabled_by_default = true
-);
+crate::register_module!("modules::worker::WorkerModule", WorkerModule, mandatory);

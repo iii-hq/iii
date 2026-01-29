@@ -98,42 +98,40 @@ pub struct WorkerMetrics {
 
 #[derive(Default)]
 pub struct WorkerRegistry {
-    pub workers: Arc<RwLock<DashMap<Uuid, Worker>>>,
+    pub workers: Arc<DashMap<Uuid, Worker>>,
     pub metrics: Arc<DashMap<Uuid, WorkerMetrics>>,
 }
 
 impl WorkerRegistry {
     pub fn new() -> Self {
         Self {
-            workers: Arc::new(RwLock::new(DashMap::new())),
+            workers: Arc::new(DashMap::new()),
             metrics: Arc::new(DashMap::new()),
         }
     }
 
-    pub async fn get_worker(&self, id: &Uuid) -> Option<Worker> {
-        self.workers.read().await.get(id).map(|w| w.value().clone())
+    pub fn get_worker(&self, id: &Uuid) -> Option<Worker> {
+        self.workers.get(id).map(|w| w.value().clone())
     }
 
-    pub async fn register_worker(&self, worker: Worker) {
-        self.workers.write().await.insert(worker.id, worker);
+    pub fn register_worker(&self, worker: Worker) {
+        self.workers.insert(worker.id, worker);
     }
 
-    pub async fn unregister_worker(&self, worker_id: &Uuid) {
+    pub fn unregister_worker(&self, worker_id: &Uuid) {
         tracing::debug!("Unregistering worker: {}", worker_id);
-        self.workers.write().await.remove(worker_id);
+        self.workers.remove(worker_id);
         self.metrics.remove(worker_id);
     }
 
-    pub async fn list_workers(&self) -> Vec<Worker> {
+    pub fn list_workers(&self) -> Vec<Worker> {
         self.workers
-            .read()
-            .await
             .iter()
             .map(|entry| entry.value().clone())
             .collect()
     }
 
-    pub async fn update_worker_metadata(
+    pub fn update_worker_metadata(
         &self,
         worker_id: &Uuid,
         runtime: String,
@@ -141,7 +139,7 @@ impl WorkerRegistry {
         name: Option<String>,
         os: Option<String>,
     ) {
-        if let Some(mut worker) = self.workers.write().await.get_mut(worker_id) {
+        if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.runtime = Some(runtime);
             worker.version = version;
             if name.is_some() {
@@ -153,8 +151,8 @@ impl WorkerRegistry {
         }
     }
 
-    pub async fn update_worker_status(&self, worker_id: &Uuid, status: WorkerStatus) {
-        if let Some(mut worker) = self.workers.write().await.get_mut(worker_id) {
+    pub fn update_worker_status(&self, worker_id: &Uuid, status: WorkerStatus) {
+        if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.status = status;
         }
     }

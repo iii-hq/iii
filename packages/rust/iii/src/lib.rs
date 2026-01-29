@@ -9,9 +9,9 @@ pub mod triggers;
 pub mod types;
 
 pub use bridge::{
-    Bridge, ExtendedMetrics, FunctionInfo, KubernetesCoreMetrics, KubernetesExtendedMetrics,
-    KubernetesIdentifiers, KubernetesResourceMetrics, PerformanceMetrics, ProcessMetrics,
-    TriggerInfo, WorkerInfo, WorkerMetadata, WorkerMetrics, WorkerMetricsInfo,
+    Bridge, ExtendedMetrics, FunctionInfo, FunctionsAvailableGuard, KubernetesCoreMetrics,
+    KubernetesExtendedMetrics, KubernetesIdentifiers, KubernetesResourceMetrics, PerformanceMetrics,
+    ProcessMetrics, TriggerInfo, WorkerInfo, WorkerMetadata, WorkerMetrics, WorkerMetricsInfo,
 };
 pub use context::{Context, get_context, with_context};
 pub use error::BridgeError;

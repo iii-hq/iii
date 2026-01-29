@@ -1,5 +1,4 @@
 use std::sync::Arc;
-pub mod adapters;
 pub mod structs;
 
 pub use self::structs::{KvDeleteInput, KvGetInput, KvSetInput};
@@ -9,14 +8,11 @@ use function_macros::{function, service};
 use serde_json::Value;
 
 use crate::{
-    builtins::BuiltinKvStore,
+    builtins::kv::BuiltinKvStore,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        kv_server::{
-            adapters::KVStoreAdapter,
-            structs::{KvListInput, KvListKeysWithPrefixInput},
-        },
+        kv_server::structs::{KvListInput, KvListKeysWithPrefixInput, KvUpdateInput},
         module::Module,
     },
     protocol::ErrorBody,
@@ -24,7 +20,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct KvServer {
-    storage: Arc<dyn KVStoreAdapter>,
+    storage: Arc<BuiltinKvStore>,
 }
 
 #[async_trait]
@@ -58,8 +54,8 @@ impl KvServer {
         description = "Get a value by key from the KV store"
     )]
     pub async fn get(&self, data: KvGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, "Getting value from KV store");
-        let result = self.storage.get(data.key, None).await;
+        tracing::debug!(index = %data.index, key = %data.key, "Getting value from KV store");
+        let result = self.storage.get(data.index.clone(), data.key.clone()).await;
         FunctionResult::Success(result)
     }
 
@@ -68,8 +64,11 @@ impl KvServer {
         description = "Set a value by key in the KV store"
     )]
     pub async fn set(&self, data: KvSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        tracing::debug!(key = %data.key, "Setting value in KV store");
-        let result = self.storage.set(data.key, data.value, None).await;
+        tracing::debug!(index = %data.index, key = %data.key, "Setting value in KV store");
+        let result = self
+            .storage
+            .set(data.index.clone(), data.key.clone(), data.value.clone())
+            .await;
 
         FunctionResult::Success(Some(serde_json::to_value(result).unwrap_or_else(|e| {
             tracing::error!(error = %e, "Failed to serialize set result");
@@ -84,10 +83,27 @@ impl KvServer {
     pub async fn delete(&self, data: KvDeleteInput) -> FunctionResult<Option<Value>, ErrorBody> {
         tracing::debug!(key = %data.key, "Deleting value from KV store");
 
-        match self.storage.delete(data.key).await {
+        match self
+            .storage
+            .delete(data.index.clone(), data.key.clone())
+            .await
+        {
             Some(value) => FunctionResult::Success(Some(value)),
             None => FunctionResult::NoResult,
         }
+    }
+
+    #[function(
+        name = "kv_server.update",
+        description = "Update a value by key in the KV store"
+    )]
+    pub async fn update(&self, data: KvUpdateInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        tracing::debug!(index = %data.index, key = %data.key, ops_count = data.ops.len(), "Updating value in KV store");
+        let result = self.storage.update(data.index, data.key, data.ops).await;
+        FunctionResult::Success(Some(serde_json::to_value(result).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to serialize update result");
+            Value::Null
+        })))
     }
 
     #[function(
@@ -114,8 +130,8 @@ impl KvServer {
         description = "List all values in the KV store"
     )]
     pub async fn list(&self, data: KvListInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        let result = self.storage.list(data.key.clone()).await;
-        tracing::debug!(key = %data.key.clone(), result = %result.len(), "Listing values from KV store");
+        let result = self.storage.list(data.index.clone()).await;
+        tracing::debug!(result = %result.len(), "Listing values from KV store");
 
         match serde_json::to_value(result) {
             Ok(value) => FunctionResult::Success(Some(value)),

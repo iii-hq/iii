@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     future::Future,
     net::SocketAddr,
@@ -357,30 +357,25 @@ impl EngineBuilder {
     pub async fn build(mut self) -> anyhow::Result<Self> {
         let config = self.config.take().expect("No module configs founded");
 
-        // Collect module classes from config
-        let config_classes: std::collections::HashSet<String> =
-            config.modules.iter().map(|m| m.class.clone()).collect();
+        tracing::info!("Building engine with {} modules", config.modules.len());
 
-        // Get default modules that aren't already in config
-        let default_entries: Vec<ModuleEntry> = default_module_entries()
-            .into_iter()
-            .filter(|entry| !config_classes.contains(&entry.class))
-            .collect();
-
-        let total_modules = config.modules.len() + default_entries.len();
-        tracing::info!(
-            "Building engine with {} modules ({} from config, {} default)",
-            total_modules,
-            config.modules.len(),
-            default_entries.len()
-        );
-
-        let all_entries: Vec<&ModuleEntry> = default_entries
+        let mut modules = config.modules;
+        let module_classes = modules
             .iter()
-            .chain(config.modules.iter())
-            .collect();
+            .map(|entry| entry.class.clone())
+            .collect::<HashSet<String>>();
 
-        for entry in all_entries {
+        for registration in inventory::iter::<ModuleRegistration> {
+            if registration.mandatory && !module_classes.contains(registration.class) {
+                modules.push(ModuleEntry {
+                    class: registration.class.to_string(),
+                    config: None,
+                });
+            }
+        }
+
+        // Create modules using the registry
+        for entry in &modules {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)

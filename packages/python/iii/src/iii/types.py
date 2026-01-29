@@ -5,7 +5,8 @@ from typing import Any, Awaitable, Callable, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .bridge_types import RegisterFunctionMessage, RegisterTriggerMessage, RegisterTriggerTypeMessage
+from .bridge_types import FunctionInfo, RegisterFunctionMessage, RegisterTriggerMessage, RegisterTriggerTypeMessage
+from .streams import IStream
 from .triggers import Trigger, TriggerHandler
 
 TInput = TypeVar("TInput")
@@ -34,6 +35,43 @@ class RemoteTriggerTypeData(BaseModel):
     handler: TriggerHandler[Any]
 
 
+class Invocation(Generic[TOutput]):
+    """Represents an invocation that can be resolved or rejected."""
+
+    def __init__(self, future: asyncio.Future[TOutput]) -> None:
+        self._future = future
+
+    def resolve(self, value: TOutput) -> None:
+        """Resolve the invocation with a value."""
+        if not self._future.done():
+            self._future.set_result(value)
+
+    def reject(self, error: Exception) -> None:
+        """Reject the invocation with an error."""
+        if not self._future.done():
+            self._future.set_exception(error)
+
+
+class RemoteServiceFunctionData(BaseModel):
+    """Data for a remote service function."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    message: RegisterFunctionMessage
+    handler: RemoteFunctionHandler
+
+
+# Type aliases for registration inputs
+RegisterTriggerInput = RegisterTriggerMessage
+RegisterServiceInput = str
+RegisterFunctionInput = RegisterFunctionMessage
+RegisterTriggerTypeInput = RegisterTriggerTypeMessage
+
+
+# Callback type for functions available event
+FunctionsAvailableCallback = Callable[[list[FunctionInfo]], None]
+
+
 class BridgeClient(Protocol):
     """Protocol for bridge client implementations."""
 
@@ -60,6 +98,12 @@ class BridgeClient(Protocol):
     ) -> None: ...
 
     def unregister_trigger_type(self, trigger_type_id: str) -> None: ...
+
+    def on(self, event: str, callback: Callable[..., None]) -> Callable[[], None]: ...
+
+    def create_stream(self, stream_name: str, stream: IStream[Any]) -> None: ...
+
+    def on_functions_available(self, callback: FunctionsAvailableCallback) -> Callable[[], None]: ...
 
 
 class ApiRequest(BaseModel, Generic[TInput]):

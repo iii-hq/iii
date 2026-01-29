@@ -1,11 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::BuiltinKvStore,
+    builtins::kv::BuiltinKvStore,
     engine::Engine,
     modules::state::{
         adapters::StateAdapter,
@@ -33,51 +34,41 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) {
-        let key: String = group_id.into();
-
-        if let Some(value) = self.storage.get(key.clone()).await {
-            let mut topic: HashMap<String, Value> =
-                serde_json::from_value(value).unwrap_or_default();
-            topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
-        } else {
-            let mut topic = HashMap::new();
-            topic.insert(item_id.to_string(), data.clone());
-            let data = serde_json::to_value(&topic).unwrap();
-            self.storage.set(key, data).await;
-        }
+    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
+        Ok(self
+            .storage
+            .set(group_id.to_string(), item_id.to_string(), data.clone())
+            .await)
     }
 
-    async fn get(&self, group_id: &str, item_id: &str) -> Option<Value> {
-        let value = self.storage.get(group_id.into()).await;
-        match value {
-            Some(v) => {
-                let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-                topic.get(item_id).cloned()
-            }
-            None => None,
-        }
+    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
+        Ok(self
+            .storage
+            .get(group_id.to_string(), item_id.to_string())
+            .await)
     }
 
-    async fn delete(&self, group_id: &str, item_id: &str) {
-        let value = self.storage.get(group_id.into()).await;
-        if let Some(v) = value {
-            let mut topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-
-            if topic.remove(item_id).is_some() {
-                let data = serde_json::to_value(&topic).unwrap();
-                self.storage.set(group_id.into(), data).await;
-            }
-        }
+    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()> {
+        self.storage
+            .delete(group_id.to_string(), item_id.to_string())
+            .await;
+        Ok(())
     }
 
-    async fn list(&self, group_id: &str) -> Vec<Value> {
-        self.storage.get(group_id.into()).await.map_or(vec![], |v| {
-            let topic: HashMap<String, Value> = serde_json::from_value(v).unwrap_or_default();
-            topic.values().cloned().collect()
-        })
+    async fn update(
+        &self,
+        group_id: &str,
+        item_id: &str,
+        ops: Vec<UpdateOp>,
+    ) -> anyhow::Result<UpdateResult> {
+        Ok(self
+            .storage
+            .update(group_id.to_string(), item_id.to_string(), ops)
+            .await)
+    }
+
+    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
+        Ok(self.storage.list(group_id.to_string()).await)
     }
 }
 
@@ -102,23 +93,36 @@ mod tests {
         let data = serde_json::json!({"key": "value"});
 
         // Test set
-        builtin_adapter.set(group_id, item_id, data.clone()).await;
+        builtin_adapter
+            .set(group_id, item_id, data.clone())
+            .await
+            .expect("Set should succeed");
 
         // Test get
         let saved_data = builtin_adapter
             .get(group_id, item_id)
             .await
+            .expect("Get should succeed")
             .expect("Data should exist");
 
         assert_eq!(saved_data, data);
 
         // Test delete
-        let deleted_data = builtin_adapter.get(group_id, item_id).await;
+        let deleted_data = builtin_adapter
+            .get(group_id, item_id)
+            .await
+            .expect("Get should succeed");
         assert!(deleted_data.is_some());
 
-        builtin_adapter.delete(group_id, item_id).await;
+        builtin_adapter
+            .delete(group_id, item_id)
+            .await
+            .expect("Delete should succeed");
 
-        let deleted_data = builtin_adapter.get(group_id, item_id).await;
+        let deleted_data = builtin_adapter
+            .get(group_id, item_id)
+            .await
+            .expect("Get should succeed");
         assert!(deleted_data.is_none());
     }
 
@@ -131,10 +135,19 @@ mod tests {
         let data1 = serde_json::json!({"key1": "value1"});
         let data2 = serde_json::json!({"key2": "value2"});
         // Set items
-        builtin_adapter.set(group_id, item1_id, data1.clone()).await;
-        builtin_adapter.set(group_id, item2_id, data2.clone()).await;
+        builtin_adapter
+            .set(group_id, item1_id, data1.clone())
+            .await
+            .expect("Set should succeed");
+        builtin_adapter
+            .set(group_id, item2_id, data2.clone())
+            .await
+            .expect("Set should succeed");
 
-        let list = builtin_adapter.list(group_id).await;
+        let list = builtin_adapter
+            .list(group_id)
+            .await
+            .expect("List should succeed");
         assert_eq!(list.len(), 2);
         assert!(list.contains(&data1));
         assert!(list.contains(&data2));
@@ -149,13 +162,20 @@ mod tests {
         let data2 = serde_json::json!({"key": "value2"});
 
         // Set initial item
-        builtin_adapter.set(group_id, item_id, data1.clone()).await;
+        builtin_adapter
+            .set(group_id, item_id, data1.clone())
+            .await
+            .expect("Set should succeed");
         // Update item
-        builtin_adapter.set(group_id, item_id, data2.clone()).await;
+        builtin_adapter
+            .set(group_id, item_id, data2.clone())
+            .await
+            .expect("Set should succeed");
 
         let saved_data = builtin_adapter
             .get(group_id, item_id)
             .await
+            .expect("Get should succeed")
             .expect("Data should exist");
         assert_eq!(saved_data, data2);
     }

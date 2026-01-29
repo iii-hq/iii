@@ -52,8 +52,51 @@ export type StreamListGroupsInput = {
 }
 
 export type StreamSetResult<TData> = {
-  existed: boolean
-  data?: TData
+  old_value?: TData
+  new_value: TData
+}
+
+export type StreamUpdateResult<TData> = {
+  old_value?: TData
+  new_value: TData
+}
+
+export type UpdateSet = {
+  type: 'set'
+  path: string
+  value: any
+}
+
+export type UpdateIncrement = {
+  type: 'increment'
+  path: string
+  by: number
+}
+
+export type UpdateDecrement = {
+  type: 'decrement'
+  path: string
+  by: number
+}
+
+export type UpdateRemove = {
+  type: 'remove'
+  path: string
+}
+
+export type UpdateMerge = {
+  type: 'merge'
+  path: string
+  value: any
+}
+
+export type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateRemove | UpdateMerge
+
+export type StreamUpdateInput = {
+  stream_name: string
+  group_id: string
+  item_id: string
+  ops: UpdateOp[]
 }
 
 export interface IStream<TData> {
@@ -62,4 +105,5 @@ export interface IStream<TData> {
   delete(input: StreamDeleteInput): Promise<void>
   getGroup(input: StreamGetGroupInput): Promise<TData[]>
   listGroups(input: StreamListGroupsInput): Promise<string[]>
+  update(input: StreamUpdateInput): Promise<StreamUpdateResult<TData> | null>
 }

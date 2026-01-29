@@ -75,9 +75,8 @@ pub async fn dynamic_handler(
     let path_parameters: HashMap<String, String> =
         extract_path_params(&registered_path, actual_path);
 
-    if let Some((function_path, condition_function_path)) = api_handler
-        .get_router(method.as_str(), &registered_path)
-        .await
+    if let Some((function_path, condition_function_path)) =
+        api_handler.get_router(method.as_str(), &registered_path)
     {
         let parsed_body = if body.is_empty() {
             None

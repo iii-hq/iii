@@ -4,7 +4,7 @@ use axum::extract::ws::Message as WsMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::modules::kv_server::structs::UpdateOp;
+use iii_sdk::UpdateOp;
 
 pub struct Subscription {
     pub subscription_id: String,
@@ -129,8 +129,8 @@ pub struct StreamJoinResult {
 /// Input for atomic stream update operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {
-    /// The key to update (format: "stream_name::group_id::item_id" or custom key)
-    pub key: String,
-    /// List of operations to apply atomically
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
     pub ops: Vec<UpdateOp>,
 }

@@ -1,4 +1,5 @@
 import type {
+  FunctionInfo,
   RegisterFunctionMessage,
   RegisterServiceMessage,
   RegisterTriggerMessage,
@@ -29,6 +30,7 @@ export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'type' | 'id'>
 export type RegisterServiceInput = Omit<RegisterServiceMessage, 'type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'type'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'type'>
+export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 
 export interface BridgeClient {
   /**
@@ -98,6 +100,12 @@ export interface BridgeClient {
    * @param stream - The stream implementation
    */
   createStream<TData>(streamName: string, stream: IStream<TData>): void
+
+  /**
+   * Registers a callback to receive the current functions list
+   * when the engine announces changes.
+   */
+  onFunctionsAvailable(callback: FunctionsAvailableCallback): () => void
 }
 
 export type Trigger = {

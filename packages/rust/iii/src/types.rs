@@ -41,9 +41,13 @@ impl From<String> for FieldPath {
 
 /// Operations that can be performed atomically on a stream value
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
-    Set { path: FieldPath, value: Value },
+    Set {
+        path: FieldPath,
+        value: Option<Value>,
+    },
 
     /// Merge object into existing value (object-only)
     Merge {
@@ -63,7 +67,7 @@ pub enum UpdateOp {
 
 impl UpdateOp {
     /// Create a Set operation
-    pub fn set(path: impl Into<FieldPath>, value: impl Into<Value>) -> Self {
+    pub fn set(path: impl Into<FieldPath>, value: impl Into<Option<Value>>) -> Self {
         Self::Set {
             path: path.into(),
             value: value.into(),
@@ -111,6 +115,14 @@ impl UpdateOp {
 /// Result of an atomic update operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateResult {
+    /// The value before the update (None if key didn't exist)
+    pub old_value: Option<Value>,
+    /// The value after the update
+    pub new_value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
     /// The value after the update

@@ -54,16 +54,28 @@ pub struct ModuleRegistration {
     pub class: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> ModuleFuture,
     pub is_default: bool,
+    pub mandatory: bool,
 }
 
 #[macro_export]
 macro_rules! register_module {
+    ($class:expr, $module:ty, mandatory) => {
+        ::inventory::submit! {
+            $crate::modules::registry::ModuleRegistration {
+                class: $class,
+                factory: < $module as $crate::modules::module::Module >::make_module,
+                is_default: true,
+                mandatory: true,
+            }
+        }
+    };
     ($class:expr, $module:ty, enabled_by_default = $enabled_by_default:expr) => {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
                 class: $class,
                 factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: $enabled_by_default,
+                mandatory: false,
             }
         }
     };
@@ -73,6 +85,7 @@ macro_rules! register_module {
                 class: $class,
                 factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: false,
+                mandatory: false,
             }
         }
     };

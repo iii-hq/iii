@@ -1,7 +1,7 @@
 """Bridge message types."""
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -98,6 +98,7 @@ class RegisterFunctionMessage(BaseModel):
     description: str | None = None
     request_format: RegisterFunctionFormat | None = Field(default=None)
     response_format: RegisterFunctionFormat | None = Field(default=None)
+    metadata: dict[str, Any] | None = None
     type: MessageType = MessageType.REGISTER_FUNCTION
 
 
@@ -122,6 +123,35 @@ class InvocationResultMessage(BaseModel):
     result: Any = None
     error: Any = None
     type: MessageType = MessageType.INVOCATION_RESULT
+
+
+class FunctionInfo(BaseModel):
+    """Information about a registered function."""
+
+    function_path: str
+    description: str | None = None
+    request_format: RegisterFunctionFormat | None = None
+    response_format: RegisterFunctionFormat | None = None
+    metadata: dict[str, Any] | None = None
+
+
+WorkerStatus = Literal["connected", "available", "busy", "disconnected"]
+
+
+class WorkerInfo(BaseModel):
+    """Information about a connected worker."""
+
+    id: str
+    name: str | None = None
+    runtime: str | None = None
+    version: str | None = None
+    os: str | None = None
+    ip_address: str | None = None
+    status: WorkerStatus
+    connected_at_ms: int
+    function_count: int
+    functions: list[str]
+    active_invocations: int
 
 
 BridgeMessage = (

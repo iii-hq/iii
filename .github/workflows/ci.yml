@@ -32,6 +32,31 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Wait for RabbitMQ
+        run: |
+          echo "Waiting for RabbitMQ to be ready..."
+          python3 << 'EOF'
+          import socket
+          import time
+          import sys
+          
+          for i in range(30):
+              try:
+                  sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                  sock.settimeout(2)
+                  result = sock.connect_ex(('localhost', 5672))
+                  sock.close()
+                  if result == 0:
+                      print("RabbitMQ is ready")
+                      sys.exit(0)
+              except Exception:
+                  pass
+              print(f"Waiting for RabbitMQ... ({i+1}/30)")
+              time.sleep(2)
+          print("RabbitMQ health check timeout - continuing anyway")
+          sys.exit(0)
+          EOF
+
       - name: Run tests
         run: cargo test --all-features
 
