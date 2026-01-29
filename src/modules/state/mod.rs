@@ -5,5 +5,6 @@ mod state;
 
 pub mod registry;
 mod structs;
+mod trigger;
 
 pub use self::state::StateCoreModule;
