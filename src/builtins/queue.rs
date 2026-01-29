@@ -67,12 +67,21 @@ impl Job {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueMode {
+    #[default]
+    Concurrent,
+    Fifo,
+}
+
 #[derive(Debug, Clone)]
 pub struct QueueConfig {
     pub max_attempts: u32,
     pub backoff_ms: u64,
     pub concurrency: u32,
     pub poll_interval_ms: u64,
+    pub mode: QueueMode,
 }
 
 impl Default for QueueConfig {
@@ -82,6 +91,7 @@ impl Default for QueueConfig {
             backoff_ms: 1000,
             concurrency: 10,
             poll_interval_ms: 100,
+            mode: QueueMode::Concurrent,
         }
     }
 }
@@ -103,6 +113,12 @@ impl QueueConfig {
             if let Some(poll_interval) = config.get("poll_interval_ms").and_then(|v| v.as_u64()) {
                 cfg.poll_interval_ms = poll_interval;
             }
+            if let Some(mode_str) = config.get("mode").and_then(|v| v.as_str()) {
+                cfg.mode = match mode_str {
+                    "fifo" => QueueMode::Fifo,
+                    _ => QueueMode::Concurrent,
+                };
+            }
         }
 
         cfg
@@ -114,6 +130,7 @@ pub struct SubscriptionConfig {
     pub concurrency: Option<u32>,
     pub max_attempts: Option<u32>,
     pub backoff_ms: Option<u64>,
+    pub mode: Option<QueueMode>,
 }
 
 impl SubscriptionConfig {
@@ -127,6 +144,10 @@ impl SubscriptionConfig {
 
     pub fn effective_backoff_ms(&self, default: u64) -> u64 {
         self.backoff_ms.unwrap_or(default)
+    }
+
+    pub fn effective_mode(&self, default: QueueMode) -> QueueMode {
+        self.mode.unwrap_or(default)
     }
 }
 
@@ -803,6 +824,7 @@ mod tests {
             concurrency: Some(20),
             max_attempts: Some(5),
             backoff_ms: Some(2000),
+            mode: None,
         };
 
         assert_eq!(config.effective_concurrency(10), 20);
@@ -994,5 +1016,58 @@ mod tests {
         assert_eq!(delayed_jobs[0], job3_id);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_queue_config_fifo_mode() {
+        let config_json = serde_json::json!({
+            "mode": "fifo"
+        });
+        let config = QueueConfig::from_value(Some(&config_json));
+        assert_eq!(config.mode, QueueMode::Fifo);
+    }
+
+    #[tokio::test]
+    async fn test_queue_config_concurrent_mode_default() {
+        let config = QueueConfig::default();
+        assert_eq!(config.mode, QueueMode::Concurrent);
+    }
+
+    #[tokio::test]
+    async fn test_queue_config_concurrent_mode_explicit() {
+        let config_json = serde_json::json!({
+            "mode": "concurrent"
+        });
+        let config = QueueConfig::from_value(Some(&config_json));
+        assert_eq!(config.mode, QueueMode::Concurrent);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_config_fifo_mode() {
+        let config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+        assert_eq!(
+            config.effective_mode(QueueMode::Concurrent),
+            QueueMode::Fifo
+        );
+    }
+
+    #[tokio::test]
+    async fn test_subscription_config_mode_defaults_to_global() {
+        let config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: None,
+        };
+        assert_eq!(config.effective_mode(QueueMode::Fifo), QueueMode::Fifo);
+        assert_eq!(
+            config.effective_mode(QueueMode::Concurrent),
+            QueueMode::Concurrent
+        );
     }
 }

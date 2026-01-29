@@ -121,6 +121,7 @@ impl EventAdapter for BuiltinQueueAdapter {
             concurrency: c.concurrency,
             max_attempts: c.max_retries,
             backoff_ms: c.backoff_delay_ms,
+            mode: None,
         });
 
         let handle = self
