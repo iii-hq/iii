@@ -148,15 +148,23 @@ export class Bridge implements BridgeClient {
   private metricsInterval?: NodeJS.Timeout
 
   /**
-   * Report worker metrics to the engine.
-   * Metrics are automatically associated with this worker via the injected worker_id.
+   * Report worker metrics to the engine via PubSub.
+   * Metrics are saved to KV for persistence and streamed to subscribers.
    */
   reportMetrics(metrics: Omit<WorkerMetrics, 'collected_at_ms'>): void {
     const metricsWithTimestamp: WorkerMetrics = {
       ...metrics,
       collected_at_ms: Date.now(),
     }
-    this.invokeFunctionAsync('engine.workers.report_metrics', metricsWithTimestamp)
+    this.invokeFunctionAsync('publish', {
+      topic: 'iii.worker.metrics',
+      data: {
+        worker_id: this.workerId,
+        worker_name: this.workerName,
+        metrics: metricsWithTimestamp,
+        timestamp: Date.now(),
+      },
+    })
   }
 
   /**
@@ -165,14 +173,10 @@ export class Bridge implements BridgeClient {
    */
   startMetricsReporting(intervalMs: number = 5000): void {
     if (this.metricsInterval) {
-      return // Already running
+      return
     }
 
-    // Dynamically import metrics to avoid circular dependencies
     import('./metrics').then(({ collectMetrics }) => {
-      // Initial warmup call
-      collectMetrics()
-
       this.metricsInterval = setInterval(() => {
         const metrics = collectMetrics()
         this.reportMetrics(metrics)
