@@ -835,6 +835,8 @@ impl GroupedFifoWorker {
     }
 
     async fn process_available_groups(&self) {
+        let mut skipped_job_ids: Vec<String> = Vec::new();
+
         loop {
             let active_count = self.active_groups.read().await.len();
             if active_count >= self.max_concurrent_groups {
@@ -857,14 +859,8 @@ impl GroupedFifoWorker {
                 let mut active = self.active_groups.write().await;
                 if active.contains(&group_id) {
                     drop(active);
-                    // Put job back - this group is busy
-                    let waiting_key = self.queue_impl.waiting_key(&self.queue_name);
-                    self.queue_impl
-                        .kv_store
-                        .lpush(&waiting_key, job.id.clone())
-                        .await;
-                    let active_key = self.queue_impl.active_key(&self.queue_name);
-                    self.queue_impl.kv_store.lrem(&active_key, 1, &job.id).await;
+                    // Collect skipped job to requeue after loop
+                    skipped_job_ids.push(job.id);
                     continue;
                 }
                 active.insert(group_id.clone());
@@ -888,6 +884,20 @@ impl GroupedFifoWorker {
 
                 active_groups.write().await.remove(&group_id);
             });
+        }
+
+        // Requeue skipped jobs in FIFO order
+        // lpush in pop-order: first popped ends up at back (next to be processed)
+        if !skipped_job_ids.is_empty() {
+            let waiting_key = self.queue_impl.waiting_key(&self.queue_name);
+            let active_key = self.queue_impl.active_key(&self.queue_name);
+            for job_id in skipped_job_ids {
+                self.queue_impl
+                    .kv_store
+                    .lpush(&waiting_key, job_id.clone())
+                    .await;
+                self.queue_impl.kv_store.lrem(&active_key, 1, &job_id).await;
+            }
         }
     }
 }
