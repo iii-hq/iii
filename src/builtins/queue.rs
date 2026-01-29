@@ -457,6 +457,31 @@ impl BuiltinQueue {
         Ok(())
     }
 
+    async fn move_to_dlq(&self, queue: &str, job: &Job, error: &str) -> anyhow::Result<()> {
+        let active_key = self.active_key(queue);
+        self.kv_store.lrem(&active_key, 1, &job.id).await;
+
+        let dlq_key = self.dlq_key(queue);
+        let failed_data = serde_json::json!({
+            "job": job,
+            "error": error,
+            "failed_at": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        });
+
+        let failed_json = serde_json::to_string(&failed_data)?;
+        self.kv_store.lpush(&dlq_key, failed_json).await;
+
+        let job_key = self.job_key(queue, &job.id);
+        self.kv_store.delete_job(&job_key).await;
+
+        tracing::warn!(queue = %queue, job_id = %job.id, attempts = job.attempts_made, "Job exhausted, moved to DLQ");
+
+        Ok(())
+    }
+
     async fn move_delayed_to_waiting(&self, queue: &str) -> anyhow::Result<()> {
         let delayed_key = self.delayed_key(queue);
         let now = SystemTime::now()
@@ -470,7 +495,10 @@ impl BuiltinQueue {
             let waiting_key = self.waiting_key(queue);
             for job_id in &ready_jobs {
                 self.kv_store.zrem(&delayed_key, job_id).await;
-                self.kv_store.lpush(&waiting_key, job_id.clone()).await;
+                // Use rpush to add to back (oldest position) so retried jobs
+                // are processed before any jobs that were added after them.
+                // This maintains FIFO order: rpop takes from back (oldest first).
+                self.kv_store.rpush(&waiting_key, job_id.clone()).await;
             }
 
             self.pubsub.send_msg(serde_json::json!({
@@ -783,15 +811,48 @@ impl GroupedFifoWorker {
             let active_groups = Arc::clone(&self.active_groups);
 
             tokio::spawn(async move {
-                match handler.handle(&job).await {
-                    Ok(()) => {
-                        if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
-                            tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                let mut job = job;
+
+                // In grouped FIFO mode, retry the job inline until success or exhaustion.
+                // This ensures subsequent jobs in the same group are blocked until this job completes.
+                loop {
+                    match handler.handle(&job).await {
+                        Ok(()) => {
+                            if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
+                                tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                            }
+                            break;
                         }
-                    }
-                    Err(error) => {
-                        if let Err(e) = queue_impl.nack(&queue_name, &job.id, &error).await {
-                            tracing::error!(error = ?e, job_id = %job.id, "Failed to nack job");
+                        Err(error) => {
+                            job.increment_attempts();
+
+                            if job.is_exhausted() {
+                                // Move to DLQ
+                                if let Err(e) =
+                                    queue_impl.move_to_dlq(&queue_name, &job, &error).await
+                                {
+                                    tracing::error!(error = ?e, job_id = %job.id, "Failed to move job to DLQ");
+                                }
+                                break;
+                            }
+
+                            // Wait for backoff, then retry inline
+                            let delay = job.calculate_backoff();
+                            tracing::debug!(
+                                queue = %queue_name,
+                                job_id = %job.id,
+                                group_id = %group_id,
+                                attempts = job.attempts_made,
+                                delay_ms = delay,
+                                "Grouped FIFO job scheduled for inline retry"
+                            );
+                            tokio::time::sleep(Duration::from_millis(delay)).await;
+
+                            // Update job in storage with new attempt count
+                            let job_key = queue_impl.job_key(&queue_name, &job.id);
+                            if let Ok(job_json) = serde_json::to_value(&job) {
+                                queue_impl.kv_store.set_job(&job_key, job_json).await;
+                            }
                         }
                     }
                 }
@@ -838,31 +899,58 @@ impl FifoWorker {
                 tracing::error!(error = ?e, queue = %self.queue_name, "Failed to move delayed jobs");
             }
 
-            // Process one job at a time, wait for completion
+            // Process one job at a time, wait for completion (including retries)
             self.process_next_job().await;
         }
     }
 
     async fn process_next_job(&self) {
-        let job = match self.queue_impl.pop(&self.queue_name).await {
+        let mut job = match self.queue_impl.pop(&self.queue_name).await {
             Some(job) => job,
             None => return,
         };
 
-        // Process synchronously - wait for completion before returning
-        match self.handler.handle(&job).await {
-            Ok(()) => {
-                if let Err(e) = self.queue_impl.ack(&self.queue_name, &job.id).await {
-                    tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+        // In FIFO mode, retry the job inline until success or exhaustion.
+        // This ensures subsequent jobs are blocked until this job completes.
+        loop {
+            match self.handler.handle(&job).await {
+                Ok(()) => {
+                    if let Err(e) = self.queue_impl.ack(&self.queue_name, &job.id).await {
+                        tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                    }
+                    return;
                 }
-            }
-            Err(error) => {
-                if let Err(e) = self
-                    .queue_impl
-                    .nack(&self.queue_name, &job.id, &error)
-                    .await
-                {
-                    tracing::error!(error = ?e, job_id = %job.id, "Failed to nack job");
+                Err(error) => {
+                    job.increment_attempts();
+
+                    if job.is_exhausted() {
+                        // Move to DLQ
+                        if let Err(e) = self
+                            .queue_impl
+                            .move_to_dlq(&self.queue_name, &job, &error)
+                            .await
+                        {
+                            tracing::error!(error = ?e, job_id = %job.id, "Failed to move job to DLQ");
+                        }
+                        return;
+                    }
+
+                    // Wait for backoff, then retry inline
+                    let delay = job.calculate_backoff();
+                    tracing::debug!(
+                        queue = %self.queue_name,
+                        job_id = %job.id,
+                        attempts = job.attempts_made,
+                        delay_ms = delay,
+                        "FIFO job scheduled for inline retry"
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+
+                    // Update job in storage with new attempt count
+                    let job_key = self.queue_impl.job_key(&self.queue_name, &job.id);
+                    if let Ok(job_json) = serde_json::to_value(&job) {
+                        self.queue_impl.kv_store.set_job(&job_key, job_json).await;
+                    }
                 }
             }
         }
@@ -1532,5 +1620,81 @@ mod tests {
         assert_eq!(order[0], job1_id, "First job should be job1");
         assert_eq!(order[1], job2_id, "Second job should be job2");
         assert_eq!(order[2], job3_id, "Third job should be job3");
+    }
+
+    #[tokio::test]
+    async fn test_fifo_mode_retry_blocks_queue() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            max_attempts: 2,
+            backoff_ms: 10, // Short backoff for test
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push jobs
+        let job1_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 1}))
+            .await;
+        let job2_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 2}))
+            .await;
+
+        let attempt_count = Arc::new(RwLock::new(0));
+        let processed_ids = Arc::new(RwLock::new(Vec::<String>::new()));
+        let attempt_clone = Arc::clone(&attempt_count);
+        let processed_clone = Arc::clone(&processed_ids);
+
+        struct RetryTracker {
+            attempts: Arc<RwLock<i32>>,
+            processed: Arc<RwLock<Vec<String>>>,
+            fail_first_n: i32,
+        }
+
+        #[async_trait]
+        impl JobHandler for RetryTracker {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                let mut count = self.attempts.write().await;
+                *count += 1;
+
+                if *count <= self.fail_first_n {
+                    return Err("Intentional failure".to_string());
+                }
+
+                self.processed.write().await.push(job.id.clone());
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(RetryTracker {
+            attempts: attempt_clone,
+            processed: processed_clone,
+            fail_first_n: 1, // Fail job1 once, then succeed
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("fifo_queue", handler, Some(subscription_config))
+            .await;
+
+        // Wait for retry and processing
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        queue.unsubscribe(handle).await;
+
+        // Both jobs should be processed, job1 first (after retry), then job2
+        let processed = processed_ids.read().await;
+        assert_eq!(processed.len(), 2);
+        assert_eq!(processed[0], job1_id);
+        assert_eq!(processed[1], job2_id);
     }
 }
