@@ -152,7 +152,7 @@ function getCgroupMemoryLimit(): number | undefined {
     '/sys/fs/cgroup/memory/memory.limit_in_bytes',
     '/sys/fs/cgroup/memory.max'
   )
-  if (value && value < 9223372036854771712) {
+  if (value && value < Number.MAX_SAFE_INTEGER) {
     return value
   }
   return undefined
@@ -500,7 +500,6 @@ export function collectMetrics(): WorkerMetrics {
 
   const performance: PerformanceMetrics = {
     thread_count: getThreadCount(),
-    open_connections: 1,
     invocations_per_sec: invocationsPerSec,
     avg_latency_ms: avgLatencyMs,
   }
@@ -516,6 +515,7 @@ export function collectMetrics(): WorkerMetrics {
 
   invocationCount = 0
   totalLatencyMs = 0
+  errorCount = 0
   lastInvocationWindow = now
 
   const metrics: WorkerMetrics = {

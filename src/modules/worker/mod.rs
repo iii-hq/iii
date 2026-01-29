@@ -436,7 +436,13 @@ impl WorkerModule {
         };
 
         let metrics_value = serde_json::to_value(&input.metrics).unwrap_or(Value::Null);
-        self.kv_store.set(KV_INDEX_WORKER_METRICS.to_string(), input.worker_id.clone(), metrics_value).await;
+        self.kv_store
+            .set(
+                KV_INDEX_WORKER_METRICS.to_string(),
+                input.worker_id.clone(),
+                metrics_value,
+            )
+            .await;
 
         self.engine
             .worker_registry
@@ -466,7 +472,13 @@ impl WorkerModule {
         };
 
         let metrics_value = serde_json::to_value(&input.metrics).unwrap_or(Value::Null);
-        self.kv_store.set(KV_INDEX_WORKER_METRICS.to_string(), input.worker_id.clone(), metrics_value).await;
+        self.kv_store
+            .set(
+                KV_INDEX_WORKER_METRICS.to_string(),
+                input.worker_id.clone(),
+                metrics_value,
+            )
+            .await;
 
         self.engine
             .worker_registry
@@ -489,7 +501,7 @@ impl WorkerModule {
             .kv_store
             .list(KV_INDEX_WORKER_METRICS.to_string())
             .await;
-        
+
         FunctionResult::Success(Some(serde_json::json!({
             "metrics": all_items
         })))

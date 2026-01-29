@@ -37,9 +37,6 @@ dev = [
     "mypy>=1.8",
     "ruff>=0.2",
 ]
-metrics = [
-    "psutil>=5.9",
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/iii"]

@@ -56,6 +56,7 @@ export class Bridge implements BridgeClient {
   private functionsAvailableFunctionPath?: string
   private messagesToSend: BridgeMessage[] = []
   private workerName: string
+  private workerId: string
   private interval?: NodeJS.Timeout
 
   constructor(
@@ -63,6 +64,7 @@ export class Bridge implements BridgeClient {
     options?: BridgeOptions,
   ) {
     this.workerName = options?.workerName ?? getDefaultWorkerName()
+    this.workerId = crypto.randomUUID()
     this.connect()
   }
 
@@ -198,26 +200,30 @@ export class Bridge implements BridgeClient {
    * Get metrics for a specific worker by ID.
    */
   async getWorkerMetrics(workerId: string): Promise<WorkerMetricsInfo | null> {
-    const result = await this.invokeFunction<
-      { worker_id: string },
-      WorkerMetricsInfo | { error: string }
-    >('engine.workers.get_metrics', { worker_id: workerId })
-
-    if ('error' in result) {
+    try {
+      const result = await this.invokeFunction<
+        { worker_id: string },
+        WorkerMetricsInfo
+      >('engine.workers.get_metrics', { worker_id: workerId })
+      return result
+    } catch {
       return null
     }
-    return result
   }
 
   /**
    * Get metrics for all workers.
    */
   async getAllWorkerMetrics(): Promise<WorkerMetricsInfo[]> {
-    const result = await this.invokeFunction<{}, { workers: WorkerMetricsInfo[] }>(
-      'engine.workers.get_metrics',
-      {},
-    )
-    return result.workers
+    try {
+      const result = await this.invokeFunction<Record<string, never>, { workers: WorkerMetricsInfo[] }>(
+        'engine.workers.get_metrics',
+        {},
+      )
+      return Array.isArray(result?.workers) ? result.workers : []
+    } catch {
+      return []
+    }
   }
 
   private registerWorkerMetadata(): void {

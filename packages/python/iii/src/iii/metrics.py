@@ -4,9 +4,9 @@ Collects CPU, memory, network, disk metrics and K8s info when available.
 Uses the `psutil` library for cross-platform support.
 """
 
+import asyncio
 import os
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -511,8 +511,6 @@ class MetricsReporter:
 
     async def start(self):
         """Start the metrics reporter."""
-        import asyncio
-
         if self._running:
             return
 
