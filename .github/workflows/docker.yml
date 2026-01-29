@@ -58,7 +58,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to DockerHub
-        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -78,13 +77,12 @@ jobs:
 
       # Security scanning with Trivy
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ env.GHCR_REPO }}:scan
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
-          # Don't fail on vulnerabilities in base image - just report
           exit-code: '0'
 
       - name: Upload Trivy scan results to GitHub Security
@@ -93,16 +91,14 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
-      - name: Run Trivy and check for critical vulnerabilities
-        uses: aquasecurity/trivy-action@master
+      - name: Check for critical vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: ${{ env.GHCR_REPO }}:scan
           format: 'table'
           severity: 'CRITICAL'
-          # Fail only on CRITICAL vulnerabilities in our code
           exit-code: '1'
           ignore-unfixed: true
-        continue-on-error: true
 
       # Build and push multi-platform images
       - name: Build and push

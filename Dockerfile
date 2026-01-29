@@ -33,11 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy source
 COPY . .
 
-# Build release binary with optimizations
-RUN cargo build --release
-
-# Strip binary to reduce size
-RUN strip target/release/iii
+# Build release binary with optimizations and strip to reduce size
+RUN cargo build --release && strip target/release/iii
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime (minimal Debian with security hardening)
