@@ -1841,4 +1841,104 @@ mod tests {
             "Expected C to be last (FIFO), but got different job"
         );
     }
+
+    #[tokio::test]
+    async fn test_grouped_fifo_worker_maintains_order() {
+        use tokio::sync::Mutex;
+
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let config = QueueConfig {
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Track processing order
+        let processed_order: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let processed_order_clone = Arc::clone(&processed_order);
+
+        struct OrderTrackingHandler {
+            processed: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for OrderTrackingHandler {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                // Small delay to simulate work
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                let name = job.data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                self.processed.lock().await.push(name.to_string());
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(OrderTrackingHandler {
+            processed: processed_order_clone,
+        });
+
+        // Push jobs: A1, B1, A2, B2, A3 (A and B are different groups)
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A1"}), "groupA")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "B1"}), "groupB")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A2"}), "groupA")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "B2"}), "groupB")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A3"}), "groupA")
+            .await;
+
+        // Create worker with max 2 concurrent groups
+        let worker =
+            GroupedFifoWorker::new(Arc::clone(&queue), "test_queue".to_string(), handler, 2);
+
+        // Run worker in background
+        let worker_handle = tokio::spawn(async move {
+            worker.run().await;
+        });
+
+        // Wait for all jobs to be processed
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        worker_handle.abort();
+
+        let order = processed_order.lock().await;
+
+        // Verify FIFO within each group:
+        // - A jobs should be in order: A1 before A2 before A3
+        // - B jobs should be in order: B1 before B2
+        let a_positions: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.starts_with('A'))
+            .map(|(i, _)| i)
+            .collect();
+        let b_positions: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.starts_with('B'))
+            .map(|(i, _)| i)
+            .collect();
+
+        assert_eq!(a_positions.len(), 3, "All A jobs should be processed");
+        assert_eq!(b_positions.len(), 2, "All B jobs should be processed");
+
+        // A1 < A2 < A3 (positions should be increasing)
+        assert!(
+            a_positions.windows(2).all(|w| w[0] < w[1]),
+            "A jobs should maintain FIFO order, got positions: {:?}",
+            a_positions
+        );
+        // B1 < B2
+        assert!(
+            b_positions.windows(2).all(|w| w[0] < w[1]),
+            "B jobs should maintain FIFO order, got positions: {:?}",
+            b_positions
+        );
+    }
 }
