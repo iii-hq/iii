@@ -9,7 +9,6 @@ use std::{pin::Pin, sync::Arc};
 use anyhow::anyhow;
 use axum::{
     Router,
-    extract::Extension,
     http::{Method, StatusCode},
 };
 use colored::Colorize;
@@ -158,10 +157,8 @@ impl RestApiCoreModule {
             &self.routers_registry,
         );
 
-        // Apply CORS layer to the router
         new_router = new_router.layer(cors_layer);
 
-        // Apply timeout layer based on configuration
         new_router = new_router.layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             std::time::Duration::from_millis(self.config.default_timeout),
@@ -171,7 +168,6 @@ impl RestApiCoreModule {
             self.config.concurrency_request_limit,
         ));
 
-        // Update the shared router
         let mut shared_router = self.shared_routers.write().await;
         *shared_router = new_router;
 
@@ -217,7 +213,10 @@ impl RestApiCoreModule {
         api_handler: Arc<RestApiCoreModule>,
         routers_registry: &DashMap<String, PathRouter>,
     ) -> Router {
-        use axum::routing::{delete, get, post, put};
+        use axum::{
+            extract::Extension,
+            routing::{delete, get, post, put},
+        };
 
         let mut router = Router::new();
 

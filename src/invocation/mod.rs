@@ -20,6 +20,14 @@ use crate::{
     telemetry::SpanExt,
 };
 
+pub mod auth;
+pub mod http_function;
+pub mod http_invoker;
+pub mod invoker;
+pub mod method;
+pub mod signature;
+pub mod url_validator;
+
 pub struct Invocation {
     pub id: Uuid,
     pub function_id: String,
