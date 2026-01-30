@@ -48,6 +48,10 @@ import type {
   BridgeClient,
   FunctionsAvailableCallback,
   Invocation,
+  LogCallback,
+  LogConfig,
+  LogSeverityLevel,
+  OtelLogEvent,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
@@ -90,6 +94,9 @@ export class Bridge implements BridgeClient {
   private functionsAvailableCallbacks = new Set<FunctionsAvailableCallback>()
   private functionsAvailableTrigger?: Trigger
   private functionsAvailableFunctionPath?: string
+  private logCallbacks = new Map<LogCallback, LogConfig>()
+  private logTrigger?: Trigger
+  private logFunctionPath?: string
   private messagesToSend: BridgeMessage[] = []
   private workerName: string
   private workerId?: string
@@ -270,7 +277,7 @@ export class Bridge implements BridgeClient {
 
     if (!this.functionsAvailableTrigger) {
       if (!this.functionsAvailableFunctionPath) {
-        this.functionsAvailableFunctionPath = `bridge.on_functions_available.${crypto.randomUUID()}`
+        this.functionsAvailableFunctionPath = `engine.on_functions_available.${crypto.randomUUID()}`
       }
 
       const function_path = this.functionsAvailableFunctionPath
@@ -295,6 +302,48 @@ export class Bridge implements BridgeClient {
       if (this.functionsAvailableCallbacks.size === 0 && this.functionsAvailableTrigger) {
         this.functionsAvailableTrigger.unregister()
         this.functionsAvailableTrigger = undefined
+      }
+    }
+  }
+
+  onLog(callback: LogCallback, config?: LogConfig): () => void {
+    const effectiveConfig = config ?? { level: 'all' }
+    this.logCallbacks.set(callback, effectiveConfig)
+
+    if (!this.logTrigger) {
+      if (!this.logFunctionPath) {
+        this.logFunctionPath = `engine.on_log.${crypto.randomUUID()}`
+      }
+
+      const function_path = this.logFunctionPath
+      if (!this.functions.has(function_path)) {
+        this.registerFunction({ function_path }, async (log: OtelLogEvent) => {
+          this.logCallbacks.forEach((cfg, handler) => {
+            try {
+              const minSeverity = this.severityTextToNumber(cfg.level ?? 'all')
+              if (cfg.level === 'all' || log.severity_number >= minSeverity) {
+                handler(log)
+              }
+            } catch (error) {
+              this.logError('Log callback handler threw an exception', error)
+            }
+          })
+          return null
+        })
+      }
+
+      this.logTrigger = this.registerTrigger({
+        trigger_type: EngineTriggers.LOG,
+        function_path,
+        config: { level: 'all', severity_min: 0 },
+      })
+    }
+
+    return () => {
+      this.logCallbacks.delete(callback)
+      if (this.logCallbacks.size === 0 && this.logTrigger) {
+        this.logTrigger.unregister()
+        this.logTrigger = undefined
       }
     }
   }
@@ -530,6 +579,19 @@ export class Bridge implements BridgeClient {
       })
     } else {
       console.error(`[Bridge] ${message}`, error ?? '')
+    }
+  }
+
+  private severityTextToNumber(level: LogSeverityLevel): number {
+    switch (level) {
+      case 'trace': return 1
+      case 'debug': return 5
+      case 'info': return 9
+      case 'warn': return 13
+      case 'error': return 17
+      case 'fatal': return 21
+      case 'all': return 0
+      default: return 0
     }
   }
 

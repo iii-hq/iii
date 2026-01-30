@@ -12,6 +12,7 @@ export const EngineFunctions = {
 /** Engine trigger types */
 export const EngineTriggers = {
   FUNCTIONS_AVAILABLE: 'engine::functions-available',
+  LOG: 'log',
 } as const
 
 /** Log function paths */
