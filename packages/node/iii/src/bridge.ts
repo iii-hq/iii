@@ -319,9 +319,13 @@ export class Bridge implements BridgeClient {
       if (!this.functions.has(function_path)) {
         this.registerFunction({ function_path }, async (log: OtelLogEvent) => {
           this.logCallbacks.forEach((cfg, handler) => {
-            const minSeverity = this.severityTextToNumber(cfg.level ?? 'all')
-            if (cfg.level === 'all' || log.severity_number >= minSeverity) {
-              handler(log)
+            try {
+              const minSeverity = this.severityTextToNumber(cfg.level ?? 'all')
+              if (cfg.level === 'all' || log.severity_number >= minSeverity) {
+                handler(log)
+              }
+            } catch (error) {
+              this.logError('Log callback handler threw an exception', error)
             }
           })
           return null
