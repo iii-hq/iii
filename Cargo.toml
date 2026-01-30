@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "custom_event_adapter"
 path = "examples/custom_event_adapter.rs"
 
+[features]
+default = []
+rabbitmq = ["lapin"]
+
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { path = "packages/rust/iii" }
@@ -42,7 +46,7 @@ anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
-lapin = "3"
+lapin = { version = "3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
