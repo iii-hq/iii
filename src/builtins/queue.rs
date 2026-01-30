@@ -522,7 +522,10 @@ impl BuiltinQueue {
 
         let task_handle = match effective_mode {
             QueueMode::Fifo => {
-                let concurrency = config.as_ref().and_then(|c| c.concurrency).unwrap_or(1) as usize;
+                let concurrency = config
+                    .as_ref()
+                    .and_then(|c| c.concurrency)
+                    .unwrap_or(self.config.concurrency) as usize;
 
                 if concurrency > 1 {
                     let worker = GroupedFifoWorker::new(
