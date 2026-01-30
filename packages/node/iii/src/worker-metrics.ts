@@ -82,7 +82,13 @@ export class WorkerMetricsCollector {
    * @param resolutionMs - Histogram resolution in milliseconds
    */
   private startEventLoopMonitoring(resolutionMs: number): void {
-    this.eventLoopHistogram = monitorEventLoopDelay({ resolution: resolutionMs })
+    // Sanitize resolution: must be a positive finite number, minimum 1ms
+    const safeResolutionMs =
+      Number.isFinite(resolutionMs) && resolutionMs > 0
+        ? Math.max(1, Math.floor(resolutionMs))
+        : 20 // Default fallback
+
+    this.eventLoopHistogram = monitorEventLoopDelay({ resolution: safeResolutionMs })
     this.eventLoopHistogram.enable()
   }
 
