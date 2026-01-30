@@ -4,4 +4,5 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+mod kv_adapter;
 mod redis_adapter;

@@ -49,16 +49,15 @@ modules:
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii-engine}
       service_version: ${SERVICE_VERSION:0.2.0}
-      
+
       # === Service Identity (Optional) ===
       service_namespace: ${SERVICE_NAMESPACE:production}  # Optional: environment/namespace for the service
-      
       # === Trace Exporter Configuration (Required) ===
       # Exporter type: "otlp" (export to collector) or "memory" (store in-memory) or "both"
       exporter: ${OTEL_EXPORTER_TYPE:memory}
       # OTLP endpoint - required when exporter is "otlp" or "both"
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
-      
+
       # === Sampling Configuration ===
       # Basic sampling ratio (0.0 to 1.0). Use 1.0 to sample everything.
       sampling_ratio: 1.0
@@ -67,7 +66,7 @@ modules:
       # sampling:
       #   default: 0.1  # 10% default sampling rate for operations not matching any rule
       #   parent_based: true  # Always enabled for AdvancedSampler - ensures consistent trace sampling
-      #   
+      #
       #   # Sampling rules (evaluated in order, first match wins)
       #   # Supports wildcard patterns: * (matches any chars), ? (matches single char)
       #   # Both 'operation' and 'service' patterns are optional - if both specified, both must match
@@ -75,61 +74,60 @@ modules:
       #     # Per-operation rules (match any service)
       #     - operation: "health.*"
       #       rate: 0.01  # 1% sampling for health checks (reduce noise)
-      #     
+      #
       #     - operation: "api.critical.*"
       #       rate: 1.0  # 100% sampling for critical API endpoints
-      #     
+      #
       #     # Per-service rules (match any operation from specific services)
       #     - service: "payment-*"
       #       rate: 1.0  # 100% sampling for all payment services
-      #     
+      #
       #     - service: "staging-*"
       #       rate: 0.05  # 5% sampling for staging environment
-      #     
+      #
       #     # Combined operation + service rules (both must match)
       #     - operation: "api.*"
       #       service: "production-*"
       #       rate: 0.8  # 80% sampling for production API calls
-      #     
+      #
       #     - operation: "api.*"
       #       service: "development-*"
       #       rate: 0.1  # 10% sampling for development API calls
-      #     
+      #
       #     # Fallback for remaining API operations
       #     - operation: "api.*"
       #       rate: 0.5  # 50% sampling for general API calls
-      #     
+      #
       #     - operation: "background.*"
       #       rate: 0.05  # 5% sampling for background jobs
-      #     
+      #
       #     # Pattern matching examples:
       #     # Service is matched against the configured service_name (e.g., "iii-engine")
       #     # "api.users.create" matches "api.*"
       #     # "health.check" matches "health.*"
       #     # "other.operation" falls back to default (0.1)
-      #   
+      #
       #   # Rate limiting prevents overwhelming the system with too many traces
       #   # Uses token bucket algorithm with atomic operations for thread safety
       #   rate_limit:
       #     max_traces_per_second: 100  # Max 100 traces/sec (parent-sampled traces always included)
-      
+
       # === Memory Storage Configuration ===
       # Max spans to keep in memory - used when exporter is "memory" or "both"
       memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
-      
+
       # === Metrics Configuration ===
       metrics_enabled: true
       metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}  # Options: memory, otlp
       metrics_retention_seconds: 3600  # How long to keep metrics in memory (default: 1 hour)
       metrics_max_count: 10000  # Maximum number of metrics to store
-      
+
       # === OTEL Logs Configuration ===
       logs_enabled: ${OTEL_LOGS_ENABLED:true}
       logs_exporter: ${OTEL_LOGS_EXPORTER:memory}  # Options: memory, otlp, both
       logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}  # Maximum number of log records to store
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}  # How long to keep logs in memory (default: 1 hour)
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
-      
       # === Alert Rules (Optional) ===
       # Alert rules for metric threshold monitoring - see docs/OTEL-IMPLEMENTATION.md
       # Alerts are evaluated every 10 seconds
@@ -165,9 +163,7 @@ modules:
   - class: modules::cron::CronModule
     config:
       adapter:
-        class: modules::cron::RedisCronAdapter
-        config:
-          redis_url: redis://localhost:6379
+        class: modules::cron::KvCronAdapter
 
   # - class: modules::bridge_client::BridgeClientModule
   #   config:
