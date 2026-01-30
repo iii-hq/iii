@@ -141,9 +141,8 @@ fn get_resource_attributes() -> HashMap<String, String> {
 // OpenTelemetry Module
 // =============================================================================
 
-/// Trigger type ID for OtelModule log events
-/// Different from LOG_TRIGGER_TYPE to allow both modules to coexist if needed
-pub const OTEL_LOG_TRIGGER_TYPE: &str = "otel_log";
+/// Trigger type ID for log events from the observability module
+pub const LOG_TRIGGER_TYPE: &str = "log";
 
 /// Log triggers for OTEL module
 pub struct OtelLogTriggers {
@@ -1231,8 +1230,8 @@ impl Module for OtelModule {
 
         // Register log trigger type
         let log_trigger_type = TriggerType {
-            id: OTEL_LOG_TRIGGER_TYPE.to_string(),
-            _description: "OTEL log event trigger".to_string(),
+            id: LOG_TRIGGER_TYPE.to_string(),
+            _description: "Log event trigger".to_string(),
             registrator: Box::new(self.clone()),
             worker_id: None,
         };

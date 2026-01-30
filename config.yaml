@@ -43,21 +43,6 @@ modules:
           - DELETE
           - OPTIONS
 
-  # OtelModule (RECOMMENDED): Provides all observability functions
-  # See docs/OTEL-IMPLEMENTATION.md for complete documentation
-  # Functions available:
-  #   - log.info, log.warn, log.error, log.debug  (OTEL-native logging)
-  #   - traces.list, traces.clear                  (trace querying)
-  #   - metrics.list                               (metrics querying)
-  #   - logs.list, logs.clear                      (log querying)
-  # Trigger types:
-  #   - log (register triggers to react to log events)
-  # REST API Endpoints:
-  #   - GET /api/health       (health check)
-  #   - GET /api/metrics      (metrics in JSON)
-  #   - GET /api/logs         (logs in JSON)
-  #   - GET /api/alerts       (alert states)
-  #   - GET /api/rollups      (pre-aggregated metrics)
   - class: modules::observability::OtelModule
     config:
       # === Core Configuration (Required) ===
@@ -67,7 +52,6 @@ modules:
       
       # === Service Identity (Optional) ===
       service_namespace: ${SERVICE_NAMESPACE:production}  # Optional: environment/namespace for the service
-      service_instance_id: ${SERVICE_INSTANCE_ID:auto-generated}  # Optional: auto-generated UUID if not provided
       
       # === Trace Exporter Configuration (Required) ===
       # Exporter type: "otlp" (export to collector) or "memory" (store in-memory) or "both"
@@ -79,7 +63,6 @@ modules:
       # Basic sampling ratio (0.0 to 1.0). Use 1.0 to sample everything.
       sampling_ratio: 1.0
       
-      # Advanced sampling configuration (optional - see docs/OTEL-IMPLEMENTATION.md for details)
       # Enables per-operation rules, per-service rules, and rate limiting
       # sampling:
       #   default: 0.1  # 10% default sampling rate for operations not matching any rule
@@ -136,8 +119,7 @@ modules:
       
       # === Metrics Configuration ===
       metrics_enabled: true
-      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}  # Options: memory, prometheus, otlp, both
-      prometheus_port: ${PROMETHEUS_PORT:9464}  # Port for Prometheus metrics endpoint (used when metrics_exporter includes 'prometheus')
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}  # Options: memory, otlp
       metrics_retention_seconds: 3600  # How long to keep metrics in memory (default: 1 hour)
       metrics_max_count: 10000  # Maximum number of metrics to store
       
@@ -146,12 +128,7 @@ modules:
       logs_exporter: ${OTEL_LOGS_EXPORTER:memory}  # Options: memory, otlp, both
       logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}  # Maximum number of log records to store
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}  # How long to keep logs in memory (default: 1 hour)
-      
-      # === Worker Metrics Configuration ===
-      worker_metrics:
-        enabled: true
-        collection_interval_seconds: 5  # How often workers report metrics
-        history_size: 60  # Keep 5 minutes of history (60 samples at 5s intervals)
+      logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
       
       # === Alert Rules (Optional) ===
       # Alert rules for metric threshold monitoring - see docs/OTEL-IMPLEMENTATION.md

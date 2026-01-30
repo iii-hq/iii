@@ -40,5 +40,14 @@ export {
   SeverityNumber,
   SpanStatusCode,
 } from './telemetry'
-export type { ApiRequest, ApiResponse, FunctionsAvailableCallback, RemoteFunctionHandler } from './types'
+export type {
+  ApiRequest,
+  ApiResponse,
+  FunctionsAvailableCallback,
+  LogCallback,
+  LogConfig,
+  LogSeverityLevel,
+  OtelLogEvent,
+  RemoteFunctionHandler,
+} from './types'
 export { safeStringify } from './utils'

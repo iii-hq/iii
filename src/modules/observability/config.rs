@@ -226,13 +226,9 @@ pub struct OtelModuleConfig {
     #[serde(default)]
     pub metrics_enabled: Option<bool>,
 
-    /// Metrics exporter type: "prometheus", "otlp", or "both"
+    /// Metrics exporter type: "memory" or "otlp"
     #[serde(default)]
     pub metrics_exporter: Option<MetricsExporterType>,
-
-    /// Port for Prometheus metrics endpoint (default: 9090)
-    #[serde(default)]
-    pub prometheus_port: Option<u16>,
 
     /// Metrics retention period in seconds (default: 3600 = 1 hour)
     #[serde(default)]

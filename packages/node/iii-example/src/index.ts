@@ -1,4 +1,4 @@
-import { useApi, useFunctionsAvailable, useOnOtelLog } from './hooks'
+import { useApi, useFunctionsAvailable, useOnLog } from './hooks'
 import { state } from './state'
 import { streams } from './streams'
 
@@ -8,7 +8,7 @@ useFunctionsAvailable((functions) => {
   console.log('--------------------------------')
 })
 
-useOnOtelLog({ level: 'all' }, async (log) => {
+useOnLog(async (log) => {
   console.log('[OTEL Log]', log)
 })
 useApi(
