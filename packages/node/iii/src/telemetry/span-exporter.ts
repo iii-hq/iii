@@ -15,7 +15,7 @@ import { PREFIX_TRACES } from './types'
 export class EngineSpanExporter implements SpanExporter {
   private static readonly MAX_PENDING_EXPORTS = 100
   private connection: SharedEngineConnection
-  private pendingExports: Array<{ spans: ReadableSpan[] }> = []
+  private pendingExports: Array<{ spans: ReadableSpan[]; resultCallback?: (result: ExportResult) => void }> = []
 
   constructor(connection: SharedEngineConnection) {
     this.connection = connection
@@ -24,8 +24,8 @@ export class EngineSpanExporter implements SpanExporter {
 
   private flushPending(): void {
     const pending = this.pendingExports.splice(0, this.pendingExports.length)
-    for (const { spans } of pending) {
-      this.sendExport(spans)
+    for (const { spans, resultCallback } of pending) {
+      this.sendExport(spans, resultCallback)
     }
   }
 
@@ -54,11 +54,12 @@ export class EngineSpanExporter implements SpanExporter {
   private doExport(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
     if (this.connection.getState() !== 'connected') {
       if (this.pendingExports.length >= EngineSpanExporter.MAX_PENDING_EXPORTS) {
-        this.pendingExports.shift()
+        const dropped = this.pendingExports.shift()
+        dropped?.resultCallback?.({ code: ExportResultCode.FAILED, error: new Error('Queue overflow') })
         console.warn('[OTel] Spans export queue full, dropped oldest entry')
       }
-      this.pendingExports.push({ spans })
-      resultCallback({ code: ExportResultCode.SUCCESS })
+      this.pendingExports.push({ spans, resultCallback })
+      // Don't call resultCallback here - it will be called when actually sent or on shutdown
       return
     }
 
@@ -70,7 +71,11 @@ export class EngineSpanExporter implements SpanExporter {
   }
 
   async shutdown(): Promise<void> {
-    this.pendingExports = []
+    const pending = this.pendingExports.splice(0, this.pendingExports.length)
+    const shutdownError = new Error('Exporter shutdown before export completed')
+    for (const { resultCallback } of pending) {
+      resultCallback?.({ code: ExportResultCode.FAILED, error: shutdownError })
+    }
   }
 
   async forceFlush(): Promise<void> {
