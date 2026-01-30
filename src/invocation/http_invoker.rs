@@ -1,5 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use reqwest::{Client, Method};
 use serde_json::Value;
 use uuid::Uuid;
@@ -7,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     function::Function,
     invocation::{
+        invoker::Invoker,
         method::{HttpAuth, HttpMethod, InvocationMethod},
         signature::sign_request,
         url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
@@ -53,7 +55,15 @@ impl HttpInvoker {
         })
     }
 
-    pub async fn invoke(
+    pub fn signature_max_age(&self) -> u64 {
+        self.signature_max_age
+    }
+
+    pub fn url_validator(&self) -> &UrlValidator {
+        &self.url_validator
+    }
+
+    async fn invoke_impl(
         &self,
         function: &Function,
         invocation_id: Uuid,
@@ -75,10 +85,13 @@ impl HttpInvoker {
             });
         };
 
-        self.url_validator.validate(url).await.map_err(|e| ErrorBody {
-            code: "url_validation_failed".into(),
-            message: e.to_string(),
-        })?;
+        self.url_validator
+            .validate(url)
+            .await
+            .map_err(|e| ErrorBody {
+                code: "url_validation_failed".into(),
+                message: e.to_string(),
+            })?;
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -129,14 +142,10 @@ impl HttpInvoker {
             None => request,
         };
 
-        let response = request
-            .body(body)
-            .send()
-            .await
-            .map_err(|err| ErrorBody {
-                code: "http_request_failed".into(),
-                message: err.to_string(),
-            })?;
+        let response = request.body(body).send().await.map_err(|err| ErrorBody {
+            code: "http_request_failed".into(),
+            message: err.to_string(),
+        })?;
 
         let status = response.status();
         let bytes = response.bytes().await.map_err(|err| ErrorBody {
@@ -177,13 +186,24 @@ impl HttpInvoker {
             message: format!("HTTP {}", status),
         })
     }
+}
 
-    pub fn signature_max_age(&self) -> u64 {
-        self.signature_max_age
+#[async_trait]
+impl Invoker for HttpInvoker {
+    fn method_type(&self) -> &'static str {
+        "http"
     }
 
-    pub fn url_validator(&self) -> &UrlValidator {
-        &self.url_validator
+    async fn invoke(
+        &self,
+        function: &Function,
+        invocation_id: Uuid,
+        data: Value,
+        caller_function: Option<&str>,
+        trace_id: Option<&str>,
+    ) -> Result<Option<Value>, ErrorBody> {
+        self.invoke_impl(function, invocation_id, data, caller_function, trace_id)
+            .await
     }
 }
 

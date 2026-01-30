@@ -52,20 +52,17 @@ pub async fn load_http_functions_from_kv(engine: &Engine) -> Result<(), ErrorBod
                 message: format!("Missing KV entry for {}", index),
             })?;
 
-        let config: HttpFunctionConfig = serde_json::from_value(value).map_err(|err| ErrorBody {
-            code: "kv_decode_failed".into(),
-            message: err.to_string(),
-        })?;
+        let config: HttpFunctionConfig =
+            serde_json::from_value(value).map_err(|err| ErrorBody {
+                code: "kv_decode_failed".into(),
+                message: err.to_string(),
+            })?;
 
         if engine.functions.get(&config.function_path).is_some() {
             continue;
         }
 
-        let auth = config
-            .auth
-            .as_ref()
-            .map(resolve_auth_ref)
-            .transpose()?;
+        let auth = config.auth.as_ref().map(resolve_auth_ref).transpose()?;
 
         let invocation_method = InvocationMethod::Http {
             url: config.url,
@@ -122,10 +119,7 @@ pub async fn delete_http_function_from_kv(
     function_path: &str,
 ) -> Result<(), ErrorBody> {
     let index = format!("{}{}", HTTP_FUNCTION_PREFIX, function_path);
-    engine
-        .kv_store
-        .delete(index, "config".to_string())
-        .await;
+    engine.kv_store.delete(index, "config".to_string()).await;
     Ok(())
 }
 

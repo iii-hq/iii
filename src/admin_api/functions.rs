@@ -1,17 +1,15 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
-    Json,
-    extract::{Path, State},
+    Json, Router,
+    extract::{Extension, Path},
     http::StatusCode,
     middleware,
     routing::{delete, get, post, put},
-    Router,
 };
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tower::limit::RateLimitLayer;
 
 use crate::{
     config::persistence::{
@@ -57,18 +55,18 @@ pub struct HttpInvocationConfig {
 }
 
 pub fn router(engine: Arc<Engine>) -> Router {
+    use axum::extract::Extension;
     Router::new()
         .route("/admin/functions", post(register_function))
         .route("/admin/functions", get(list_functions))
         .route("/admin/functions/:path", put(update_function))
         .route("/admin/functions/:path", delete(unregister_function))
         .layer(middleware::from_fn(auth_middleware))
-        .layer(RateLimitLayer::new(100, Duration::from_secs(1)))
-        .with_state(engine)
+        .layer(Extension(engine))
 }
 
 pub async fn register_function(
-    State(engine): State<Arc<Engine>>,
+    Extension(engine): Extension<Arc<Engine>>,
     Json(payload): Json<RegisterFunctionRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     engine
@@ -138,7 +136,7 @@ pub async fn register_function(
 }
 
 pub async fn update_function(
-    State(engine): State<Arc<Engine>>,
+    Extension(engine): Extension<Arc<Engine>>,
     Path(function_path): Path<String>,
     Json(payload): Json<UpdateFunctionRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
@@ -223,9 +221,9 @@ pub async fn update_function(
 }
 
 pub async fn unregister_function(
-    State(engine): State<Arc<Engine>>,
     Path(function_path): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+    Extension(engine): Extension<Arc<Engine>>,
+) -> Result<StatusCode, (StatusCode, String)> {
     delete_http_function_from_kv(&engine, &function_path)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
@@ -236,15 +234,11 @@ pub async fn unregister_function(
         .remove_function_from_services(&function_path)
         .await;
 
-    Ok(Json(json!({
-        "status": "unregistered",
-        "function_path": function_path,
-        "persisted": true
-    })))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_functions(
-    State(engine): State<Arc<Engine>>,
+    Extension(engine): Extension<Arc<Engine>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let functions: Vec<Value> = engine
         .functions

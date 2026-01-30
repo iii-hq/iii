@@ -26,8 +26,8 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 
 use super::{module::Module, registry::ModuleRegistration};
-use crate::{config::persistence::load_http_functions_from_kv, engine::Engine};
 use crate::config::{HttpFunctionConfig, HttpTriggerConfig, SecurityConfig};
+use crate::{config::persistence::load_http_functions_from_kv, engine::Engine};
 
 // =============================================================================
 // Constants

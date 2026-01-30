@@ -20,10 +20,11 @@ use crate::{
     config::{HttpFunctionConfig, HttpTriggerConfig, SecurityConfig, resolve_http_auth},
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry, RegistrationSource},
     invocation::{
+        InvocationHandler, InvokerRegistry,
         http_invoker::{HttpInvoker, HttpInvokerConfig},
+        invoker::Invoker,
         method::InvocationMethod,
         url_validator::UrlValidatorConfig,
-        InvocationHandler,
     },
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
     protocol::{ErrorBody, Message},
@@ -149,13 +150,14 @@ pub trait EngineTrait: Send + Sync {
         F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerRegistry>,
     pub functions: Arc<FunctionsRegistry>,
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
+    pub invoker_registry: Arc<InvokerRegistry>,
     pub http_invoker: Arc<HttpInvoker>,
     pub webhook_dispatcher: Arc<WebhookDispatcher>,
     pub http_triggers: Arc<HttpTriggerRegistry>,
@@ -193,17 +195,25 @@ impl Engine {
         let http_triggers = Arc::new(HttpTriggerRegistry::new());
         let kv_store = Arc::new(BuiltinKvStore::new(kv_store_config));
 
-        Self {
+        let invoker_registry = InvokerRegistry::new_with_http(http_invoker.clone());
+        let invoker_registry = Arc::new(invoker_registry);
+
+        Ok(Self {
             worker_registry: Arc::new(WorkerRegistry::new()),
             functions: Arc::new(FunctionsRegistry::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
-            invocations: Arc::new(InvocationHandler::new(http_invoker.clone())),
+            invocations: Arc::new(InvocationHandler::new(invoker_registry.clone())),
+            invoker_registry,
             http_invoker,
             webhook_dispatcher,
             http_triggers,
             kv_store,
-        }
+        })
+    }
+
+    pub async fn register_invoker(&self, invoker: Arc<dyn Invoker>) {
+        self.invoker_registry.register(invoker).await;
     }
 
     pub async fn register_http_function_from_config(

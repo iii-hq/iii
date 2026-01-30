@@ -9,7 +9,6 @@ use std::{pin::Pin, sync::Arc};
 use anyhow::anyhow;
 use axum::{
     Router,
-    extract::Extension,
     http::{Method, StatusCode},
 };
 use colored::Colorize;
@@ -201,11 +200,9 @@ impl RestApiCoreModule {
         api_handler: Arc<RestApiCoreModule>,
         routers_registry: &DashMap<String, PathRouter>,
     ) -> Router {
-        use axum::routing::{delete, get, post, put};
+        use axum::{extract::Extension, routing::{delete, get, post, put}};
 
-        let mut router = Router::new().with_state(engine.clone());
-        let admin_router = crate::admin_api::create_router(engine.clone());
-        router = router.merge(admin_router);
+        let mut router = Router::new();
 
         for entry in routers_registry.iter() {
             let path = Self::build_router_for_axum(&entry.http_path);

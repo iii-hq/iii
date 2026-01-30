@@ -44,13 +44,13 @@ pub fn resolve_http_auth(auth: &HttpAuthConfig) -> anyhow::Result<HttpAuth> {
             Ok(HttpAuth::Hmac { secret })
         }
         HttpAuthConfig::Bearer { token_env } => {
-            let token = std::env::var(token_env)
-                .map_err(|_| anyhow!("Missing env var: {}", token_env))?;
+            let token =
+                std::env::var(token_env).map_err(|_| anyhow!("Missing env var: {}", token_env))?;
             Ok(HttpAuth::Bearer { token })
         }
         HttpAuthConfig::ApiKey { header, value_env } => {
-            let value = std::env::var(value_env)
-                .map_err(|_| anyhow!("Missing env var: {}", value_env))?;
+            let value =
+                std::env::var(value_env).map_err(|_| anyhow!("Missing env var: {}", value_env))?;
             Ok(HttpAuth::ApiKey {
                 header: header.clone(),
                 value,

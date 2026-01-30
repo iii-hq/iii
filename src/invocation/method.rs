@@ -6,7 +6,9 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InvocationMethod {
-    WebSocket { worker_id: Uuid },
+    WebSocket {
+        worker_id: Uuid,
+    },
     Http {
         url: String,
         method: HttpMethod,
@@ -14,6 +16,15 @@ pub enum InvocationMethod {
         headers: HashMap<String, String>,
         auth: Option<HttpAuth>,
     },
+}
+
+impl InvocationMethod {
+    pub fn method_type(&self) -> &'static str {
+        match self {
+            InvocationMethod::WebSocket { .. } => "websocket",
+            InvocationMethod::Http { .. } => "http",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

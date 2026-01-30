@@ -99,5 +99,29 @@ impl UrlValidator {
 }
 
 fn is_private_ip(ip: &IpAddr) -> bool {
-    ip.is_loopback() || ip.is_private() || ip.is_link_local()
+    match ip {
+        IpAddr::V4(ipv4) => {
+            ipv4.is_loopback()
+                || ipv4.is_private()
+                || ipv4.is_link_local()
+                || ipv4.is_broadcast()
+                || ipv4.is_documentation()
+                || ipv4.is_unspecified()
+        }
+        IpAddr::V6(ipv6) => {
+            ipv6.is_loopback()
+                || is_ipv6_unique_local(ipv6)
+                || is_ipv6_link_local(ipv6)
+                || ipv6.is_unspecified()
+                || ipv6.is_multicast()
+        }
+    }
+}
+
+fn is_ipv6_unique_local(ipv6: &std::net::Ipv6Addr) -> bool {
+    (ipv6.segments()[0] & 0xfe00) == 0xfc00
+}
+
+fn is_ipv6_link_local(ipv6: &std::net::Ipv6Addr) -> bool {
+    (ipv6.segments()[0] & 0xffc0) == 0xfe80
 }
