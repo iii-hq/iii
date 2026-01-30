@@ -1201,9 +1201,8 @@ impl Module for OtelModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         // Initialize metrics if enabled
         let metrics_config = metrics::MetricsConfig::default();
-        if metrics_config.enabled {
-            metrics::init_metrics(&metrics_config);
-            // Pre-initialize global engine metrics
+        if metrics_config.enabled && metrics::init_metrics(&metrics_config) {
+            // Pre-initialize global engine metrics only if init succeeded
             let _ = metrics::get_engine_metrics();
         }
 

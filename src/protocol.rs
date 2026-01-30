@@ -79,9 +79,23 @@ pub enum Message {
     },
 }
 
+/// Worker resource metrics for health monitoring.
+///
+/// # JavaScript Precision Note
+///
+/// The `u64` fields (`memory_*`, `cpu_*_micros`, `uptime_seconds`, `timestamp_ms`)
+/// can theoretically exceed JavaScript's `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+/// In practice:
+/// - Memory values would need to exceed ~9 PB to lose precision
+/// - CPU microseconds would need ~285 years of continuous uptime
+/// - Timestamps are safe until the year 287396
+///
+/// For most use cases this is not a concern, but if you need guaranteed precision
+/// for very large values, consider parsing these as BigInt on the JavaScript side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerMetrics {
     // Memory metrics (bytes)
+    // Note: u64 values above 2^53-1 may lose precision in JavaScript
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_heap_used: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,7 +105,8 @@ pub struct WorkerMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_external: Option<u64>,
 
-    // CPU metrics
+    // CPU metrics (microseconds since process start)
+    // Note: u64 values above 2^53-1 may lose precision in JavaScript
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_user_micros: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

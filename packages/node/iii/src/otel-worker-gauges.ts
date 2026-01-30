@@ -1,4 +1,4 @@
-import type { Meter, BatchObservableResult } from '@opentelemetry/api'
+import type { Meter, BatchObservableResult, Observable } from '@opentelemetry/api'
 import { WorkerMetricsCollector } from './worker-metrics'
 
 export interface WorkerGaugesOptions {
@@ -8,6 +8,9 @@ export interface WorkerGaugesOptions {
 
 let registeredGauges = false
 let metricsCollector: WorkerMetricsCollector | null = null
+let registeredMeter: Meter | null = null
+let registeredBatchCallback: ((observableResult: BatchObservableResult) => void) | null = null
+let registeredObservables: Observable[] = []
 
 export function registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions): void {
   if (registeredGauges) {
@@ -113,13 +116,36 @@ export function registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions)
     uptimeSeconds,
   ])
 
+  registeredMeter = meter
+  registeredBatchCallback = batchCallback
+  registeredObservables = [
+    memoryHeapUsed,
+    memoryHeapTotal,
+    memoryRss,
+    memoryExternal,
+    cpuPercent,
+    cpuUserMicros,
+    cpuSystemMicros,
+    eventLoopLag,
+    uptimeSeconds,
+  ]
+
   registeredGauges = true
 }
 
 export function stopWorkerGauges(): void {
+  // Remove the batch observable callback before stopping
+  if (registeredMeter && registeredBatchCallback) {
+    registeredMeter.removeBatchObservableCallback(registeredBatchCallback, registeredObservables)
+  }
+
   if (metricsCollector) {
     metricsCollector.stopMonitoring()
     metricsCollector = null
   }
+
+  registeredMeter = null
+  registeredBatchCallback = null
+  registeredObservables = []
   registeredGauges = false
 }

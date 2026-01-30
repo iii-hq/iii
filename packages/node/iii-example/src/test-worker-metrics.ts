@@ -52,7 +52,7 @@ async function testWorkerMetrics() {
         console.log(`  Status: ${worker.status}`)
         console.log(`  Functions: ${worker.function_count}`)
         
-        if (worker.memory_heap_used) {
+        if (worker.memory_heap_used != null) {
           console.log('\n  Resource Metrics:')
           console.log(`    Memory Heap Used: ${(worker.memory_heap_used / 1_048_576).toFixed(2)} MB`)
           console.log(`    Memory Heap Total: ${(worker.memory_heap_total / 1_048_576).toFixed(2)} MB`)

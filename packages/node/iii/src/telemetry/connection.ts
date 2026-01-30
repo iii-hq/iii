@@ -126,7 +126,7 @@ export class SharedEngineConnection {
     const exponentialDelay = this.config.initialDelayMs * Math.pow(this.config.backoffMultiplier, this.reconnectAttempt)
     const cappedDelay = Math.min(exponentialDelay, this.config.maxDelayMs)
     const jitter = cappedDelay * this.config.jitterFactor * (2 * Math.random() - 1)
-    const delay = Math.floor(cappedDelay + jitter)
+    const delay = Math.max(0, Math.floor(cappedDelay + jitter))
 
     this.state = 'reconnecting'
     console.log(`[OTel] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt + 1})...`)
