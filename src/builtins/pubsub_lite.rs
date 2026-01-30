@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
@@ -143,7 +149,6 @@ mod test {
         let subscription_id1 = Uuid::new_v4().to_string();
         let subscription_id2 = Uuid::new_v4().to_string();
 
-        // Subscribe two subscribers in normal (non-exclusive) mode
         let subscriber1: Arc<dyn Subscriber> = Arc::new(TestSubscriber {
             call_count: call_count.clone(),
         });
@@ -158,38 +163,29 @@ mod test {
             .subscribe(subscription_id2.clone(), subscriber2)
             .await;
 
-        // Start watching events in background
         let adapter = Arc::new(adapter);
         let adapter_clone = Arc::clone(&adapter);
         tokio::spawn(async move {
             adapter_clone.watch_events().await;
         });
 
-        // Give it a moment to start watching
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Send a message
         adapter.send_msg(serde_json::json!({"test": "data"}));
 
-        // Wait for message to be processed
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // In normal mode, both subscribers should have been called
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         adapter.unsubscribe(subscription_id1).await;
-        // Send a message
         adapter.send_msg(serde_json::json!({"test": "data"}));
 
-        // Wait for message to be processed
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
 
         adapter.unsubscribe(subscription_id2).await;
-        // Send a message
         adapter.send_msg(serde_json::json!({"test": "data"}));
 
-        // Wait for message to be processed
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
