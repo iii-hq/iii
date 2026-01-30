@@ -46,7 +46,9 @@ impl HttpTriggerRegistry {
     pub fn list_cron_triggers(&self, trigger_id: &str) -> Vec<HttpTrigger> {
         self.triggers
             .iter()
-            .filter(|entry| entry.value().trigger_type == "cron" && entry.value().trigger_id == trigger_id)
+            .filter(|entry| {
+                entry.value().trigger_type == "cron" && entry.value().trigger_id == trigger_id
+            })
             .map(|entry| entry.value().clone())
             .collect()
     }

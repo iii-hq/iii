@@ -94,14 +94,10 @@ impl WebhookDispatcher {
             None => request,
         };
 
-        let response = request
-            .body(body)
-            .send()
-            .await
-            .map_err(|err| ErrorBody {
-                code: "http_request_failed".into(),
-                message: err.to_string(),
-            })?;
+        let response = request.body(body).send().await.map_err(|err| ErrorBody {
+            code: "http_request_failed".into(),
+            message: err.to_string(),
+        })?;
 
         if response.status().is_success() {
             return Ok(());

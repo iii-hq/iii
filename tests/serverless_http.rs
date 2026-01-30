@@ -2,17 +2,29 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use iii::{
-    config::{SecurityConfig, persistence::{HttpFunctionConfig as KvHttpFunctionConfig, load_http_functions_from_kv, store_http_function_in_kv}},
+    config::{
+        SecurityConfig,
+        persistence::{
+            HttpFunctionConfig as KvHttpFunctionConfig, load_http_functions_from_kv,
+            store_http_function_in_kv,
+        },
+    },
     engine::Engine,
-    invocation::{method::HttpMethod, signature::{sign_request, verify_signature}},
     invocation::url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
+    invocation::{
+        method::HttpMethod,
+        signature::{sign_request, verify_signature},
+    },
 };
 
 #[tokio::test]
 async fn test_signature_roundtrip() {
     let body = br#"{"key":"value"}"#;
     let secret = "test_secret";
-    let timestamp = 1705312200;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let signature = sign_request(body, secret, timestamp);
     let result = verify_signature(body, &signature, secret, timestamp, 300);
     assert!(result.is_ok());
