@@ -5,6 +5,6 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod kv;
-pub mod pubsub;
+pub mod pubsub_lite;
 pub mod queue;
 pub mod queue_kv;

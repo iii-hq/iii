@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    builtins::pubsub::Subscriber,
+    builtins::pubsub_lite::Subscriber,
     engine::{Engine, EngineTrait},
     function::FunctionResult,
     modules::streams::{

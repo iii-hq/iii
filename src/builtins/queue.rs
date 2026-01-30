@@ -20,7 +20,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use super::{pubsub::BuiltInPubSubAdapter, queue_kv::QueueKvStore};
+use crate::builtins::pubsub_lite::BuiltInPubSubLite;
+
+use super::queue_kv::QueueKvStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -140,7 +142,7 @@ pub trait JobHandler: Send + Sync {
 
 pub struct BuiltinQueue {
     kv_store: Arc<QueueKvStore>,
-    pubsub: Arc<BuiltInPubSubAdapter>,
+    pubsub: Arc<BuiltInPubSubLite>,
     config: QueueConfig,
     subscriptions: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
 }
@@ -148,7 +150,7 @@ pub struct BuiltinQueue {
 impl BuiltinQueue {
     pub fn new(
         kv_store: Arc<QueueKvStore>,
-        pubsub: Arc<BuiltInPubSubAdapter>,
+        pubsub: Arc<BuiltInPubSubLite>,
         config: QueueConfig,
     ) -> Self {
         Self {
@@ -628,7 +630,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_and_pop() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store, pubsub, config);
 
@@ -647,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn test_ack_removes_job() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
@@ -665,7 +667,7 @@ mod tests {
     #[tokio::test]
     async fn test_nack_with_retry() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             max_attempts: 3,
             backoff_ms: 100,
@@ -690,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn test_nack_exhausted_moves_to_dlq() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             max_attempts: 1,
             backoff_ms: 100,
@@ -714,7 +716,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_delayed() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
@@ -733,7 +735,7 @@ mod tests {
     #[tokio::test]
     async fn test_move_delayed_to_waiting() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
@@ -751,7 +753,7 @@ mod tests {
     #[tokio::test]
     async fn test_dlq_redrive() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             max_attempts: 1,
             backoff_ms: 100,
@@ -811,7 +813,7 @@ mod tests {
     #[tokio::test]
     async fn test_rebuild_from_storage_waiting_jobs() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config.clone());
 
@@ -839,7 +841,7 @@ mod tests {
     #[tokio::test]
     async fn test_rebuild_from_storage_delayed_jobs() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config.clone());
 
@@ -861,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn test_rebuild_from_storage_with_retry() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             max_attempts: 3,
             backoff_ms: 100,
@@ -898,7 +900,7 @@ mod tests {
         });
 
         let kv_store = make_queue_kv(Some(config_json.clone()));
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             max_attempts: 3,
             backoff_ms: 1,
@@ -921,7 +923,7 @@ mod tests {
         drop(kv_store);
 
         let new_kv_store = make_queue_kv(Some(config_json));
-        let new_pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let new_pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let new_queue = BuiltinQueue::new(new_kv_store, new_pubsub, config);
         new_queue.rebuild_from_storage().await.unwrap();
 
@@ -944,7 +946,7 @@ mod tests {
         });
 
         let kv_store = make_queue_kv(Some(config_json.clone()));
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let queue_config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), queue_config.clone());
 
@@ -967,7 +969,7 @@ mod tests {
         drop(kv_store);
 
         let new_kv_store = make_queue_kv(Some(config_json));
-        let new_pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let new_pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let new_queue = BuiltinQueue::new(new_kv_store.clone(), new_pubsub, queue_config);
 
         new_queue.rebuild_from_storage().await.unwrap();

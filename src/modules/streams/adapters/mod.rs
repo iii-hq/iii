@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use serde_json::Value;
 
-use crate::{builtins::pubsub::Subscriber, modules::streams::StreamWrapperMessage};
+use crate::{builtins::pubsub_lite::Subscriber, modules::streams::StreamWrapperMessage};
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
