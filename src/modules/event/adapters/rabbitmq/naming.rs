@@ -4,6 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+#![cfg(feature = "rabbitmq")]
+
 pub const EXCHANGE_PREFIX: &str = "iii";
 
 pub struct RabbitNames {
