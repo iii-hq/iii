@@ -138,9 +138,7 @@ impl CompiledRule {
         let escaped = regex::escape(pattern);
         // Then convert our wildcard tokens back:
         // regex::escape turns `*` into `\*` and `?` into `\?`
-        let regex_pattern = escaped
-            .replace(r"\*", ".*")
-            .replace(r"\?", ".");
+        let regex_pattern = escaped.replace(r"\*", ".*").replace(r"\?", ".");
         Regex::new(&format!("^{}$", regex_pattern))
     }
 
