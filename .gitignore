@@ -13,6 +13,7 @@ dist/
 .claude/
 app.log
 .shared/
+.worktrees/
 .sisyphus/
 CLAUDE.md
 packages/docker/bun/iii
