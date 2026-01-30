@@ -413,13 +413,12 @@ impl BuiltinQueue {
     }
 
     async fn nack(&self, queue: &str, job_id: &str, error: &str) -> anyhow::Result<()> {
-        let active_key = self.active_key(queue);
-        self.kv_store.lrem(&active_key, 1, job_id).await;
-
         let job_key = self.job_key(queue, job_id);
         let job_value = self.kv_store.get_job(&job_key).await;
 
         let Some(job_value) = job_value else {
+            let active_key = self.active_key(queue);
+            self.kv_store.lrem(&active_key, 1, job_id).await;
             tracing::warn!(queue = %queue, job_id = %job_id, "Job not found for nack");
             return Ok(());
         };
@@ -428,22 +427,11 @@ impl BuiltinQueue {
         job.increment_attempts();
 
         if job.is_exhausted() {
-            let dlq_key = self.dlq_key(queue);
-            let failed_data = serde_json::json!({
-                "job": job,
-                "error": error,
-                "failed_at": SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            });
-
-            let failed_json = serde_json::to_string(&failed_data)?;
-            self.kv_store.lpush(&dlq_key, failed_json).await;
-            self.kv_store.delete_job(&job_key).await;
-
-            tracing::warn!(queue = %queue, job_id = %job_id, attempts = job.attempts_made, "Job exhausted, moved to DLQ");
+            self.move_to_dlq(queue, &job, error).await?;
         } else {
+            let active_key = self.active_key(queue);
+            self.kv_store.lrem(&active_key, 1, job_id).await;
+
             let delay = job.calculate_backoff();
             let delayed_key = self.delayed_key(queue);
             let process_at = SystemTime::now()
@@ -1627,7 +1615,7 @@ mod tests {
     #[tokio::test]
     async fn test_fifo_mode_retry_blocks_queue() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             mode: QueueMode::Fifo,
             max_attempts: 2,
@@ -1703,7 +1691,7 @@ mod tests {
     #[tokio::test]
     async fn test_grouped_fifo_no_duplicate_group_processing() {
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             mode: QueueMode::Fifo,
             poll_interval_ms: 1, // Fast polling to increase race likelihood
@@ -1789,7 +1777,7 @@ mod tests {
         // After requeue, order should still be B, C (not C, B)
 
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig::default();
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
@@ -1847,7 +1835,7 @@ mod tests {
         use tokio::sync::Mutex;
 
         let kv_store = make_queue_kv(None);
-        let pubsub = Arc::new(BuiltInPubSubAdapter::new(None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
         let config = QueueConfig {
             poll_interval_ms: 10,
             ..Default::default()
