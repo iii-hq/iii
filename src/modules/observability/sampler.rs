@@ -111,31 +111,13 @@ pub struct CompiledRule {
 impl CompiledRule {
     pub fn new(rule: &SamplingRule) -> Result<Self, regex::Error> {
         let operation_pattern = if let Some(ref pattern) = rule.operation {
-            // Convert wildcard pattern to regex
-            // e.g., "api.*" becomes "^api\..*$"
-            let regex_pattern = format!(
-                "^{}$",
-                pattern
-                    .replace(".", "\\.")
-                    .replace("*", ".*")
-                    .replace("?", ".")
-            );
-            Some(Regex::new(&regex_pattern)?)
+            Some(Self::wildcard_to_regex(pattern)?)
         } else {
             None
         };
 
         let service_pattern = if let Some(ref pattern) = rule.service {
-            // Convert wildcard pattern to regex (same as operation)
-            // e.g., "worker-*" becomes "^worker-.*$"
-            let regex_pattern = format!(
-                "^{}$",
-                pattern
-                    .replace(".", "\\.")
-                    .replace("*", ".*")
-                    .replace("?", ".")
-            );
-            Some(Regex::new(&regex_pattern)?)
+            Some(Self::wildcard_to_regex(pattern)?)
         } else {
             None
         };
@@ -145,6 +127,21 @@ impl CompiledRule {
             service_pattern,
             rate: rule.rate,
         })
+    }
+
+    /// Convert a wildcard pattern to a regex pattern.
+    /// Escapes all regex metacharacters first, then converts wildcards:
+    /// - `*` becomes `.*` (match any characters)
+    /// - `?` becomes `.` (match single character)
+    fn wildcard_to_regex(pattern: &str) -> Result<Regex, regex::Error> {
+        // First escape all regex metacharacters
+        let escaped = regex::escape(pattern);
+        // Then convert our wildcard tokens back:
+        // regex::escape turns `*` into `\*` and `?` into `\?`
+        let regex_pattern = escaped
+            .replace(r"\*", ".*")
+            .replace(r"\?", ".");
+        Regex::new(&format!("^{}$", regex_pattern))
     }
 
     /// Check if this rule matches the given span.
@@ -506,5 +503,23 @@ mod tests {
         assert_eq!(sampler.get_sampling_ratio("api.users"), 1.0);
         assert_eq!(sampler.get_sampling_ratio("health.check"), 1.0);
         assert_eq!(sampler.get_sampling_ratio("any.operation"), 1.0);
+    }
+
+    #[test]
+    fn test_compiled_rule_metacharacter_escaping() {
+        // Pattern with regex metacharacters that should be treated literally
+        let rule = SamplingRule {
+            operation: Some("api.v1+beta[test]".to_string()),
+            service: None,
+            rate: 0.5,
+        };
+
+        let compiled = CompiledRule::new(&rule).unwrap();
+
+        // Should match the literal string
+        assert!(compiled.matches("api.v1+beta[test]", None));
+        // Should NOT match variations that would match if metacharacters weren't escaped
+        assert!(!compiled.matches("api.v11beta[test]", None)); // + not treated as "one or more"
+        assert!(!compiled.matches("apixv1+betattest]", None)); // . not treated as "any char"
     }
 }
