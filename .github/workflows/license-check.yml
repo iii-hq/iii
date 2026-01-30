@@ -1,0 +1,19 @@
+name: License Header Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-license-headers:
+    name: Check License Headers
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check license headers in Rust files
+        run: ./scripts/check-license-headers.sh
