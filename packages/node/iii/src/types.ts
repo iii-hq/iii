@@ -11,9 +11,16 @@ import type { IStream } from './streams'
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (data: TInput) => Promise<TOutput>
 export type Invocation<TOutput = any> = { resolve: (data: TOutput) => void; reject: (error: any) => void }
 
+/** Internal handler type that includes traceparent and baggage for distributed tracing */
+export type InternalFunctionHandler<TInput = any, TOutput = any> = (
+  data: TInput,
+  traceparent?: string,
+  baggage?: string,
+) => Promise<TOutput>
+
 export type RemoteFunctionData = {
   message: RegisterFunctionMessage
-  handler: RemoteFunctionHandler
+  handler: InternalFunctionHandler
 }
 
 export type RemoteServiceFunctionData = {

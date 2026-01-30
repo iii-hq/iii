@@ -8,6 +8,7 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
+  WorkerRegistered = 'workerregistered',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -118,6 +119,14 @@ export type InvokeFunctionMessage = {
    * The data to pass to the function
    */
   data: any
+  /**
+   * W3C trace-context traceparent header for distributed tracing
+   */
+  traceparent?: string
+  /**
+   * W3C baggage header for cross-cutting context propagation
+   */
+  baggage?: string
 }
 
 export type InvocationResultMessage = {
@@ -132,6 +141,14 @@ export type InvocationResultMessage = {
   function_path: string
   result?: any
   error?: any
+  /**
+   * W3C trace-context traceparent header for distributed tracing
+   */
+  traceparent?: string
+  /**
+   * W3C baggage header for cross-cutting context propagation
+   */
+  baggage?: string
 }
 
 export type FunctionInfo = {
@@ -158,6 +175,11 @@ export type WorkerInfo = {
   active_invocations: number
 }
 
+export type WorkerRegisteredMessage = {
+  type: MessageType.WorkerRegistered
+  worker_id: string
+}
+
 export type BridgeMessage =
   | RegisterFunctionMessage
   | InvokeFunctionMessage
@@ -168,3 +190,4 @@ export type BridgeMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
+  | WorkerRegisteredMessage
