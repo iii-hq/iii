@@ -15,5 +15,5 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check license headers in Rust files
-        run: ./scripts/check-license-headers.sh
+      - name: Check license headers
+        uses: korandoru/hawkeye@v6
