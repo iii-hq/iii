@@ -199,19 +199,20 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 ### Building Docker Images Locally
 
 ```bash
-# Build from a specific release version
-docker build --build-arg VERSION=v0.2.1 -t iii:v0.2.1 .
+# Production image (distroless runtime)
+docker build -t iii:local .
 
-# Debug image (includes shell, htop, vim)
-docker build --build-arg VERSION=v0.2.1 -f Dockerfile.debug -t iii:debug .
+# Debug image (Debian with shell, htop, vim)
+docker build -f Dockerfile.debug -t iii:debug .
 
 # Run locally built image
-docker run --rm iii:v0.2.1 --version
+docker run --rm iii:local --version
 ```
 
 ### Security
 
 The Docker images include:
+- Distroless runtime (no shell, minimal attack surface)
 - Non-root user execution
 - Trivy vulnerability scanning in CI
 - SBOM (Software Bill of Materials) attestation

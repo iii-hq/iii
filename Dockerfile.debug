@@ -1,33 +1,25 @@
-ARG VERSION=latest
+FROM rust:slim-bookworm AS builder
 
-FROM alpine:3.21 AS downloader
-ARG VERSION
-ARG TARGETARCH
-RUN apk add --no-cache curl tar
-WORKDIR /download
-RUN set -ex; \
-    case "${TARGETARCH}" in \
-        amd64) RUST_TARGET="x86_64-unknown-linux-musl" ;; \
-        arm64) RUST_TARGET="aarch64-unknown-linux-gnu" ;; \
-        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/MotiaDev/iii-engine/releases/download/${VERSION}/iii-${RUST_TARGET}.tar.gz" | tar xz; \
-    chmod 550 iii
+WORKDIR /build
 
-FROM alpine:3.21 AS runtime-amd64
-RUN apk add --no-cache ca-certificates curl procps net-tools htop vim bash
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-FROM debian:bookworm-slim AS runtime-arm64
+COPY . .
+
+RUN cargo build --release && strip target/release/iii
+
+FROM debian:bookworm-slim
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl procps net-tools htop vim-tiny \
     && rm -rf /var/lib/apt/lists/*
 
-ARG TARGETARCH
-FROM runtime-${TARGETARCH}
+RUN useradd --system --create-home --shell /bin/bash iii
 
-RUN adduser --system --create-home --shell /bin/sh iii
 WORKDIR /app
-COPY --from=downloader --chown=iii:iii /download/iii /app/iii
+COPY --from=builder --chown=iii:iii /build/target/release/iii /app/iii
 USER iii
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

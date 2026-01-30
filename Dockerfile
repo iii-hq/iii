@@ -1,37 +1,18 @@
-ARG VERSION=latest
+FROM rust:slim-bookworm AS builder
 
-FROM alpine:3.21 AS downloader
-ARG VERSION
-ARG TARGETARCH
-RUN apk add --no-cache curl tar
-WORKDIR /download
-RUN set -ex; \
-    case "${TARGETARCH}" in \
-        amd64) RUST_TARGET="x86_64-unknown-linux-musl" ;; \
-        arm64) RUST_TARGET="aarch64-unknown-linux-gnu" ;; \
-        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
-    esac; \
-    curl -fsSL "https://github.com/MotiaDev/iii-engine/releases/download/${VERSION}/iii-${RUST_TARGET}.tar.gz" | tar xz; \
-    chmod 550 iii
+WORKDIR /build
 
-FROM alpine:3.21 AS runtime-amd64
-RUN apk add --no-cache ca-certificates curl
-
-FROM debian:bookworm-slim AS runtime-arm64
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
+    pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-ARG TARGETARCH
-FROM runtime-${TARGETARCH}
+COPY . .
 
-RUN adduser --system --no-create-home --shell /sbin/nologin iii
-WORKDIR /app
-COPY --from=downloader --chown=iii:iii /download/iii /app/iii
-USER iii
+RUN cargo build --release && strip target/release/iii
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:3111/health || /app/iii --version
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+COPY --from=builder /build/target/release/iii /app/iii
 
 EXPOSE 49134 3111 3112 9464
 ENTRYPOINT ["/app/iii"]
