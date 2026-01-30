@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -18,6 +18,14 @@ use crate::{
 
 const DEFAULT_LOCK_TTL_MS: u64 = 30_000;
 const DEFAULT_LOCK_INDEX: &str = "cron_locks";
+
+static CRON_KV_STORE: OnceLock<Arc<BuiltinKvStore>> = OnceLock::new();
+
+fn shared_kv_store(config: Option<Value>) -> Arc<BuiltinKvStore> {
+    CRON_KV_STORE
+        .get_or_init(|| Arc::new(BuiltinKvStore::new(config)))
+        .clone()
+}
 
 pub struct KvCronLock {
     kv: Arc<BuiltinKvStore>,
@@ -46,7 +54,7 @@ impl KvCronLock {
             "KvCronAdapter uses process-local locks; cron jobs may run on every engine instance"
         );
 
-        let kv = Arc::new(BuiltinKvStore::new(config));
+        let kv = shared_kv_store(config);
         let instance_id = uuid::Uuid::new_v4().to_string();
 
         Ok(Self {
@@ -160,5 +168,20 @@ mod tests {
             "expected warning not emitted: {}",
             output
         );
+    }
+
+    #[tokio::test]
+    async fn test_kv_cron_adapter_shares_lock_store_across_instances() {
+        let adapter_a = KvCronLock::new(None).await.unwrap();
+        let adapter_b = KvCronLock::new(None).await.unwrap();
+        let job_id = format!("job:kv:shared:{}", uuid::Uuid::new_v4());
+
+        assert!(adapter_a.try_acquire_lock(&job_id).await);
+        assert!(
+            !adapter_b.try_acquire_lock(&job_id).await,
+            "expected shared store to prevent second lock"
+        );
+        adapter_a.release_lock(&job_id).await;
+        assert!(adapter_b.try_acquire_lock(&job_id).await);
     }
 }
