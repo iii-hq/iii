@@ -15,10 +15,15 @@ use tracing::{
 use tracing_subscriber::{
     EnvFilter,
     fmt::{self as tracing_fmt, FmtContext, FormatEvent, FormatFields},
+    layer::SubscriberExt,
     registry::LookupSpan,
+    util::SubscriberInitExt,
 };
 
 use crate::modules::config::EngineConfig;
+use crate::modules::observability::logs_layer::OtelLogsLayer;
+use crate::modules::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
+use crate::telemetry::{ExporterType, OtelConfig, init_otel};
 
 /// Collected field from tracing event
 #[derive(Debug, Clone)]
@@ -270,6 +275,43 @@ where
 
 static TRACING: OnceLock<()> = OnceLock::new();
 
+/// Extract OTEL configuration from the OtelModule config in the config file.
+/// This is called early during startup, before modules are loaded.
+fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
+    let otel_module_name = "modules::observability::OtelModule";
+    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
+
+    let mut otel_cfg = OtelConfig::default();
+
+    if let Some(module_entry) = otel_module_cfg
+        && let Some(config) = &module_entry.config
+    {
+        if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
+            otel_cfg.enabled = enabled;
+        }
+        if let Some(service_name) = config.get("service_name").and_then(|v| v.as_str()) {
+            otel_cfg.service_name = service_name.to_string();
+        }
+        if let Some(exporter) = config.get("exporter").and_then(|v| v.as_str()) {
+            otel_cfg.exporter = match exporter.to_lowercase().as_str() {
+                "memory" => ExporterType::Memory,
+                _ => ExporterType::Otlp,
+            };
+        }
+        if let Some(endpoint) = config.get("endpoint").and_then(|v| v.as_str()) {
+            otel_cfg.endpoint = endpoint.to_string();
+        }
+        if let Some(sampling) = config.get("sampling_ratio").and_then(|v| v.as_f64()) {
+            otel_cfg.sampling_ratio = sampling;
+        }
+        if let Some(max_spans) = config.get("memory_max_spans").and_then(|v| v.as_u64()) {
+            otel_cfg.memory_max_spans = max_spans as usize;
+        }
+    }
+
+    otel_cfg
+}
+
 pub fn init_log(path: &str) {
     println!("Initializing logging from config file: {}", path);
     let cfg = EngineConfig::config_file_or_default(path);
@@ -278,24 +320,25 @@ pub fn init_log(path: &str) {
             "Failed to parse config file: {}, using default local logging. Error: {}",
             path, e
         );
-        init_local_log("info");
+        init_local_log("info", &OtelConfig::default());
         return;
     };
 
     let cfg = cfg.expect("Failed to parse config file");
 
     println!("Parsed config file: {}", path);
+
+    // Extract OTEL config from OtelModule (must be done before modules are loaded)
+    let otel_cfg = extract_otel_config(&cfg);
+
     let log_module_name = "modules::observability::LoggingModule";
     let log_module_cfg = cfg.modules.iter().find(|m| m.class == log_module_name);
     match log_module_cfg {
-        Some(_) => {
-            let log_level = log_module_cfg
-                .and_then(|m| {
-                    m.config
-                        .as_ref()?
-                        .get("level")
-                        .or_else(|| m.config.as_ref()?.get("log_level"))
-                })
+        Some(module_entry) => {
+            let log_level = module_entry
+                .config
+                .as_ref()
+                .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
                 .map(|v| {
                     v.as_str()
                         .map(|s| s.to_string())
@@ -303,8 +346,10 @@ pub fn init_log(path: &str) {
                 })
                 .unwrap_or_else(|| "info".to_string());
 
-            let log_format = log_module_cfg
-                .and_then(|m| m.config.as_ref()?.get("format"))
+            let log_format = module_entry
+                .config
+                .as_ref()
+                .and_then(|c| c.get("format"))
                 .map(|v| {
                     v.as_str()
                         .map(|s| s.to_string())
@@ -313,41 +358,95 @@ pub fn init_log(path: &str) {
                 .unwrap_or_else(|| "default".to_string());
 
             println!(
-                "Log level from config: {}, Log format: {}",
-                log_level, log_format
+                "Log level from config: {}, Log format: {}, OTel enabled: {}",
+                log_level, log_format, otel_cfg.enabled
             );
 
             if log_format.to_lowercase() == "json" {
-                init_prod_log(log_level.as_str());
+                init_prod_log(log_level.as_str(), &otel_cfg);
             } else {
-                init_local_log(log_level.as_str());
+                init_local_log(log_level.as_str(), &otel_cfg);
             }
         }
         None => {
             println!("LoggingModule not found in config, using default local logging");
-            init_local_log("info");
+            init_local_log("info", &otel_cfg);
         }
     }
 }
 
-fn init_prod_log(log_level: &str) {
+fn init_prod_log(log_level: &str, otel_cfg: &OtelConfig) {
     TRACING.get_or_init(|| {
         let filter = EnvFilter::new(log_level);
-        tracing_subscriber::fmt::Subscriber::builder()
-            .with_env_filter(filter)
+
+        // JSON formatting layer
+        let fmt_layer = tracing_subscriber::fmt::layer()
             .json()
             .with_current_span(true)
-            .with_span_list(true)
+            .with_span_list(true);
+
+        // Build the subscriber with optional OTel layers
+        // We need to initialize OTel first to get the layers with correct types
+        let otel_trace_layer = init_otel(otel_cfg);
+
+        // Initialize OTEL logs layer if enabled
+        let otel_logs_layer = if otel_cfg.enabled {
+            // Get max logs from global config (if set) or use default
+            let max_logs = get_otel_config()
+                .and_then(|cfg| cfg.logs_max_count)
+                .or(Some(1000));
+
+            // Initialize log storage
+            init_log_storage(max_logs);
+
+            // Create logs layer
+            get_log_storage()
+                .map(|storage| OtelLogsLayer::new(storage, otel_cfg.service_name.clone()))
+        } else {
+            None
+        };
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .with(otel_trace_layer)
+            .with(otel_logs_layer)
             .init();
     });
 }
 
-fn init_local_log(log_level: &str) {
+fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
     TRACING.get_or_init(|| {
         let filter = EnvFilter::new(log_level);
-        tracing_subscriber::fmt::Subscriber::builder()
-            .with_env_filter(filter)
-            .event_format(IIILogFormatter)
+
+        // Custom formatting layer
+        let fmt_layer = tracing_subscriber::fmt::layer().event_format(IIILogFormatter);
+
+        // Build the subscriber with optional OTel layers
+        let otel_trace_layer = init_otel(otel_cfg);
+
+        // Initialize OTEL logs layer if enabled
+        let otel_logs_layer = if otel_cfg.enabled {
+            // Get max logs from global config (if set) or use default
+            let max_logs = get_otel_config()
+                .and_then(|cfg| cfg.logs_max_count)
+                .or(Some(1000));
+
+            // Initialize log storage
+            init_log_storage(max_logs);
+
+            // Create logs layer
+            get_log_storage()
+                .map(|storage| OtelLogsLayer::new(storage, otel_cfg.service_name.clone()))
+        } else {
+            None
+        };
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .with(otel_trace_layer)
+            .with(otel_logs_layer)
             .init();
     });
 }

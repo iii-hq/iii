@@ -352,4 +352,4 @@ async fn main() -> anyhow::Result<()> {
 //       adapter:
 //         class: my::LoggingEventAdapter  # or my::InMemoryEventAdapter
 //         config:
-//           inner_adapter: my::InMemoryEventAdapter  # only for LoggingAdapter
+//           inner_adapter: my::InMemoryEventAdapter

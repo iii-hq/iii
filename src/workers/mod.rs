@@ -10,10 +10,11 @@ use std::{collections::HashSet, str::FromStr, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use opentelemetry::KeyValue;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
-use crate::engine::Outbound;
+use crate::{engine::Outbound, modules::observability::metrics::get_engine_metrics};
 
 #[derive(Default)]
 pub struct WorkerRegistry {
@@ -33,11 +34,33 @@ impl WorkerRegistry {
 
     pub fn register_worker(&self, worker: Worker) {
         self.workers.insert(worker.id, worker);
+        let count = self.workers.len() as i64;
+
+        // Update metrics
+        let metrics = get_engine_metrics();
+        metrics.workers_active.record(count, &[]);
+        metrics.workers_spawns_total.add(1, &[]);
+
+        // Update accumulator for readable metrics
+        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+        acc.workers_spawns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn unregister_worker(&self, worker_id: &Uuid) {
         tracing::debug!("Unregistering worker: {}", worker_id);
         self.workers.remove(worker_id);
+        let count = self.workers.len() as i64;
+
+        // Update metrics
+        let metrics = get_engine_metrics();
+        metrics.workers_active.record(count, &[]);
+        metrics.workers_deaths_total.add(1, &[]);
+
+        // Update accumulator for readable metrics
+        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+        acc.workers_deaths
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn list_workers(&self) -> Vec<Worker> {
@@ -71,10 +94,23 @@ impl WorkerRegistry {
         if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.status = status;
         }
+
+        // Update metrics - count workers for each status
+        let mut status_counts = std::collections::HashMap::new();
+        for w in self.workers.iter() {
+            *status_counts.entry(w.value().status).or_insert(0i64) += 1;
+        }
+
+        let metrics = get_engine_metrics();
+        for (st, count) in status_counts {
+            metrics
+                .workers_by_status
+                .record(count, &[KeyValue::new("status", st.as_str())]);
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum WorkerStatus {
     #[default]
     Connected,
