@@ -118,7 +118,7 @@ impl ConfigurableModule for CronCoreModule {
     type Config = CronModuleConfig;
     type Adapter = dyn CronSchedulerAdapter;
     type AdapterRegistration = super::registry::CronAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::RedisCronAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::KvCronAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CronSchedulerAdapter>>>> =
