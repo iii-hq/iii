@@ -16,3 +16,4 @@ app.log
 .sisyphus/
 CLAUDE.md
 packages/docker/bun/iii
+docs/
