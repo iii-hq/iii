@@ -17,6 +17,19 @@ pub struct SecurityConfig {
     pub require_https: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BridgeApiConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub public_url: Option<String>,
+    #[serde(default = "default_token_secret_env")]
+    pub token_secret_env: String,
+}
+
+fn default_token_secret_env() -> String {
+    "III_BRIDGE_SECRET".to_string()
+}
+
 fn default_block_private_ips() -> bool {
     true
 }

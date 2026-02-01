@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod admin_api;
+pub mod bridge_api;
 pub mod builtins;
 pub mod config;
 pub mod engine;

@@ -1,9 +1,11 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use reqwest::Client;
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{
+    bridge_api::token::BridgeTokenRegistry,
     invocation::{
         method::HttpAuth,
         signature::sign_request,
@@ -17,6 +19,8 @@ pub struct WebhookConfig {
     pub url_validator: UrlValidatorConfig,
     pub signature_max_age: u64,
     pub default_timeout_ms: u64,
+    pub bridge_url: Option<String>,
+    pub token_registry: Option<Arc<BridgeTokenRegistry>>,
 }
 
 impl Default for WebhookConfig {
@@ -25,6 +29,8 @@ impl Default for WebhookConfig {
             url_validator: UrlValidatorConfig::default(),
             signature_max_age: 300,
             default_timeout_ms: 30000,
+            bridge_url: None,
+            token_registry: None,
         }
     }
 }
@@ -34,6 +40,8 @@ pub struct WebhookDispatcher {
     url_validator: UrlValidator,
     signature_max_age: u64,
     default_timeout_ms: u64,
+    bridge_url: Option<String>,
+    token_registry: Option<Arc<BridgeTokenRegistry>>,
 }
 
 impl WebhookDispatcher {
@@ -49,6 +57,8 @@ impl WebhookDispatcher {
             url_validator,
             signature_max_age: config.signature_max_age,
             default_timeout_ms: config.default_timeout_ms,
+            bridge_url: config.bridge_url,
+            token_registry: config.token_registry,
         })
     }
 
@@ -74,6 +84,17 @@ impl WebhookDispatcher {
             message: err.to_string(),
         })?;
 
+        let invocation_id = Uuid::new_v4().to_string();
+        let trace_id = format!("trace-{}", Uuid::new_v4());
+
+        let bridge_token = if let (Some(registry), Some(_bridge_url)) =
+            (&self.token_registry, &self.bridge_url)
+        {
+            Some(registry.create_token(&invocation_id, &trigger.function_path, &trace_id))
+        } else {
+            None
+        };
+
         let mut request = self
             .client
             .post(&trigger.url)
@@ -82,7 +103,15 @@ impl WebhookDispatcher {
             .header("X-III-Trigger-Type", &trigger.trigger_type)
             .header("X-III-Trigger-ID", &trigger.trigger_id)
             .header("X-III-Function-Path", &trigger.function_path)
-            .header("X-III-Timestamp", timestamp.to_string());
+            .header("X-III-Timestamp", timestamp.to_string())
+            .header("X-III-Invocation-ID", &invocation_id)
+            .header("X-III-Trace-ID", &trace_id);
+
+        if let (Some(token), Some(url)) = (&bridge_token, &self.bridge_url) {
+            request = request
+                .header("X-III-Bridge-URL", url)
+                .header("X-III-Bridge-Token", token);
+        }
 
         request = match trigger.auth.as_ref() {
             Some(HttpAuth::Hmac { secret }) => {
@@ -98,6 +127,10 @@ impl WebhookDispatcher {
             code: "http_request_failed".into(),
             message: err.to_string(),
         })?;
+
+        if let (Some(token), Some(registry)) = (&bridge_token, &self.token_registry) {
+            registry.invalidate_token(token);
+        }
 
         if response.status().is_success() {
             return Ok(());
@@ -138,5 +171,9 @@ impl WebhookDispatcher {
 
     pub fn url_validator(&self) -> &UrlValidator {
         &self.url_validator
+    }
+
+    pub fn token_registry(&self) -> Option<Arc<BridgeTokenRegistry>> {
+        self.token_registry.clone()
     }
 }

@@ -143,48 +143,107 @@ export class EngineClient {
     this.token = config.token
   }
 
+  static fromRequest(request: any): EngineClient {
+    const bridgeUrl = request.headers?.get?.('X-III-Bridge-URL') ?? request.headers?.['x-iii-bridge-url']
+    const bridgeToken =
+      request.headers?.get?.('X-III-Bridge-Token') ?? request.headers?.['x-iii-bridge-token']
+
+    if (!bridgeUrl || !bridgeToken) {
+      throw new Error('Missing bridge headers (X-III-Bridge-URL or X-III-Bridge-Token)')
+    }
+
+    return new EngineClient({
+      engineUrl: bridgeUrl,
+      token: bridgeToken,
+    })
+  }
+
+  static fromHeaders(headers: Record<string, string>): EngineClient {
+    const bridgeUrl = headers['x-iii-bridge-url']
+    const bridgeToken = headers['x-iii-bridge-token']
+
+    if (!bridgeUrl || !bridgeToken) {
+      throw new Error('Missing bridge headers (X-III-Bridge-URL or X-III-Bridge-Token)')
+    }
+
+    return new EngineClient({
+      engineUrl: bridgeUrl,
+      token: bridgeToken,
+    })
+  }
+
+  private async sendMessage(message: any): Promise<any> {
+    const response = await fetch(`${this.engineUrl}/bridge`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(message),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Bridge request failed: ${response.status}`)
+    }
+
+    const result: any = await response.json()
+    if (result.error) {
+      throw new Error(result.error.message)
+    }
+
+    return result.result
+  }
+
   async invoke(functionPath: string, data: any): Promise<any> {
-    const response = await fetch(`${this.engineUrl}/api/invoke`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ function_path: functionPath, data }),
-    })
-    if (!response.ok) {
-      throw new Error(`Invocation failed: ${response.status}`)
+    const message = {
+      type: 'invokefunction',
+      invocation_id: typeof crypto !== 'undefined' ? crypto.randomUUID() : undefined,
+      function_path: functionPath,
+      data,
     }
-    return response.json()
+    return this.sendMessage(message)
   }
 
-  async state(action: 'get' | 'set' | 'delete', key: string, value?: any): Promise<any> {
-    const response = await fetch(`${this.engineUrl}/api/state/${action}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ key, value }),
-    })
-    if (!response.ok) {
-      throw new Error(`State request failed: ${response.status}`)
-    }
-    return response.json()
+  state = {
+    get: (groupId: string, itemId: string) =>
+      this.invoke('state.get', { group_id: groupId, item_id: itemId }),
+
+    set: (groupId: string, itemId: string, data: any) =>
+      this.invoke('state.set', { group_id: groupId, item_id: itemId, data }),
+
+    delete: (groupId: string, itemId: string) =>
+      this.invoke('state.delete', { group_id: groupId, item_id: itemId }),
+
+    list: (groupId: string) => this.invoke('state.list', { group_id: groupId }),
   }
 
-  async emit(topic: string, data: any): Promise<void> {
-    const response = await fetch(`${this.engineUrl}/api/events/emit`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ topic, data }),
-    })
-    if (!response.ok) {
-      throw new Error(`Emit failed: ${response.status}`)
-    }
+  streams = {
+    get: (streamName: string, groupId: string, itemId: string) =>
+      this.invoke('streams.get', { stream_name: streamName, group_id: groupId, item_id: itemId }),
+
+    set: (streamName: string, groupId: string, itemId: string, data: any) =>
+      this.invoke('streams.set', { stream_name: streamName, group_id: groupId, item_id: itemId, data }),
+
+    delete: (streamName: string, groupId: string, itemId: string) =>
+      this.invoke('streams.delete', { stream_name: streamName, group_id: groupId, item_id: itemId }),
+
+    getGroup: (streamName: string, groupId: string) =>
+      this.invoke('streams.getGroup', { stream_name: streamName, group_id: groupId }),
+  }
+
+  logger = {
+    log: (level: string, message: string, metadata?: any): Promise<void> =>
+      this.invoke(`logger.${level}`, { message, metadata }),
+
+    info: (message: string, metadata?: any): Promise<void> => this.logger.log('info', message, metadata),
+
+    warn: (message: string, metadata?: any): Promise<void> => this.logger.log('warn', message, metadata),
+
+    error: (message: string, metadata?: any): Promise<void> => this.logger.log('error', message, metadata),
+  }
+
+  async publish(topic: string, data: any): Promise<void> {
+    await this.invoke('publish', { topic, data })
   }
 }
 

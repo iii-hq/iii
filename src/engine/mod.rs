@@ -16,8 +16,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
+    bridge_api::token::BridgeTokenRegistry,
     builtins::kv::BuiltinKvStore,
-    config::{HttpFunctionConfig, HttpTriggerConfig, SecurityConfig, resolve_http_auth},
+    config::{BridgeApiConfig, HttpFunctionConfig, HttpTriggerConfig, SecurityConfig, resolve_http_auth},
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry, RegistrationSource},
     invocation::{
         InvocationHandler, InvokerRegistry,
@@ -167,12 +168,13 @@ pub struct Engine {
 impl Engine {
     pub fn new() -> Self {
         let security = SecurityConfig::default();
-        Self::new_with_security(security, None).expect("Failed to initialize engine")
+        Self::new_with_security(security, None, None).expect("Failed to initialize engine")
     }
 
     pub fn new_with_security(
         security: SecurityConfig,
         kv_store_config: Option<Value>,
+        bridge_api_config: Option<BridgeApiConfig>,
     ) -> anyhow::Result<Self> {
         let allowlist = if security.url_allowlist.is_empty() {
             vec!["*".to_string()]
@@ -188,8 +190,35 @@ impl Engine {
             url_validator: url_validator.clone(),
             ..HttpInvokerConfig::default()
         })?);
+
+        let token_registry = if let Some(ref bridge_config) = bridge_api_config {
+            if bridge_config.enabled {
+                let secret = std::env::var(&bridge_config.token_secret_env)
+                    .unwrap_or_else(|_| "insecure-default-secret".to_string());
+                
+                if secret == "insecure-default-secret" {
+                    tracing::warn!(
+                        "Using insecure default secret for bridge tokens. Set {} environment variable",
+                        bridge_config.token_secret_env
+                    );
+                }
+
+                Some(Arc::new(BridgeTokenRegistry::new(secret)))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let bridge_url = bridge_api_config
+            .as_ref()
+            .and_then(|c| c.public_url.clone());
+
         let webhook_dispatcher = Arc::new(WebhookDispatcher::new(WebhookConfig {
             url_validator,
+            bridge_url,
+            token_registry: token_registry.clone(),
             ..WebhookConfig::default()
         })?);
         let http_triggers = Arc::new(HttpTriggerRegistry::new());

@@ -26,7 +26,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 
 use super::{module::Module, registry::ModuleRegistration};
-use crate::config::{HttpFunctionConfig, HttpTriggerConfig, SecurityConfig};
+use crate::config::{BridgeApiConfig, HttpFunctionConfig, HttpTriggerConfig, SecurityConfig};
 use crate::{config::persistence::load_http_functions_from_kv, engine::Engine};
 
 // =============================================================================
@@ -57,6 +57,8 @@ pub struct EngineConfig {
     pub http_triggers: Vec<HttpTriggerConfig>,
     #[serde(default)]
     pub security: Option<SecurityConfig>,
+    #[serde(default)]
+    pub bridge_api: Option<BridgeApiConfig>,
 }
 
 impl EngineConfig {
@@ -69,6 +71,7 @@ impl EngineConfig {
             http_functions: Vec::new(),
             http_triggers: Vec::new(),
             security: None,
+            bridge_api: None,
         }
     }
 
@@ -125,6 +128,7 @@ impl EngineConfig {
                     http_functions: Vec::new(),
                     http_triggers: Vec::new(),
                     security: None,
+                    bridge_api: None,
                 })
             }
         }
@@ -363,6 +367,7 @@ impl EngineBuilder {
                 http_functions: Vec::new(),
                 http_triggers: Vec::new(),
                 security: None,
+                bridge_api: None,
             });
         }
 
@@ -385,7 +390,12 @@ impl EngineBuilder {
             .iter()
             .find(|entry| entry.class == "modules::kv_server::KvServer")
             .and_then(|entry| entry.config.clone());
-        self.engine = Arc::new(Engine::new_with_security(security, kv_store_config)?);
+        let bridge_api_config = config.bridge_api.clone();
+        self.engine = Arc::new(Engine::new_with_security(
+            security,
+            kv_store_config,
+            bridge_api_config,
+        )?);
 
         for http_function in config.http_functions.clone() {
             self.engine

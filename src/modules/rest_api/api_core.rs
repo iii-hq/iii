@@ -28,6 +28,7 @@ use super::{
     views::dynamic_handler,
 };
 use crate::{
+    bridge_api,
     engine::{Engine, EngineTrait},
     modules::module::Module,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
@@ -140,11 +141,14 @@ impl RestApiCoreModule {
             Arc::new(self.clone()),
             &self.routers_registry,
         );
+        drop(routers_registry_guard);
 
-        // Apply CORS layer to the router
+        if let Some(bridge_router) = self.build_bridge_router() {
+            new_router = new_router.merge(bridge_router);
+        }
+
         new_router = new_router.layer(cors_layer);
 
-        // Apply timeout layer based on configuration
         new_router = new_router.layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,
             std::time::Duration::from_millis(self.config.default_timeout),
@@ -154,12 +158,19 @@ impl RestApiCoreModule {
             self.config.concurrency_request_limit,
         ));
 
-        // Update the shared router
         let mut shared_router = self.shared_routers.write().await;
         *shared_router = new_router;
 
         tracing::debug!("Routes updated successfully");
         Ok(())
+    }
+
+    fn build_bridge_router(&self) -> Option<Router> {
+        if let Some(token_registry) = self.engine.webhook_dispatcher.token_registry() {
+            Some(bridge_api::router(self.engine.clone(), token_registry))
+        } else {
+            None
+        }
     }
 
     fn build_router_for_axum(path: &String) -> String {

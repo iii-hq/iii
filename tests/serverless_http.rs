@@ -56,7 +56,7 @@ async fn test_url_validator_allowlist() {
 
 #[tokio::test]
 async fn test_kv_persistence_load() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
     let config = KvHttpFunctionConfig {
         function_path: "geo.lookup".to_string(),
         url: "https://example.com/invoke".to_string(),
