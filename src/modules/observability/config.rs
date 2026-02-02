@@ -258,6 +258,10 @@ pub struct OtelModuleConfig {
     #[serde(default = "default_logs_sampling_ratio")]
     pub logs_sampling_ratio: f64,
 
+    /// Whether to output ingested OTEL logs to the console via tracing (default: true)
+    #[serde(default = "default_logs_console_output")]
+    pub logs_console_output: bool,
+
     /// Alert rules for metric thresholds
     #[serde(default)]
     pub alerts: Vec<AlertRule>,
@@ -265,6 +269,10 @@ pub struct OtelModuleConfig {
 
 fn default_logs_sampling_ratio() -> f64 {
     1.0 // Keep all logs by default
+}
+
+fn default_logs_console_output() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
