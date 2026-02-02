@@ -1,19 +1,26 @@
 modules:
   - class: modules::streams::StreamModule
     config:
-      port: 3112
+      port: ${STREAMS_PORT:3112}
       host: 127.0.0.1
       adapter:
         class: modules::streams::adapters::RedisAdapter
         config:
           redis_url: redis://localhost:6379
 
+  - class: modules::kv_server::KvServer
+    config:
+      store_method: file_based
+      file_path: ./data/kv_store
+      save_interval_ms: 5000
+
   - class: modules::state::StateModule
     config:
       adapter:
-        class: modules::state::adapters::RedisAdapter
+        class: modules::state::adapters::KvStore
         config:
-          redis_url: redis://localhost:6379
+          store_method: file_based
+          file_path: ./data/state_store.db
 
   - class: modules::api::RestApiModule
     config:
@@ -32,10 +39,54 @@ modules:
           - DELETE
           - OPTIONS
 
-  - class: modules::observability::LoggingModule
+  - class: modules::observability::OtelModule
     config:
-      level: info
-      format: default
+      enabled: ${OTEL_ENABLED:true}
+      service_name: ${OTEL_SERVICE_NAME:iii-engine}
+      service_version: ${SERVICE_VERSION:0.1.0}
+
+      service_namespace: ${SERVICE_NAMESPACE:production}
+      service_instance_id: ${SERVICE_INSTANCE_ID:auto-generated}
+
+      exporter: ${OTEL_EXPORTER_TYPE:both}
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+
+      sampling_ratio: 1.0
+
+      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
+
+      metrics_enabled: true
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:both}
+      prometheus_port: ${PROMETHEUS_PORT:9464}
+      metrics_retention_seconds: 3600
+      metrics_max_count: 10000
+
+      logs_enabled: ${OTEL_LOGS_ENABLED:true}
+      logs_exporter: ${OTEL_LOGS_EXPORTER:both}
+      logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}
+      logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
+
+      worker_metrics:
+        enabled: true
+        collection_interval_seconds: 5
+        history_size: 60
+
+  - class: modules::event::EventModule
+    config:
+      adapter:
+        class: modules::event::RedisAdapter
+        config:
+          redis_url: redis://localhost:6379
+
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::LocalAdapter
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::KvCronAdapter
 
   - class: modules::shell::ExecModule
     config:

@@ -14,6 +14,7 @@ use std::{
 
 use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -26,6 +27,18 @@ struct KeyStorage(String);
 enum DirtyOp {
     Upsert,
     Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KvLockEntry {
+    owner: String,
+    expires_at_ms: i64,
+}
+
+impl KvLockEntry {
+    fn is_expired(&self, now_ms: i64) -> bool {
+        self.expires_at_ms <= now_ms
+    }
 }
 
 fn encode_index(index: &str) -> String {
@@ -343,6 +356,85 @@ impl BuiltinKvStore {
         }
 
         removed
+    }
+
+    pub async fn try_acquire_lock(&self, index: &str, key: &str, owner: &str, ttl_ms: u64) -> bool {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let expires_at_ms = now_ms.saturating_add(ttl_ms as i64);
+        let lock_value = serde_json::to_value(KvLockEntry {
+            owner: owner.to_string(),
+            expires_at_ms,
+        })
+        .unwrap_or(Value::Null);
+
+        let acquired = {
+            let mut store = self.store.write().await;
+            let index_map = store.entry(index.to_string()).or_insert_with(HashMap::new);
+
+            let can_acquire = match index_map.get(key) {
+                None => true,
+                Some(value) => match serde_json::from_value::<KvLockEntry>(value.clone()) {
+                    Ok(entry) => entry.is_expired(now_ms),
+                    Err(_) => true,
+                },
+            };
+
+            if can_acquire {
+                index_map.insert(key.to_string(), lock_value);
+                true
+            } else {
+                false
+            }
+        };
+
+        if acquired && self.file_store_dir.is_some() {
+            self.dirty
+                .write()
+                .await
+                .insert(index.to_string(), DirtyOp::Upsert);
+        }
+
+        acquired
+    }
+
+    pub async fn release_lock(&self, index: &str, key: &str, owner: &str) -> bool {
+        let (released, dirty_op) = {
+            let mut store = self.store.write().await;
+            let index_map = store.get_mut(index);
+
+            if let Some(index_map) = index_map {
+                let should_remove = match index_map.get(key) {
+                    Some(value) => match serde_json::from_value::<KvLockEntry>(value.clone()) {
+                        Ok(entry) => entry.owner == owner,
+                        Err(_) => false,
+                    },
+                    None => false,
+                };
+
+                if should_remove {
+                    index_map.remove(key);
+                    let dirty = if index_map.is_empty() {
+                        Some(DirtyOp::Delete)
+                    } else {
+                        Some(DirtyOp::Upsert)
+                    };
+                    (true, dirty)
+                } else {
+                    (false, None)
+                }
+            } else {
+                (false, None)
+            }
+        };
+
+        if released
+            && self.file_store_dir.is_some()
+            && let Some(dirty_op) = dirty_op
+        {
+            self.dirty.write().await.insert(index.to_string(), dirty_op);
+        }
+
+        released
     }
 
     pub async fn update(&self, index: String, key: String, ops: Vec<UpdateOp>) -> UpdateResult {
@@ -949,5 +1041,65 @@ mod test {
             "Name should be one of A-J, got '{}'",
             name
         );
+    }
+
+    #[tokio::test]
+    async fn test_builtin_kv_lock_acquire_release() {
+        let kv_store = BuiltinKvStore::new(None);
+        let index = "cron_locks";
+        let key = "job:alpha";
+
+        let owner_a = "instance-a";
+        let owner_b = "instance-b";
+
+        let acquired_a = kv_store.try_acquire_lock(index, key, owner_a, 50_000).await;
+        assert!(acquired_a);
+
+        let acquired_b = kv_store.try_acquire_lock(index, key, owner_b, 50_000).await;
+        assert!(!acquired_b);
+
+        let released_wrong_owner = kv_store.release_lock(index, key, owner_b).await;
+        assert!(!released_wrong_owner);
+
+        let released_right_owner = kv_store.release_lock(index, key, owner_a).await;
+        assert!(released_right_owner);
+
+        let acquired_after_release = kv_store.try_acquire_lock(index, key, owner_b, 50_000).await;
+        assert!(acquired_after_release);
+    }
+
+    #[tokio::test]
+    async fn test_builtin_kv_lock_ttl_expiry() {
+        let kv_store = BuiltinKvStore::new(None);
+        let index = "cron_locks";
+        let key = "job:ttl";
+
+        let acquired = kv_store.try_acquire_lock(index, key, "owner-a", 10).await;
+        assert!(acquired);
+
+        let acquired_immediate = kv_store.try_acquire_lock(index, key, "owner-b", 10).await;
+        assert!(!acquired_immediate);
+
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+        let acquired_after_ttl = kv_store.try_acquire_lock(index, key, "owner-b", 10).await;
+        assert!(acquired_after_ttl);
+    }
+
+    #[tokio::test]
+    async fn test_builtin_kv_lock_concurrent_only_one_wins() {
+        let kv_store = Arc::new(BuiltinKvStore::new(None));
+        let index = "cron_locks";
+        let key = "job:race";
+
+        let kv_a = Arc::clone(&kv_store);
+        let kv_b = Arc::clone(&kv_store);
+
+        let (a, b) = tokio::join!(
+            kv_a.try_acquire_lock(index, key, "owner-a", 50_000),
+            kv_b.try_acquire_lock(index, key, "owner-b", 50_000)
+        );
+
+        assert!(a ^ b);
     }
 }

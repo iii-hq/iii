@@ -10,6 +10,8 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
@@ -18,9 +20,67 @@ use crate::{
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
+    telemetry::{
+        SpanExt, ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,
+        inject_baggage_from_context, inject_traceparent_from_context,
+    },
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
 };
+
+/// Magic prefix for OTLP binary frames (used by SDKs for trace spans)
+const OTLP_WS_PREFIX: &[u8] = b"OTLP";
+/// Magic prefix for metrics binary frames (used by SDKs for OTEL metrics)
+const MTRC_WS_PREFIX: &[u8] = b"MTRC";
+/// Magic prefix for logs binary frames (used by SDKs for OTEL logs)
+const LOGS_WS_PREFIX: &[u8] = b"LOGS";
+
+/// Handles binary frames with OTEL telemetry prefixes.
+/// Returns true if the frame was handled (matched a known prefix), false otherwise.
+async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
+    // Match on the prefix to determine which handler to use
+    let (prefix, name, result) = if bytes.starts_with(OTLP_WS_PREFIX) {
+        let payload = &bytes[OTLP_WS_PREFIX.len()..];
+        match std::str::from_utf8(payload) {
+            Ok(json_str) => (OTLP_WS_PREFIX, "OTLP", ingest_otlp_json(json_str).await),
+            Err(err) => {
+                tracing::warn!(peer = %peer, error = ?err, "OTLP payload is not valid UTF-8");
+                return true;
+            }
+        }
+    } else if bytes.starts_with(MTRC_WS_PREFIX) {
+        let payload = &bytes[MTRC_WS_PREFIX.len()..];
+        match std::str::from_utf8(payload) {
+            Ok(json_str) => (
+                MTRC_WS_PREFIX,
+                "Metrics",
+                ingest_otlp_metrics(json_str).await,
+            ),
+            Err(err) => {
+                tracing::warn!(peer = %peer, error = ?err, "Metrics payload is not valid UTF-8");
+                return true;
+            }
+        }
+    } else if bytes.starts_with(LOGS_WS_PREFIX) {
+        let payload = &bytes[LOGS_WS_PREFIX.len()..];
+        match std::str::from_utf8(payload) {
+            Ok(json_str) => (LOGS_WS_PREFIX, "Logs", ingest_otlp_logs(json_str).await),
+            Err(err) => {
+                tracing::warn!(peer = %peer, error = ?err, "Logs payload is not valid UTF-8");
+                return true;
+            }
+        }
+    } else {
+        return false;
+    };
+
+    // Log any ingestion errors
+    if let Err(err) = result {
+        tracing::warn!(peer = %peer, error = ?err, "{} ingestion error", name);
+    }
+    let _ = prefix; // Suppress unused warning
+    true
+}
 
 #[derive(Debug)]
 pub enum Outbound {
@@ -110,11 +170,15 @@ impl Engine {
         invocation_id: Option<Uuid>,
         function_path: &str,
         body: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         tracing::debug!(
             worker_id = %worker.id,
             ?invocation_id,
             function_path = function_path,
+            traceparent = ?traceparent,
+            baggage = ?baggage,
             "Remembering invocation for worker"
         );
 
@@ -130,6 +194,8 @@ impl Engine {
                     function_path.to_string(),
                     body,
                     function,
+                    traceparent,
+                    baggage,
                 )
                 .await
         } else {
@@ -220,14 +286,28 @@ impl Engine {
                 invocation_id,
                 function_path,
                 data,
+                traceparent,
+                baggage,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
                     invocation_id = ?invocation_id,
                     function_path = %function_path,
+                    traceparent = ?traceparent,
+                    baggage = ?baggage,
                     payload = ?data,
                     "InvokeFunction"
                 );
+
+                // Create a span that's linked to the incoming trace context (if any)
+                let span = tracing::info_span!(
+                    "handle_invocation",
+                    worker_id = %worker.id,
+                    function_path = %function_path,
+                    invocation_id = ?invocation_id,
+                    otel.kind = "server"
+                )
+                .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
                 let engine = self.clone();
                 let worker = worker.clone();
@@ -245,29 +325,67 @@ impl Engine {
                     }
                     data
                 };
+                let incoming_traceparent = traceparent.clone();
+                let incoming_baggage = baggage.clone();
 
-                tokio::spawn(async move {
-                    let result = engine
-                        .remember_invocation(&worker, invocation_id, &function_path, data)
-                        .await;
+                tokio::spawn(
+                    async move {
+                        let result = engine
+                            .remember_invocation(
+                                &worker,
+                                invocation_id,
+                                &function_path,
+                                data,
+                                incoming_traceparent.clone(),
+                                incoming_baggage.clone(),
+                            )
+                            .await;
 
-                    if let Some(invocation_id) = invocation_id {
-                        match result {
-                            Ok(result) => match result {
-                                Ok(result) => {
-                                    engine
-                                        .send_msg(
-                                            &worker,
-                                            Message::InvocationResult {
-                                                invocation_id,
-                                                function_path: function_path.clone(),
-                                                result: result.clone(),
-                                                error: None,
-                                            },
-                                        )
-                                        .await;
-                                }
+                        if let Some(invocation_id) = invocation_id {
+                            // Inject traceparent/baggage from the span's explicit context
+                            // (using tracing::Span::current().context() for reliable propagation)
+                            let current_ctx = tracing::Span::current().context();
+                            let response_traceparent =
+                                inject_traceparent_from_context(&current_ctx)
+                                    .or(incoming_traceparent);
+                            let response_baggage =
+                                inject_baggage_from_context(&current_ctx).or(incoming_baggage);
+
+                            match result {
+                                Ok(result) => match result {
+                                    Ok(result) => {
+                                        engine
+                                            .send_msg(
+                                                &worker,
+                                                Message::InvocationResult {
+                                                    invocation_id,
+                                                    function_path: function_path.clone(),
+                                                    result: result.clone(),
+                                                    error: None,
+                                                    traceparent: response_traceparent.clone(),
+                                                    baggage: response_baggage.clone(),
+                                                },
+                                            )
+                                            .await;
+                                    }
+                                    Err(err) => {
+                                        engine
+                                            .send_msg(
+                                                &worker,
+                                                Message::InvocationResult {
+                                                    invocation_id,
+                                                    function_path: function_path.clone(),
+                                                    result: None,
+                                                    error: Some(err.clone()),
+                                                    traceparent: response_traceparent.clone(),
+                                                    baggage: response_baggage.clone(),
+                                                },
+                                            )
+                                            .await;
+                                    }
+                                },
                                 Err(err) => {
+                                    tracing::error!(error = ?err, "Error remembering invocation");
                                     engine
                                         .send_msg(
                                             &worker,
@@ -275,34 +393,23 @@ impl Engine {
                                                 invocation_id,
                                                 function_path: function_path.clone(),
                                                 result: None,
-                                                error: Some(err.clone()),
+                                                error: Some(ErrorBody {
+                                                    code: "invocation_error".into(),
+                                                    message: err.to_string(),
+                                                }),
+                                                traceparent: response_traceparent,
+                                                baggage: response_baggage,
                                             },
                                         )
                                         .await;
                                 }
-                            },
-                            Err(err) => {
-                                tracing::error!(error = ?err, "Error remembering invocation");
-                                engine
-                                    .send_msg(
-                                        &worker,
-                                        Message::InvocationResult {
-                                            invocation_id,
-                                            function_path: function_path.clone(),
-                                            result: None,
-                                            error: Some(ErrorBody {
-                                                code: "invocation_error".into(),
-                                                message: err.to_string(),
-                                            }),
-                                        },
-                                    )
-                                    .await;
                             }
-                        }
 
-                        worker.remove_invocation(&invocation_id).await;
+                            worker.remove_invocation(&invocation_id).await;
+                        }
                     }
-                });
+                    .instrument(span),
+                );
 
                 Ok(())
             }
@@ -311,6 +418,8 @@ impl Engine {
                 function_path,
                 result,
                 error,
+                traceparent: _,
+                baggage: _,
             } => {
                 tracing::debug!(
                     function_path = %function_path,
@@ -397,6 +506,11 @@ impl Engine {
                 Ok(())
             }
             Message::Pong => Ok(()),
+            Message::WorkerRegistered { .. } => {
+                // This message is sent from engine to worker, not the other way around
+                // If we receive it here, just ignore it
+                Ok(())
+            }
         }
     }
 
@@ -448,6 +562,15 @@ impl Engine {
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
 
+        // Send worker ID back to the worker
+        self.send_msg(
+            &worker,
+            Message::WorkerRegistered {
+                worker_id: worker.id.to_string(),
+            },
+        )
+        .await;
+
         let workers_data = serde_json::json!({
             "event": "worker_connected",
             "worker_id": worker.id.to_string(),
@@ -466,10 +589,18 @@ impl Engine {
                         Err(err) => tracing::warn!(peer = %peer, error = ?err, "json decode error"),
                     }
                 }
-                Ok(WsMessage::Binary(bytes)) => match serde_json::from_slice::<Message>(&bytes) {
-                    Ok(msg) => self.router_msg(&worker, &msg).await?,
-                    Err(err) => tracing::warn!(peer = %peer, error = ?err, "binary decode error"),
-                },
+                Ok(WsMessage::Binary(bytes)) => {
+                    // Check for OTEL telemetry frames (OTLP, MTRC, LOGS prefixes)
+                    if !handle_telemetry_frame(&bytes, &peer).await {
+                        // Not a telemetry frame, try to decode as regular protocol message
+                        match serde_json::from_slice::<Message>(&bytes) {
+                            Ok(msg) => self.router_msg(&worker, &msg).await?,
+                            Err(err) => {
+                                tracing::warn!(peer = %peer, error = ?err, "binary decode error")
+                            }
+                        }
+                    }
+                }
                 Ok(WsMessage::Close(_)) => {
                     tracing::debug!(peer = %peer, "Worker disconnected");
                     break;
@@ -536,9 +667,23 @@ impl EngineTrait for Engine {
         let function_opt = self.functions.get(function_path);
 
         if let Some(function) = function_opt {
+            // Inject current trace context and baggage to link spans as parent-child
+            // Use the tracing span's context directly to ensure proper propagation in async code
+            let ctx = tracing::Span::current().context();
+            let traceparent = inject_traceparent_from_context(&ctx);
+            let baggage = inject_baggage_from_context(&ctx);
+
             let result = self
                 .invocations
-                .handle_invocation(None, None, function_path.to_string(), input, function)
+                .handle_invocation(
+                    None,
+                    None,
+                    function_path.to_string(),
+                    input,
+                    function,
+                    traceparent,
+                    baggage,
+                )
                 .await;
 
             match result {

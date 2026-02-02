@@ -4,6 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+#![cfg(feature = "rabbitmq")]
+
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use async_trait::async_trait;

@@ -5,5 +5,6 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod builtin;
-//pub mod rabbitmq;
+#[cfg(feature = "rabbitmq")]
+pub mod rabbitmq;
 pub mod redis_adapter;
