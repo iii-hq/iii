@@ -1935,10 +1935,10 @@ fn emit_log_to_console(log: &StoredLog) {
     } else {
         serde_json::to_string(&log.attributes).unwrap_or_default()
     };
-    
+
     let service = &log.service_name;
     let body = &log.body;
-    
+
     // OTEL severity numbers: TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24
     match log.severity_number {
         1..=4 => tracing::trace!(service = %service, data = %data, "{}", body),
