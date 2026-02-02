@@ -4,7 +4,11 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::{HashMap, HashSet}, pin::Pin, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    pin::Pin,
+    sync::Arc,
+};
 
 use colored::Colorize;
 use futures::Future;
@@ -82,28 +86,31 @@ impl TriggerRegistrator for StreamCoreModule {
                     if let Some(stream_name_str) = stream_name_value.as_str() {
                         let trigger_id = trigger.id.clone();
                         let stream_name = stream_name_str.to_string();
-                        
+
                         tracing::info!(
                             "Registering stream trigger for function path {} with stream_name {}",
                             trigger.function_path.purple(),
                             stream_name.purple()
                         );
-                        
+
                         let condition_function_path = trigger
                             .config
                             .get("condition_function_path")
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
-                        
+
                         let stream_trigger = StreamTrigger {
                             trigger,
                             stream_name: Some(stream_name.clone()),
                             condition_function_path,
                         };
-                        
+
                         // Store trigger by ID for unregistration
-                        let _ = stream_triggers.write().await.insert(trigger_id.clone(), stream_trigger);
-                        
+                        let _ = stream_triggers
+                            .write()
+                            .await
+                            .insert(trigger_id.clone(), stream_trigger);
+
                         // Organize triggers by stream_name for efficient lookup during invocation
                         let mut by_name = stream_triggers_by_name.write().await;
                         by_name
@@ -146,7 +153,7 @@ impl TriggerRegistrator for StreamCoreModule {
             }
             if trigger.trigger_type == STREAM_TRIGGER_TYPE {
                 let trigger_id = trigger.id.clone();
-                
+
                 // Remove from main triggers map
                 if let Some(removed_trigger) = stream_triggers.write().await.remove(&trigger_id) {
                     // Remove from stream_name index

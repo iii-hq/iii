@@ -38,12 +38,15 @@ use crate::{
                 StreamEventType, StreamGetGroupInput, StreamGetInput, StreamListGroupsInput,
                 StreamSetInput, StreamUpdateInput,
             },
-            trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger, StreamTriggers},
+            trigger::{
+                JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
+                StreamTriggers,
+            },
             utils::{headers_to_map, query_to_multi_map},
         },
     },
     protocol::ErrorBody,
-    trigger::{TriggerType},
+    trigger::TriggerType,
 };
 
 #[derive(Clone)]
@@ -249,7 +252,7 @@ impl StreamCoreModule {
             let by_name = self.triggers.stream_triggers_by_name.read().await;
             let triggers_map = self.triggers.stream_triggers.read().await;
             let mut triggers = Vec::new();
-            
+
             // Get triggers for this specific stream_name
             if let Some(ids_for_stream) = by_name.get(&event_stream_name) {
                 for trigger_id in ids_for_stream {
@@ -258,7 +261,7 @@ impl StreamCoreModule {
                     }
                 }
             }
-            
+
             triggers
         };
 
@@ -387,10 +390,7 @@ impl StreamCoreModule {
                 }
 
                 let input = input.unwrap();
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, input)
-                    .await;
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => {
@@ -505,10 +505,7 @@ impl StreamCoreModule {
                 }
 
                 let input = input.unwrap();
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, input)
-                    .await;
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -537,13 +534,9 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        
+
         // Get old value before delete
-        let old_value = match self
-            .adapter
-            .get(&stream_name, &group_id, &item_id)
-            .await
-        {
+        let old_value = match self.adapter.get(&stream_name, &group_id, &item_id).await {
             Ok(v) => v,
             Err(e) => {
                 return FunctionResult::Failure(ErrorBody {
@@ -579,10 +572,7 @@ impl StreamCoreModule {
                 }
 
                 let input = input.unwrap();
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, input)
-                    .await;
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(_) => {
@@ -687,10 +677,7 @@ impl StreamCoreModule {
                 }
 
                 let input = input.unwrap();
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, input)
-                    .await;
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -739,10 +726,7 @@ impl StreamCoreModule {
                 }
 
                 let input = input.unwrap();
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, input)
-                    .await;
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
