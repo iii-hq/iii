@@ -34,15 +34,16 @@ use crate::{
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
-                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamListGroupsInput, StreamSetInput, StreamUpdateInput,
+                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamEventData,
+                StreamEventType, StreamGetGroupInput, StreamGetInput, StreamListGroupsInput,
+                StreamSetInput, StreamUpdateInput,
             },
-            trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
+            trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger, StreamTriggers},
             utils::{headers_to_map, query_to_multi_map},
         },
     },
     protocol::ErrorBody,
-    trigger::TriggerType,
+    trigger::{TriggerType},
 };
 
 #[derive(Clone)]
@@ -169,6 +170,16 @@ impl Module for StreamCoreModule {
             })
             .await;
 
+        let _ = self
+            .engine
+            .register_trigger_type(TriggerType {
+                id: STREAM_TRIGGER_TYPE.to_string(),
+                _description: "Stream trigger".to_string(),
+                registrator: Box::new(self.clone()),
+                worker_id: None,
+            })
+            .await;
+
         tokio::spawn(async move {
             tracing::info!(
                 "Stream API listening on address: {}",
@@ -225,6 +236,120 @@ impl ConfigurableModule for StreamCoreModule {
     }
 }
 
+impl StreamCoreModule {
+    /// Invoke triggers for a given event type with condition checks
+    async fn invoke_triggers(&self, event_data: StreamEventData) {
+        let engine = self.engine.clone();
+        let event_type = event_data.event_type.clone();
+        let event_stream_name = event_data.stream_name.clone();
+
+        // Collect relevant trigger IDs and clone the triggers we need
+        // Only triggers with matching stream_name are registered, so we only need to look up by stream_name
+        let triggers_to_invoke: Vec<StreamTrigger> = {
+            let by_name = self.triggers.stream_triggers_by_name.read().await;
+            let triggers_map = self.triggers.stream_triggers.read().await;
+            let mut triggers = Vec::new();
+            
+            // Get triggers for this specific stream_name
+            if let Some(ids_for_stream) = by_name.get(&event_stream_name) {
+                for trigger_id in ids_for_stream {
+                    if let Some(trigger) = triggers_map.get(trigger_id) {
+                        triggers.push(trigger.clone());
+                    }
+                }
+            }
+            
+            triggers
+        };
+
+        if let Ok(event_data) = serde_json::to_value(event_data) {
+            tokio::spawn(async move {
+                tracing::debug!("Invoking triggers for event type {:?}", event_type);
+
+                for stream_trigger in triggers_to_invoke {
+                    let trigger = &stream_trigger.trigger;
+
+                    // Check condition if specified (using pre-parsed value)
+                    let condition_function_path = stream_trigger.condition_function_path.clone();
+
+                    if let Some(condition_function_path) = condition_function_path {
+                        tracing::debug!(
+                            condition_function_path = %condition_function_path,
+                            "Checking trigger conditions"
+                        );
+
+                        match engine
+                            .invoke_function(&condition_function_path, event_data.clone())
+                            .await
+                        {
+                            Ok(Some(result)) => {
+                                tracing::debug!(
+                                    condition_function_path = %condition_function_path,
+                                    result = ?result,
+                                    "Condition function result"
+                                );
+
+                                if let Some(passed) = result.as_bool()
+                                    && !passed
+                                {
+                                    tracing::debug!(
+                                        function_path = %trigger.function_path,
+                                        "Condition check failed, skipping handler"
+                                    );
+                                    continue;
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    condition_function_path = %condition_function_path,
+                                    "Condition function returned no result"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    condition_function_path = %condition_function_path,
+                                    error = ?err,
+                                    "Error invoking condition function"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Invoke the handler function
+                    tracing::debug!(
+                        function_path = %trigger.function_path,
+                        "Invoking trigger"
+                    );
+
+                    let call_result = engine
+                        .invoke_function(&trigger.function_path, event_data.clone())
+                        .await;
+
+                    match call_result {
+                        Ok(_) => {
+                            tracing::debug!(
+                                function_path = %trigger.function_path,
+                                "Trigger handler invoked successfully"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                function_path = %trigger.function_path,
+                                error = ?err,
+                                "Error invoking trigger handler"
+                            );
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::error!("Failed to convert event data to value");
+        }
+    }
+}
+
 #[service(name = "streams")]
 impl StreamCoreModule {
     #[function(name = "streams.set", description = "Set a value in a stream")]
@@ -236,6 +361,14 @@ impl StreamCoreModule {
         let data = input.data;
         let data_clone = data.clone();
 
+        // Get old value to determine if this is a create or update
+        let old_value = self
+            .adapter
+            .get(&stream_name, &group_id, &item_id)
+            .await
+            .ok()
+            .flatten();
+
         let function_path = format!("streams.set({})", stream_name);
         let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
@@ -244,9 +377,19 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.set function");
 
+                let input = serde_json::to_value(cloned_input);
+
+                if let Err(e) = input {
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert input to value: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    });
+                }
+
+                let input = input.unwrap();
                 let result = self
                     .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .invoke_function(&function_path, input)
                     .await;
 
                 match result {
@@ -275,6 +418,24 @@ impl StreamCoreModule {
                         {
                             tracing::error!(error = %e, "Failed to emit event");
                         }
+
+                        // Invoke triggers after successful set
+                        let is_create = old_value.is_none();
+                        let event_data = StreamEventData {
+                            message_type: "stream".to_string(),
+                            event_type: if is_create {
+                                StreamEventType::Created
+                            } else {
+                                StreamEventType::Updated
+                            },
+                            stream_name: stream_name.clone(),
+                            group_id: group_id.clone(),
+                            item_id: item_id.clone(),
+                            old_value,
+                            new_value: data_clone.clone(),
+                        };
+
+                        self.invoke_triggers(event_data).await;
                     }
                     Err(error) => {
                         return FunctionResult::Failure(error);
@@ -286,7 +447,25 @@ impl StreamCoreModule {
                     .set(&stream_name, &group_id, &item_id, data.clone())
                     .await
                 {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        // Invoke triggers after successful set
+                        let is_create = old_value.is_none();
+                        let event_data = StreamEventData {
+                            message_type: "stream".to_string(),
+                            event_type: if is_create {
+                                StreamEventType::Created
+                            } else {
+                                StreamEventType::Updated
+                            },
+                            stream_name: stream_name.clone(),
+                            group_id: group_id.clone(),
+                            item_id: item_id.clone(),
+                            old_value,
+                            new_value: data_clone.clone(),
+                        };
+
+                        self.invoke_triggers(event_data).await;
+                    }
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to set value in stream");
                         return FunctionResult::Failure(ErrorBody {
@@ -316,9 +495,19 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.get function");
 
+                let input = serde_json::to_value(cloned_input);
+
+                if let Err(e) = input {
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert input to value: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    });
+                }
+
+                let input = input.unwrap();
                 let result = self
                     .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .invoke_function(&function_path, input)
                     .await;
 
                 match result {
@@ -348,6 +537,22 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
+        
+        // Get old value before delete
+        let old_value = match self
+            .adapter
+            .get(&stream_name, &group_id, &item_id)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return FunctionResult::Failure(ErrorBody {
+                    message: format!("Failed to get value before delete: {}", e),
+                    code: "GET_ERROR".to_string(),
+                });
+            }
+        };
+
         let data = self
             .get(StreamGetInput {
                 stream_name: stream_name.clone(),
@@ -364,9 +569,19 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.delete function");
 
+                let input = serde_json::to_value(cloned_input);
+
+                if let Err(e) = input {
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert input to value: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    });
+                }
+
+                let input = input.unwrap();
                 let result = self
                     .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .invoke_function(&function_path, input)
                     .await;
 
                 match result {
@@ -385,6 +600,19 @@ impl StreamCoreModule {
                         {
                             tracing::error!(error = %e, "Failed to emit delete event");
                         }
+
+                        // Invoke triggers after successful delete
+                        let event_data = StreamEventData {
+                            message_type: "stream".to_string(),
+                            event_type: StreamEventType::Deleted,
+                            stream_name: stream_name.clone(),
+                            group_id: group_id.clone(),
+                            item_id: item_id.clone(),
+                            old_value: old_value.clone(),
+                            new_value: Value::Null,
+                        };
+
+                        self.invoke_triggers(event_data).await;
                     }
                     Err(error) => {
                         return FunctionResult::Failure(error);
@@ -392,12 +620,28 @@ impl StreamCoreModule {
                 }
             }
             None => {
-                if let Err(e) = adapter.delete(&stream_name, &group_id, &item_id).await {
-                    tracing::error!(error = %e, "Failed to delete value from stream");
-                    return FunctionResult::Failure(ErrorBody {
-                        message: format!("Failed to delete value: {}", e),
-                        code: "STREAM_DELETE_ERROR".to_string(),
-                    });
+                match adapter.delete(&stream_name, &group_id, &item_id).await {
+                    Ok(_) => {
+                        // Invoke triggers after successful delete
+                        let event_data = StreamEventData {
+                            message_type: "stream".to_string(),
+                            event_type: StreamEventType::Deleted,
+                            stream_name: stream_name.clone(),
+                            group_id: group_id.clone(),
+                            item_id: item_id.clone(),
+                            old_value: old_value.clone(),
+                            new_value: Value::Null,
+                        };
+
+                        self.invoke_triggers(event_data).await;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to delete value from stream");
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to delete value: {}", e),
+                            code: "STREAM_DELETE_ERROR".to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -433,9 +677,19 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.getGroup function");
 
+                let input = serde_json::to_value(cloned_input);
+
+                if let Err(e) = input {
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert input to value: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    });
+                }
+
+                let input = input.unwrap();
                 let result = self
                     .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .invoke_function(&function_path, input)
                     .await;
 
                 match result {
@@ -475,9 +729,19 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.listGroups function");
 
+                let input = serde_json::to_value(cloned_input);
+
+                if let Err(e) = input {
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Failed to convert input to value: {}", e),
+                        code: "JSON_ERROR".to_string(),
+                    });
+                }
+
+                let input = input.unwrap();
                 let result = self
                     .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
+                    .invoke_function(&function_path, input)
                     .await;
 
                 match result {
@@ -527,10 +791,10 @@ impl StreamCoreModule {
 
         if let Err(e) = adapter
             .emit_event(StreamWrapperMessage {
-                id: Some(item_id),
+                id: Some(item_id.clone()),
                 timestamp: Utc::now().timestamp_millis(),
-                stream_name,
-                group_id,
+                stream_name: stream_name.clone(),
+                group_id: group_id.clone(),
                 event: StreamOutboundMessage::Update {
                     data: result.new_value.clone(),
                 },
@@ -539,6 +803,26 @@ impl StreamCoreModule {
         {
             tracing::error!(error = %e, "Failed to emit update event");
         }
+
+        // Invoke triggers after successful update
+        let old_value = result.old_value.clone();
+        let new_value = result.new_value.clone();
+        let is_create = old_value.is_none();
+        let event_data = StreamEventData {
+            message_type: "stream".to_string(),
+            event_type: if is_create {
+                StreamEventType::Created
+            } else {
+                StreamEventType::Updated
+            },
+            stream_name: stream_name.clone(),
+            group_id: group_id.clone(),
+            item_id: item_id.clone(),
+            old_value,
+            new_value,
+        };
+
+        self.invoke_triggers(event_data).await;
 
         FunctionResult::Success(serde_json::to_value(result).ok())
     }
