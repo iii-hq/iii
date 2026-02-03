@@ -1,10 +1,3 @@
-/**
- * OpenTelemetry initialization for the III Node SDK.
- *
- * This module provides trace, metrics, and log export to the III Engine
- * via a shared WebSocket connection using OTLP JSON format.
- */
-
 import { Resource } from '@opentelemetry/resources'
 import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 import { randomUUID } from 'crypto'
@@ -24,9 +17,11 @@ import { SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
 import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from '@opentelemetry/core'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
-import { registerInstrumentations } from '@opentelemetry/instrumentation'
+import { registerInstrumentations, type Instrumentation } from '@opentelemetry/instrumentation'
 import { LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs'
 import { type Logger, SeverityNumber } from '@opentelemetry/api-logs'
+import { RuntimeNodeInstrumentation } from '@opentelemetry/instrumentation-runtime-node'
+import { HostMetrics } from '@opentelemetry/host-metrics'
 
 import {
   type OtelConfig,
@@ -38,11 +33,9 @@ import { SharedEngineConnection } from './connection'
 import { EngineSpanExporter, EngineMetricsExporter, EngineLogExporter } from './exporters'
 import { extractTraceparent } from './context'
 
-// Re-export everything from submodules
 export * from './types'
 export * from './context'
 
-// Module-level state
 let sharedConnection: SharedEngineConnection | null = null
 let tracerProvider: NodeTracerProvider | null = null
 let meterProvider: MeterProvider | null = null
@@ -51,11 +44,8 @@ let tracer: Tracer | null = null
 let meter: Meter | null = null
 let logger: Logger | null = null
 let serviceName: string = 'iii-node-bridge'
+let hostMetrics: HostMetrics | null = null
 
-/**
- * Initialize OpenTelemetry with the given configuration.
- * This should be called once at application startup.
- */
 export function initOtel(config: OtelConfig = {}): void {
   const enabled = config.enabled ?? (process.env.OTEL_ENABLED === 'true' || process.env.OTEL_ENABLED === '1')
 
@@ -64,19 +54,16 @@ export function initOtel(config: OtelConfig = {}): void {
     return
   }
 
-  // Register any provided instrumentations
   if (config.instrumentations?.length) {
     registerInstrumentations({ instrumentations: config.instrumentations })
   }
 
-  // Configure service identity
   serviceName = config.serviceName ?? process.env.OTEL_SERVICE_NAME ?? 'iii-node-bridge'
   const serviceVersion = config.serviceVersion ?? process.env.SERVICE_VERSION ?? 'unknown'
   const serviceNamespace = config.serviceNamespace ?? process.env.SERVICE_NAMESPACE
   const serviceInstanceId = config.serviceInstanceId ?? process.env.SERVICE_INSTANCE_ID ?? randomUUID()
   const engineWsUrl = config.engineWsUrl ?? process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
 
-  // Build resource attributes
   const resourceAttributes: Record<string, string> = {
     [ATTR_SERVICE_NAME]: serviceName,
     [ATTR_SERVICE_VERSION]: serviceVersion,
@@ -87,17 +74,14 @@ export function initOtel(config: OtelConfig = {}): void {
   }
   const resource = new Resource(resourceAttributes)
 
-  // Create shared WebSocket connection
   sharedConnection = new SharedEngineConnection(engineWsUrl, config.reconnectionConfig)
 
-  // Initialize tracer
   const spanExporter = new EngineSpanExporter(sharedConnection)
   tracerProvider = new NodeTracerProvider({
     resource,
     spanProcessors: [new SimpleSpanProcessor(spanExporter)],
   })
 
-  // Register W3C Trace Context and Baggage propagators
   propagation.setGlobalPropagator(
     new CompositePropagator({
       propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
@@ -109,7 +93,6 @@ export function initOtel(config: OtelConfig = {}): void {
 
   console.log(`[OTel] Traces initialized: engine=${engineWsUrl}, service=${serviceName}`)
 
-  // Initialize metrics if enabled
   const metricsEnabled = config.metricsEnabled ?? (process.env.OTEL_METRICS_ENABLED === 'true' || process.env.OTEL_METRICS_ENABLED === '1')
 
   if (metricsEnabled) {
@@ -129,10 +112,15 @@ export function initOtel(config: OtelConfig = {}): void {
     metrics.setGlobalMeterProvider(meterProvider)
     meter = meterProvider.getMeter(serviceName)
 
-    console.log(`[OTel] Metrics initialized: interval=${exportIntervalMs}ms`)
+    const runtimeInstrumentation = new RuntimeNodeInstrumentation()
+    registerInstrumentations({ instrumentations: [runtimeInstrumentation as unknown as Instrumentation] })
+
+    hostMetrics = new HostMetrics({ meterProvider })
+    hostMetrics.start()
+
+    console.log(`[OTel] Metrics initialized: interval=${exportIntervalMs}ms (with runtime & host metrics)`)
   }
 
-  // Initialize logs (always enabled when OTEL is enabled)
   const logExporter = new EngineLogExporter(sharedConnection)
   loggerProvider = new LoggerProvider({ resource })
   loggerProvider.addLogRecordProcessor(new SimpleLogRecordProcessor(logExporter))
@@ -141,10 +129,11 @@ export function initOtel(config: OtelConfig = {}): void {
   console.log('[OTel] Logs initialized')
 }
 
-/**
- * Shutdown OpenTelemetry, flushing any pending data.
- */
 export async function shutdownOtel(): Promise<void> {
+  if (hostMetrics) {
+    hostMetrics = null
+  }
+
   if (tracerProvider) {
     await tracerProvider.shutdown()
     tracerProvider = null
@@ -170,38 +159,24 @@ export async function shutdownOtel(): Promise<void> {
   logger = null
 }
 
-/**
- * Get the OpenTelemetry tracer instance.
- */
 export function getTracer(): Tracer | null {
   return tracer
 }
 
-/**
- * Get the OpenTelemetry meter instance.
- */
 export function getMeter(): Meter | null {
   return meter
 }
 
-/**
- * Get the OpenTelemetry logger instance.
- */
 export function getLogger(): Logger | null {
   return logger
 }
 
-/**
- * Start a new span with the given name and run the callback within it.
- */
 export async function withSpan<T>(
   name: string,
   options: { kind?: SpanKind; traceparent?: string },
   fn: (span: Span) => Promise<T>
 ): Promise<T> {
   if (!tracer) {
-    // Execute without span context when tracer is not initialized
-    // Provide a no-op span to avoid runtime errors if fn calls span methods
     const noopSpan: Span = {
       spanContext: () => ({ traceId: '', spanId: '', traceFlags: 0 }),
       setAttribute: () => noopSpan,
@@ -240,5 +215,4 @@ export async function withSpan<T>(
   )
 }
 
-// Re-export OTEL types for convenience
 export { SpanKind, SpanStatusCode, SeverityNumber, type Span, type Context, type Tracer, type Meter, type Logger }
