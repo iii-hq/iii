@@ -169,16 +169,25 @@ export class Bridge implements BridgeClient {
     })
   }
 
+  private metricsStarting = false
+
   /**
    * Start automatic metrics reporting using the built-in metrics collector.
    * @param intervalMs - Reporting interval in milliseconds (default: 5000)
    */
   startMetricsReporting(intervalMs: number = 5000): void {
-    if (this.metricsInterval) {
+    if (this.metricsInterval || this.metricsStarting) {
       return
     }
 
+    this.metricsStarting = true
+
     import('./metrics').then(({ collectMetrics }) => {
+      // Check if stopMetricsReporting was called before import resolved
+      if (!this.metricsStarting) {
+        return
+      }
+      this.metricsStarting = false
       this.metricsInterval = setInterval(() => {
         const metrics = collectMetrics()
         this.reportMetrics(metrics)
@@ -190,6 +199,7 @@ export class Bridge implements BridgeClient {
    * Stop automatic metrics reporting.
    */
   stopMetricsReporting(): void {
+    this.metricsStarting = false
     if (this.metricsInterval) {
       clearInterval(this.metricsInterval)
       this.metricsInterval = undefined
