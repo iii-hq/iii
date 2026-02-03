@@ -114,7 +114,7 @@ async fn test_http_invocation_method_configuration() {
     let http_method = InvocationMethod::Http {
         url: "https://api.example.com/function".to_string(),
         method: HttpMethod::Post,
-        timeout_ms: 10000,
+        timeout_ms: Some(10000),
         headers: vec![
             ("Authorization".to_string(), "Bearer token".to_string()),
             ("Content-Type".to_string(), "application/json".to_string()),
@@ -136,7 +136,7 @@ async fn test_http_invocation_method_configuration() {
     {
         assert_eq!(url, "https://api.example.com/function");
         assert!(matches!(method, HttpMethod::Post));
-        assert_eq!(timeout_ms, 10000);
+        assert_eq!(timeout_ms, Some(10000));
         assert_eq!(headers.len(), 2);
         assert_eq!(headers.get("Authorization"), Some(&"Bearer token".to_string()));
     } else {
@@ -157,7 +157,7 @@ async fn test_function_with_different_registration_sources() {
         invocation_method: InvocationMethod::Http {
             url: "https://example.com".to_string(),
             method: HttpMethod::Post,
-            timeout_ms: 5000,
+            timeout_ms: Some(5000),
             headers: Default::default(),
             auth: None,
         },
@@ -175,7 +175,7 @@ async fn test_function_with_different_registration_sources() {
         invocation_method: InvocationMethod::Http {
             url: "https://example.com".to_string(),
             method: HttpMethod::Post,
-            timeout_ms: 5000,
+            timeout_ms: Some(5000),
             headers: Default::default(),
             auth: None,
         },

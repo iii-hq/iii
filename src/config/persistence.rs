@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::{
     engine::Engine,
-    function::{Function, RegistrationSource},
-    invocation::method::{HttpAuth, HttpMethod, InvocationMethod},
+    function::RegistrationSource,
+    invocation::method::{HttpAuth, HttpMethod},
     protocol::ErrorBody,
 };
 
@@ -16,7 +16,8 @@ pub struct HttpFunctionConfig {
     pub function_path: String,
     pub url: String,
     pub method: HttpMethod,
-    pub timeout_ms: u64,
+    /// Request timeout in milliseconds. If not specified, the invoker's default timeout will be used.
+    pub timeout_ms: Option<u64>,
     pub headers: HashMap<String, String>,
     pub auth: Option<HttpAuthRef>,
     pub description: Option<String>,
@@ -24,6 +25,9 @@ pub struct HttpFunctionConfig {
     pub response_format: Option<Value>,
     pub metadata: Option<Value>,
     pub registered_at: DateTime<Utc>,
+    /// Last update timestamp. None for functions that have never been updated.
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,35 +66,22 @@ pub async fn load_http_functions_from_kv(engine: &Engine) -> Result<(), ErrorBod
             continue;
         }
 
-        let auth = config.auth.as_ref().map(resolve_auth_ref).transpose()?;
-
-        let invocation_method = InvocationMethod::Http {
-            url: config.url,
-            method: config.method,
-            timeout_ms: config.timeout_ms,
-            headers: config.headers,
-            auth,
-        };
-
-        let function = Function {
-            function_path: config.function_path.clone(),
-            description: config.description,
-            request_format: config.request_format,
-            response_format: config.response_format,
-            metadata: config.metadata,
-            invocation_method,
-            registered_at: config.registered_at,
-            registration_source: RegistrationSource::AdminApi,
-            handler: None,
-        };
-
         engine
-            .service_registry
-            .register_service_from_func_path(&config.function_path)
-            .await;
-        engine
-            .functions
-            .register_function(config.function_path.clone(), function);
+            .register_http_function_from_persistence(
+                config.function_path,
+                config.url,
+                config.method,
+                config.timeout_ms,
+                config.headers,
+                config.auth,
+                config.description,
+                config.request_format,
+                config.response_format,
+                config.metadata,
+                config.registered_at,
+                RegistrationSource::AdminApi,
+            )
+            .await?;
     }
 
     Ok(())

@@ -62,7 +62,7 @@ export class ServerlessWorker {
           }
         }
 
-        const triggerType = request.headers.get('X-III-Trigger-Type')
+        const triggerType = request.headers.get('x-iii-Trigger-Type')
         if (triggerType) {
           return this.handleTrigger(request)
         }
@@ -72,10 +72,10 @@ export class ServerlessWorker {
   }
 
   private async handleInvocation(request: any): Promise<any> {
-    const functionPath = request.headers.get('X-III-Function-Path') ?? ''
-    const invocationId = request.headers.get('X-III-Invocation-ID') ?? undefined
-    const traceId = request.headers.get('X-III-Trace-ID') ?? undefined
-    const timestamp = parseInt(request.headers.get('X-III-Timestamp') ?? '', 10)
+    const functionPath = request.headers.get('x-iii-Function-Path') ?? ''
+    const invocationId = request.headers.get('x-iii-Invocation-ID') ?? undefined
+    const traceId = request.headers.get('x-iii-Trace-ID') ?? undefined
+    const timestamp = parseInt(request.headers.get('x-iii-Timestamp') ?? '', 10)
 
     const handler = this.functions.get(functionPath)
     if (!handler) {
@@ -103,10 +103,10 @@ export class ServerlessWorker {
   }
 
   private async handleTrigger(request: any): Promise<any> {
-    const triggerId = request.headers.get('X-III-Trigger-ID') ?? ''
-    const triggerType = request.headers.get('X-III-Trigger-Type') ?? undefined
-    const functionPath = request.headers.get('X-III-Function-Path') ?? undefined
-    const timestamp = parseInt(request.headers.get('X-III-Timestamp') ?? '', 10)
+    const triggerId = request.headers.get('x-iii-Trigger-ID') ?? ''
+    const triggerType = request.headers.get('x-iii-Trigger-Type') ?? undefined
+    const functionPath = request.headers.get('x-iii-Function-Path') ?? undefined
+    const timestamp = parseInt(request.headers.get('x-iii-Timestamp') ?? '', 10)
 
     const handler = this.triggers.get(triggerId)
     if (!handler) {
@@ -144,12 +144,12 @@ export class EngineClient {
   }
 
   static fromRequest(request: any): EngineClient {
-    const bridgeUrl = request.headers?.get?.('X-III-Bridge-URL') ?? request.headers?.['x-iii-bridge-url']
+    const bridgeUrl = request.headers?.get?.('x-iii-Bridge-URL') ?? request.headers?.['x-iii-bridge-url']
     const bridgeToken =
-      request.headers?.get?.('X-III-Bridge-Token') ?? request.headers?.['x-iii-bridge-token']
+      request.headers?.get?.('x-iii-Bridge-Token') ?? request.headers?.['x-iii-bridge-token']
 
     if (!bridgeUrl || !bridgeToken) {
-      throw new Error('Missing bridge headers (X-III-Bridge-URL or X-III-Bridge-Token)')
+      throw new Error('Missing bridge headers (x-iii-Bridge-URL or x-iii-Bridge-Token)')
     }
 
     return new EngineClient({
@@ -163,7 +163,7 @@ export class EngineClient {
     const bridgeToken = headers['x-iii-bridge-token']
 
     if (!bridgeUrl || !bridgeToken) {
-      throw new Error('Missing bridge headers (X-III-Bridge-URL or X-III-Bridge-Token)')
+      throw new Error('Missing bridge headers (x-iii-Bridge-URL or x-iii-Bridge-Token)')
     }
 
     return new EngineClient({
@@ -251,8 +251,8 @@ export async function verifySignature(
   request: any,
   options: { secret: string; maxAge: number },
 ): Promise<boolean> {
-  const signature = request.headers.get('X-III-Signature') ?? ''
-  const timestampHeader = request.headers.get('X-III-Timestamp') ?? ''
+  const signature = request.headers.get('x-iii-Signature') ?? ''
+  const timestampHeader = request.headers.get('x-iii-Timestamp') ?? ''
   const timestamp = parseInt(timestampHeader, 10)
   if (!signature || !Number.isFinite(timestamp)) {
     return false
@@ -269,13 +269,13 @@ export async function verifySignature(
 }
 
 export async function parseInvocation(request: any): Promise<{ functionPath: string; data: any }> {
-  const functionPath = request.headers.get('X-III-Function-Path') ?? ''
+  const functionPath = request.headers.get('x-iii-Function-Path') ?? ''
   const data = await safeJson(request)
   return { functionPath, data }
 }
 
 export async function parseTrigger(request: any): Promise<{ triggerId: string; payload: any }> {
-  const triggerId = request.headers.get('X-III-Trigger-ID') ?? ''
+  const triggerId = request.headers.get('x-iii-Trigger-ID') ?? ''
   const payload = await safeJson(request)
   return { triggerId, payload }
 }

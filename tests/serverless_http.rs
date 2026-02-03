@@ -61,7 +61,7 @@ async fn test_kv_persistence_load() {
         function_path: "geo.lookup".to_string(),
         url: "https://example.com/invoke".to_string(),
         method: HttpMethod::Post,
-        timeout_ms: 1000,
+        timeout_ms: Some(1000),
         headers: HashMap::new(),
         auth: None,
         description: None,
@@ -69,6 +69,7 @@ async fn test_kv_persistence_load() {
         response_format: None,
         metadata: None,
         registered_at: Utc::now(),
+        updated_at: None,
     };
     store_http_function_in_kv(&engine, &config).await.unwrap();
     load_http_functions_from_kv(&engine).await.unwrap();

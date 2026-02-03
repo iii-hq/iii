@@ -66,6 +66,7 @@ ring = "0.17.14"
 hex = "0.4.3"
 glob = "0.3.3"
 base64 = "0.22.1"
+subtle = "2.6"
 
 [dev-dependencies]
 mockall = "0.13"

@@ -200,7 +200,7 @@ async fn test_invocation_method_type() {
     let http_method = InvocationMethod::Http {
         url: "https://example.com".to_string(),
         method: HttpMethod::Post,
-        timeout_ms: 5000,
+        timeout_ms: Some(5000),
         headers: std::collections::HashMap::new(),
         auth: None,
     };

@@ -4,7 +4,8 @@ pub mod persistence;
 
 use serde::Deserialize;
 
-pub use http_functions::{HttpAuthConfig, HttpFunctionConfig, resolve_http_auth};
+pub use http_functions::HttpFunctionConfig;
+pub use persistence::{HttpAuthRef, resolve_auth_ref};
 pub use http_triggers::HttpTriggerConfig;
 
 #[derive(Debug, Clone, Deserialize)]

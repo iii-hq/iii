@@ -20,6 +20,14 @@ pub struct HttpInvokerConfig {
     pub url_validator: UrlValidatorConfig,
     pub signature_max_age: u64,
     pub default_timeout_ms: u64,
+    /// Maximum idle connections per host in the connection pool.
+    /// Default: 50 connections per host.
+    pub pool_max_idle_per_host: usize,
+    /// Client-level timeout for all requests.
+    /// This is the absolute maximum time for any request.
+    /// Individual requests may have shorter timeouts via timeout_ms.
+    /// Default: 60 seconds.
+    pub client_timeout_secs: u64,
 }
 
 impl Default for HttpInvokerConfig {
@@ -28,6 +36,8 @@ impl Default for HttpInvokerConfig {
             url_validator: UrlValidatorConfig::default(),
             signature_max_age: 300,
             default_timeout_ms: 30000,
+            pool_max_idle_per_host: 50,
+            client_timeout_secs: 60,
         }
     }
 }
@@ -42,8 +52,8 @@ pub struct HttpInvoker {
 impl HttpInvoker {
     pub fn new(config: HttpInvokerConfig) -> Result<Self, SecurityError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(10)
+            .timeout(Duration::from_secs(config.client_timeout_secs))
+            .pool_max_idle_per_host(config.pool_max_idle_per_host)
             .build()
             .map_err(|_| SecurityError::InvalidUrl)?;
         let url_validator = UrlValidator::new(config.url_validator)?;
@@ -106,36 +116,32 @@ impl HttpInvoker {
             message: err.to_string(),
         })?;
 
-        let timeout = if *timeout_ms == 0 {
-            self.default_timeout_ms
-        } else {
-            *timeout_ms
-        };
+        let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
 
         let mut request = self
             .client
             .request(http_method_to_reqwest(method), url)
             .timeout(Duration::from_millis(timeout))
             .header("Content-Type", "application/json")
-            .header("X-III-Function-Path", &function.function_path)
-            .header("X-III-Invocation-ID", invocation_id.to_string())
-            .header("X-III-Timestamp", timestamp.to_string());
+            .header("x-iii-Function-Path", &function.function_path)
+            .header("x-iii-Invocation-ID", invocation_id.to_string())
+            .header("x-iii-Timestamp", timestamp.to_string());
 
         for (key, value) in headers {
             request = request.header(key, value);
         }
 
         if let Some(caller) = caller_function {
-            request = request.header("X-III-Caller-Function", caller);
+            request = request.header("x-iii-Caller-Function", caller);
         }
         if let Some(trace) = trace_id {
-            request = request.header("X-III-Trace-ID", trace);
+            request = request.header("x-iii-Trace-ID", trace);
         }
 
         request = match auth {
             Some(HttpAuth::Hmac { secret }) => {
                 let signature = sign_request(&body, secret, timestamp);
-                request.header("X-III-Signature", signature)
+                request.header("x-iii-Signature", signature)
             }
             Some(HttpAuth::Bearer { token }) => request.bearer_auth(token),
             Some(HttpAuth::ApiKey { header, value }) => request.header(header, value),

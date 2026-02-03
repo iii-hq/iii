@@ -7,7 +7,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
@@ -18,13 +18,13 @@ use uuid::Uuid;
 use crate::{
     bridge_api::token::BridgeTokenRegistry,
     builtins::kv::BuiltinKvStore,
-    config::{BridgeApiConfig, HttpFunctionConfig, HttpTriggerConfig, SecurityConfig, resolve_http_auth},
+    config::{BridgeApiConfig, HttpFunctionConfig, HttpTriggerConfig, SecurityConfig, resolve_auth_ref},
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry, RegistrationSource},
     invocation::{
         InvocationHandler, InvokerRegistry,
         http_invoker::{HttpInvoker, HttpInvokerConfig},
         invoker::Invoker,
-        method::InvocationMethod,
+        method::{HttpMethod, InvocationMethod},
         url_validator::UrlValidatorConfig,
     },
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
@@ -259,9 +259,9 @@ impl Engine {
             })?;
 
         let auth = match config.auth.as_ref() {
-            Some(auth) => Some(resolve_http_auth(auth).map_err(|err| ErrorBody {
+            Some(auth) => Some(resolve_auth_ref(auth).map_err(|err| ErrorBody {
                 code: "auth_resolution_failed".into(),
-                message: err.to_string(),
+                message: err.message,
             })?),
             None => None,
         };
@@ -294,6 +294,57 @@ impl Engine {
         Ok(())
     }
 
+    /// Unified method for registering HTTP functions from persistence (KV store or Admin API).
+    /// This eliminates code duplication between Admin API and persistence loading.
+    pub async fn register_http_function_from_persistence(
+        &self,
+        function_path: String,
+        url: String,
+        method: HttpMethod,
+        timeout_ms: Option<u64>,
+        headers: std::collections::HashMap<String, String>,
+        auth_ref: Option<crate::config::persistence::HttpAuthRef>,
+        description: Option<String>,
+        request_format: Option<Value>,
+        response_format: Option<Value>,
+        metadata: Option<Value>,
+        registered_at: DateTime<Utc>,
+        registration_source: RegistrationSource,
+    ) -> Result<(), ErrorBody> {
+        let auth = auth_ref
+            .as_ref()
+            .map(resolve_auth_ref)
+            .transpose()?;
+
+        let invocation_method = InvocationMethod::Http {
+            url,
+            method,
+            timeout_ms,
+            headers,
+            auth,
+        };
+
+        let function = Function {
+            function_path: function_path.clone(),
+            description,
+            request_format,
+            response_format,
+            metadata,
+            invocation_method,
+            registered_at,
+            registration_source,
+            handler: None,
+        };
+
+        self.service_registry
+            .register_service_from_func_path(&function_path)
+            .await;
+        self.functions
+            .register_function(function_path, function);
+
+        Ok(())
+    }
+
     pub async fn register_http_trigger_from_config(
         &self,
         config: HttpTriggerConfig,
@@ -308,9 +359,9 @@ impl Engine {
             })?;
 
         let auth = match config.auth.as_ref() {
-            Some(auth) => Some(resolve_http_auth(auth).map_err(|err| ErrorBody {
+            Some(auth) => Some(resolve_auth_ref(auth).map_err(|err| ErrorBody {
                 code: "auth_resolution_failed".into(),
-                message: err.to_string(),
+                message: err.message,
             })?),
             None => None,
         };

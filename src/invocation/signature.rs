@@ -1,7 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use ring::{constant_time, hmac};
+use ring::hmac;
+use subtle::ConstantTimeEq;
 
 #[derive(Debug)]
 pub enum SignatureError {
@@ -47,6 +48,9 @@ pub fn verify_signature(
     }
 
     let expected = sign_request(body, secret, timestamp);
-    constant_time::verify_slices_are_equal(signature.as_bytes(), expected.as_bytes())
-        .map_err(|_| SignatureError::InvalidSignature)
+    if signature.as_bytes().ct_eq(expected.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err(SignatureError::InvalidSignature)
+    }
 }

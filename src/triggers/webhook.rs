@@ -21,6 +21,13 @@ pub struct WebhookConfig {
     pub default_timeout_ms: u64,
     pub bridge_url: Option<String>,
     pub token_registry: Option<Arc<BridgeTokenRegistry>>,
+    /// Maximum idle connections per host in the connection pool.
+    /// Default: 50 connections per host.
+    pub pool_max_idle_per_host: usize,
+    /// Client-level timeout for all requests.
+    /// This is the absolute maximum time for any request.
+    /// Default: 60 seconds.
+    pub client_timeout_secs: u64,
 }
 
 impl Default for WebhookConfig {
@@ -31,6 +38,8 @@ impl Default for WebhookConfig {
             default_timeout_ms: 30000,
             bridge_url: None,
             token_registry: None,
+            pool_max_idle_per_host: 50,
+            client_timeout_secs: 60,
         }
     }
 }
@@ -47,8 +56,8 @@ pub struct WebhookDispatcher {
 impl WebhookDispatcher {
     pub fn new(config: WebhookConfig) -> Result<Self, SecurityError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(60))
-            .pool_max_idle_per_host(10)
+            .timeout(Duration::from_secs(config.client_timeout_secs))
+            .pool_max_idle_per_host(config.pool_max_idle_per_host)
             .build()
             .map_err(|_| SecurityError::InvalidUrl)?;
         let url_validator = UrlValidator::new(config.url_validator)?;
@@ -100,23 +109,23 @@ impl WebhookDispatcher {
             .post(&trigger.url)
             .timeout(Duration::from_millis(self.default_timeout_ms))
             .header("Content-Type", "application/json")
-            .header("X-III-Trigger-Type", &trigger.trigger_type)
-            .header("X-III-Trigger-ID", &trigger.trigger_id)
-            .header("X-III-Function-Path", &trigger.function_path)
-            .header("X-III-Timestamp", timestamp.to_string())
-            .header("X-III-Invocation-ID", &invocation_id)
-            .header("X-III-Trace-ID", &trace_id);
+            .header("x-iii-Trigger-Type", &trigger.trigger_type)
+            .header("x-iii-Trigger-ID", &trigger.trigger_id)
+            .header("x-iii-Function-Path", &trigger.function_path)
+            .header("x-iii-Timestamp", timestamp.to_string())
+            .header("x-iii-Invocation-ID", &invocation_id)
+            .header("x-iii-Trace-ID", &trace_id);
 
         if let (Some(token), Some(url)) = (&bridge_token, &self.bridge_url) {
             request = request
-                .header("X-III-Bridge-URL", url)
-                .header("X-III-Bridge-Token", token);
+                .header("x-iii-Bridge-URL", url)
+                .header("x-iii-Bridge-Token", token);
         }
 
         request = match trigger.auth.as_ref() {
             Some(HttpAuth::Hmac { secret }) => {
                 let signature = sign_request(&body, secret, timestamp);
-                request.header("X-III-Signature", signature)
+                request.header("x-iii-Signature", signature)
             }
             Some(HttpAuth::Bearer { token }) => request.bearer_auth(token),
             Some(HttpAuth::ApiKey { header, value }) => request.header(header, value),

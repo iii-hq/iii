@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::HttpAuthConfig;
+use crate::config::persistence::HttpAuthRef;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct HttpTriggerConfig {
@@ -10,7 +10,7 @@ pub struct HttpTriggerConfig {
     pub trigger_id: String,
     pub url: String,
     #[serde(default)]
-    pub auth: Option<HttpAuthConfig>,
+    pub auth: Option<HttpAuthRef>,
     #[serde(default)]
     pub config: Value,
 }

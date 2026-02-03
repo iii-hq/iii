@@ -12,7 +12,8 @@ pub enum InvocationMethod {
     Http {
         url: String,
         method: HttpMethod,
-        timeout_ms: u64,
+        /// Request timeout in milliseconds. None means use the default timeout.
+        timeout_ms: Option<u64>,
         headers: HashMap<String, String>,
         auth: Option<HttpAuth>,
     },

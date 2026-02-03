@@ -17,8 +17,8 @@ use crate::{
         store_http_function_in_kv,
     },
     engine::Engine,
-    function::{Function, RegistrationSource},
-    invocation::method::{HttpAuth, HttpMethod, InvocationMethod},
+    function::RegistrationSource,
+    invocation::method::{HttpMethod, InvocationMethod},
 };
 
 use super::middleware::auth_middleware;
@@ -47,11 +47,14 @@ pub struct HttpInvocationConfig {
     pub url: String,
     #[serde(default = "default_method")]
     pub method: HttpMethod,
-    #[serde(default = "default_timeout_ms")]
-    pub timeout_ms: u64,
+    /// Request timeout in milliseconds. If not specified, the invoker's default timeout will be used.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    pub auth: Option<HttpAuth>,
+    /// Authentication configuration using environment variable keys.
+    /// Example: {"type": "hmac", "secret_key": "MY_FUNCTION_HMAC_SECRET"}
+    pub auth: Option<HttpAuthRef>,
 }
 
 pub fn router(engine: Arc<Engine>) -> Router {
@@ -69,6 +72,25 @@ pub async fn register_function(
     Extension(engine): Extension<Arc<Engine>>,
     Json(payload): Json<RegisterFunctionRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    // Validate function path
+    validate_function_path(&payload.function_path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    // Check for duplicate registration
+    if engine.functions.get(&payload.function_path).is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "Function '{}' already exists. Use PUT /admin/functions/{} to update.",
+                payload.function_path, payload.function_path
+            ),
+        ));
+    }
+
+    // Validate input sizes
+    validate_input_sizes(&payload)?;
+
+    // Validate URL
     engine
         .http_invoker
         .url_validator()
@@ -76,57 +98,49 @@ pub async fn register_function(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let auth_ref = payload
-        .invocation
-        .auth
-        .as_ref()
-        .map(|auth| auth_ref_from_auth(&payload.function_path, auth));
+    // Validate that environment variables exist for auth configuration
+    if let Some(ref auth_ref) = payload.invocation.auth {
+        validate_auth_env_vars(auth_ref)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
 
+    let registered_at = Utc::now();
     let kv_config = KvHttpFunctionConfig {
         function_path: payload.function_path.clone(),
         url: payload.invocation.url.clone(),
         method: payload.invocation.method.clone(),
         timeout_ms: payload.invocation.timeout_ms,
         headers: payload.invocation.headers.clone(),
-        auth: auth_ref,
+        auth: payload.invocation.auth.clone(),
         description: payload.description.clone(),
         request_format: payload.request_format.clone(),
         response_format: payload.response_format.clone(),
         metadata: payload.metadata.clone(),
-        registered_at: Utc::now(),
+        registered_at,
+        updated_at: None,
     };
 
     store_http_function_in_kv(&engine, &kv_config)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
-    let invocation_method = InvocationMethod::Http {
-        url: payload.invocation.url,
-        method: payload.invocation.method,
-        timeout_ms: payload.invocation.timeout_ms,
-        headers: payload.invocation.headers,
-        auth: payload.invocation.auth,
-    };
-
-    let function = Function {
-        function_path: payload.function_path.clone(),
-        description: payload.description,
-        request_format: payload.request_format,
-        response_format: payload.response_format,
-        metadata: payload.metadata,
-        invocation_method,
-        registered_at: Utc::now(),
-        registration_source: RegistrationSource::AdminApi,
-        handler: None,
-    };
-
     engine
-        .service_registry
-        .register_service_from_func_path(&payload.function_path)
-        .await;
-    engine
-        .functions
-        .register_function(payload.function_path.clone(), function);
+        .register_http_function_from_persistence(
+            payload.function_path.clone(),
+            payload.invocation.url,
+            payload.invocation.method,
+            payload.invocation.timeout_ms,
+            payload.invocation.headers,
+            payload.invocation.auth,
+            payload.description,
+            payload.request_format,
+            payload.response_format,
+            payload.metadata,
+            registered_at,
+            RegistrationSource::AdminApi,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
     Ok(Json(json!({
         "status": "registered",
@@ -140,7 +154,7 @@ pub async fn update_function(
     Path(function_path): Path<String>,
     Json(payload): Json<UpdateFunctionRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let mut function = engine
+    engine
         .functions
         .get(&function_path)
         .ok_or((StatusCode::NOT_FOUND, "Function not found".to_string()))?;
@@ -155,19 +169,15 @@ pub async fn update_function(
         serde_json::from_value(value).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if let Some(description) = payload.description {
-        function.description = Some(description.clone());
         kv_config.description = Some(description);
     }
     if let Some(request_format) = payload.request_format {
-        function.request_format = Some(request_format.clone());
         kv_config.request_format = Some(request_format);
     }
     if let Some(response_format) = payload.response_format {
-        function.response_format = Some(response_format.clone());
         kv_config.response_format = Some(response_format);
     }
     if let Some(metadata) = payload.metadata {
-        function.metadata = Some(metadata.clone());
         kv_config.metadata = Some(metadata);
     }
 
@@ -179,39 +189,43 @@ pub async fn update_function(
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-        let auth_ref = invocation
-            .auth
-            .as_ref()
-            .map(|auth| auth_ref_from_auth(&function_path, auth));
+        // Validate that environment variables exist for auth configuration
+        if let Some(ref auth_ref) = invocation.auth {
+            validate_auth_env_vars(auth_ref)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        }
 
-        kv_config.url = invocation.url.clone();
-        kv_config.method = invocation.method.clone();
+        kv_config.url = invocation.url;
+        kv_config.method = invocation.method;
         kv_config.timeout_ms = invocation.timeout_ms;
-        kv_config.headers = invocation.headers.clone();
-        kv_config.auth = auth_ref;
-        kv_config.registered_at = Utc::now();
-
-        function.invocation_method = InvocationMethod::Http {
-            url: invocation.url,
-            method: invocation.method,
-            timeout_ms: invocation.timeout_ms,
-            headers: invocation.headers,
-            auth: invocation.auth,
-        };
+        kv_config.headers = invocation.headers;
+        kv_config.auth = invocation.auth;
     }
 
-    kv_config.registered_at = Utc::now();
+    // Set updated_at timestamp (don't modify registered_at)
+    kv_config.updated_at = Some(Utc::now());
 
     store_http_function_in_kv(&engine, &kv_config)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
-    function.registered_at = Utc::now();
-    function.registration_source = RegistrationSource::AdminApi;
-
     engine
-        .functions
-        .register_function(function_path.clone(), function);
+        .register_http_function_from_persistence(
+            function_path.clone(),
+            kv_config.url,
+            kv_config.method,
+            kv_config.timeout_ms,
+            kv_config.headers,
+            kv_config.auth,
+            kv_config.description,
+            kv_config.request_format,
+            kv_config.response_format,
+            kv_config.metadata,
+            kv_config.registered_at,
+            RegistrationSource::AdminApi,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
     Ok(Json(json!({
         "status": "updated",
@@ -260,26 +274,115 @@ pub async fn list_functions(
     Ok(Json(json!({ "functions": functions })))
 }
 
-fn auth_ref_from_auth(function_path: &str, auth: &HttpAuth) -> HttpAuthRef {
-    let prefix = function_path.to_uppercase().replace('.', "_");
-    match auth {
-        HttpAuth::Hmac { .. } => HttpAuthRef::Hmac {
-            secret_key: format!("{}_HMAC_SECRET", prefix),
-        },
-        HttpAuth::Bearer { .. } => HttpAuthRef::Bearer {
-            token_key: format!("{}_BEARER_TOKEN", prefix),
-        },
-        HttpAuth::ApiKey { header, .. } => HttpAuthRef::ApiKey {
-            header: header.clone(),
-            value_key: format!("{}_API_KEY", prefix),
-        },
+/// Validates that the function path is safe and follows naming conventions.
+/// Function paths can only contain alphanumeric characters, dots, underscores, and hyphens.
+/// They cannot start or end with a dot.
+fn validate_function_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("Function path cannot be empty".to_string());
     }
+
+    if path.len() > 255 {
+        return Err("Function path cannot exceed 255 characters".to_string());
+    }
+
+    if !path
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err(
+            "Function path can only contain alphanumeric characters, dots, underscores, and hyphens"
+                .to_string(),
+        );
+    }
+
+    if path.starts_with('.') || path.ends_with('.') {
+        return Err("Function path cannot start or end with a dot".to_string());
+    }
+
+    if path.contains("..") {
+        return Err("Function path cannot contain consecutive dots".to_string());
+    }
+
+    Ok(())
+}
+
+/// Validates that the environment variables referenced by the auth configuration exist.
+/// Returns an error message if any required environment variables are missing.
+fn validate_auth_env_vars(auth_ref: &HttpAuthRef) -> Result<(), String> {
+    match auth_ref {
+        HttpAuthRef::Hmac { secret_key } => {
+            std::env::var(secret_key).map_err(|_| {
+                format!(
+                    "Missing environment variable '{}' for HMAC authentication. \
+                     Please set this environment variable before registering the function.",
+                    secret_key
+                )
+            })?;
+        }
+        HttpAuthRef::Bearer { token_key } => {
+            std::env::var(token_key).map_err(|_| {
+                format!(
+                    "Missing environment variable '{}' for Bearer token authentication. \
+                     Please set this environment variable before registering the function.",
+                    token_key
+                )
+            })?;
+        }
+        HttpAuthRef::ApiKey { value_key, .. } => {
+            std::env::var(value_key).map_err(|_| {
+                format!(
+                    "Missing environment variable '{}' for API key authentication. \
+                     Please set this environment variable before registering the function.",
+                    value_key
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Validates input sizes to prevent abuse and resource exhaustion.
+fn validate_input_sizes(payload: &RegisterFunctionRequest) -> Result<(), (StatusCode, String)> {
+    if let Some(ref desc) = payload.description {
+        if desc.len() > 2000 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Description cannot exceed 2000 characters".to_string(),
+            ));
+        }
+    }
+
+    if payload.invocation.headers.len() > 50 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Cannot specify more than 50 headers".to_string(),
+        ));
+    }
+
+    for (key, value) in &payload.invocation.headers {
+        if key.len() > 256 || value.len() > 4096 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Header key cannot exceed 256 chars and value cannot exceed 4096 chars"
+                    .to_string(),
+            ));
+        }
+    }
+
+    if let Some(ref metadata) = payload.metadata {
+        let metadata_str = serde_json::to_string(metadata).unwrap_or_default();
+        if metadata_str.len() > 10240 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Metadata cannot exceed 10KB when serialized".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn default_method() -> HttpMethod {
     HttpMethod::Post
-}
-
-fn default_timeout_ms() -> u64 {
-    30000
 }
