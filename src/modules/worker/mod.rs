@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::{pin::Pin, sync::Arc};
 
 use dashmap::DashMap;
@@ -11,7 +17,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::module::Module,
-    protocol::ErrorBody,
+    protocol::{ErrorBody, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
     workers::{Worker, WorkerMetrics},
 };
@@ -24,6 +30,11 @@ pub const KV_INDEX_WORKER_METRICS: &str = "worker_metrics";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct WorkersListInput {
+    pub worker_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionInfo {
@@ -55,6 +66,7 @@ pub struct WorkerInfo {
     pub function_count: usize,
     pub functions: Vec<String>,
     pub active_invocations: usize,
+    pub latest_metrics: Option<WorkerMetrics>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -168,17 +180,30 @@ impl WorkerModule {
             .collect()
     }
 
-    async fn list_worker_infos(&self) -> Vec<WorkerInfo> {
+    async fn list_worker_infos(&self, filter_worker_id: Option<&str>) -> Vec<WorkerInfo> {
+        use crate::modules::observability::metrics::get_worker_metrics_from_storage;
+
         let workers = self.engine.worker_registry.list_workers();
         let mut worker_infos = Vec::with_capacity(workers.len());
 
         for w in workers {
+            let worker_id = w.id.to_string();
+
+            // Apply worker_id filter if provided
+            if let Some(filter_id) = filter_worker_id
+                && worker_id != filter_id
+            {
+                continue;
+            }
+
             let functions = w.get_function_paths().await;
             let function_count = functions.len();
             let active_invocations = w.invocation_count().await;
+            // Query latest metrics from OTEL storage
+            let latest_metrics = get_worker_metrics_from_storage(&worker_id);
 
             worker_infos.push(WorkerInfo {
-                id: w.id.to_string(),
+                id: worker_id,
                 name: w.name.clone(),
                 runtime: w.runtime.clone(),
                 version: w.version.clone(),
@@ -189,6 +214,7 @@ impl WorkerModule {
                 function_count,
                 functions,
                 active_invocations,
+                latest_metrics,
             });
         }
         worker_infos
@@ -377,13 +403,19 @@ impl WorkerModule {
         FunctionResult::Success(Some(serde_json::json!({ "functions": functions })))
     }
 
-    #[function(name = "engine.workers.list", description = "List all workers")]
+    #[function(
+        name = "engine.workers.list",
+        description = "List all workers with metrics"
+    )]
     pub async fn get_workers(
         &self,
-        _input: EmptyInput,
+        input: WorkersListInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let workers = self.list_worker_infos().await;
-        FunctionResult::Success(Some(serde_json::json!({ "workers": workers })))
+        let workers = self.list_worker_infos(input.worker_id.as_deref()).await;
+        FunctionResult::Success(Some(serde_json::json!({
+            "workers": workers,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        })))
     }
 
     #[function(name = "engine.triggers.list", description = "List all triggers")]

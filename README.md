@@ -10,7 +10,7 @@ Prerequisites:
 
 - Rust 1.80+ (edition 2024)
 - Redis (only if you enable the event/cron/streams modules; the default config expects Redis at
-  `redis://localhost:6379`)
+  `redis://localhost:6379`). Cron uses the built-in KV adapter by default.
 
 Install (prebuilt binary)
 -------------------------
@@ -126,14 +126,14 @@ Available core modules (registered in `src/modules/config.rs`):
 
 - `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
 - `modules::event::EventModule` – Redis-backed event bus (`event` trigger, `emit` function).
-- `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger).
+- `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
 - `modules::streams::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
   `streams.set/get/delete/getGroup` functions (Redis-backed by default).
 - `modules::observability::LoggingModule` – `logger.info/warn/error` functions.
 - `modules::shell::ExecModule` – File watcher that runs commands (only when configured).
 
 If `config.yaml` is missing, the engine loads the default module list:
-RestApi, Event, Logging, Cron, Streams. Those defaults expect Redis.
+RestApi, Event, Logging, Cron, Streams. Event/Streams expect Redis; Cron uses built-in KV by default.
 
 ## Protocol Summary
 

@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
@@ -8,7 +14,10 @@ use crate::{
     builtins::{
         kv::BuiltinKvStore,
         pubsub_lite::BuiltInPubSubLite,
-        queue::{BuiltinQueue, JobHandler, QueueConfig, SubscriptionConfig, SubscriptionHandle},
+        queue::{
+            BuiltinQueue, JobHandler, QueueConfig, QueueMode, SubscriptionConfig,
+            SubscriptionHandle,
+        },
         queue_kv::QueueKvStore,
     },
     engine::{Engine, EngineTrait},
@@ -115,6 +124,10 @@ impl EventAdapter for BuiltinQueueAdapter {
             concurrency: c.concurrency,
             max_attempts: c.max_retries,
             backoff_ms: c.backoff_delay_ms,
+            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
+                "fifo" => QueueMode::Fifo,
+                _ => QueueMode::Concurrent,
+            }),
         });
 
         let handle = self
@@ -154,3 +167,121 @@ crate::register_adapter!(
     "modules::event::BuiltinQueueAdapter",
     make_adapter
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::queue::QueueMode;
+    use crate::modules::event::SubscriberQueueConfig;
+
+    #[test]
+    fn test_subscriber_queue_config_mode_mapping_fifo() {
+        let config = SubscriberQueueConfig {
+            queue_mode: Some("fifo".to_string()),
+            max_retries: Some(3),
+            concurrency: Some(5),
+            visibility_timeout: None,
+            delay_seconds: None,
+            backoff_type: None,
+            backoff_delay_ms: Some(1000),
+        };
+
+        let subscription_config = Some(config).map(|c| SubscriptionConfig {
+            concurrency: c.concurrency,
+            max_attempts: c.max_retries,
+            backoff_ms: c.backoff_delay_ms,
+            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
+                "fifo" => QueueMode::Fifo,
+                _ => QueueMode::Concurrent,
+            }),
+        });
+
+        let sub_config = subscription_config.unwrap();
+        assert_eq!(sub_config.mode, Some(QueueMode::Fifo));
+        assert_eq!(sub_config.concurrency, Some(5));
+        assert_eq!(sub_config.max_attempts, Some(3));
+        assert_eq!(sub_config.backoff_ms, Some(1000));
+    }
+
+    #[test]
+    fn test_subscriber_queue_config_mode_mapping_concurrent() {
+        let config = SubscriberQueueConfig {
+            queue_mode: Some("concurrent".to_string()),
+            max_retries: None,
+            concurrency: None,
+            visibility_timeout: None,
+            delay_seconds: None,
+            backoff_type: None,
+            backoff_delay_ms: None,
+        };
+
+        let subscription_config = Some(config).map(|c| SubscriptionConfig {
+            concurrency: c.concurrency,
+            max_attempts: c.max_retries,
+            backoff_ms: c.backoff_delay_ms,
+            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
+                "fifo" => QueueMode::Fifo,
+                _ => QueueMode::Concurrent,
+            }),
+        });
+
+        let sub_config = subscription_config.unwrap();
+        assert_eq!(sub_config.mode, Some(QueueMode::Concurrent));
+    }
+
+    #[test]
+    fn test_subscriber_queue_config_mode_mapping_standard() {
+        // "standard" and any other value should map to Concurrent
+        let config = SubscriberQueueConfig {
+            queue_mode: Some("standard".to_string()),
+            max_retries: None,
+            concurrency: None,
+            visibility_timeout: None,
+            delay_seconds: None,
+            backoff_type: None,
+            backoff_delay_ms: None,
+        };
+
+        let subscription_config = Some(config).map(|c| SubscriptionConfig {
+            concurrency: c.concurrency,
+            max_attempts: c.max_retries,
+            backoff_ms: c.backoff_delay_ms,
+            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
+                "fifo" => QueueMode::Fifo,
+                _ => QueueMode::Concurrent,
+            }),
+        });
+
+        let sub_config = subscription_config.unwrap();
+        assert_eq!(sub_config.mode, Some(QueueMode::Concurrent));
+    }
+
+    #[test]
+    fn test_subscriber_queue_config_mode_mapping_none() {
+        let config = SubscriberQueueConfig {
+            queue_mode: None,
+            max_retries: Some(5),
+            concurrency: Some(10),
+            visibility_timeout: None,
+            delay_seconds: None,
+            backoff_type: None,
+            backoff_delay_ms: None,
+        };
+
+        let subscription_config = Some(config).map(|c| SubscriptionConfig {
+            concurrency: c.concurrency,
+            max_attempts: c.max_retries,
+            backoff_ms: c.backoff_delay_ms,
+            mode: c.queue_mode.as_ref().map(|m| match m.as_str() {
+                "fifo" => QueueMode::Fifo,
+                _ => QueueMode::Concurrent,
+            }),
+        });
+
+        let sub_config = subscription_config.unwrap();
+        // When queue_mode is None, mode should also be None (inherits global default)
+        assert_eq!(sub_config.mode, None);
+        assert_eq!(sub_config.concurrency, Some(10));
+        assert_eq!(sub_config.max_attempts, Some(5));
+    }
+}

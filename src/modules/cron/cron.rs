@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::{
     collections::HashMap,
     pin::Pin,
@@ -112,7 +118,7 @@ impl ConfigurableModule for CronCoreModule {
     type Config = CronModuleConfig;
     type Adapter = dyn CronSchedulerAdapter;
     type AdapterRegistration = super::registry::CronAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::RedisCronAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::KvCronAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CronSchedulerAdapter>>>> =

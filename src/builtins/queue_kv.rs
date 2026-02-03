@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
@@ -271,6 +277,20 @@ impl QueueKvStore {
         }
     }
 
+    pub async fn rpush(&self, key: &str, value: String) {
+        let mut lists = self.lists.write().await;
+        lists
+            .entry(key.to_string())
+            .or_insert_with(VecDeque::new)
+            .push_back(value);
+
+        if self.file_store_dir.is_some() {
+            drop(lists);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+    }
+
     pub async fn rpop(&self, key: &str) -> Option<String> {
         let mut lists = self.lists.write().await;
         let list = lists.get_mut(key)?;
@@ -463,6 +483,59 @@ mod tests {
 
         let empty = kv_store.rpop(key).await;
         assert_eq!(empty, None);
+    }
+
+    #[tokio::test]
+    async fn test_rpush_operations() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_rpush";
+
+        // rpush adds to back, rpop removes from back
+        // So the last rpush will be the first rpop
+        kv_store.rpush(key, "value1".to_string()).await;
+        kv_store.rpush(key, "value2".to_string()).await;
+        kv_store.rpush(key, "value3".to_string()).await;
+
+        assert_eq!(kv_store.llen(key).await, 3);
+
+        // rpop removes from back, so value3 (last pushed) comes out first
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value3".to_string()));
+
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value2".to_string()));
+
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value1".to_string()));
+
+        let empty = kv_store.rpop(key).await;
+        assert_eq!(empty, None);
+    }
+
+    #[tokio::test]
+    async fn test_lpush_rpush_mixed() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_mixed";
+
+        // lpush adds to front, rpush adds to back
+        // With lpush, new items go to front, rpop takes from back (oldest)
+        kv_store.lpush(key, "job1".to_string()).await; // [job1]
+        kv_store.lpush(key, "job2".to_string()).await; // [job2, job1]
+
+        // rpush adds to back (same position as oldest items)
+        kv_store.rpush(key, "retry_job".to_string()).await; // [job2, job1, retry_job]
+
+        // rpop takes from back, so retry_job comes first
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("retry_job".to_string()));
+
+        // Then job1 (oldest lpush)
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("job1".to_string()));
+
+        // Then job2 (newest lpush)
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("job2".to_string()));
     }
 
     #[tokio::test]

@@ -1,6 +1,15 @@
+import { context } from '@opentelemetry/api'
 import { createRequire } from 'module'
 import * as os from 'os'
 import { type Data, WebSocket } from 'ws'
+import {
+  type BridgeConnectionState,
+  type BridgeReconnectionConfig,
+  DEFAULT_BRIDGE_RECONNECTION_CONFIG,
+  DEFAULT_INVOCATION_TIMEOUT_MS,
+  EngineFunctions,
+  EngineTriggers,
+} from './bridge-constants'
 import {
   type BridgeMessage,
   type FunctionInfo,
@@ -12,17 +21,37 @@ import {
   type RegisterTriggerMessage,
   type RegisterTriggerTypeMessage,
   type WorkerInfo,
-  type WorkerMetrics,
-  type WorkerMetricsInfo,
+  type WorkerRegisteredMessage,
 } from './bridge-types'
 import { withContext } from './context'
 import { Logger } from './logger'
 import type { IStream } from './streams'
+import {
+  currentSpanId,
+  currentTraceId,
+  extractContext,
+  getLogger,
+  getMeter,
+  getTracer,
+  injectBaggage,
+  injectTraceparent,
+  initOtel,
+  shutdownOtel,
+  SeverityNumber,
+  SpanKind,
+  withSpan,
+  type OtelConfig,
+} from './telemetry'
+import { registerWorkerGauges, stopWorkerGauges } from './otel-worker-gauges'
 import type { TriggerHandler } from './triggers'
 import type {
   BridgeClient,
   FunctionsAvailableCallback,
   Invocation,
+  LogCallback,
+  LogConfig,
+  LogSeverityLevel,
+  OtelLogEvent,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
@@ -40,38 +69,67 @@ function getDefaultWorkerName(): string {
   return `${os.hostname()}:${process.pid}`
 }
 
+/** Callback type for connection state changes */
+export type ConnectionStateCallback = (state: BridgeConnectionState) => void
+
 export type BridgeOptions = {
   workerName?: string
+  enableMetricsReporting?: boolean
+  /** Default timeout for function invocations in milliseconds */
+  invocationTimeoutMs?: number
+  /** Configuration for WebSocket reconnection behavior */
+  reconnectionConfig?: Partial<BridgeReconnectionConfig>
+  /** OpenTelemetry configuration. If provided, OTEL will be initialized automatically.
+   * The engineWsUrl is set automatically from the Bridge address. */
+  otel?: Omit<OtelConfig, 'engineWsUrl'>
 }
 
 export class Bridge implements BridgeClient {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
   private services = new Map<string, Omit<RegisterServiceMessage, 'functions'>>()
-  private invocations = new Map<string, Invocation>()
+  private invocations = new Map<string, Invocation & { timeout?: NodeJS.Timeout }>()
   private triggers = new Map<string, RegisterTriggerMessage>()
   private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private functionsAvailableCallbacks = new Set<FunctionsAvailableCallback>()
   private functionsAvailableTrigger?: Trigger
   private functionsAvailableFunctionPath?: string
+  private logCallbacks = new Map<LogCallback, LogConfig>()
+  private logTrigger?: Trigger
+  private logFunctionPath?: string
   private messagesToSend: BridgeMessage[] = []
   private workerName: string
-  private workerId: string
-  private interval?: NodeJS.Timeout
+  private workerId?: string
+  private reconnectTimeout?: NodeJS.Timeout
+  private metricsReportingEnabled: boolean
+  private invocationTimeoutMs: number
+  private reconnectionConfig: BridgeReconnectionConfig
+  private reconnectAttempt = 0
+  private connectionState: BridgeConnectionState = 'disconnected'
+  private stateCallbacks = new Set<ConnectionStateCallback>()
+  private isShuttingDown = false
 
   constructor(
     private readonly address: string,
     options?: BridgeOptions,
   ) {
     this.workerName = options?.workerName ?? getDefaultWorkerName()
-    this.workerId = crypto.randomUUID()
+    this.metricsReportingEnabled = options?.enableMetricsReporting ?? true
+    this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
+    this.reconnectionConfig = { ...DEFAULT_BRIDGE_RECONNECTION_CONFIG, ...options?.reconnectionConfig }
+
+    // Initialize OpenTelemetry if config is provided
+    if (options?.otel) {
+      initOtel({ ...options.otel, engineWsUrl: this.address })
+    }
+
     this.connect()
   }
 
   registerTriggerType<TConfig>(
     triggerType: Omit<RegisterTriggerTypeMessage, 'type'>,
     handler: TriggerHandler<TConfig>,
-  ) {
+  ): void {
     this.sendMessage(MessageType.RegisterTriggerType, triggerType, true)
     this.triggerTypes.set(triggerType.id, {
       message: { ...triggerType, type: MessageType.RegisterTriggerType },
@@ -79,11 +137,11 @@ export class Bridge implements BridgeClient {
     })
   }
 
-  on(event: string, callback: (arg?: unknown) => void) {
+  on(event: string, callback: (arg?: unknown) => void): void {
     this.ws?.on(event, callback)
   }
 
-  unregisterTriggerType(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>) {
+  unregisterTriggerType(triggerType: Omit<RegisterTriggerTypeMessage, 'type'>): void {
     this.sendMessage(MessageType.UnregisterTriggerType, triggerType, true)
     this.triggerTypes.delete(triggerType.id)
   }
@@ -101,143 +159,104 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  registerFunction(message: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler) {
-    const invoke = this.invokeFunctionAsync.bind(this)
+  registerFunction(message: Omit<RegisterFunctionMessage, 'type'>, handler: RemoteFunctionHandler): void {
+    if (!message.function_path || message.function_path.trim() === '') {
+      throw new Error('function_path is required')
+    }
 
     this.sendMessage(MessageType.RegisterFunction, message, true)
     this.functions.set(message.function_path, {
       message: { ...message, type: MessageType.RegisterFunction },
-      handler: async (input) => {
-        const logger = new Logger(invoke, crypto.randomUUID(), message.function_path)
-        const context = { logger }
+      handler: async (input, traceparent?: string, baggage?: string) => {
+        // If we have a tracer, wrap in a span and pass it to the context
+        if (getTracer()) {
+          // Extract both traceparent and baggage into a parent context
+          const parentContext = extractContext(traceparent, baggage)
+          
+          return context.with(parentContext, () =>
+            withSpan(`invoke ${message.function_path}`, { kind: SpanKind.SERVER }, async (span) => {
+              const traceId = currentTraceId() ?? crypto.randomUUID()
+              const spanId = currentSpanId()
+              const logger = new Logger(undefined, traceId, message.function_path, spanId)
+              const ctx = { logger, trace: span }
 
-        return withContext(async () => await handler(input), context)
+              return withContext(async () => await handler(input), ctx)
+            })
+          )
+        }
+
+        // Fallback without tracing
+        const traceId = crypto.randomUUID()
+        const logger = new Logger(undefined, traceId, message.function_path)
+        const ctx = { logger }
+
+        return withContext(async () => await handler(input), ctx)
       },
     })
   }
 
-  registerService(message: Omit<RegisterServiceMessage, 'type'>) {
+  registerService(message: Omit<RegisterServiceMessage, 'type'>): void {
     this.sendMessage(MessageType.RegisterService, message, true)
     this.services.set(message.id, { ...message, type: MessageType.RegisterService })
   }
 
-  async invokeFunction<TInput, TOutput>(function_path: string, data: TInput): Promise<TOutput> {
+  async invokeFunction<TInput, TOutput>(function_path: string, data: TInput, timeoutMs?: number): Promise<TOutput> {
     const invocation_id = crypto.randomUUID()
+    // Inject trace context and baggage if available
+    const traceparent = injectTraceparent()
+    const baggage = injectBaggage()
+    const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
 
     return new Promise<TOutput>((resolve, reject) => {
-      this.sendMessage(MessageType.InvokeFunction, { invocation_id, function_path, data })
-      this.invocations.set(invocation_id, { resolve, reject })
+      const timeout = setTimeout(() => {
+        const invocation = this.invocations.get(invocation_id)
+        if (invocation) {
+          this.invocations.delete(invocation_id)
+          reject(new Error(`Invocation timeout after ${effectiveTimeout}ms: ${function_path}`))
+        }
+      }, effectiveTimeout)
+
+      this.invocations.set(invocation_id, {
+        resolve: (result: TOutput) => {
+          clearTimeout(timeout)
+          resolve(result)
+        },
+        reject: (error: unknown) => {
+          clearTimeout(timeout)
+          reject(error)
+        },
+        timeout,
+      })
+
+      this.sendMessage(MessageType.InvokeFunction, { invocation_id, function_path, data, traceparent, baggage })
     })
   }
 
   invokeFunctionAsync<TInput>(function_path: string, data: TInput): void {
-    this.sendMessage(MessageType.InvokeFunction, { function_path, data })
+    // Inject trace context and baggage if available
+    const traceparent = injectTraceparent()
+    const baggage = injectBaggage()
+    this.sendMessage(MessageType.InvokeFunction, { function_path, data, traceparent, baggage })
   }
 
   async listFunctions(): Promise<FunctionInfo[]> {
     const result = await this.invokeFunction<Record<string, never>, { functions: FunctionInfo[] }>(
-      'engine.functions.list',
+      EngineFunctions.LIST_FUNCTIONS,
       {},
     )
     return result.functions
   }
 
   async listWorkers(): Promise<WorkerInfo[]> {
-    const result = await this.invokeFunction<Record<string, never>, { workers: WorkerInfo[] }>('engine.workers.list', {})
+    const result = await this.invokeFunction<Record<string, never>, { workers: WorkerInfo[] }>(
+      EngineFunctions.LIST_WORKERS,
+      {},
+    )
     return result.workers
   }
 
-  private metricsInterval?: NodeJS.Timeout
-
-  /**
-   * Report worker metrics to the engine via PubSub.
-   * Metrics are saved to KV for persistence and streamed to subscribers.
-   */
-  reportMetrics(metrics: Omit<WorkerMetrics, 'collected_at_ms'>): void {
-    const metricsWithTimestamp: WorkerMetrics = {
-      ...metrics,
-      collected_at_ms: Date.now(),
-    }
-    this.invokeFunctionAsync('publish', {
-      topic: 'iii.worker.metrics',
-      data: {
-        worker_id: this.workerId,
-        worker_name: this.workerName,
-        metrics: metricsWithTimestamp,
-        timestamp: Date.now(),
-      },
-    })
-  }
-
-  private metricsStarting = false
-
-  /**
-   * Start automatic metrics reporting using the built-in metrics collector.
-   * @param intervalMs - Reporting interval in milliseconds (default: 5000)
-   */
-  startMetricsReporting(intervalMs: number = 5000): void {
-    if (this.metricsInterval || this.metricsStarting) {
-      return
-    }
-
-    this.metricsStarting = true
-
-    import('./metrics').then(({ collectMetrics }) => {
-      // Check if stopMetricsReporting was called before import resolved
-      if (!this.metricsStarting) {
-        return
-      }
-      this.metricsStarting = false
-      this.metricsInterval = setInterval(() => {
-        const metrics = collectMetrics()
-        this.reportMetrics(metrics)
-      }, intervalMs)
-    })
-  }
-
-  /**
-   * Stop automatic metrics reporting.
-   */
-  stopMetricsReporting(): void {
-    this.metricsStarting = false
-    if (this.metricsInterval) {
-      clearInterval(this.metricsInterval)
-      this.metricsInterval = undefined
-    }
-  }
-
-  /**
-   * Get metrics for a specific worker by ID.
-   */
-  async getWorkerMetrics(workerId: string): Promise<WorkerMetricsInfo | null> {
-    try {
-      const result = await this.invokeFunction<
-        { worker_id: string },
-        WorkerMetricsInfo
-      >('engine.workers.get_metrics', { worker_id: workerId })
-      return result
-    } catch {
-      return null
-    }
-  }
-
-  /**
-   * Get metrics for all workers.
-   */
-  async getAllWorkerMetrics(): Promise<WorkerMetricsInfo[]> {
-    try {
-      const result = await this.invokeFunction<Record<string, never>, { workers: WorkerMetricsInfo[] }>(
-        'engine.workers.get_metrics',
-        {},
-      )
-      return Array.isArray(result?.workers) ? result.workers : []
-    } catch {
-      return []
-    }
-  }
-
   private registerWorkerMetadata(): void {
-    this.invokeFunctionAsync('engine.workers.register', {
+    this.invokeFunctionAsync(EngineFunctions.REGISTER_WORKER, {
       runtime: 'node',
       version: SDK_VERSION,
       name: this.workerName,
@@ -258,7 +277,7 @@ export class Bridge implements BridgeClient {
 
     if (!this.functionsAvailableTrigger) {
       if (!this.functionsAvailableFunctionPath) {
-        this.functionsAvailableFunctionPath = `bridge.on_functions_available.${crypto.randomUUID()}`
+        this.functionsAvailableFunctionPath = `engine.on_functions_available.${crypto.randomUUID()}`
       }
 
       const function_path = this.functionsAvailableFunctionPath
@@ -272,7 +291,7 @@ export class Bridge implements BridgeClient {
       }
 
       this.functionsAvailableTrigger = this.registerTrigger({
-        trigger_type: 'engine::functions-available',
+        trigger_type: EngineTriggers.FUNCTIONS_AVAILABLE,
         function_path,
         config: {},
       })
@@ -287,30 +306,208 @@ export class Bridge implements BridgeClient {
     }
   }
 
+  onLog(callback: LogCallback, config?: LogConfig): () => void {
+    const effectiveConfig = config ?? { level: 'all' }
+    this.logCallbacks.set(callback, effectiveConfig)
+
+    if (!this.logTrigger) {
+      if (!this.logFunctionPath) {
+        this.logFunctionPath = `engine.on_log.${crypto.randomUUID()}`
+      }
+
+      const function_path = this.logFunctionPath
+      if (!this.functions.has(function_path)) {
+        this.registerFunction({ function_path }, async (log: OtelLogEvent) => {
+          this.logCallbacks.forEach((cfg, handler) => {
+            try {
+              const minSeverity = this.severityTextToNumber(cfg.level ?? 'all')
+              if (cfg.level === 'all' || log.severity_number >= minSeverity) {
+                handler(log)
+              }
+            } catch (error) {
+              this.logError('Log callback handler threw an exception', error)
+            }
+          })
+          return null
+        })
+      }
+
+      this.logTrigger = this.registerTrigger({
+        trigger_type: EngineTriggers.LOG,
+        function_path,
+        config: { level: 'all', severity_min: 0 },
+      })
+    }
+
+    return () => {
+      this.logCallbacks.delete(callback)
+      if (this.logCallbacks.size === 0 && this.logTrigger) {
+        this.logTrigger.unregister()
+        this.logTrigger = undefined
+      }
+    }
+  }
+
+  /**
+   * Get the current connection state.
+   */
+  getConnectionState(): BridgeConnectionState {
+    return this.connectionState
+  }
+
+  /**
+   * Register a callback to be notified of connection state changes.
+   * @returns A function to unregister the callback
+   */
+  onConnectionStateChange(callback: ConnectionStateCallback): () => void {
+    this.stateCallbacks.add(callback)
+    // Immediately notify of current state
+    callback(this.connectionState)
+    return () => this.stateCallbacks.delete(callback)
+  }
+
+  /**
+   * Gracefully shutdown the bridge, cleaning up all resources.
+   */
+  async shutdown(): Promise<void> {
+    this.isShuttingDown = true
+    
+    this.stopMetricsReporting()
+
+    // Shutdown OpenTelemetry
+    await shutdownOtel()
+    
+    // Clear reconnection timeout
+    this.clearReconnectTimeout()
+    
+    // Reject all pending invocations
+    for (const [_id, invocation] of this.invocations) {
+      if (invocation.timeout) {
+        clearTimeout(invocation.timeout)
+      }
+      invocation.reject(new Error('Bridge shutting down'))
+    }
+    this.invocations.clear()
+    
+    // Close WebSocket
+    if (this.ws) {
+      this.ws.removeAllListeners()
+      this.ws.close()
+      this.ws = undefined
+    }
+    
+    // Clear callbacks
+    this.stateCallbacks.clear()
+    
+    this.setConnectionState('disconnected')
+  }
+
   // private methods
 
-  private connect() {
+  private setConnectionState(state: BridgeConnectionState): void {
+    if (this.connectionState !== state) {
+      this.connectionState = state
+      for (const callback of this.stateCallbacks) {
+        try {
+          callback(state)
+        } catch (error) {
+          this.logError('Error in connection state callback', error)
+        }
+      }
+    }
+  }
+
+  private connect(): void {
+    if (this.isShuttingDown) {
+      return
+    }
+    
+    this.setConnectionState('connecting')
     this.ws = new WebSocket(this.address)
     this.ws.on('open', this.onSocketOpen.bind(this))
     this.ws.on('close', this.onSocketClose.bind(this))
+    this.ws.on('error', this.onSocketError.bind(this))
   }
 
-  private clearInterval() {
-    clearInterval(this.interval)
-    this.interval = undefined
+  private clearReconnectTimeout(): void {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = undefined
+    }
   }
 
-  private onSocketClose() {
+  private scheduleReconnect(): void {
+    if (this.isShuttingDown) {
+      return
+    }
+    
+    const { maxRetries, initialDelayMs, backoffMultiplier, maxDelayMs, jitterFactor } = this.reconnectionConfig
+    
+    if (maxRetries !== -1 && this.reconnectAttempt >= maxRetries) {
+      this.setConnectionState('failed')
+      this.logError(`Max reconnection retries (${maxRetries}) reached, giving up`)
+      return
+    }
+    
+    if (this.reconnectTimeout) {
+      return // Already scheduled
+    }
+    
+    const exponentialDelay = initialDelayMs * Math.pow(backoffMultiplier, this.reconnectAttempt)
+    const cappedDelay = Math.min(exponentialDelay, maxDelayMs)
+    const jitter = cappedDelay * jitterFactor * (2 * Math.random() - 1)
+    const delay = Math.floor(cappedDelay + jitter)
+    
+    this.setConnectionState('reconnecting')
+    console.debug(`[Bridge] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempt + 1})...`)
+    
+    this.reconnectTimeout = setTimeout(() => {
+      this.reconnectTimeout = undefined
+      this.reconnectAttempt++
+      this.connect()
+    }, delay)
+  }
+
+  private onSocketError(error: Error): void {
+    this.logError('WebSocket error', error)
+  }
+
+  private startMetricsReporting(): void {
+    if (!this.metricsReportingEnabled || !this.workerId) {
+      return
+    }
+
+    const meter = getMeter()
+    if (!meter) {
+      console.warn('[Bridge] Worker metrics disabled: OpenTelemetry not initialized. Call initOtel() with metricsEnabled: true before creating the Bridge.')
+      return
+    }
+
+    registerWorkerGauges(meter, {
+      workerId: this.workerId,
+      workerName: this.workerName,
+    })
+  }
+
+  private stopMetricsReporting(): void {
+    stopWorkerGauges()
+  }
+
+  private onSocketClose(): void {
     this.ws?.removeAllListeners()
     this.ws?.terminate()
     this.ws = undefined
 
-    this.clearInterval()
-    this.interval = setInterval(() => this.connect(), 2000)
+    this.setConnectionState('disconnected')
+    this.stopMetricsReporting()
+    this.scheduleReconnect()
   }
 
-  private onSocketOpen() {
-    this.clearInterval()
+  private onSocketOpen(): void {
+    this.clearReconnectTimeout()
+    this.reconnectAttempt = 0
+    this.setConnectionState('connected')
+    
     this.ws?.on('message', this.onMessage.bind(this))
 
     this.triggerTypes.forEach(({ message }) => {
@@ -325,62 +522,130 @@ export class Bridge implements BridgeClient {
     this.triggers.forEach((trigger) => {
       this.sendMessage(MessageType.RegisterTrigger, trigger, true)
     })
-    this.messagesToSend
-      .splice(0, this.messagesToSend.length)
-      .forEach((message) => {
-        this.ws?.send(JSON.stringify(message))
-      })
+    
+    // Optimized: swap with empty array instead of splice
+    const pending = this.messagesToSend
+    this.messagesToSend = []
+    for (const message of pending) {
+      // Skip InvokeFunction messages for timed-out invocations
+      if (
+        message.type === MessageType.InvokeFunction &&
+        message.invocation_id &&
+        !this.invocations.has(message.invocation_id)
+      ) {
+        continue
+      }
+      this.sendMessageRaw(JSON.stringify(message))
+    }
 
     this.registerWorkerMetadata()
   }
 
-  private isOpen() {
+  private isOpen(): boolean {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
-  private sendMessage(type: MessageType, message: Omit<BridgeMessage, 'type'>, skipIfClosed = false) {
-    if (this.isOpen()) {
-      this.ws?.send(JSON.stringify({ ...message, type }))
-    } else if (!skipIfClosed) {
-      this.messagesToSend.push({ ...message, type } as BridgeMessage)
+  private sendMessageRaw(data: string): void {
+    if (this.ws && this.isOpen()) {
+      try {
+        this.ws.send(data, (err) => {
+          if (err) {
+            this.logError('Failed to send message', err)
+          }
+        })
+      } catch (error) {
+        this.logError('Exception while sending message', error)
+      }
     }
   }
 
-  private onInvocationResult(invocation_id: string, result: unknown, error: unknown) {
+  private sendMessage(type: MessageType, message: Omit<BridgeMessage, 'type'>, skipIfClosed = false): void {
+    const fullMessage = { ...message, type }
+    if (this.isOpen()) {
+      this.sendMessageRaw(JSON.stringify(fullMessage))
+    } else if (!skipIfClosed) {
+      this.messagesToSend.push(fullMessage as BridgeMessage)
+    }
+  }
+
+  private logError(message: string, error?: unknown): void {
+    const otelLogger = getLogger()
+    const errorMessage = error instanceof Error ? error.message : String(error ?? '')
+    
+    if (otelLogger) {
+      otelLogger.emit({
+        severityNumber: SeverityNumber.ERROR,
+        body: `[Bridge] ${message}${errorMessage ? `: ${errorMessage}` : ''}`,
+      })
+    } else {
+      console.error(`[Bridge] ${message}`, error ?? '')
+    }
+  }
+
+  private severityTextToNumber(level: LogSeverityLevel): number {
+    switch (level) {
+      case 'trace': return 1
+      case 'debug': return 5
+      case 'info': return 9
+      case 'warn': return 13
+      case 'error': return 17
+      case 'fatal': return 21
+      case 'all': return 0
+      default: return 0
+    }
+  }
+
+  private onInvocationResult(invocation_id: string, result: unknown, error: unknown): void {
     const invocation = this.invocations.get(invocation_id)
 
     if (invocation) {
+      if (invocation.timeout) {
+        clearTimeout(invocation.timeout)
+      }
       error ? invocation.reject(error) : invocation.resolve(result)
     }
 
     this.invocations.delete(invocation_id)
   }
 
-  private async onInvokeFunction<TInput>(invocation_id: string | undefined, function_path: string, input: TInput) {
+  private async onInvokeFunction<TInput>(
+    invocation_id: string | undefined,
+    function_path: string,
+    input: TInput,
+    traceparent?: string,
+    baggage?: string,
+  ): Promise<unknown> {
     const fn = this.functions.get(function_path)
+    // Get response traceparent/baggage after handler runs (will be current span's context)
+    const getResponseTraceparent = () => injectTraceparent() ?? traceparent
+    const getResponseBaggage = () => injectBaggage() ?? baggage
 
     if (fn) {
       if (!invocation_id) {
         try {
-          return fn.handler(input)
+          await fn.handler(input, traceparent, baggage)
         } catch (error) {
-          console.error({
-            message: 'Error invoking function',
-            error: error,
-            function_path,
-            input,
-          })
+          this.logError(`Error invoking function ${function_path}`, error)
         }
+        return
       }
 
       try {
-        const result = await fn.handler(input)
-        this.sendMessage(MessageType.InvocationResult, { invocation_id, function_path, result })
+        const result = await fn.handler(input, traceparent, baggage)
+        this.sendMessage(MessageType.InvocationResult, {
+          invocation_id,
+          function_path,
+          result,
+          traceparent: getResponseTraceparent(),
+          baggage: getResponseBaggage(),
+        })
       } catch (error) {
         this.sendMessage(MessageType.InvocationResult, {
           invocation_id,
           function_path,
           error: { code: 'invocation_failed', message: (error as Error).message },
+          traceparent: getResponseTraceparent(),
+          baggage: getResponseBaggage(),
         })
       }
     } else {
@@ -388,6 +653,8 @@ export class Bridge implements BridgeClient {
         invocation_id,
         function_path,
         error: { code: 'function_not_found', message: 'Function not found' },
+        traceparent,
+        baggage,
       })
     }
   }
@@ -418,17 +685,33 @@ export class Bridge implements BridgeClient {
     }
   }
 
-  private onMessage(socketMessage: Data) {
-    const { type, ...message }: BridgeMessage = JSON.parse(socketMessage.toString())
+  private onMessage(socketMessage: Data): void {
+    let type: MessageType
+    let message: Omit<BridgeMessage, 'type'>
+    
+    try {
+      const parsed = JSON.parse(socketMessage.toString()) as BridgeMessage
+      type = parsed.type
+      const { type: _, ...rest } = parsed
+      message = rest
+    } catch (error) {
+      this.logError('Failed to parse incoming message', error)
+      return
+    }
 
     if (type === MessageType.InvocationResult) {
       const { invocation_id, result, error } = message as InvocationResultMessage
       this.onInvocationResult(invocation_id, result, error)
     } else if (type === MessageType.InvokeFunction) {
-      const { invocation_id, function_path, data } = message as InvokeFunctionMessage
-      this.onInvokeFunction(invocation_id, function_path, data)
+      const { invocation_id, function_path, data, traceparent, baggage } = message as InvokeFunctionMessage
+      this.onInvokeFunction(invocation_id, function_path, data, traceparent, baggage)
     } else if (type === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as RegisterTriggerMessage)
+    } else if (type === MessageType.WorkerRegistered) {
+      const { worker_id } = message as WorkerRegisteredMessage
+      this.workerId = worker_id
+      console.debug('[Bridge] Worker registered with ID:', worker_id)
+      this.startMetricsReporting()
     }
   }
 }

@@ -8,6 +8,7 @@ export enum MessageType {
   UnregisterTrigger = 'unregistertrigger',
   UnregisterTriggerType = 'unregistertriggertype',
   TriggerRegistrationResult = 'triggerregistrationresult',
+  WorkerRegistered = 'workerregistered',
 }
 
 export type RegisterTriggerTypeMessage = {
@@ -118,6 +119,14 @@ export type InvokeFunctionMessage = {
    * The data to pass to the function
    */
   data: any
+  /**
+   * W3C trace-context traceparent header for distributed tracing
+   */
+  traceparent?: string
+  /**
+   * W3C baggage header for cross-cutting context propagation
+   */
+  baggage?: string
 }
 
 export type InvocationResultMessage = {
@@ -132,6 +141,14 @@ export type InvocationResultMessage = {
   function_path: string
   result?: any
   error?: any
+  /**
+   * W3C trace-context traceparent header for distributed tracing
+   */
+  traceparent?: string
+  /**
+   * W3C baggage header for cross-cutting context propagation
+   */
+  baggage?: string
 }
 
 export type FunctionInfo = {
@@ -158,81 +175,9 @@ export type WorkerInfo = {
   active_invocations: number
 }
 
-export type ProcessMetrics = {
-  cpu_percent?: number
-  memory_used_bytes?: number
-  memory_total_bytes?: number
-  process_uptime_secs?: number
-}
-
-export type PerformanceMetrics = {
-  thread_count?: number
-  open_connections?: number
-  invocations_per_sec?: number
-  avg_latency_ms?: number
-}
-
-export type ExtendedMetrics = {
-  disk_read_bytes?: number
-  disk_write_bytes?: number
-  network_rx_bytes?: number
-  network_tx_bytes?: number
-  open_file_descriptors?: number
-  error_count?: number
-}
-
-export type KubernetesIdentifiers = {
-  cluster?: string
-  namespace?: string
-  pod_name?: string
-  container_name?: string
-  node_name?: string
-  pod_uid?: string
-}
-
-export type KubernetesCoreMetrics = {
-  cpu_usage_cores?: number
-  memory_working_set_bytes?: number
-  pod_phase?: string
-  pod_ready?: boolean
-  container_restarts_total?: number
-  last_termination_reason?: string
-  uptime_seconds?: number
-}
-
-export type KubernetesResourceMetrics = {
-  cpu_requests_cores?: number
-  cpu_limits_cores?: number
-  memory_requests_bytes?: number
-  memory_limits_bytes?: number
-  cpu_throttled_seconds_total?: number
-  pod_pending_seconds?: number
-}
-
-export type KubernetesExtendedMetrics = {
-  network_rx_bytes_total?: number
-  network_tx_bytes_total?: number
-  fs_usage_bytes?: number
-  node_memory_pressure?: boolean
-  node_disk_pressure?: boolean
-  node_pid_pressure?: boolean
-}
-
-export type WorkerMetrics = {
-  collected_at_ms: number
-  process?: ProcessMetrics
-  performance?: PerformanceMetrics
-  extended?: ExtendedMetrics
-  k8s_identifiers?: KubernetesIdentifiers
-  k8s_core?: KubernetesCoreMetrics
-  k8s_resources?: KubernetesResourceMetrics
-  k8s_extended?: KubernetesExtendedMetrics
-}
-
-export type WorkerMetricsInfo = {
+export type WorkerRegisteredMessage = {
+  type: MessageType.WorkerRegistered
   worker_id: string
-  worker_name?: string
-  metrics: WorkerMetrics
 }
 
 export type BridgeMessage =
@@ -245,3 +190,4 @@ export type BridgeMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
+  | WorkerRegisteredMessage

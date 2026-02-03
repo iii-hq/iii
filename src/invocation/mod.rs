@@ -1,13 +1,23 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use opentelemetry::KeyValue;
 use serde_json::Value;
 use tokio::sync::oneshot::{self, error::RecvError};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionResult},
+    modules::observability::metrics::get_engine_metrics,
     protocol::ErrorBody,
+    telemetry::SpanExt,
 };
 
 pub struct Invocation {
@@ -15,6 +25,10 @@ pub struct Invocation {
     pub function_path: String,
     pub worker_id: Option<Uuid>,
     pub sender: oneshot::Sender<Result<Option<Value>, ErrorBody>>,
+    /// W3C traceparent for distributed tracing context
+    pub traceparent: Option<String>,
+    /// W3C baggage for cross-cutting context propagation
+    pub baggage: Option<String>,
 }
 
 type Invocations = Arc<DashMap<Uuid, Invocation>>;
@@ -47,6 +61,7 @@ impl InvocationHandler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_invocation(
         &self,
         invocation_id: Option<Uuid>,
@@ -54,40 +69,173 @@ impl InvocationHandler {
         function_path: String,
         body: Value,
         function_handler: Function,
+        traceparent: Option<String>,
+        baggage: Option<String>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
-        let invocation = Invocation {
-            id: invocation_id,
-            function_path: function_path.clone(),
-            worker_id,
-            sender,
-        };
+        // Create span with dynamic name using the function_path
+        // Using OTEL semantic conventions for FaaS (Function as a Service)
+        let span = tracing::info_span!(
+            "invoke",
+            otel.name = %format!("invoke {}", function_path),
+            otel.kind = "server",
+            otel.status_code = tracing::field::Empty,
+            // FAAS semantic conventions (https://opentelemetry.io/docs/specs/semconv/faas/)
+            "faas.invoked_name" = %function_path,
+            "faas.trigger" = "other",  // III Engine uses its own invocation mechanism
+            // Keep function_path for backward compatibility
+            function_path = %function_path,
+        )
+        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
-        let result = function_handler
-            .call_handler(Some(invocation_id), body)
-            .await;
+        async {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
+            let invocation = Invocation {
+                id: invocation_id,
+                function_path: function_path.clone(),
+                worker_id,
+                sender,
+                traceparent,
+                baggage,
+            };
 
-        match result {
-            FunctionResult::Success(result) => {
-                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function result: {:?}", result);
-                let _ = invocation.sender.send(Ok(result));
+            // Start timer for invocation duration
+            let start_time = std::time::Instant::now();
+            let metrics = get_engine_metrics();
+
+            let result = function_handler
+                .call_handler(Some(invocation_id), body)
+                .await;
+
+            // Calculate duration
+            let duration = start_time.elapsed().as_secs_f64();
+
+            match result {
+                FunctionResult::Success(result) => {
+                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function completed successfully");
+                    tracing::Span::current().record("otel.status_code", "OK");
+
+                    // Record metrics
+                    metrics.invocations_total.add(
+                        1,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "ok"),
+                        ],
+                    );
+                    metrics.invocation_duration.record(
+                        duration,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "ok"),
+                        ],
+                    );
+
+                    // Update accumulator for readable metrics
+                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.increment_function(&function_path);
+
+                    let _ = invocation.sender.send(Ok(result));
+                }
+                FunctionResult::Failure(error) => {
+                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, error_code = %error.code, "Function failed: {}", error.message);
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+
+                    // Record metrics
+                    metrics.invocations_total.add(
+                        1,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "error"),
+                        ],
+                    );
+                    metrics.invocation_duration.record(
+                        duration,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "error"),
+                        ],
+                    );
+                    metrics.invocation_errors_total.add(
+                        1,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("error_code", error.code.clone()),
+                        ],
+                    );
+
+                    // Update accumulator for readable metrics
+                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.invocations_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.increment_function(&function_path);
+
+                    let _ = invocation.sender.send(Err(error));
+                }
+                FunctionResult::NoResult => {
+                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function no result");
+                    tracing::Span::current().record("otel.status_code", "OK");
+
+                    // Record metrics
+                    metrics.invocations_total.add(
+                        1,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "ok"),
+                        ],
+                    );
+                    metrics.invocation_duration.record(
+                        duration,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "ok"),
+                        ],
+                    );
+
+                    // Update accumulator for readable metrics
+                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.increment_function(&function_path);
+
+                    let _ = invocation.sender.send(Ok(None));
+                }
+                FunctionResult::Deferred => {
+                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function deferred");
+
+                    // Record metrics for deferred invocations
+                    metrics.invocations_total.add(
+                        1,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "deferred"),
+                        ],
+                    );
+                    metrics.invocation_duration.record(
+                        duration,
+                        &[
+                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("status", "deferred"),
+                        ],
+                    );
+
+                    // Update accumulator for readable metrics
+                    let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.invocations_deferred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    acc.increment_function(&function_path);
+
+                    // Deferred invocations will have their status set when the result comes back
+                    // we need to store the invocation because it's a worker invocation
+                    self.invocations.insert(invocation_id, invocation);
+                }
             }
-            FunctionResult::Failure(error) => {
-                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function error: {:?}", error);
-                let _ = invocation.sender.send(Err(error));
-            }
-            FunctionResult::NoResult => {
-                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function no result");
-                let _ = invocation.sender.send(Ok(None));
-            }
-            FunctionResult::Deferred => {
-                tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function deferred");
-                // we need to store the invocation because it's a worker invocation
-                self.invocations.insert(invocation_id, invocation);
-            }
+
+            receiver.await
         }
-
-        receiver.await
+        .instrument(span)
+        .await
     }
 }
