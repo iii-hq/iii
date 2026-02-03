@@ -28,7 +28,6 @@ use super::{
     views::dynamic_handler,
 };
 use crate::{
-    bridge_api,
     engine::{Engine, EngineTrait},
     modules::module::Module,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
@@ -141,11 +140,7 @@ impl RestApiCoreModule {
             Arc::new(self.clone()),
             &self.routers_registry,
         );
-        drop(routers_registry_guard);
 
-        if let Some(bridge_router) = self.build_bridge_router() {
-            new_router = new_router.merge(bridge_router);
-        }
 
         new_router = new_router.layer(cors_layer);
 
@@ -163,14 +158,6 @@ impl RestApiCoreModule {
 
         tracing::debug!("Routes updated successfully");
         Ok(())
-    }
-
-    fn build_bridge_router(&self) -> Option<Router> {
-        if let Some(token_registry) = self.engine.webhook_dispatcher.token_registry() {
-            Some(bridge_api::router(self.engine.clone(), token_registry))
-        } else {
-            None
-        }
     }
 
     fn build_router_for_axum(path: &String) -> String {

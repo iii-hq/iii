@@ -129,7 +129,7 @@ impl InvocationHandler {
         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
         async {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let (_sender, _receiver) = tokio::sync::oneshot::channel::<Result<Option<Value>, ErrorBody>>();
             let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
         let method_type = function_handler.invocation_method.method_type();
 
@@ -156,6 +156,9 @@ impl InvocationHandler {
             code: "unsupported_invocation_method".into(),
             message: format!("No invoker registered for: {}", method_type),
         }))
+        }
+        .instrument(span)
+        .await
     }
 
     async fn handle_websocket_invocation(
@@ -167,18 +170,18 @@ impl InvocationHandler {
         function_handler: Function,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-            let invocation = Invocation {
-                id: invocation_id,
-                function_path: function_path.clone(),
-                worker_id,
-                sender,
-                traceparent,
-                baggage,
-            };
+        let invocation = Invocation {
+            id: invocation_id,
+            function_path: function_path.clone(),
+            worker_id,
+            sender,
+            traceparent: None,
+            baggage: None,
+        };
 
-            // Start timer for invocation duration
-            let start_time = std::time::Instant::now();
-            let metrics = get_engine_metrics();
+        // Start timer for invocation duration
+        let start_time = std::time::Instant::now();
+        let metrics = get_engine_metrics();
 
             let result = function_handler
                 .call_handler(Some(invocation_id), body)
@@ -310,9 +313,6 @@ impl InvocationHandler {
                 }
             }
 
-            receiver.await
-        }
-        .instrument(span)
-        .await
+        receiver.await
     }
 }

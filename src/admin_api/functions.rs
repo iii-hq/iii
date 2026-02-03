@@ -245,8 +245,7 @@ pub async fn unregister_function(
     engine.functions.remove(&function_path);
     engine
         .service_registry
-        .remove_function_from_services(&function_path)
-        .await;
+        .remove_function_from_services(&function_path);
 
     Ok(StatusCode::NO_CONTENT)
 }

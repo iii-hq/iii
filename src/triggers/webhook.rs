@@ -1,11 +1,10 @@
-use std::{sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use reqwest::Client;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    bridge_api::token::BridgeTokenRegistry,
     invocation::{
         method::HttpAuth,
         signature::sign_request,
@@ -19,8 +18,6 @@ pub struct WebhookConfig {
     pub url_validator: UrlValidatorConfig,
     pub signature_max_age: u64,
     pub default_timeout_ms: u64,
-    pub bridge_url: Option<String>,
-    pub token_registry: Option<Arc<BridgeTokenRegistry>>,
     /// Maximum idle connections per host in the connection pool.
     /// Default: 50 connections per host.
     pub pool_max_idle_per_host: usize,
@@ -36,8 +33,6 @@ impl Default for WebhookConfig {
             url_validator: UrlValidatorConfig::default(),
             signature_max_age: 300,
             default_timeout_ms: 30000,
-            bridge_url: None,
-            token_registry: None,
             pool_max_idle_per_host: 50,
             client_timeout_secs: 60,
         }
@@ -49,8 +44,6 @@ pub struct WebhookDispatcher {
     url_validator: UrlValidator,
     signature_max_age: u64,
     default_timeout_ms: u64,
-    bridge_url: Option<String>,
-    token_registry: Option<Arc<BridgeTokenRegistry>>,
 }
 
 impl WebhookDispatcher {
@@ -66,8 +59,6 @@ impl WebhookDispatcher {
             url_validator,
             signature_max_age: config.signature_max_age,
             default_timeout_ms: config.default_timeout_ms,
-            bridge_url: config.bridge_url,
-            token_registry: config.token_registry,
         })
     }
 
@@ -96,14 +87,6 @@ impl WebhookDispatcher {
         let invocation_id = Uuid::new_v4().to_string();
         let trace_id = format!("trace-{}", Uuid::new_v4());
 
-        let bridge_token = if let (Some(registry), Some(_bridge_url)) =
-            (&self.token_registry, &self.bridge_url)
-        {
-            Some(registry.create_token(&invocation_id, &trigger.function_path, &trace_id))
-        } else {
-            None
-        };
-
         let mut request = self
             .client
             .post(&trigger.url)
@@ -115,12 +98,6 @@ impl WebhookDispatcher {
             .header("x-iii-Timestamp", timestamp.to_string())
             .header("x-iii-Invocation-ID", &invocation_id)
             .header("x-iii-Trace-ID", &trace_id);
-
-        if let (Some(token), Some(url)) = (&bridge_token, &self.bridge_url) {
-            request = request
-                .header("x-iii-Bridge-URL", url)
-                .header("x-iii-Bridge-Token", token);
-        }
 
         request = match trigger.auth.as_ref() {
             Some(HttpAuth::Hmac { secret }) => {
@@ -136,10 +113,6 @@ impl WebhookDispatcher {
             code: "http_request_failed".into(),
             message: err.to_string(),
         })?;
-
-        if let (Some(token), Some(registry)) = (&bridge_token, &self.token_registry) {
-            registry.invalidate_token(token);
-        }
 
         if response.status().is_success() {
             return Ok(());
@@ -180,9 +153,5 @@ impl WebhookDispatcher {
 
     pub fn url_validator(&self) -> &UrlValidator {
         &self.url_validator
-    }
-
-    pub fn token_registry(&self) -> Option<Arc<BridgeTokenRegistry>> {
-        self.token_registry.clone()
     }
 }

@@ -1,5 +1,8 @@
 pub mod functions;
 pub mod middleware;
+pub mod module;
+
+pub use module::{AdminApiConfig, AdminApiModule};
 
 use std::sync::Arc;
 
