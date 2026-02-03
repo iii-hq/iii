@@ -448,8 +448,9 @@ def collect_metrics() -> dict[str, Any]:
         err_count = _error_count
         _invocation_count = 0
         _total_latency_ms = 0.0
+        _error_count = 0
 
-    # Assuming 5s reporting interval
+    # Assuming 5s reporting interval (same as default in MetricsReporter)
     invocations_per_sec = inv_count / 5.0
     avg_latency_ms = total_lat / inv_count if inv_count > 0 else 0.0
 
