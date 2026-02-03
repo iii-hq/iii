@@ -100,7 +100,7 @@ impl TriggerRegistrator for StreamCoreModule {
                             condition_function_path = %stream_trigger.condition_function_path.clone().unwrap_or_default(),
                             "{} Stream trigger", "[REGISTERED]".green());
 
-                        let _ = stream_triggers_by_name
+                        stream_triggers_by_name
                             .write()
                             .await
                             .entry(stream_trigger.stream_name.clone().unwrap())

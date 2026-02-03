@@ -264,8 +264,8 @@ impl StreamCoreModule {
                         let item_id = trigger.config.item_id.clone().unwrap_or("".to_string());
                         let event_item_id = event_data.id.clone().unwrap_or("".to_string());
 
-                        if (group_id != "" && group_id != event_data.group_id)
-                            || (item_id != "" && item_id != event_item_id)
+                        if (!group_id.is_empty() && group_id != event_data.group_id)
+                            || (!item_id.is_empty() && item_id != event_item_id)
                         {
                             continue;
                         }
