@@ -33,7 +33,6 @@ use crate::{
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Worker information returned by `engine.workers.list`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInfo {
     pub id: String,
@@ -49,7 +48,6 @@ pub struct WorkerInfo {
     pub active_invocations: usize,
 }
 
-/// Function information returned by `engine.functions.list`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionInfo {
     pub function_path: String,
@@ -59,7 +57,6 @@ pub struct FunctionInfo {
     pub metadata: Option<Value>,
 }
 
-/// Trigger information returned by `engine.triggers.list`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerInfo {
     pub id: String,
@@ -68,7 +65,6 @@ pub struct TriggerInfo {
     pub config: Value,
 }
 
-/// Worker metadata for auto-registration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerMetadata {
     pub runtime: String,
@@ -199,13 +195,11 @@ enum Outbound {
 
 type PendingInvocation = oneshot::Sender<Result<Value, BridgeError>>;
 
-// WebSocket transmitter type alias
 type WsTx = futures_util::stream::SplitSink<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     WsMessage,
 >;
 
-/// Callback function type for functions available events
 pub type FunctionsAvailableCallback = Arc<dyn Fn(Vec<FunctionInfo>) + Send + Sync>;
 
 struct BridgeInner {
@@ -231,7 +225,6 @@ pub struct Bridge {
     inner: Arc<BridgeInner>,
 }
 
-/// Guard that unsubscribes from functions available events when dropped
 pub struct FunctionsAvailableGuard {
     bridge: Bridge,
     callback_id: usize,
@@ -262,12 +255,10 @@ impl Drop for FunctionsAvailableGuard {
 }
 
 impl Bridge {
-    /// Create a new Bridge with default worker metadata (auto-detected runtime, os, hostname)
     pub fn new(address: &str) -> Self {
         Self::with_metadata(address, WorkerMetadata::default())
     }
 
-    /// Create a new Bridge with custom worker metadata
     pub fn with_metadata(address: &str, metadata: WorkerMetadata) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = BridgeInner {
@@ -292,7 +283,6 @@ impl Bridge {
         }
     }
 
-    /// Set custom worker metadata (call before connect)
     pub fn set_metadata(&self, metadata: WorkerMetadata) {
         *self.inner.worker_metadata.lock().unwrap() = Some(metadata);
     }
@@ -557,7 +547,6 @@ impl Bridge {
         })
     }
 
-    /// List all registered functions from the engine
     pub async fn list_functions(&self) -> Result<Vec<FunctionInfo>, BridgeError> {
         let result = self
             .invoke_function("engine.functions.list", serde_json::json!({}))
@@ -571,8 +560,6 @@ impl Bridge {
         Ok(functions)
     }
 
-    /// Subscribe to function availability events
-    /// Returns a guard that will unsubscribe when dropped
     pub fn on_functions_available<F>(&self, callback: F) -> FunctionsAvailableGuard
     where
         F: Fn(Vec<FunctionInfo>) + Send + Sync + 'static,
@@ -589,10 +576,8 @@ impl Bridge {
             .unwrap()
             .insert(callback_id, callback);
 
-        // Set up trigger if not already done
         let mut trigger_guard = self.inner.functions_available_trigger.lock().unwrap();
         if trigger_guard.is_none() {
-            // Get or create function path (reuse existing if trigger registration previously failed)
             let function_path = {
                 let mut path_guard = self.inner.functions_available_function_path.lock().unwrap();
                 if path_guard.is_none() {
@@ -604,7 +589,6 @@ impl Bridge {
                 }
             };
 
-            // Register handler function only if it doesn't already exist
             let function_exists = self
                 .inner
                 .functions
@@ -616,7 +600,6 @@ impl Bridge {
                 self.register_function(function_path.clone(), move |input: Value| {
                     let bridge = bridge.clone();
                     async move {
-                        // Extract functions from trigger payload
                         let functions = input
                             .get("functions")
                             .and_then(|v| {
@@ -633,7 +616,6 @@ impl Bridge {
                 });
             }
 
-            // Register trigger
             match self.register_trigger(
                 "engine::functions-available",
                 function_path,
@@ -654,7 +636,6 @@ impl Bridge {
         }
     }
 
-    /// List all connected workers from the engine
     pub async fn list_workers(&self) -> Result<Vec<WorkerInfo>, BridgeError> {
         let result = self
             .invoke_function("engine.workers.list", serde_json::json!({}))
@@ -668,7 +649,6 @@ impl Bridge {
         Ok(workers)
     }
 
-    /// List all registered triggers from the engine
     pub async fn list_triggers(&self) -> Result<Vec<TriggerInfo>, BridgeError> {
         let result = self
             .invoke_function("engine.triggers.list", serde_json::json!({}))
@@ -682,10 +662,7 @@ impl Bridge {
         Ok(triggers)
     }
 
-    /// Report worker metrics to the engine.
-    /// Metrics are automatically associated with this worker via the injected worker_id.
     pub fn report_metrics(&self, mut metrics: WorkerMetrics) -> Result<(), BridgeError> {
-        // Set timestamp if not already set
         if metrics.collected_at_ms == 0 {
             metrics.collected_at_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -695,7 +672,6 @@ impl Bridge {
         self.invoke_function_async("engine.workers.report_metrics", metrics)
     }
 
-    /// Get metrics for a specific worker by ID.
     pub async fn get_worker_metrics(
         &self,
         worker_id: &str,
@@ -714,7 +690,6 @@ impl Bridge {
         Ok(serde_json::from_value(result).ok())
     }
 
-    /// Get metrics for all workers.
     pub async fn get_all_worker_metrics(&self) -> Result<Vec<WorkerMetricsInfo>, BridgeError> {
         let result = self
             .invoke_function("engine.workers.get_metrics", serde_json::json!({}))
@@ -728,7 +703,6 @@ impl Bridge {
         Ok(metrics)
     }
 
-    /// Register this worker's metadata with the engine (called automatically on connect)
     fn register_worker_metadata(&self) {
         if let Some(metadata) = self.inner.worker_metadata.lock().unwrap().clone() {
             let _ = self.invoke_function_async("engine.workers.register", metadata);
@@ -763,7 +737,6 @@ impl Bridge {
                         continue;
                     }
 
-                    // Auto-register worker metadata on connect (like Node SDK)
                     self.register_worker_metadata();
 
                     let mut should_reconnect = false;

@@ -1,20 +1,14 @@
-"""Real system metrics collection for iii-sdk.
-
-Collects CPU, memory, network, disk metrics and K8s info when available.
-Uses the `psutil` library for cross-platform support.
-"""
-
 import asyncio
 import os
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Optional
 
 import psutil
 
 
-# Global state for tracking metrics over time
 _state_lock = Lock()
 _process_start_time = time.time()
 _invocation_count = 0
@@ -26,7 +20,6 @@ _last_cpu_time: float | None = None
 
 
 def record_invocation(latency_ms: float, is_error: bool = False) -> None:
-    """Record an invocation for throughput/latency calculations."""
     global _invocation_count, _total_latency_ms, _error_count
     with _state_lock:
         _invocation_count += 1
@@ -36,12 +29,10 @@ def record_invocation(latency_ms: float, is_error: bool = False) -> None:
 
 
 def is_kubernetes() -> bool:
-    """Check if running inside Kubernetes."""
     return "KUBERNETES_SERVICE_HOST" in os.environ
 
 
 def _read_k8s_file(filename: str) -> str | None:
-    """Read Kubernetes downward API files."""
     path = Path("/var/run/secrets/kubernetes.io/serviceaccount") / filename
     try:
         if path.exists():
@@ -52,7 +43,6 @@ def _read_k8s_file(filename: str) -> str | None:
 
 
 def _get_kubernetes_identifiers() -> dict[str, Any] | None:
-    """Get Kubernetes identifiers from environment/downward API."""
     if not is_kubernetes():
         return None
 
@@ -67,7 +57,6 @@ def _get_kubernetes_identifiers() -> dict[str, Any] | None:
 
 
 def _read_cgroup_value(v1_path: str, v2_path: str) -> int | None:
-    """Read a cgroup file and return its numeric value."""
     for p in [v2_path, v1_path]:
         try:
             path = Path(p)
@@ -82,9 +71,7 @@ def _read_cgroup_value(v1_path: str, v2_path: str) -> int | None:
 
 
 def _get_cgroup_cpu_usage_cores() -> float | None:
-    """Get CPU usage in cores from cgroup."""
     try:
-        # cgroup v2
         v2_path = Path("/sys/fs/cgroup/cpu.stat")
         if v2_path.exists():
             content = v2_path.read_text()
@@ -93,7 +80,6 @@ def _get_cgroup_cpu_usage_cores() -> float | None:
                     usec = int(line.split()[1])
                     return usec / 1_000_000
 
-        # cgroup v1
         v1_path = Path("/sys/fs/cgroup/cpu/cpuacct.usage")
         if v1_path.exists():
             nsec = int(v1_path.read_text().strip())
@@ -104,7 +90,6 @@ def _get_cgroup_cpu_usage_cores() -> float | None:
 
 
 def _get_cgroup_memory_working_set() -> int | None:
-    """Get memory working set bytes from cgroup."""
     return _read_cgroup_value(
         "/sys/fs/cgroup/memory/memory.usage_in_bytes",
         "/sys/fs/cgroup/memory.current",
@@ -112,21 +97,17 @@ def _get_cgroup_memory_working_set() -> int | None:
 
 
 def _get_cgroup_memory_limit() -> int | None:
-    """Get memory limit from cgroup."""
     value = _read_cgroup_value(
         "/sys/fs/cgroup/memory/memory.limit_in_bytes",
         "/sys/fs/cgroup/memory.max",
     )
-    # Very large values mean no limit
     if value and value < 9223372036854771712:
         return value
     return None
 
 
 def _get_cgroup_cpu_limit_cores() -> float | None:
-    """Get CPU limit in cores from cgroup."""
     try:
-        # cgroup v2
         v2_path = Path("/sys/fs/cgroup/cpu.max")
         if v2_path.exists():
             content = v2_path.read_text().strip()
@@ -136,7 +117,6 @@ def _get_cgroup_cpu_limit_cores() -> float | None:
                 if quota > 0 and period > 0:
                     return quota / period
 
-        # cgroup v1
         quota_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
         period_path = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
         if quota_path.exists() and period_path.exists():
@@ -150,9 +130,7 @@ def _get_cgroup_cpu_limit_cores() -> float | None:
 
 
 def _get_cgroup_cpu_throttled_seconds() -> float | None:
-    """Get CPU throttled time from cgroup."""
     try:
-        # cgroup v2
         v2_path = Path("/sys/fs/cgroup/cpu.stat")
         if v2_path.exists():
             content = v2_path.read_text()
@@ -160,7 +138,6 @@ def _get_cgroup_cpu_throttled_seconds() -> float | None:
                 if line.startswith("throttled_usec"):
                     return int(line.split()[1]) / 1_000_000
 
-        # cgroup v1
         v1_path = Path("/sys/fs/cgroup/cpu/cpu.stat")
         if v1_path.exists():
             content = v1_path.read_text()
@@ -173,7 +150,6 @@ def _get_cgroup_cpu_throttled_seconds() -> float | None:
 
 
 def _parse_k8s_memory(value: str) -> int | None:
-    """Parse Kubernetes memory strings (e.g., '256Mi', '1Gi')."""
     import re
 
     match = re.match(r"^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$", value)
@@ -203,7 +179,6 @@ def _parse_k8s_memory(value: str) -> int | None:
 
 
 def _get_kubernetes_core_metrics() -> dict[str, Any] | None:
-    """Get Kubernetes core metrics."""
     if not is_kubernetes():
         return None
 
@@ -213,7 +188,6 @@ def _get_kubernetes_core_metrics() -> dict[str, Any] | None:
         "pod_ready": True,
     }
 
-    # Add cgroup-based metrics
     cpu_cores = _get_cgroup_cpu_usage_cores()
     if cpu_cores is not None:
         metrics["cpu_usage_cores"] = cpu_cores
@@ -237,13 +211,11 @@ def _get_kubernetes_core_metrics() -> dict[str, Any] | None:
 
 
 def _get_kubernetes_resource_metrics() -> dict[str, Any] | None:
-    """Get Kubernetes resource metrics (limits, requests, throttling)."""
     if not is_kubernetes():
         return None
 
     metrics: dict[str, Any] = {}
 
-    # CPU/memory limits from cgroup
     cpu_limit = _get_cgroup_cpu_limit_cores()
     if cpu_limit is not None:
         metrics["cpu_limits_cores"] = cpu_limit
@@ -252,12 +224,10 @@ def _get_kubernetes_resource_metrics() -> dict[str, Any] | None:
     if mem_limit is not None:
         metrics["memory_limits_bytes"] = mem_limit
 
-    # CPU throttling
     throttled = _get_cgroup_cpu_throttled_seconds()
     if throttled is not None:
         metrics["cpu_throttled_seconds_total"] = throttled
 
-    # Requests from downward API env vars
     cpu_request = os.environ.get("CPU_REQUEST")
     if cpu_request:
         if cpu_request.endswith("m"):
@@ -278,7 +248,6 @@ def _get_kubernetes_resource_metrics() -> dict[str, Any] | None:
 
 
 def _get_filesystem_usage() -> int | None:
-    """Get filesystem usage bytes for root filesystem."""
     try:
         disk = psutil.disk_usage("/")
         return disk.used
@@ -287,7 +256,6 @@ def _get_filesystem_usage() -> int | None:
 
 
 def _get_node_pressure() -> dict[str, bool | None]:
-    """Get node pressure conditions from cgroup pressure files."""
     result: dict[str, bool | None] = {
         "memory": None,
         "disk": None,
@@ -303,7 +271,6 @@ def _get_node_pressure() -> dict[str, bool | None]:
         match = re.search(r"avg10=(\d+\.?\d*)", line)
         return float(match.group(1)) if match else None
 
-    # Memory pressure
     try:
         content = Path("/sys/fs/cgroup/memory.pressure").read_text()
         for line in content.splitlines():
@@ -314,7 +281,6 @@ def _get_node_pressure() -> dict[str, bool | None]:
     except Exception:
         pass
 
-    # IO/Disk pressure
     try:
         content = Path("/sys/fs/cgroup/io.pressure").read_text()
         for line in content.splitlines():
@@ -325,7 +291,6 @@ def _get_node_pressure() -> dict[str, bool | None]:
     except Exception:
         pass
 
-    # CPU/PID pressure
     try:
         content = Path("/sys/fs/cgroup/cpu.pressure").read_text()
         for line in content.splitlines():
@@ -340,13 +305,11 @@ def _get_node_pressure() -> dict[str, bool | None]:
 
 
 def _get_kubernetes_extended_metrics() -> dict[str, Any] | None:
-    """Get Kubernetes extended metrics."""
     if not is_kubernetes():
         return None
 
     metrics: dict[str, Any] = {}
 
-    # Network stats
     try:
         net_io = psutil.net_io_counters()
         metrics["network_rx_bytes_total"] = net_io.bytes_recv
@@ -354,12 +317,10 @@ def _get_kubernetes_extended_metrics() -> dict[str, Any] | None:
     except Exception:
         pass
 
-    # Filesystem usage
     fs_usage = _get_filesystem_usage()
     if fs_usage is not None:
         metrics["fs_usage_bytes"] = fs_usage
 
-    # Node pressure conditions from cgroup v2 pressure files
     pressure = _get_node_pressure()
     if pressure["memory"] is not None:
         metrics["node_memory_pressure"] = pressure["memory"]
@@ -372,16 +333,11 @@ def _get_kubernetes_extended_metrics() -> dict[str, Any] | None:
 
 
 def collect_metrics() -> dict[str, Any]:
-    """Collect all system metrics.
-
-    Returns a WorkerMetrics-compatible dictionary.
-    """
     global _invocation_count, _total_latency_ms, _last_network_stats, _last_disk_stats, _last_cpu_time
 
     now_ms = int(time.time() * 1000)
     uptime_secs = int(time.time() - _process_start_time)
 
-    # Default values if psutil not available
     cpu_percent = 0.0
     memory_used = 0
     memory_total = 0
@@ -394,27 +350,22 @@ def collect_metrics() -> dict[str, Any]:
 
     proc = psutil.Process()
 
-    # CPU percent (since last call)
     cpu_percent = proc.cpu_percent(interval=None)
 
-    # Memory
     mem_info = proc.memory_info()
     memory_used = mem_info.rss
     memory_total = psutil.virtual_memory().total
 
-    # Thread count
     try:
         thread_count = proc.num_threads()
     except Exception:
         thread_count = 1
 
-    # Open file descriptors (Unix only)
     try:
         open_fds = proc.num_fds()
     except (AttributeError, psutil.Error):
         pass
 
-    # Network I/O (delta)
     try:
         net_io = psutil.net_io_counters()
         current_net = {"rx": net_io.bytes_recv, "tx": net_io.bytes_sent}
@@ -427,7 +378,6 @@ def collect_metrics() -> dict[str, Any]:
     except Exception:
         pass
 
-    # Disk I/O (delta)
     try:
         disk_io = psutil.disk_io_counters()
         if disk_io:
@@ -441,7 +391,6 @@ def collect_metrics() -> dict[str, Any]:
     except Exception:
         pass
 
-    # Calculate invocation metrics and reset counters
     with _state_lock:
         inv_count = _invocation_count
         total_lat = _total_latency_ms
@@ -450,7 +399,6 @@ def collect_metrics() -> dict[str, Any]:
         _total_latency_ms = 0.0
         _error_count = 0
 
-    # Assuming 5s reporting interval (same as default in MetricsReporter)
     invocations_per_sec = inv_count / 5.0
     avg_latency_ms = total_lat / inv_count if inv_count > 0 else 0.0
 
@@ -464,7 +412,7 @@ def collect_metrics() -> dict[str, Any]:
         },
         "performance": {
             "thread_count": thread_count,
-            "open_connections": 1,  # WebSocket connection
+            "open_connections": 1,
             "invocations_per_sec": invocations_per_sec,
             "avg_latency_ms": avg_latency_ms,
         },
@@ -478,7 +426,6 @@ def collect_metrics() -> dict[str, Any]:
         },
     }
 
-    # Add K8s metrics if running in Kubernetes
     if is_kubernetes():
         metrics["k8s_identifiers"] = _get_kubernetes_identifiers()
         metrics["k8s_core"] = _get_kubernetes_core_metrics()
@@ -488,9 +435,122 @@ def collect_metrics() -> dict[str, Any]:
     return metrics
 
 
-class MetricsReporter:
-    """Auto-reporter that periodically collects and sends metrics."""
+@dataclass
+class K8sIdentifiersData:
+    cluster: Optional[str] = None
+    namespace: Optional[str] = None
+    pod_name: Optional[str] = None
+    container_name: Optional[str] = None
+    node_name: Optional[str] = None
+    pod_uid: Optional[str] = None
 
+
+@dataclass
+class K8sMetricsData:
+    cpu_usage_cores: Optional[float] = None
+    memory_working_set_bytes: Optional[int] = None
+    cpu_limits_cores: Optional[float] = None
+    memory_limits_bytes: Optional[int] = None
+    cpu_throttled_seconds_total: Optional[float] = None
+    cpu_requests_cores: Optional[float] = None
+    memory_requests_bytes: Optional[int] = None
+
+
+@dataclass
+class WorkerMetricsSnapshot:
+    memory_rss: Optional[int] = None
+    memory_heap_used: Optional[int] = None
+    memory_heap_total: Optional[int] = None
+    cpu_percent: Optional[float] = None
+    cpu_user_seconds: Optional[float] = None
+    cpu_system_seconds: Optional[float] = None
+    uptime_seconds: Optional[int] = None
+    thread_count: Optional[int] = None
+    open_file_descriptors: Optional[int] = None
+    open_connections: Optional[int] = None
+    error_count: Optional[int] = None
+    invocations_total: Optional[int] = None
+    invocations_per_sec: Optional[float] = None
+    k8s_identifiers: Optional[K8sIdentifiersData] = None
+    k8s: Optional[K8sMetricsData] = None
+
+
+class WorkerMetricsCollector:
+    def __init__(self) -> None:
+        self._proc = psutil.Process()
+        self._proc.cpu_percent(interval=None)
+        self._invocations_total = 0
+
+    def collect(self) -> WorkerMetricsSnapshot:
+        raw = collect_metrics()
+
+        process = raw.get("process", {})
+        perf = raw.get("performance", {})
+        ext = raw.get("extended", {})
+
+        cpu_times = self._proc.cpu_times()
+
+        k8s_ids = None
+        raw_ids = raw.get("k8s_identifiers")
+        if raw_ids:
+            k8s_ids = K8sIdentifiersData(
+                cluster=raw_ids.get("cluster"),
+                namespace=raw_ids.get("namespace"),
+                pod_name=raw_ids.get("pod_name"),
+                container_name=raw_ids.get("container_name"),
+                node_name=raw_ids.get("node_name"),
+                pod_uid=raw_ids.get("pod_uid"),
+            )
+
+        k8s_metrics = None
+        raw_core = raw.get("k8s_core")
+        raw_res = raw.get("k8s_resources")
+        if raw_core or raw_res:
+            k8s_metrics = K8sMetricsData(
+                cpu_usage_cores=(raw_core or {}).get("cpu_usage_cores"),
+                memory_working_set_bytes=(raw_core or {}).get("memory_working_set_bytes"),
+                cpu_limits_cores=(raw_res or {}).get("cpu_limits_cores"),
+                memory_limits_bytes=(raw_res or {}).get("memory_limits_bytes"),
+                cpu_throttled_seconds_total=(raw_res or {}).get("cpu_throttled_seconds_total"),
+                cpu_requests_cores=(raw_res or {}).get("cpu_requests_cores"),
+                memory_requests_bytes=(raw_res or {}).get("memory_requests_bytes"),
+            )
+
+        inv_total_delta = int(perf.get("invocations_per_sec", 0) * 5)
+        self._invocations_total += inv_total_delta
+
+        return WorkerMetricsSnapshot(
+            memory_rss=process.get("memory_used_bytes"),
+            memory_heap_used=process.get("memory_used_bytes"),
+            memory_heap_total=process.get("memory_total_bytes"),
+            cpu_percent=process.get("cpu_percent"),
+            cpu_user_seconds=cpu_times.user,
+            cpu_system_seconds=cpu_times.system,
+            uptime_seconds=process.get("process_uptime_secs"),
+            thread_count=perf.get("thread_count"),
+            open_file_descriptors=ext.get("open_file_descriptors"),
+            open_connections=perf.get("open_connections"),
+            error_count=ext.get("error_count"),
+            invocations_total=self._invocations_total,
+            invocations_per_sec=perf.get("invocations_per_sec"),
+            k8s_identifiers=k8s_ids,
+            k8s=k8s_metrics,
+        )
+
+
+_collector_instance: Optional[WorkerMetricsCollector] = None
+_collector_lock = Lock()
+
+
+def get_metrics_collector() -> WorkerMetricsCollector:
+    global _collector_instance
+    with _collector_lock:
+        if _collector_instance is None:
+            _collector_instance = WorkerMetricsCollector()
+        return _collector_instance
+
+
+class MetricsReporter:
     def __init__(
         self,
         report_fn,
@@ -502,13 +562,11 @@ class MetricsReporter:
         self._task = None
 
     async def start(self):
-        """Start the metrics reporter."""
         if self._running:
             return
 
         self._running = True
 
-        # Initial warmup call to establish baselines
         psutil.Process().cpu_percent(interval=None)
 
         async def _loop():
@@ -521,7 +579,6 @@ class MetricsReporter:
         self._task = asyncio.create_task(_loop())
 
     async def stop(self):
-        """Stop the metrics reporter."""
         self._running = False
         if self._task:
             self._task.cancel()

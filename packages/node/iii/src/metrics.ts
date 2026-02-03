@@ -216,7 +216,6 @@ function getFilesystemUsage(): number | undefined {
 
   try {
     const { execSync } = require('child_process')
-    // Add timeout to prevent blocking event loop if df hangs (e.g., unresponsive NFS mount)
     const output = execSync('df -B1 / 2>/dev/null', { encoding: 'utf-8', timeout: 1000 })
     const lines = output.trim().split('\n')
     if (lines.length >= 2) {

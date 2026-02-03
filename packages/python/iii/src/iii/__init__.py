@@ -1,5 +1,3 @@
-"""III SDK for Python."""
-
 import logging
 
 from .bridge import Bridge, BridgeOptions
@@ -8,9 +6,18 @@ from .context import Context, get_context, with_context
 from .logger import Logger
 from .metrics import (
     MetricsReporter,
+    WorkerMetricsCollector,
     collect_metrics,
+    get_metrics_collector,
     is_kubernetes,
     record_invocation,
+)
+from .telemetry import (
+    EngineMetricsExporter,
+    WorkerGaugesOptions,
+    register_system_gauges,
+    register_worker_gauges,
+    stop_worker_gauges,
 )
 from .streams import (
     IStream,
@@ -36,12 +43,6 @@ from .types import ApiRequest, ApiResponse, FunctionsAvailableCallback, RemoteFu
 
 
 def configure_logging(level: int = logging.INFO, format: str | None = None) -> None:
-    """Configure logging for the III SDK.
-
-    Args:
-        level: Logging level (e.g., logging.DEBUG, logging.INFO)
-        format: Log format string. Defaults to a simple format.
-    """
     if format is None:
         format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
@@ -50,21 +51,17 @@ def configure_logging(level: int = logging.INFO, format: str | None = None) -> N
 
 
 __all__ = [
-    # Core
     "Bridge",
     "BridgeOptions",
     "Logger",
     "Context",
     "get_context",
     "with_context",
-    # API types
     "ApiRequest",
     "ApiResponse",
-    # Bridge types
     "FunctionInfo",
     "WorkerInfo",
     "WorkerStatus",
-    # Stream types
     "IStream",
     "StreamAuthInput",
     "StreamAuthResult",
@@ -83,14 +80,18 @@ __all__ = [
     "UpdateOp",
     "UpdateRemove",
     "UpdateSet",
-    # Callbacks
     "FunctionsAvailableCallback",
     "RemoteFunctionHandler",
-    # Utility
     "configure_logging",
-    # Metrics
     "collect_metrics",
     "record_invocation",
     "is_kubernetes",
     "MetricsReporter",
+    "WorkerMetricsCollector",
+    "get_metrics_collector",
+    "register_system_gauges",
+    "register_worker_gauges",
+    "stop_worker_gauges",
+    "WorkerGaugesOptions",
+    "EngineMetricsExporter",
 ]
