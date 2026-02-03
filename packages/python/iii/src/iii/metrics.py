@@ -11,12 +11,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
-try:
-    import psutil
-
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
+import psutil
 
 
 # Global state for tracking metrics over time
@@ -284,13 +279,11 @@ def _get_kubernetes_resource_metrics() -> dict[str, Any] | None:
 
 def _get_filesystem_usage() -> int | None:
     """Get filesystem usage bytes for root filesystem."""
-    if PSUTIL_AVAILABLE:
-        try:
-            disk = psutil.disk_usage("/")
-            return disk.used
-        except Exception:
-            pass
-    return None
+    try:
+        disk = psutil.disk_usage("/")
+        return disk.used
+    except Exception:
+        return None
 
 
 def _get_node_pressure() -> dict[str, bool | None]:
@@ -354,13 +347,12 @@ def _get_kubernetes_extended_metrics() -> dict[str, Any] | None:
     metrics: dict[str, Any] = {}
 
     # Network stats
-    if PSUTIL_AVAILABLE:
-        try:
-            net_io = psutil.net_io_counters()
-            metrics["network_rx_bytes_total"] = net_io.bytes_recv
-            metrics["network_tx_bytes_total"] = net_io.bytes_sent
-        except Exception:
-            pass
+    try:
+        net_io = psutil.net_io_counters()
+        metrics["network_rx_bytes_total"] = net_io.bytes_recv
+        metrics["network_tx_bytes_total"] = net_io.bytes_sent
+    except Exception:
+        pass
 
     # Filesystem usage
     fs_usage = _get_filesystem_usage()
@@ -400,55 +392,54 @@ def collect_metrics() -> dict[str, Any]:
     disk_write = None
     open_fds = None
 
-    if PSUTIL_AVAILABLE:
-        proc = psutil.Process()
+    proc = psutil.Process()
 
-        # CPU percent (since last call)
-        cpu_percent = proc.cpu_percent(interval=None)
+    # CPU percent (since last call)
+    cpu_percent = proc.cpu_percent(interval=None)
 
-        # Memory
-        mem_info = proc.memory_info()
-        memory_used = mem_info.rss
-        memory_total = psutil.virtual_memory().total
+    # Memory
+    mem_info = proc.memory_info()
+    memory_used = mem_info.rss
+    memory_total = psutil.virtual_memory().total
 
-        # Thread count
-        try:
-            thread_count = proc.num_threads()
-        except Exception:
-            thread_count = 1
+    # Thread count
+    try:
+        thread_count = proc.num_threads()
+    except Exception:
+        thread_count = 1
 
-        # Open file descriptors (Unix only)
-        try:
-            open_fds = proc.num_fds()
-        except (AttributeError, psutil.Error):
-            pass
+    # Open file descriptors (Unix only)
+    try:
+        open_fds = proc.num_fds()
+    except (AttributeError, psutil.Error):
+        pass
 
-        # Network I/O (delta)
-        try:
-            net_io = psutil.net_io_counters()
-            current_net = {"rx": net_io.bytes_recv, "tx": net_io.bytes_sent}
+    # Network I/O (delta)
+    try:
+        net_io = psutil.net_io_counters()
+        current_net = {"rx": net_io.bytes_recv, "tx": net_io.bytes_sent}
+
+        with _state_lock:
+            if _last_network_stats:
+                network_rx = current_net["rx"] - _last_network_stats["rx"]
+                network_tx = current_net["tx"] - _last_network_stats["tx"]
+            _last_network_stats = current_net
+    except Exception:
+        pass
+
+    # Disk I/O (delta)
+    try:
+        disk_io = psutil.disk_io_counters()
+        if disk_io:
+            current_disk = {"read": disk_io.read_bytes, "write": disk_io.write_bytes}
 
             with _state_lock:
-                if _last_network_stats:
-                    network_rx = current_net["rx"] - _last_network_stats["rx"]
-                    network_tx = current_net["tx"] - _last_network_stats["tx"]
-                _last_network_stats = current_net
-        except Exception:
-            pass
-
-        # Disk I/O (delta)
-        try:
-            disk_io = psutil.disk_io_counters()
-            if disk_io:
-                current_disk = {"read": disk_io.read_bytes, "write": disk_io.write_bytes}
-
-                with _state_lock:
-                    if _last_disk_stats:
-                        disk_read = current_disk["read"] - _last_disk_stats["read"]
-                        disk_write = current_disk["write"] - _last_disk_stats["write"]
-                    _last_disk_stats = current_disk
-        except Exception:
-            pass
+                if _last_disk_stats:
+                    disk_read = current_disk["read"] - _last_disk_stats["read"]
+                    disk_write = current_disk["write"] - _last_disk_stats["write"]
+                _last_disk_stats = current_disk
+    except Exception:
+        pass
 
     # Calculate invocation metrics and reset counters
     with _state_lock:
@@ -517,8 +508,7 @@ class MetricsReporter:
         self._running = True
 
         # Initial warmup call to establish baselines
-        if PSUTIL_AVAILABLE:
-            psutil.Process().cpu_percent(interval=None)
+        psutil.Process().cpu_percent(interval=None)
 
         async def _loop():
             while self._running:
