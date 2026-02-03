@@ -60,8 +60,8 @@ function getCpuPercent(): number {
 function getMemoryMetrics(): { used: number; total: number } {
   const memUsage = process.memoryUsage()
   return {
-    used: memUsage.heapUsed + memUsage.external,
-    total: memUsage.heapTotal + memUsage.external,
+    used: memUsage.rss,
+    total: os.totalmem(),
   }
 }
 

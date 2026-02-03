@@ -5,7 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Callable, Optional
 
 import psutil
-from opentelemetry.metrics import Meter, get_meter
+from opentelemetry.metrics import Meter, Observation, get_meter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import (
     MetricExporter,
@@ -72,7 +72,7 @@ def register_worker_gauges(meter: Meter, options: WorkerGaugesOptions) -> None:
                     if metrics.k8s_identifiers.container_name:
                         attrs["k8s.container.name"] = metrics.k8s_identifiers.container_name
 
-                yield options.Observation(value, attrs)
+                yield Observation(value, attrs)
         return callback
 
     meter.create_observable_gauge(
@@ -178,7 +178,7 @@ def register_worker_gauges(meter: Meter, options: WorkerGaugesOptions) -> None:
                     attrs["k8s.pod.name"] = metrics.k8s_identifiers.pod_name
                 if metrics.k8s_identifiers.namespace:
                     attrs["k8s.namespace"] = metrics.k8s_identifiers.namespace
-            yield options.Observation(metrics.k8s.cpu_usage_cores, attrs)
+            yield Observation(metrics.k8s.cpu_usage_cores, attrs)
 
     def k8s_memory_callback(options):
         collector = _metrics_collector
@@ -192,7 +192,7 @@ def register_worker_gauges(meter: Meter, options: WorkerGaugesOptions) -> None:
                     attrs["k8s.pod.name"] = metrics.k8s_identifiers.pod_name
                 if metrics.k8s_identifiers.namespace:
                     attrs["k8s.namespace"] = metrics.k8s_identifiers.namespace
-            yield options.Observation(metrics.k8s.memory_working_set_bytes, attrs)
+            yield Observation(metrics.k8s.memory_working_set_bytes, attrs)
 
     def k8s_cpu_limits_callback(options):
         collector = _metrics_collector
@@ -201,7 +201,7 @@ def register_worker_gauges(meter: Meter, options: WorkerGaugesOptions) -> None:
         metrics = collector.collect()
         if metrics.k8s and metrics.k8s.cpu_limits_cores is not None:
             attrs = dict(base_attributes)
-            yield options.Observation(metrics.k8s.cpu_limits_cores, attrs)
+            yield Observation(metrics.k8s.cpu_limits_cores, attrs)
 
     def k8s_memory_limits_callback(options):
         collector = _metrics_collector
@@ -210,7 +210,7 @@ def register_worker_gauges(meter: Meter, options: WorkerGaugesOptions) -> None:
         metrics = collector.collect()
         if metrics.k8s and metrics.k8s.memory_limits_bytes is not None:
             attrs = dict(base_attributes)
-            yield options.Observation(metrics.k8s.memory_limits_bytes, attrs)
+            yield Observation(metrics.k8s.memory_limits_bytes, attrs)
 
     meter.create_observable_gauge(
         "iii.worker.k8s.cpu.usage",
@@ -259,28 +259,28 @@ def register_system_gauges(meter: Meter) -> None:
     def cpu_callback(options):
         try:
             cpu_percent = psutil.cpu_percent(interval=None)
-            yield options.Observation(cpu_percent / 100.0, {"system.cpu.state": "user"})
+            yield Observation(cpu_percent / 100.0, {"system.cpu.state": "user"})
         except Exception:
             pass
 
     def memory_callback(options):
         try:
             mem = psutil.virtual_memory()
-            yield options.Observation(mem.used, {"system.memory.state": "used"})
+            yield Observation(mem.used, {"system.memory.state": "used"})
         except Exception:
             pass
 
     def network_rx_callback(options):
         try:
             net = psutil.net_io_counters()
-            yield options.Observation(net.bytes_recv, {"network.io.direction": "receive"})
+            yield Observation(net.bytes_recv, {"network.io.direction": "receive"})
         except Exception:
             pass
 
     def network_tx_callback(options):
         try:
             net = psutil.net_io_counters()
-            yield options.Observation(net.bytes_sent, {"network.io.direction": "transmit"})
+            yield Observation(net.bytes_sent, {"network.io.direction": "transmit"})
         except Exception:
             pass
 
@@ -288,7 +288,7 @@ def register_system_gauges(meter: Meter) -> None:
         try:
             disk = psutil.disk_io_counters()
             if disk:
-                yield options.Observation(disk.read_bytes, {"disk.io.direction": "read"})
+                yield Observation(disk.read_bytes, {"disk.io.direction": "read"})
         except Exception:
             pass
 
@@ -296,7 +296,7 @@ def register_system_gauges(meter: Meter) -> None:
         try:
             disk = psutil.disk_io_counters()
             if disk:
-                yield options.Observation(disk.write_bytes, {"disk.io.direction": "write"})
+                yield Observation(disk.write_bytes, {"disk.io.direction": "write"})
         except Exception:
             pass
 
