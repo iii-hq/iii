@@ -51,11 +51,19 @@ pub enum UpdateOp {
         value: Value,
     },
 
-    Increment { path: FieldPath, by: i64 },
+    Increment {
+        path: FieldPath,
+        by: i64,
+    },
 
-    Decrement { path: FieldPath, by: i64 },
+    Decrement {
+        path: FieldPath,
+        by: i64,
+    },
 
-    Remove { path: FieldPath },
+    Remove {
+        path: FieldPath,
+    },
 }
 
 impl UpdateOp {
