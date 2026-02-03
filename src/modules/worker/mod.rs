@@ -13,20 +13,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    builtins::kv::BuiltinKvStore,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::module::Module,
     protocol::{ErrorBody, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
-    workers::{Worker, WorkerMetrics},
 };
 
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
 pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
-pub const TRIGGER_WORKER_METRICS: &str = "subscribe";
-pub const TOPIC_WORKER_METRICS: &str = "iii.worker.metrics";
-pub const KV_INDEX_WORKER_METRICS: &str = "worker_metrics";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
@@ -80,51 +75,17 @@ pub struct RegisterWorkerInput {
     pub os: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReportMetricsInput {
-    /// Worker ID injected by engine from caller context
-    #[serde(rename = "_caller_worker_id")]
-    pub worker_id: String,
-    /// The metrics payload
-    #[serde(flatten)]
-    pub metrics: WorkerMetrics,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct GetMetricsInput {
-    /// Optional worker ID to get metrics for a specific worker
-    pub worker_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkerMetricsInfo {
-    pub worker_id: String,
-    pub worker_name: Option<String>,
-    pub metrics: WorkerMetrics,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct WorkerMetricsEvent {
-    pub worker_id: String,
-    pub worker_name: Option<String>,
-    pub metrics: WorkerMetrics,
-    pub timestamp: Option<u64>,
-}
-
 #[derive(Clone)]
 pub struct WorkerModule {
     engine: Arc<Engine>,
     triggers: Arc<DashMap<String, Trigger>>,
-    kv_store: Arc<BuiltinKvStore>,
 }
 
 impl WorkerModule {
     pub fn new(engine: Arc<Engine>) -> Self {
-        let kv_store = Arc::new(BuiltinKvStore::new(None));
         Self {
             engine,
             triggers: Arc::new(DashMap::new()),
-            kv_store,
         }
     }
 
@@ -308,25 +269,6 @@ impl Module for WorkerModule {
         };
         let _ = self.engine.register_trigger_type(workers_trigger).await;
 
-        let metrics_trigger = Trigger {
-            id: "engine.workers.metrics.subscriber".to_string(),
-            trigger_type: TRIGGER_WORKER_METRICS.to_string(),
-            function_path: "engine.workers.metrics._on_publish".to_string(),
-            config: serde_json::json!({
-                "topic": TOPIC_WORKER_METRICS
-            }),
-            worker_id: None,
-        };
-
-        if let Err(err) = self
-            .engine
-            .trigger_registry
-            .register_trigger(metrics_trigger)
-            .await
-        {
-            tracing::warn!(error = %err, "Failed to register worker metrics PubSub trigger");
-        }
-
         Ok(())
     }
 
@@ -447,154 +389,6 @@ impl WorkerModule {
             .await;
 
         FunctionResult::Success(Some(serde_json::json!({"success": true})))
-    }
-
-    #[function(
-        name = "engine.workers.report_metrics",
-        description = "Report worker metrics (CPU, memory, K8s stats, etc.)"
-    )]
-    pub async fn report_metrics(
-        &self,
-        input: ReportMetricsInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let worker_id = match uuid::Uuid::parse_str(&input.worker_id) {
-            Ok(id) => id,
-            Err(_) => {
-                return FunctionResult::Failure(ErrorBody {
-                    code: "invalid_worker_id".into(),
-                    message: format!("Invalid worker_id format: {}", input.worker_id),
-                });
-            }
-        };
-
-        let metrics_value = serde_json::to_value(&input.metrics).unwrap_or(Value::Null);
-        self.kv_store
-            .set(
-                KV_INDEX_WORKER_METRICS.to_string(),
-                input.worker_id.clone(),
-                metrics_value,
-            )
-            .await;
-
-        self.engine
-            .worker_registry
-            .update_worker_metrics(&worker_id, input.metrics);
-
-        tracing::debug!(worker_id = %worker_id, "Worker metrics updated");
-
-        FunctionResult::Success(Some(serde_json::json!({"success": true})))
-    }
-
-    #[function(
-        name = "engine.workers.metrics._on_publish",
-        description = "Internal handler for worker metrics PubSub events"
-    )]
-    pub async fn on_metrics_publish(
-        &self,
-        input: WorkerMetricsEvent,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let worker_id = match uuid::Uuid::parse_str(&input.worker_id) {
-            Ok(id) => id,
-            Err(_) => {
-                return FunctionResult::Failure(ErrorBody {
-                    code: "invalid_worker_id".into(),
-                    message: format!("Invalid worker_id format: {}", input.worker_id),
-                });
-            }
-        };
-
-        let metrics_value = serde_json::to_value(&input.metrics).unwrap_or(Value::Null);
-        self.kv_store
-            .set(
-                KV_INDEX_WORKER_METRICS.to_string(),
-                input.worker_id.clone(),
-                metrics_value,
-            )
-            .await;
-
-        self.engine
-            .worker_registry
-            .update_worker_metrics(&worker_id, input.metrics);
-
-        tracing::debug!(worker_id = %input.worker_id, "Worker metrics saved");
-
-        FunctionResult::Success(None)
-    }
-
-    #[function(
-        name = "engine.workers.metrics.list",
-        description = "List all worker metrics from persistent storage"
-    )]
-    pub async fn list_worker_metrics_kv(
-        &self,
-        _input: EmptyInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let all_items = self
-            .kv_store
-            .list(KV_INDEX_WORKER_METRICS.to_string())
-            .await;
-
-        FunctionResult::Success(Some(serde_json::json!({
-            "metrics": all_items
-        })))
-    }
-
-    #[function(
-        name = "engine.workers.get_metrics",
-        description = "Get worker metrics (optionally for a specific worker)"
-    )]
-    pub async fn get_metrics(
-        &self,
-        input: GetMetricsInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        if let Some(worker_id_str) = input.worker_id {
-            let worker_id = match uuid::Uuid::parse_str(&worker_id_str) {
-                Ok(id) => id,
-                Err(_) => {
-                    return FunctionResult::Failure(ErrorBody {
-                        code: "invalid_worker_id".into(),
-                        message: format!("Invalid worker_id format: {}", worker_id_str),
-                    });
-                }
-            };
-
-            let worker: Option<Worker> = self.engine.worker_registry.get_worker(&worker_id);
-            let metrics = self.engine.worker_registry.get_worker_metrics(&worker_id);
-
-            match metrics {
-                Some(m) => FunctionResult::Success(Some(serde_json::json!({
-                    "worker_id": worker_id_str,
-                    "worker_name": worker.and_then(|w| w.name),
-                    "metrics": m
-                }))),
-                None => FunctionResult::Failure(ErrorBody {
-                    code: "not_found".into(),
-                    message: format!("No metrics found for worker: {}", worker_id_str),
-                }),
-            }
-        } else {
-            let all_metrics = self.engine.worker_registry.get_all_metrics();
-            let workers: Vec<Worker> = self.engine.worker_registry.list_workers();
-
-            let metrics_list: Vec<WorkerMetricsInfo> = all_metrics
-                .into_iter()
-                .map(|(worker_id, metrics)| {
-                    let worker_name = workers
-                        .iter()
-                        .find(|w| w.id == worker_id)
-                        .and_then(|w| w.name.clone());
-                    WorkerMetricsInfo {
-                        worker_id: worker_id.to_string(),
-                        worker_name,
-                        metrics,
-                    }
-                })
-                .collect();
-
-            FunctionResult::Success(Some(serde_json::json!({
-                "workers": metrics_list
-            })))
-        }
     }
 }
 
