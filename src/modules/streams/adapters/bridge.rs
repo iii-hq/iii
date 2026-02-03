@@ -7,7 +7,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use iii_sdk::{Bridge, UpdateOp, UpdateResult, types::SetResult};
+use iii_sdk::{
+    Bridge, UpdateOp, UpdateResult,
+    types::{DeleteResult, SetResult},
+};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,7 +25,7 @@ use crate::{
         },
         pubsub::{PubSubInput, SubscribeTrigger},
         streams::{
-            StreamOutboundMessage, StreamWrapperMessage,
+            StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
@@ -135,26 +138,8 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
-        let set_result = serde_json::from_value::<SetResult>(set_result)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))?;
-
-        let data_clone = set_result.new_value.clone();
-        let event = if set_result.old_value.is_some() {
-            StreamOutboundMessage::Update { data: data_clone }
-        } else {
-            StreamOutboundMessage::Create { data: data_clone }
-        };
-        let message = StreamWrapperMessage {
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            stream_name: stream_name.to_string(),
-            group_id: group_id.to_string(),
-            id: Some(item_id.to_string()),
-            event,
-        };
-
-        self.emit_event(message).await?;
-
-        Ok(set_result)
+        serde_json::from_value::<SetResult>(set_result)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 
     async fn get(
@@ -177,7 +162,12 @@ impl StreamAdapter for BridgeAdapter {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize get result: {}", e))
     }
 
-    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<()> {
+    async fn delete(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<DeleteResult> {
         let delete_data = KvDeleteInput {
             index: self.gen_key(stream_name, group_id),
             key: item_id.to_string(),
@@ -188,23 +178,8 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
 
-        let delete_result = serde_json::from_value::<Option<Value>>(delete_result)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize delete result: {}", e))?;
-
-        if delete_result.is_some() {
-            self.emit_event(StreamWrapperMessage {
-                timestamp: chrono::Utc::now().timestamp_millis(),
-                stream_name: stream_name.to_string(),
-                group_id: group_id.to_string(),
-                id: Some(item_id.to_string()),
-                event: StreamOutboundMessage::Delete {
-                    data: serde_json::json!({ "id": item_id }),
-                },
-            })
-            .await?;
-        }
-
-        Ok(())
+        serde_json::from_value::<DeleteResult>(delete_result)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize delete result: {}", e))
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {

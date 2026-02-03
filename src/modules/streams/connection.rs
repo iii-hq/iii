@@ -178,6 +178,7 @@ impl SocketStreamConnection {
                 if result.unauthorized {
                     let event = StreamOutboundMessage::Unauthorized {};
                     let message = StreamWrapperMessage {
+                        event_type: "stream".to_string(),
                         timestamp,
                         stream_name,
                         group_id,
@@ -214,6 +215,7 @@ impl SocketStreamConnection {
                         FunctionResult::Success(data) => {
                             self.sender
                                 .send(StreamOutbound::Stream(StreamWrapperMessage {
+                                    event_type: "stream".to_string(),
                                     timestamp,
                                     stream_name: stream_name.clone(),
                                     group_id: group_id.clone(),
@@ -249,6 +251,7 @@ impl SocketStreamConnection {
                         FunctionResult::Success(data) => {
                             self.sender
                                 .send(StreamOutbound::Stream(StreamWrapperMessage {
+                                    event_type: "stream".to_string(),
                                     timestamp,
                                     stream_name: stream_name.clone(),
                                     group_id: group_id.clone(),

@@ -57,6 +57,8 @@ pub enum StreamOutboundMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamWrapperMessage {
+    #[serde(rename = "type")]
+    pub event_type: String,
     pub timestamp: i64,
     #[serde(rename = "streamName")]
     pub stream_name: String,
@@ -139,26 +141,4 @@ pub struct StreamUpdateInput {
     pub group_id: String,
     pub item_id: String,
     pub ops: Vec<UpdateOp>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StreamEventType {
-    #[serde(rename = "stream:created")]
-    Created,
-    #[serde(rename = "stream:updated")]
-    Updated,
-    #[serde(rename = "stream:deleted")]
-    Deleted,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamEventData {
-    #[serde(rename = "type")]
-    pub message_type: String,
-    pub event_type: StreamEventType,
-    pub stream_name: String,
-    pub group_id: String,
-    pub item_id: String,
-    pub old_value: Option<Value>,
-    pub new_value: Value,
 }
