@@ -153,10 +153,17 @@ impl TriggerRegistry {
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
-        let _: Result<(), anyhow::Error> = trigger_type
+        match trigger_type
             .registrator
             .register_trigger(trigger.clone())
-            .await;
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = %err, "Error registering trigger");
+                return Err(err);
+            }
+        }
 
         drop(trigger_type);
 
