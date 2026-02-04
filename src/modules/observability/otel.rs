@@ -1928,6 +1928,35 @@ fn extract_log_attributes(attributes: &[OtlpKeyValue]) -> HashMap<String, serde_
     attrs
 }
 
+/// Emit a log to the console via tracing based on severity level.
+fn emit_log_to_console(log: &StoredLog) {
+    let data = if log.attributes.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&log.attributes).unwrap_or_default()
+    };
+
+    let service = &log.service_name;
+    let body = &log.body;
+
+    // OTEL severity numbers: TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24
+    match log.severity_number {
+        1..=4 => tracing::trace!(service = %service, data = %data, "{}", body),
+        5..=8 => tracing::debug!(service = %service, data = %data, "{}", body),
+        9..=12 => tracing::info!(service = %service, data = %data, "{}", body),
+        13..=16 => tracing::warn!(service = %service, data = %data, "{}", body),
+        17..=24 => tracing::error!(service = %service, data = %data, "{}", body),
+        _ => tracing::info!(service = %service, data = %data, "{}", body),
+    }
+}
+
+/// Check if console output is enabled for OTEL logs.
+fn should_output_to_console() -> bool {
+    get_otel_config()
+        .map(|c| c.logs_console_output)
+        .unwrap_or(true)
+}
+
 /// Ingest OTLP JSON logs data from Node SDK.
 ///
 /// This function is called when the engine receives a logs frame
@@ -1993,6 +2022,11 @@ pub async fn ingest_otlp_logs(json_str: &str) -> anyhow::Result<()> {
                     instrumentation_scope_name: scope_name.clone(),
                     instrumentation_scope_version: scope_version.clone(),
                 };
+
+                // Emit to console if enabled
+                if should_output_to_console() {
+                    emit_log_to_console(&stored_log);
+                }
 
                 stored_logs.push(stored_log);
             }
