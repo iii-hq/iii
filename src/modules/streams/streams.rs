@@ -368,7 +368,7 @@ impl StreamCoreModule {
 #[service(name = "streams")]
 impl StreamCoreModule {
     #[function(name = "streams.set", description = "Set a value in a stream")]
-    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -395,7 +395,15 @@ impl StreamCoreModule {
                 let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
-                    Ok(Some(result)) => Ok(serde_json::from_value::<SetResult>(result).unwrap()),
+                    Ok(Some(result)) => match serde_json::from_value::<SetResult>(result) {
+                        Ok(result) => Ok(result),
+                        Err(e) => {
+                            return FunctionResult::Failure(ErrorBody {
+                                message: format!("Failed to convert result to value: {}", e),
+                                code: "JSON_ERROR".to_string(),
+                            });
+                        }
+                    },
                     Ok(None) => Err(anyhow::anyhow!("Function returned no result")),
                     Err(error) => Err(anyhow::anyhow!("Failed to invoke function: {:?}", error)),
                 }
@@ -434,16 +442,7 @@ impl StreamCoreModule {
                     tracing::error!(error = %e, "Failed to emit event");
                 }
 
-                let result = match serde_json::to_value(result) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        return FunctionResult::Failure(ErrorBody {
-                            message: format!("Failed to convert result to value: {}", e),
-                            code: "JSON_ERROR".to_string(),
-                        });
-                    }
-                };
-                FunctionResult::Success(Some(result))
+                FunctionResult::Success(result)
             }
             Err(error) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to set value: {}", error),
@@ -467,10 +466,17 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.get function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -494,19 +500,11 @@ impl StreamCoreModule {
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<DeleteResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        let data = self
-            .get(StreamGetInput {
-                stream_name: stream_name.clone(),
-                group_id: group_id.clone(),
-                item_id: item_id.clone(),
-            })
-            .await;
-
         let function_path = format!("streams.delete({})", stream_name);
         let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
@@ -547,7 +545,7 @@ impl StreamCoreModule {
 
         match result {
             Ok(result) => {
-                if let Some(old_value) = result.old_value {
+                if let Some(old_value) = result.old_value.clone() {
                     let message = StreamWrapperMessage {
                         event_type: "stream".to_string(),
                         id: Some(item_id.clone()),
@@ -563,16 +561,14 @@ impl StreamCoreModule {
                         tracing::error!(error = %e, "Failed to emit delete event");
                     }
                 }
-            }
-            Err(error) => {
-                return FunctionResult::Failure(ErrorBody {
-                    message: format!("Failed to delete value: {}", error),
-                    code: "STREAM_DELETE_ERROR".to_string(),
-                });
-            }
-        }
 
-        data
+                FunctionResult::Success(result)
+            }
+            Err(error) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to delete value: {}", error),
+                code: "STREAM_DELETE_ERROR".to_string(),
+            }),
+        }
     }
 
     #[function(
@@ -603,10 +599,17 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.getGroup function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -681,7 +684,7 @@ impl StreamCoreModule {
     pub async fn update(
         &self,
         input: StreamUpdateInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<UpdateResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
@@ -710,7 +713,15 @@ impl StreamCoreModule {
                 let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
-                    Ok(Some(result)) => Ok(serde_json::from_value::<UpdateResult>(result).unwrap()),
+                    Ok(Some(result)) => match serde_json::from_value::<UpdateResult>(result) {
+                        Ok(result) => Ok(result),
+                        Err(e) => {
+                            return FunctionResult::Failure(ErrorBody {
+                                message: format!("Failed to convert result to value: {}", e),
+                                code: "JSON_ERROR".to_string(),
+                            });
+                        }
+                    },
                     Ok(None) => Err(anyhow::anyhow!("Function returned no result")),
                     Err(error) => Err(anyhow::anyhow!("Failed to invoke function: {:?}", error)),
                 }
@@ -745,16 +756,7 @@ impl StreamCoreModule {
                     tracing::error!(error = %e, "Failed to emit event");
                 }
 
-                let result = match serde_json::to_value(result) {
-                    Ok(result) => result,
-                    Err(e) => {
-                        return FunctionResult::Failure(ErrorBody {
-                            message: format!("Failed to convert result to value: {}", e),
-                            code: "JSON_ERROR".to_string(),
-                        });
-                    }
-                };
-                FunctionResult::Success(Some(result))
+                FunctionResult::Success(result)
             }
             Err(error) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to update value: {}", error),

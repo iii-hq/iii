@@ -138,8 +138,12 @@ impl StreamAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
-        serde_json::from_value::<SetResult>(set_result)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
+        match serde_json::from_value::<SetResult>(set_result) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to deserialize set result: {}", e));
+            }
+        }
     }
 
     async fn get(

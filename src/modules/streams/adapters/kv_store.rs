@@ -114,7 +114,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         let index = self.gen_key(stream_name, group_id);
         let old_value = self.storage.delete(index, item_id.to_string()).await;
 
-        Ok(DeleteResult { old_value })
+        Ok(old_value)
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {
