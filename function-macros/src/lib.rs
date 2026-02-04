@@ -42,6 +42,72 @@ fn extract_optional(args: &Punctuated<Meta, Token![,]>, name: &str) -> Option<St
     None
 }
 
+fn needs_serialization(return_type: &syn::Type) -> bool {
+    let type_path = match return_type {
+        syn::Type::Path(type_path) => type_path,
+        _ => return false,
+    };
+
+    let segment = match type_path.path.segments.last() {
+        Some(seg) => seg,
+        None => return false,
+    };
+
+    if segment.ident != "FunctionResult" {
+        return false;
+    }
+
+    let args = match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => args,
+        _ => return false,
+    };
+
+    let success_ty = match args.args.first() {
+        Some(syn::GenericArgument::Type(ty)) => ty,
+        _ => return false,
+    };
+
+    // Check if success_ty is Option<Value> or Option<serde_json::Value>
+    let opt_path = match success_ty {
+        syn::Type::Path(opt_path) => opt_path,
+        _ => return true, // Not Option, needs serialization
+    };
+
+    let opt_seg = match opt_path.path.segments.last() {
+        Some(seg) => seg,
+        None => return true, // Not Option, needs serialization
+    };
+
+    if opt_seg.ident != "Option" {
+        return true; // Not Option, needs serialization
+    }
+
+    let opt_args = match &opt_seg.arguments {
+        syn::PathArguments::AngleBracketed(args) => args,
+        _ => return true, // Not Option, needs serialization
+    };
+
+    let inner_ty = match opt_args.args.first() {
+        Some(syn::GenericArgument::Type(ty)) => ty,
+        _ => return true, // Option with no type arg, needs serialization
+    };
+
+    let val_path = match inner_ty {
+        syn::Type::Path(val_path) => val_path,
+        _ => return true, // Not Value type, needs serialization
+    };
+
+    // Check if it's Value (could be serde_json::Value or just Value)
+    let is_value = val_path
+        .path
+        .segments
+        .last()
+        .map(|seg| seg.ident == "Value")
+        .unwrap_or(false);
+
+    !is_value // If it's Option<Value>, no serialization needed; otherwise, needs serialization
+}
+
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -93,8 +159,54 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                         _ => quote! { () },
                     };
 
+                    // Extract return type
+                    let return_type = match &method.sig.output {
+                        syn::ReturnType::Type(_, ty) => &**ty,
+                        syn::ReturnType::Default => {
+                            panic!("Function {} must return FunctionResult", method_ident);
+                        }
+                    };
+
+                    // Check if return type is FunctionResult<T, ErrorBody>
+                    // If T is not Option<Value>, we need to serialize it to a JSON string
+                    let needs_serialization = needs_serialization(return_type);
                     let handler_ident = format_ident!("{}_handler", method_ident);
                     let description = quote!(Some(#description.into()));
+
+                    let result_handling = if needs_serialization {
+                        quote! {
+                            let result = this.#method_ident(input).await;
+                            match result {
+                                FunctionResult::Success(value) => {
+                                    // Serialize the value to a JSON string
+                                    // serde_json::to_string handles Option types correctly:
+                                    // - Some(u) serializes u to JSON string
+                                    // - None serializes to "null" string
+                                    match serde_json::to_string(&value) {
+                                        Ok(serialized_str) => FunctionResult::Success(Some(serde_json::Value::String(serialized_str))),
+                                        Err(err) => {
+                                            eprintln!(
+                                                "[warning] Failed to serialize result for {}: {}",
+                                                #name,
+                                                err
+                                            );
+                                            FunctionResult::Failure(ErrorBody {
+                                                code: "serialization_error".into(),
+                                                message: format!("Failed to serialize result for {}: {}", #name, err.to_string()),
+                                            })
+                                        }
+                                    }
+                                }
+                                FunctionResult::Failure(err) => FunctionResult::Failure(err),
+                                FunctionResult::Deferred => FunctionResult::Deferred,
+                                FunctionResult::NoResult => FunctionResult::NoResult,
+                            }
+                        }
+                    } else {
+                        quote! {
+                            this.#method_ident(input).await
+                        }
+                    };
 
                     generated.push(quote! {
                         {
@@ -119,7 +231,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         }
                                     };
 
-                                    this.#method_ident(input).await
+                                    #result_handling
                                 }
                             });
 

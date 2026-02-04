@@ -118,7 +118,7 @@ impl StateCoreModule {
 
         if let Ok(event_data) = serde_json::to_value(event_data) {
             tokio::spawn(async move {
-                tracing::info!("Invoking triggers for event type {:?}", event_type);
+                tracing::debug!("Invoking triggers for event type {:?}", event_type);
 
                 for trigger in triggers {
                     let trigger = trigger.clone();
