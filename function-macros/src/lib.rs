@@ -178,12 +178,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                             let result = this.#method_ident(input).await;
                             match result {
                                 FunctionResult::Success(value) => {
-                                    // Serialize the value to a JSON string
-                                    // serde_json::to_string handles Option types correctly:
-                                    // - Some(u) serializes u to JSON string
-                                    // - None serializes to "null" string
-                                    match serde_json::to_string(&value) {
-                                        Ok(serialized_str) => FunctionResult::Success(Some(serde_json::Value::String(serialized_str))),
+                                    match serde_json::to_value(&value) {
+                                        Ok(value) => FunctionResult::Success(Some(value)),
                                         Err(err) => {
                                             eprintln!(
                                                 "[warning] Failed to serialize result for {}: {}",
