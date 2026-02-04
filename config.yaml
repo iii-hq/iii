@@ -128,6 +128,7 @@ modules:
       logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}  # Maximum number of log records to store
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}  # How long to keep logs in memory (default: 1 hour)
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
+      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}  # Output SDK logs to engine console (default: true)
       # === Alert Rules (Optional) ===
       # Alert rules for metric threshold monitoring - see docs/OTEL-IMPLEMENTATION.md
       # Alerts are evaluated every 10 seconds

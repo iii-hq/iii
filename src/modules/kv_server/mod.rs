@@ -11,6 +11,10 @@ pub use self::structs::{KvDeleteInput, KvGetInput, KvSetInput};
 
 use async_trait::async_trait;
 use function_macros::{function, service};
+use iii_sdk::{
+    UpdateResult,
+    types::{DeleteResult, SetResult},
+};
 use serde_json::Value;
 
 use crate::{
@@ -69,47 +73,40 @@ impl KvServer {
         name = "kv_server.set",
         description = "Set a value by key in the KV store"
     )]
-    pub async fn set(&self, data: KvSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn set(&self, data: KvSetInput) -> FunctionResult<Option<SetResult>, ErrorBody> {
         tracing::debug!(index = %data.index, key = %data.key, "Setting value in KV store");
         let result = self
             .storage
             .set(data.index.clone(), data.key.clone(), data.value.clone())
             .await;
 
-        FunctionResult::Success(Some(serde_json::to_value(result).unwrap_or_else(|e| {
-            tracing::error!(error = %e, "Failed to serialize set result");
-            Value::Null
-        })))
+        FunctionResult::Success(Some(result))
     }
 
     #[function(
         name = "kv_server.delete",
         description = "Delete a value by key from the KV store"
     )]
-    pub async fn delete(&self, data: KvDeleteInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn delete(&self, data: KvDeleteInput) -> FunctionResult<DeleteResult, ErrorBody> {
         tracing::debug!(key = %data.key, "Deleting value from KV store");
 
-        match self
+        let result = self
             .storage
             .delete(data.index.clone(), data.key.clone())
-            .await
-        {
-            Some(value) => FunctionResult::Success(Some(value)),
-            None => FunctionResult::NoResult,
-        }
+            .await;
+
+        FunctionResult::Success(result)
     }
 
     #[function(
         name = "kv_server.update",
         description = "Update a value by key in the KV store"
     )]
-    pub async fn update(&self, data: KvUpdateInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn update(&self, data: KvUpdateInput) -> FunctionResult<UpdateResult, ErrorBody> {
         tracing::debug!(index = %data.index, key = %data.key, ops_count = data.ops.len(), "Updating value in KV store");
         let result = self.storage.update(data.index, data.key, data.ops).await;
-        FunctionResult::Success(Some(serde_json::to_value(result).unwrap_or_else(|e| {
-            tracing::error!(error = %e, "Failed to serialize update result");
-            Value::Null
-        })))
+
+        FunctionResult::Success(result)
     }
 
     #[function(
