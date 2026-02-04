@@ -1,34 +1,13 @@
-use std::collections::HashMap;
-
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
+    config::HttpFunctionConfig,
     engine::Engine,
     function::RegistrationSource,
-    invocation::method::{HttpAuth, HttpMethod},
+    invocation::method::HttpAuth,
     protocol::ErrorBody,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpFunctionConfig {
-    pub function_path: String,
-    pub url: String,
-    pub method: HttpMethod,
-    /// Request timeout in milliseconds. If not specified, the invoker's default timeout will be used.
-    pub timeout_ms: Option<u64>,
-    pub headers: HashMap<String, String>,
-    pub auth: Option<HttpAuthRef>,
-    pub description: Option<String>,
-    pub request_format: Option<Value>,
-    pub response_format: Option<Value>,
-    pub metadata: Option<Value>,
-    pub registered_at: DateTime<Utc>,
-    /// Last update timestamp. None for functions that have never been updated.
-    #[serde(default)]
-    pub updated_at: Option<DateTime<Utc>>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -78,7 +57,7 @@ pub async fn load_http_functions_from_kv(engine: &Engine) -> Result<(), ErrorBod
                 config.request_format,
                 config.response_format,
                 config.metadata,
-                config.registered_at,
+                config.registered_at.unwrap_or_else(Utc::now),
                 RegistrationSource::AdminApi,
             )
             .await?;

@@ -34,10 +34,6 @@ use crate::{
         inject_baggage_from_context, inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
-    triggers::{
-        http::{HttpTrigger, HttpTriggerRegistry},
-        webhook::{WebhookConfig, WebhookDispatcher},
-    },
     workers::{Worker, WorkerRegistry},
 };
 
@@ -159,8 +155,6 @@ pub struct Engine {
     pub invocations: Arc<InvocationHandler>,
     pub invoker_registry: Arc<InvokerRegistry>,
     pub http_invoker: Arc<HttpInvoker>,
-    pub webhook_dispatcher: Arc<WebhookDispatcher>,
-    pub http_triggers: Arc<HttpTriggerRegistry>,
     pub kv_store: Arc<BuiltinKvStore>,
 }
 
@@ -189,11 +183,6 @@ impl Engine {
             ..HttpInvokerConfig::default()
         })?);
 
-        let webhook_dispatcher = Arc::new(WebhookDispatcher::new(WebhookConfig {
-            url_validator,
-            ..WebhookConfig::default()
-        })?);
-        let http_triggers = Arc::new(HttpTriggerRegistry::new());
         let kv_store = Arc::new(BuiltinKvStore::new(kv_store_config));
 
         let invoker_registry = InvokerRegistry::new_with_http(http_invoker.clone());
@@ -207,8 +196,6 @@ impl Engine {
             invocations: Arc::new(InvocationHandler::new(invoker_registry.clone())),
             invoker_registry,
             http_invoker,
-            webhook_dispatcher,
-            http_triggers,
             kv_store,
         })
     }
@@ -247,21 +234,21 @@ impl Engine {
         };
 
         let function = Function {
-            function_path: config.path.clone(),
+            function_path: config.function_path.clone(),
             description: config.description,
             request_format: config.request_format,
             response_format: config.response_format,
             metadata: config.metadata,
             invocation_method,
-            registered_at: Utc::now(),
+            registered_at: config.registered_at.unwrap_or_else(Utc::now),
             registration_source: RegistrationSource::Config,
             handler: None,
         };
 
         self.service_registry
-            .register_service_from_func_path(&config.path);
+            .register_service_from_func_path(&config.function_path);
         self.functions
-            .register_function(config.path.clone(), function);
+            .register_function(config.function_path.clone(), function);
         Ok(())
     }
 
@@ -340,14 +327,20 @@ impl Engine {
             });
         }
 
-        let trigger = HttpTrigger {
+        let trigger = Trigger {
+            id: config.trigger_id,
+            trigger_type: format!("http_{}", config.trigger_type),
             function_path: config.function_path,
-            trigger_type: config.trigger_type,
-            trigger_id: config.trigger_id,
             config: config.config,
+            worker_id: None,
         };
 
-        self.http_triggers.register(trigger);
+        self.trigger_registry.register_trigger(trigger).await
+            .map_err(|e| ErrorBody {
+                code: "trigger_registration_failed".into(),
+                message: e.to_string(),
+            })?;
+        
         Ok(())
     }
 

@@ -12,10 +12,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    config::persistence::{
-        HttpAuthRef, HttpFunctionConfig as KvHttpFunctionConfig, delete_http_function_from_kv,
-        store_http_function_in_kv,
-    },
+    config::{HttpAuthRef, HttpFunctionConfig},
+    config::persistence::{delete_http_function_from_kv, store_http_function_in_kv},
     engine::Engine,
     function::RegistrationSource,
     invocation::method::{HttpMethod, InvocationMethod},
@@ -62,8 +60,8 @@ pub fn router(engine: Arc<Engine>) -> Router {
     Router::new()
         .route("/admin/functions", post(register_function))
         .route("/admin/functions", get(list_functions))
-        .route("/admin/functions/:path", put(update_function))
-        .route("/admin/functions/:path", delete(unregister_function))
+        .route("/admin/functions/{path}", put(update_function))
+        .route("/admin/functions/{path}", delete(unregister_function))
         .layer(middleware::from_fn(auth_middleware))
         .layer(Extension(engine))
 }
@@ -105,7 +103,7 @@ pub async fn register_function(
     }
 
     let registered_at = Utc::now();
-    let kv_config = KvHttpFunctionConfig {
+    let kv_config = HttpFunctionConfig {
         function_path: payload.function_path.clone(),
         url: payload.invocation.url.clone(),
         method: payload.invocation.method.clone(),
@@ -116,7 +114,7 @@ pub async fn register_function(
         request_format: payload.request_format.clone(),
         response_format: payload.response_format.clone(),
         metadata: payload.metadata.clone(),
-        registered_at,
+        registered_at: Some(registered_at),
         updated_at: None,
     };
 
@@ -165,7 +163,7 @@ pub async fn update_function(
         .get(index.clone(), "config".to_string())
         .await
         .ok_or((StatusCode::NOT_FOUND, "KV config not found".to_string()))?;
-    let mut kv_config: KvHttpFunctionConfig =
+    let mut kv_config: HttpFunctionConfig =
         serde_json::from_value(value).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if let Some(description) = payload.description {
@@ -209,23 +207,23 @@ pub async fn update_function(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
-    engine
-        .register_http_function_from_persistence(
-            function_path.clone(),
-            kv_config.url,
-            kv_config.method,
-            kv_config.timeout_ms,
-            kv_config.headers,
-            kv_config.auth,
-            kv_config.description,
-            kv_config.request_format,
-            kv_config.response_format,
-            kv_config.metadata,
-            kv_config.registered_at,
-            RegistrationSource::AdminApi,
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
+        engine
+            .register_http_function_from_persistence(
+                function_path.clone(),
+                kv_config.url,
+                kv_config.method,
+                kv_config.timeout_ms,
+                kv_config.headers,
+                kv_config.auth,
+                kv_config.description,
+                kv_config.request_format,
+                kv_config.response_format,
+                kv_config.metadata,
+                kv_config.registered_at.unwrap_or_else(Utc::now),
+                RegistrationSource::AdminApi,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
     Ok(Json(json!({
         "status": "updated",

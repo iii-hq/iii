@@ -18,15 +18,8 @@ use crate::{
 
 pub struct HttpInvokerConfig {
     pub url_validator: UrlValidatorConfig,
-    pub signature_max_age: u64,
     pub default_timeout_ms: u64,
-    /// Maximum idle connections per host in the connection pool.
-    /// Default: 50 connections per host.
     pub pool_max_idle_per_host: usize,
-    /// Client-level timeout for all requests.
-    /// This is the absolute maximum time for any request.
-    /// Individual requests may have shorter timeouts via timeout_ms.
-    /// Default: 60 seconds.
     pub client_timeout_secs: u64,
 }
 
@@ -34,7 +27,6 @@ impl Default for HttpInvokerConfig {
     fn default() -> Self {
         Self {
             url_validator: UrlValidatorConfig::default(),
-            signature_max_age: 300,
             default_timeout_ms: 30000,
             pool_max_idle_per_host: 50,
             client_timeout_secs: 60,
@@ -45,7 +37,6 @@ impl Default for HttpInvokerConfig {
 pub struct HttpInvoker {
     client: Client,
     url_validator: UrlValidator,
-    signature_max_age: u64,
     default_timeout_ms: u64,
 }
 
@@ -60,17 +51,122 @@ impl HttpInvoker {
         Ok(Self {
             client,
             url_validator,
-            signature_max_age: config.signature_max_age,
             default_timeout_ms: config.default_timeout_ms,
         })
     }
 
-    pub fn signature_max_age(&self) -> u64 {
-        self.signature_max_age
-    }
-
     pub fn url_validator(&self) -> &UrlValidator {
         &self.url_validator
+    }
+
+    pub async fn deliver_webhook(
+        &self,
+        function: &Function,
+        trigger_type: &str,
+        trigger_id: &str,
+        payload: Value,
+    ) -> Result<(), ErrorBody> {
+        let InvocationMethod::Http {
+            url,
+            method,
+            timeout_ms,
+            headers,
+            auth,
+        } = &function.invocation_method
+        else {
+            return Err(ErrorBody {
+                code: "invalid_invocation_method".into(),
+                message: "Expected HTTP invocation method".into(),
+            });
+        };
+
+        self.url_validator
+            .validate(url)
+            .await
+            .map_err(|e| ErrorBody {
+                code: "url_validation_failed".into(),
+                message: e.to_string(),
+            })?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| ErrorBody {
+                code: "timestamp_error".into(),
+                message: err.to_string(),
+            })?
+            .as_secs();
+
+        let body = serde_json::to_vec(&payload).map_err(|err| ErrorBody {
+            code: "serialization_error".into(),
+            message: err.to_string(),
+        })?;
+
+        let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
+        let invocation_id = Uuid::new_v4().to_string();
+        let trace_id_value = format!("trace-{}", Uuid::new_v4());
+
+        let mut request = self
+            .client
+            .request(http_method_to_reqwest(method), url)
+            .timeout(Duration::from_millis(timeout))
+            .header("Content-Type", "application/json")
+            .header("x-iii-Function-Path", &function.function_path)
+            .header("x-iii-Invocation-ID", &invocation_id)
+            .header("x-iii-Timestamp", timestamp.to_string())
+            .header("x-iii-Trace-ID", &trace_id_value)
+            .header("x-iii-Trigger-Type", trigger_type)
+            .header("x-iii-Trigger-ID", trigger_id);
+
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+
+        request = match auth {
+            Some(HttpAuth::Hmac { secret }) => {
+                let signature = sign_request(&body, secret, timestamp);
+                request.header("x-iii-Signature", signature)
+            }
+            Some(HttpAuth::Bearer { token }) => request.bearer_auth(token),
+            Some(HttpAuth::ApiKey { header, value }) => request.header(header, value),
+            None => request,
+        };
+
+        let response = request.body(body).send().await.map_err(|err| ErrorBody {
+            code: "http_request_failed".into(),
+            message: err.to_string(),
+        })?;
+
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|err| ErrorBody {
+            code: "http_response_failed".into(),
+            message: err.to_string(),
+        })?;
+
+        let error_json: Option<Value> = serde_json::from_slice(&bytes).ok();
+        if let Some(error_json) = error_json {
+            if let Some(error_obj) = error_json.get("error") {
+                let code = error_obj
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http_error")
+                    .to_string();
+                let message = error_obj
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("HTTP request failed")
+                    .to_string();
+                return Err(ErrorBody { code, message });
+            }
+        }
+
+        Err(ErrorBody {
+            code: "http_error".into(),
+            message: format!("HTTP {}", status),
+        })
     }
 
     async fn invoke_impl(

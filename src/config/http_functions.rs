@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -8,9 +9,10 @@ use crate::{
     invocation::method::HttpMethod,
 };
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpFunctionConfig {
-    pub path: String,
+    #[serde(alias = "path")]
+    pub function_path: String,
     pub url: String,
     #[serde(default = "default_method")]
     pub method: HttpMethod,
@@ -29,6 +31,10 @@ pub struct HttpFunctionConfig {
     pub response_format: Option<Value>,
     #[serde(default)]
     pub metadata: Option<Value>,
+    #[serde(default)]
+    pub registered_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 fn default_method() -> HttpMethod {

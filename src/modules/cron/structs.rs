@@ -156,11 +156,23 @@ impl CronAdapter {
                         }
                     }
 
-                    let http_triggers = engine.http_triggers.list_cron_triggers(&job_id);
+                    let http_triggers: Vec<crate::trigger::Trigger> = engine.trigger_registry.triggers
+                        .iter()
+                        .filter(|entry| {
+                            let trigger = entry.value();
+                            trigger.trigger_type == "http_cron" && 
+                            trigger.config.get("cron_id")
+                                .and_then(|v| v.as_str())
+                                .map(|v| v == job_id)
+                                .unwrap_or(false)
+                        })
+                        .map(|entry| entry.value().clone())
+                        .collect();
+                    
                     for trigger in http_triggers {
-                        let dispatcher = engine.webhook_dispatcher.clone();
+                        let http_invoker = engine.http_invoker.clone();
                         let functions = engine.functions.clone();
-                        let trigger_id = trigger.trigger_id.clone();
+                        let trigger_id = trigger.id.clone();
                         let function_path = trigger.function_path.clone();
                         let config = trigger.config.clone();
                         let payload = json!({
@@ -174,7 +186,9 @@ impl CronAdapter {
                             "config": config,
                         });
                         tokio::spawn(async move {
-                            let _ = dispatcher.deliver(&trigger, payload, &functions).await;
+                            if let Some(function) = functions.get(&trigger.function_path) {
+                                let _ = http_invoker.deliver_webhook(&function, "cron", &trigger.id, payload).await;
+                            }
                         });
                     }
 

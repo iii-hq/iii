@@ -1,2 +1,1 @@
-pub mod http;
-pub mod webhook;
+pub mod http_registrator;

@@ -58,11 +58,26 @@ impl EventCoreModule {
         tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
         let _ = adapter.emit(&topic, event_data.clone()).await;
 
-        let http_triggers = self.engine.http_triggers.list_event_triggers(&topic);
+        let http_triggers: Vec<Trigger> = self.engine.trigger_registry.triggers
+            .iter()
+            .filter(|entry| {
+                let trigger = entry.value();
+                if trigger.trigger_type != "http_event" {
+                    return false;
+                }
+                trigger.config
+                    .get("topic")
+                    .and_then(|v| v.as_str())
+                    .map(|value| value == topic)
+                    .unwrap_or(false)
+            })
+            .map(|entry| entry.value().clone())
+            .collect();
+        
         for trigger in http_triggers {
-            let dispatcher = self.engine.webhook_dispatcher.clone();
+            let http_invoker = self.engine.http_invoker.clone();
             let functions = self.engine.functions.clone();
-            let trigger_id = trigger.trigger_id.clone();
+            let trigger_id = trigger.id.clone();
             let function_path = trigger.function_path.clone();
             let topic_value = topic.clone();
             let event_value = event_data.clone();
@@ -79,7 +94,9 @@ impl EventCoreModule {
                 }
             });
             tokio::spawn(async move {
-                let _ = dispatcher.deliver(&trigger, payload, &functions).await;
+                if let Some(function) = functions.get(&trigger.function_path) {
+                    let _ = http_invoker.deliver_webhook(&function, "event", &trigger.id, payload).await;
+                }
             });
         }
 

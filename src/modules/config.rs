@@ -21,7 +21,12 @@ use tokio::net::TcpListener;
 
 use super::{module::Module, registry::ModuleRegistration};
 use crate::config::{HttpFunctionConfig, HttpTriggerConfig, SecurityConfig};
-use crate::{config::persistence::load_http_functions_from_kv, engine::Engine};
+use crate::{
+    config::persistence::load_http_functions_from_kv,
+    engine::Engine,
+    trigger::TriggerType,
+    triggers::http_registrator::HttpTriggerRegistrator,
+};
 
 // =============================================================================
 // Constants
@@ -391,6 +396,25 @@ impl EngineBuilder {
         load_http_functions_from_kv(&self.engine)
             .await
             .map_err(|e| anyhow::anyhow!(e.message))?;
+
+        let http_trigger_registrator = HttpTriggerRegistrator::new(
+            self.engine.http_invoker.clone(),
+            self.engine.functions.clone(),
+        );
+        
+        self.engine.trigger_registry.register_trigger_type(TriggerType {
+            id: "http_cron".to_string(),
+            _description: "HTTP Cron Trigger".to_string(),
+            registrator: Box::new(http_trigger_registrator.clone()),
+            worker_id: None,
+        }).await?;
+        
+        self.engine.trigger_registry.register_trigger_type(TriggerType {
+            id: "http_event".to_string(),
+            _description: "HTTP Event Trigger".to_string(),
+            registrator: Box::new(http_trigger_registrator),
+            worker_id: None,
+        }).await?;
 
         for http_trigger in config.http_triggers.clone() {
             self.engine

@@ -1,10 +1,9 @@
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use iii::{
     admin_api::{AdminApiConfig, AdminApiModule},
     config::SecurityConfig,
     engine::Engine,
-    invocation::method::HttpMethod,
     modules::module::Module,
 };
 use reqwest::StatusCode;
@@ -13,9 +12,9 @@ use serde_json::{Value, json};
 #[tokio::test]
 async fn test_admin_api_requires_authentication() {
     // Don't set III_ADMIN_TOKEN - should fail
-    std::env::remove_var("III_ADMIN_TOKEN");
+    unsafe { std::env::remove_var("III_ADMIN_TOKEN"); }
 
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(SecurityConfig::default(), None).unwrap());
     let config = AdminApiConfig {
         port: 49136, // Different port to avoid conflicts
         host: "127.0.0.1".to_string(),
@@ -45,9 +44,9 @@ async fn test_admin_api_requires_authentication() {
 
 #[tokio::test]
 async fn test_admin_api_list_functions() {
-    std::env::set_var("III_ADMIN_TOKEN", "test-token-123");
+    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-123"); }
 
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(SecurityConfig::default(), None).unwrap());
     let config = AdminApiConfig {
         port: 49137,
         host: "127.0.0.1".to_string(),
@@ -79,14 +78,14 @@ async fn test_admin_api_list_functions() {
 
 #[tokio::test]
 async fn test_admin_api_register_function() {
-    std::env::set_var("III_ADMIN_TOKEN", "test-token-456");
-    std::env::set_var("TEST_HMAC_SECRET", "my-secret-key");
+    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-456"); }
+    unsafe { std::env::set_var("TEST_HMAC_SECRET", "my-secret-key"); }
 
     let mut security = SecurityConfig::default();
     security.url_allowlist = vec!["example.com".to_string()];
     security.require_https = false;
 
-    let engine = Engine::new_with_security(security, None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
     let config = AdminApiConfig {
         port: 49138,
         host: "127.0.0.1".to_string(),
@@ -143,13 +142,13 @@ async fn test_admin_api_register_function() {
 
 #[tokio::test]
 async fn test_admin_api_register_duplicate_function() {
-    std::env::set_var("III_ADMIN_TOKEN", "test-token-789");
+    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-789"); }
 
     let mut security = SecurityConfig::default();
     security.url_allowlist = vec!["example.com".to_string()];
     security.require_https = false;
 
-    let engine = Engine::new_with_security(security, None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
     let config = AdminApiConfig {
         port: 49139,
         host: "127.0.0.1".to_string(),
@@ -201,13 +200,13 @@ async fn test_admin_api_register_duplicate_function() {
 
 #[tokio::test]
 async fn test_admin_api_update_function() {
-    std::env::set_var("III_ADMIN_TOKEN", "test-token-update");
+    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-update"); }
 
     let mut security = SecurityConfig::default();
     security.url_allowlist = vec!["example.com".to_string()];
     security.require_https = false;
 
-    let engine = Engine::new_with_security(security, None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
     let config = AdminApiConfig {
         port: 49140,
         host: "127.0.0.1".to_string(),
@@ -269,13 +268,13 @@ async fn test_admin_api_update_function() {
 
 #[tokio::test]
 async fn test_admin_api_delete_function() {
-    std::env::set_var("III_ADMIN_TOKEN", "test-token-delete");
+    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-delete"); }
 
     let mut security = SecurityConfig::default();
     security.url_allowlist = vec!["example.com".to_string()];
     security.require_https = false;
 
-    let engine = Engine::new_with_security(security, None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
     let config = AdminApiConfig {
         port: 49141,
         host: "127.0.0.1".to_string(),
@@ -330,13 +329,13 @@ async fn test_admin_api_delete_function() {
 
 #[tokio::test]
 async fn test_admin_api_invalid_function_path() {
-    std::env::set_var("III_ADMIN_TOKEN", "test-token-invalid");
+    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-invalid"); }
 
     let mut security = SecurityConfig::default();
     security.url_allowlist = vec!["*".to_string()];
     security.require_https = false;
 
-    let engine = Engine::new_with_security(security, None, None).unwrap();
+    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
     let config = AdminApiConfig {
         port: 49142,
         host: "127.0.0.1".to_string(),

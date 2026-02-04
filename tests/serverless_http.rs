@@ -2,33 +2,15 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use iii::{
-    config::{
-        SecurityConfig,
-        persistence::{
-            HttpFunctionConfig as KvHttpFunctionConfig, load_http_functions_from_kv,
-            store_http_function_in_kv,
+        config::{
+            HttpFunctionConfig,
+            SecurityConfig,
+            persistence::{load_http_functions_from_kv, store_http_function_in_kv},
         },
-    },
     engine::Engine,
     invocation::url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
-    invocation::{
-        method::HttpMethod,
-        signature::{sign_request, verify_signature},
-    },
+    invocation::method::HttpMethod,
 };
-
-#[tokio::test]
-async fn test_signature_roundtrip() {
-    let body = br#"{"key":"value"}"#;
-    let secret = "test_secret";
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let signature = sign_request(body, secret, timestamp);
-    let result = verify_signature(body, &signature, secret, timestamp, 300);
-    assert!(result.is_ok());
-}
 
 #[tokio::test]
 async fn test_url_validator_private_ip() {
@@ -56,8 +38,8 @@ async fn test_url_validator_allowlist() {
 
 #[tokio::test]
 async fn test_kv_persistence_load() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
-    let config = KvHttpFunctionConfig {
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
+    let config = HttpFunctionConfig {
         function_path: "geo.lookup".to_string(),
         url: "https://example.com/invoke".to_string(),
         method: HttpMethod::Post,
@@ -68,7 +50,7 @@ async fn test_kv_persistence_load() {
         request_format: None,
         response_format: None,
         metadata: None,
-        registered_at: Utc::now(),
+        registered_at: Some(Utc::now()),
         updated_at: None,
     };
     store_http_function_in_kv(&engine, &config).await.unwrap();

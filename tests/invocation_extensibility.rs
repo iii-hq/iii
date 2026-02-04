@@ -112,7 +112,7 @@ async fn test_invoker_registry_multiple_invokers() {
 
 #[tokio::test]
 async fn test_engine_registers_http_invoker_by_default() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let http_invoker = engine.invoker_registry.get("http").await;
     assert!(http_invoker.is_some());
@@ -121,7 +121,7 @@ async fn test_engine_registers_http_invoker_by_default() {
 
 #[tokio::test]
 async fn test_engine_register_custom_invoker() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let grpc_invoker = Arc::new(MockGrpcInvoker { should_fail: false });
     engine.register_invoker(grpc_invoker).await;
@@ -209,7 +209,7 @@ async fn test_invocation_method_type() {
 
 #[tokio::test]
 async fn test_multiple_custom_invokers_different_methods() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let grpc_invoker = Arc::new(MockGrpcInvoker { should_fail: false });
     let mqtt_invoker = Arc::new(MockMqttInvoker);
@@ -294,7 +294,7 @@ async fn test_invoker_registry_replacement() {
 
 #[tokio::test]
 async fn test_concurrent_invoker_registration() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let handles: Vec<_> = (0..10)
         .map(|i| {

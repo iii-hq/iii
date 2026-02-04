@@ -49,7 +49,7 @@ impl Invoker for TestKafkaInvoker {
 
 #[tokio::test]
 async fn test_invocation_handler_routes_to_http() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let http_invoker = engine.invoker_registry.get("http").await;
     assert!(http_invoker.is_some());
@@ -58,7 +58,7 @@ async fn test_invocation_handler_routes_to_http() {
 
 #[tokio::test]
 async fn test_invocation_handler_routes_to_custom_invoker() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let kafka_invoker = Arc::new(TestKafkaInvoker {
         topic: "events".to_string(),
@@ -103,7 +103,7 @@ async fn test_invocation_handler_routes_to_custom_invoker() {
 
 #[tokio::test]
 async fn test_unsupported_invocation_method() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let result = engine.invoker_registry.get("unsupported_protocol").await;
     assert!(result.is_none());
@@ -146,7 +146,7 @@ async fn test_http_invocation_method_configuration() {
 
 #[tokio::test]
 async fn test_function_with_different_registration_sources() {
-    let _engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let _engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let config_function = Function {
         function_path: "config.function".to_string(),
@@ -196,7 +196,7 @@ async fn test_function_with_different_registration_sources() {
 
 #[tokio::test]
 async fn test_multiple_invokers_same_engine() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     struct Invoker1;
     struct Invoker2;
@@ -293,7 +293,7 @@ async fn test_invoker_error_propagation() {
         }
     }
 
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
     engine.register_invoker(Arc::new(FailingInvoker)).await;
 
     let invoker = engine.invoker_registry.get("failing").await.unwrap();
@@ -323,7 +323,7 @@ async fn test_invoker_error_propagation() {
 
 #[tokio::test]
 async fn test_invoker_with_large_payload() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let kafka_invoker = Arc::new(TestKafkaInvoker {
         topic: "large-data".to_string(),
@@ -366,7 +366,7 @@ async fn test_invoker_with_large_payload() {
 
 #[tokio::test]
 async fn test_engine_cloning_preserves_invokers() {
-    let engine1 = Engine::new_with_security(SecurityConfig::default(), None, None).unwrap();
+    let engine1 = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
 
     let kafka_invoker = Arc::new(TestKafkaInvoker {
         topic: "test".to_string(),
