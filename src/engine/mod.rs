@@ -319,29 +319,31 @@ impl Engine {
         &self,
         config: HttpTriggerConfig,
     ) -> Result<(), ErrorBody> {
-        self.webhook_dispatcher
-            .url_validator()
-            .validate(&config.url)
-            .await
-            .map_err(|e| ErrorBody {
-                code: "url_validation_failed".into(),
-                message: e.to_string(),
+        let function = self.functions.get(&config.function_path)
+            .ok_or_else(|| ErrorBody {
+                code: "function_not_found".into(),
+                message: format!(
+                    "http_trigger '{}' references '{}' but no http_function with that path exists",
+                    config.trigger_id,
+                    config.function_path
+                ),
             })?;
 
-        let auth = match config.auth.as_ref() {
-            Some(auth) => Some(resolve_auth_ref(auth).map_err(|err| ErrorBody {
-                code: "auth_resolution_failed".into(),
-                message: err.message,
-            })?),
-            None => None,
-        };
+        if !matches!(&function.invocation_method, InvocationMethod::Http { .. }) {
+            return Err(ErrorBody {
+                code: "invalid_function_type".into(),
+                message: format!(
+                    "http_trigger '{}' references '{}' which is not an HTTP function",
+                    config.trigger_id,
+                    config.function_path
+                ),
+            });
+        }
 
         let trigger = HttpTrigger {
             function_path: config.function_path,
             trigger_type: config.trigger_type,
             trigger_id: config.trigger_id,
-            url: config.url,
-            auth,
             config: config.config,
         };
 

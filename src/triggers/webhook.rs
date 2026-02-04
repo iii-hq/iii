@@ -5,8 +5,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
+    function::FunctionsRegistry,
     invocation::{
-        method::HttpAuth,
+        method::{HttpAuth, InvocationMethod},
         signature::sign_request,
         url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
     },
@@ -62,9 +63,28 @@ impl WebhookDispatcher {
         })
     }
 
-    pub async fn deliver(&self, trigger: &HttpTrigger, payload: Value) -> Result<(), ErrorBody> {
+    pub async fn deliver(
+        &self,
+        trigger: &HttpTrigger,
+        payload: Value,
+        functions: &FunctionsRegistry,
+    ) -> Result<(), ErrorBody> {
+        let function = functions.get(&trigger.function_path)
+            .ok_or_else(|| ErrorBody {
+                code: "function_not_found".into(),
+                message: format!("Function '{}' not found", trigger.function_path),
+            })?;
+
+        let (url, auth) = match &function.invocation_method {
+            InvocationMethod::Http { url, auth, .. } => (url.clone(), auth.clone()),
+            _ => return Err(ErrorBody {
+                code: "invalid_function".into(),
+                message: "Referenced function is not an HTTP function".into(),
+            }),
+        };
+
         self.url_validator
-            .validate(&trigger.url)
+            .validate(&url)
             .await
             .map_err(|e| ErrorBody {
                 code: "url_validation_failed".into(),
@@ -89,7 +109,7 @@ impl WebhookDispatcher {
 
         let mut request = self
             .client
-            .post(&trigger.url)
+            .post(&url)
             .timeout(Duration::from_millis(self.default_timeout_ms))
             .header("Content-Type", "application/json")
             .header("x-iii-Trigger-Type", &trigger.trigger_type)
@@ -99,7 +119,7 @@ impl WebhookDispatcher {
             .header("x-iii-Invocation-ID", &invocation_id)
             .header("x-iii-Trace-ID", &trace_id);
 
-        request = match trigger.auth.as_ref() {
+        request = match auth.as_ref() {
             Some(HttpAuth::Hmac { secret }) => {
                 let signature = sign_request(&body, secret, timestamp);
                 request.header("x-iii-Signature", signature)

@@ -159,6 +159,7 @@ impl CronAdapter {
                     let http_triggers = engine.http_triggers.list_cron_triggers(&job_id);
                     for trigger in http_triggers {
                         let dispatcher = engine.webhook_dispatcher.clone();
+                        let functions = engine.functions.clone();
                         let trigger_id = trigger.trigger_id.clone();
                         let function_path = trigger.function_path.clone();
                         let config = trigger.config.clone();
@@ -173,7 +174,7 @@ impl CronAdapter {
                             "config": config,
                         });
                         tokio::spawn(async move {
-                            let _ = dispatcher.deliver(&trigger, payload).await;
+                            let _ = dispatcher.deliver(&trigger, payload, &functions).await;
                         });
                     }
 

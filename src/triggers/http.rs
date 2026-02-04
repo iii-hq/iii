@@ -3,15 +3,11 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use serde_json::Value;
 
-use crate::invocation::method::HttpAuth;
-
 #[derive(Debug, Clone)]
 pub struct HttpTrigger {
     pub function_path: String,
     pub trigger_type: String,
     pub trigger_id: String,
-    pub url: String,
-    pub auth: Option<HttpAuth>,
     pub config: Value,
 }
 

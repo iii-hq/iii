@@ -61,6 +61,7 @@ impl EventCoreModule {
         let http_triggers = self.engine.http_triggers.list_event_triggers(&topic);
         for trigger in http_triggers {
             let dispatcher = self.engine.webhook_dispatcher.clone();
+            let functions = self.engine.functions.clone();
             let trigger_id = trigger.trigger_id.clone();
             let function_path = trigger.function_path.clone();
             let topic_value = topic.clone();
@@ -78,7 +79,7 @@ impl EventCoreModule {
                 }
             });
             tokio::spawn(async move {
-                let _ = dispatcher.deliver(&trigger, payload).await;
+                let _ = dispatcher.deliver(&trigger, payload, &functions).await;
             });
         }
 
