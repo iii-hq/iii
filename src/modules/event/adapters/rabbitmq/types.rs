@@ -4,6 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+#![cfg(feature = "rabbitmq")]
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;

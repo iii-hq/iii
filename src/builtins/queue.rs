@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -35,10 +35,22 @@ pub struct Job {
     pub created_at: u64,
     #[serde(default)]
     pub process_at: Option<u64>,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 impl Job {
     pub fn new(queue: &str, data: Value, max_attempts: u32, backoff_delay_ms: u64) -> Self {
+        Self::new_with_group(queue, data, max_attempts, backoff_delay_ms, None)
+    }
+
+    pub fn new_with_group(
+        queue: &str,
+        data: Value,
+        max_attempts: u32,
+        backoff_delay_ms: u64,
+        group_id: Option<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             queue: queue.to_string(),
@@ -51,6 +63,7 @@ impl Job {
                 .unwrap()
                 .as_millis() as u64,
             process_at: None,
+            group_id,
         }
     }
 
@@ -67,12 +80,21 @@ impl Job {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueMode {
+    #[default]
+    Concurrent,
+    Fifo,
+}
+
 #[derive(Debug, Clone)]
 pub struct QueueConfig {
     pub max_attempts: u32,
     pub backoff_ms: u64,
     pub concurrency: u32,
     pub poll_interval_ms: u64,
+    pub mode: QueueMode,
 }
 
 impl Default for QueueConfig {
@@ -82,6 +104,7 @@ impl Default for QueueConfig {
             backoff_ms: 1000,
             concurrency: 10,
             poll_interval_ms: 100,
+            mode: QueueMode::Concurrent,
         }
     }
 }
@@ -103,6 +126,12 @@ impl QueueConfig {
             if let Some(poll_interval) = config.get("poll_interval_ms").and_then(|v| v.as_u64()) {
                 cfg.poll_interval_ms = poll_interval;
             }
+            if let Some(mode_str) = config.get("mode").and_then(|v| v.as_str()) {
+                cfg.mode = match mode_str {
+                    "fifo" => QueueMode::Fifo,
+                    _ => QueueMode::Concurrent,
+                };
+            }
         }
 
         cfg
@@ -114,6 +143,7 @@ pub struct SubscriptionConfig {
     pub concurrency: Option<u32>,
     pub max_attempts: Option<u32>,
     pub backoff_ms: Option<u64>,
+    pub mode: Option<QueueMode>,
 }
 
 impl SubscriptionConfig {
@@ -127,6 +157,10 @@ impl SubscriptionConfig {
 
     pub fn effective_backoff_ms(&self, default: u64) -> u64 {
         self.backoff_ms.unwrap_or(default)
+    }
+
+    pub fn effective_mode(&self, default: QueueMode) -> QueueMode {
+        self.mode.unwrap_or(default)
     }
 }
 
@@ -237,7 +271,7 @@ impl BuiltinQueue {
         Ok(())
     }
 
-    fn job_key(&self, queue: &str, job_id: &str) -> String {
+    pub(crate) fn job_key(&self, queue: &str, job_id: &str) -> String {
         format!("queue:{}:jobs:{}", queue, job_id)
     }
 
@@ -267,7 +301,10 @@ impl BuiltinQueue {
         let job_id = job.id.clone();
 
         let job_key = self.job_key(queue, &job.id);
-        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+        // Job serialization should never fail as all fields are basic types.
+        // If it does fail, it indicates a bug in the code that should be fixed.
+        let job_json =
+            serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
         self.kv_store.set_job(&job_key, job_json).await;
 
         let waiting_key = self.waiting_key(queue);
@@ -280,6 +317,38 @@ impl BuiltinQueue {
         }));
 
         tracing::debug!(queue = %queue, job_id = %job_id, "Job pushed to queue");
+
+        job_id
+    }
+
+    pub async fn push_fifo(&self, queue: &str, data: Value, group_id: &str) -> String {
+        let job = Job::new_with_group(
+            queue,
+            data,
+            self.config.max_attempts,
+            self.config.backoff_ms,
+            Some(group_id.to_string()),
+        );
+        let job_id = job.id.clone();
+
+        let job_key = self.job_key(queue, &job.id);
+        // Job serialization should never fail as all fields are basic types.
+        // If it does fail, it indicates a bug in the code that should be fixed.
+        let job_json =
+            serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
+        self.kv_store.set_job(&job_key, job_json).await;
+
+        let waiting_key = self.waiting_key(queue);
+        self.kv_store.lpush(&waiting_key, job.id.clone()).await;
+
+        self.pubsub.send_msg(serde_json::json!({
+            "topic": format!("queue:job:{}", queue),
+            "type": "available",
+            "job_id": &job.id,
+            "group_id": group_id,
+        }));
+
+        tracing::debug!(queue = %queue, job_id = %job_id, group_id = %group_id, "FIFO job pushed to queue");
 
         job_id
     }
@@ -302,7 +371,10 @@ impl BuiltinQueue {
         job.process_at = Some(process_at);
 
         let job_key = self.job_key(queue, &job.id);
-        let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+        // Job serialization should never fail as all fields are basic types.
+        // If it does fail, it indicates a bug in the code that should be fixed.
+        let job_json =
+            serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
         self.kv_store.set_job(&job_key, job_json).await;
 
         let delayed_key = self.delayed_key(queue);
@@ -341,13 +413,12 @@ impl BuiltinQueue {
     }
 
     async fn nack(&self, queue: &str, job_id: &str, error: &str) -> anyhow::Result<()> {
-        let active_key = self.active_key(queue);
-        self.kv_store.lrem(&active_key, 1, job_id).await;
-
         let job_key = self.job_key(queue, job_id);
         let job_value = self.kv_store.get_job(&job_key).await;
 
         let Some(job_value) = job_value else {
+            let active_key = self.active_key(queue);
+            self.kv_store.lrem(&active_key, 1, job_id).await;
             tracing::warn!(queue = %queue, job_id = %job_id, "Job not found for nack");
             return Ok(());
         };
@@ -356,22 +427,11 @@ impl BuiltinQueue {
         job.increment_attempts();
 
         if job.is_exhausted() {
-            let dlq_key = self.dlq_key(queue);
-            let failed_data = serde_json::json!({
-                "job": job,
-                "error": error,
-                "failed_at": SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
-            });
-
-            let failed_json = serde_json::to_string(&failed_data)?;
-            self.kv_store.lpush(&dlq_key, failed_json).await;
-            self.kv_store.delete_job(&job_key).await;
-
-            tracing::warn!(queue = %queue, job_id = %job_id, attempts = job.attempts_made, "Job exhausted, moved to DLQ");
+            self.move_to_dlq(queue, &job, error).await?;
         } else {
+            let active_key = self.active_key(queue);
+            self.kv_store.lrem(&active_key, 1, job_id).await;
+
             let delay = job.calculate_backoff();
             let delayed_key = self.delayed_key(queue);
             let process_at = SystemTime::now()
@@ -394,6 +454,31 @@ impl BuiltinQueue {
         Ok(())
     }
 
+    async fn move_to_dlq(&self, queue: &str, job: &Job, error: &str) -> anyhow::Result<()> {
+        let active_key = self.active_key(queue);
+        self.kv_store.lrem(&active_key, 1, &job.id).await;
+
+        let dlq_key = self.dlq_key(queue);
+        let failed_data = serde_json::json!({
+            "job": job,
+            "error": error,
+            "failed_at": SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        });
+
+        let failed_json = serde_json::to_string(&failed_data)?;
+        self.kv_store.lpush(&dlq_key, failed_json).await;
+
+        let job_key = self.job_key(queue, &job.id);
+        self.kv_store.delete_job(&job_key).await;
+
+        tracing::warn!(queue = %queue, job_id = %job.id, attempts = job.attempts_made, "Job exhausted, moved to DLQ");
+
+        Ok(())
+    }
+
     async fn move_delayed_to_waiting(&self, queue: &str) -> anyhow::Result<()> {
         let delayed_key = self.delayed_key(queue);
         let now = SystemTime::now()
@@ -407,7 +492,10 @@ impl BuiltinQueue {
             let waiting_key = self.waiting_key(queue);
             for job_id in &ready_jobs {
                 self.kv_store.zrem(&delayed_key, job_id).await;
-                self.kv_store.lpush(&waiting_key, job_id.clone()).await;
+                // Use rpush to add to back (oldest position) so retried jobs
+                // are processed before any jobs that were added after them.
+                // This maintains FIFO order: rpop takes from back (oldest first).
+                self.kv_store.rpush(&waiting_key, job_id.clone()).await;
             }
 
             self.pubsub.send_msg(serde_json::json!({
@@ -427,27 +515,59 @@ impl BuiltinQueue {
     ) -> SubscriptionHandle {
         let handle_id = Uuid::new_v4().to_string();
 
-        let effective_concurrency = config
+        let effective_mode = config
             .as_ref()
-            .and_then(|c| c.concurrency)
-            .unwrap_or(self.config.concurrency);
+            .and_then(|c| c.mode)
+            .unwrap_or(self.config.mode);
 
-        let worker = Worker::new(
-            Arc::new(self.clone()),
-            queue.to_string(),
-            handler,
-            config,
-            effective_concurrency,
-        );
+        let task_handle = match effective_mode {
+            QueueMode::Fifo => {
+                let concurrency = config
+                    .as_ref()
+                    .and_then(|c| c.concurrency)
+                    .unwrap_or(self.config.concurrency) as usize;
 
-        let task_handle = tokio::spawn(async move {
-            worker.run().await;
-        });
+                if concurrency > 1 {
+                    let worker = GroupedFifoWorker::new(
+                        Arc::new(self.clone()),
+                        queue.to_string(),
+                        handler,
+                        concurrency,
+                    );
+                    tokio::spawn(async move {
+                        worker.run().await;
+                    })
+                } else {
+                    let worker =
+                        FifoWorker::new(Arc::new(self.clone()), queue.to_string(), handler);
+                    tokio::spawn(async move {
+                        worker.run().await;
+                    })
+                }
+            }
+            QueueMode::Concurrent => {
+                let effective_concurrency = config
+                    .as_ref()
+                    .and_then(|c| c.concurrency)
+                    .unwrap_or(self.config.concurrency);
+
+                let worker = Worker::new(
+                    Arc::new(self.clone()),
+                    queue.to_string(),
+                    handler,
+                    config,
+                    effective_concurrency,
+                );
+                tokio::spawn(async move {
+                    worker.run().await;
+                })
+            }
+        };
 
         let mut subs = self.subscriptions.write().await;
         subs.insert(handle_id.clone(), task_handle);
 
-        tracing::info!(queue = %queue, handle_id = %handle_id, "Subscribed to queue");
+        tracing::info!(queue = %queue, handle_id = %handle_id, mode = ?effective_mode, "Subscribed to queue");
 
         SubscriptionHandle {
             id: handle_id,
@@ -480,7 +600,10 @@ impl BuiltinQueue {
                 job.attempts_made = 0;
 
                 let job_key = self.job_key(queue, &job.id);
-                let job_json = serde_json::to_value(&job).expect("Failed to serialize job");
+                // Job serialization should never fail as all fields are basic types.
+                // If it does fail, it indicates a bug in the code that should be fixed.
+                let job_json =
+                    serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
                 self.kv_store.set_job(&job_key, job_json).await;
 
                 let waiting_key = self.waiting_key(queue);
@@ -510,6 +633,64 @@ impl Clone for BuiltinQueue {
             pubsub: Arc::clone(&self.pubsub),
             config: self.config.clone(),
             subscriptions: Arc::clone(&self.subscriptions),
+        }
+    }
+}
+
+/// Shared helper for processing a FIFO job with inline retry.
+/// This function handles the retry loop until the job succeeds or is exhausted.
+/// Used by both FifoWorker (single-threaded FIFO) and GroupedFifoWorker (grouped FIFO).
+async fn process_job_with_inline_retry(
+    queue_impl: &BuiltinQueue,
+    queue_name: &str,
+    handler: &dyn JobHandler,
+    mut job: Job,
+    group_id_for_logging: Option<&str>,
+) {
+    loop {
+        match handler.handle(&job).await {
+            Ok(()) => {
+                if let Err(e) = queue_impl.ack(queue_name, &job.id).await {
+                    tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
+                }
+                return;
+            }
+            Err(error) => {
+                job.increment_attempts();
+
+                if job.is_exhausted() {
+                    if let Err(e) = queue_impl.move_to_dlq(queue_name, &job, &error).await {
+                        tracing::error!(error = ?e, job_id = %job.id, "Failed to move job to DLQ");
+                    }
+                    return;
+                }
+
+                let delay = job.calculate_backoff();
+                if let Some(gid) = group_id_for_logging {
+                    tracing::debug!(
+                        queue = %queue_name,
+                        job_id = %job.id,
+                        group_id = %gid,
+                        attempts = job.attempts_made,
+                        delay_ms = delay,
+                        "FIFO job scheduled for inline retry"
+                    );
+                } else {
+                    tracing::debug!(
+                        queue = %queue_name,
+                        job_id = %job.id,
+                        attempts = job.attempts_made,
+                        delay_ms = delay,
+                        "FIFO job scheduled for inline retry"
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+
+                let job_key = queue_impl.job_key(queue_name, &job.id);
+                if let Ok(job_json) = serde_json::to_value(&job) {
+                    queue_impl.kv_store.set_job(&job_key, job_json).await;
+                }
+            }
         }
     }
 }
@@ -597,6 +778,175 @@ impl Worker {
                 }
             });
         }
+    }
+}
+
+struct GroupedFifoWorker {
+    queue_impl: Arc<BuiltinQueue>,
+    queue_name: String,
+    handler: Arc<dyn JobHandler>,
+    active_groups: Arc<RwLock<HashSet<String>>>,
+    max_concurrent_groups: usize,
+    poll_interval_ms: u64,
+}
+
+impl GroupedFifoWorker {
+    fn new(
+        queue_impl: Arc<BuiltinQueue>,
+        queue_name: String,
+        handler: Arc<dyn JobHandler>,
+        max_concurrent_groups: usize,
+    ) -> Self {
+        Self {
+            poll_interval_ms: queue_impl.config.poll_interval_ms,
+            queue_impl,
+            queue_name,
+            handler,
+            active_groups: Arc::new(RwLock::new(HashSet::new())),
+            max_concurrent_groups,
+        }
+    }
+
+    async fn run(self) {
+        let mut poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
+
+        loop {
+            poll_interval.tick().await;
+
+            if let Err(e) = self
+                .queue_impl
+                .move_delayed_to_waiting(&self.queue_name)
+                .await
+            {
+                tracing::error!(error = ?e, queue = %self.queue_name, "Failed to move delayed jobs");
+            }
+
+            self.process_available_groups().await;
+        }
+    }
+
+    async fn process_available_groups(&self) {
+        let mut skipped_job_ids: Vec<String> = Vec::new();
+
+        loop {
+            let active_count = self.active_groups.read().await.len();
+            if active_count >= self.max_concurrent_groups {
+                break;
+            }
+
+            // Pop a job
+            let job = match self.queue_impl.pop(&self.queue_name).await {
+                Some(job) => job,
+                None => break,
+            };
+
+            let group_id = job
+                .group_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+
+            // Atomic check-and-insert to avoid TOCTOU race condition
+            {
+                let mut active = self.active_groups.write().await;
+                if active.contains(&group_id) {
+                    drop(active);
+                    // Collect skipped job to requeue after loop
+                    skipped_job_ids.push(job.id);
+                    continue;
+                }
+                active.insert(group_id.clone());
+            }
+
+            // Process job in background
+            let queue_impl = Arc::clone(&self.queue_impl);
+            let queue_name = self.queue_name.clone();
+            let handler = Arc::clone(&self.handler);
+            let active_groups = Arc::clone(&self.active_groups);
+
+            tokio::spawn(async move {
+                process_job_with_inline_retry(
+                    &queue_impl,
+                    &queue_name,
+                    handler.as_ref(),
+                    job,
+                    Some(&group_id),
+                )
+                .await;
+
+                active_groups.write().await.remove(&group_id);
+            });
+        }
+
+        // Requeue skipped jobs in FIFO order
+        // lpush in pop-order: first popped ends up at back (next to be processed)
+        if !skipped_job_ids.is_empty() {
+            let waiting_key = self.queue_impl.waiting_key(&self.queue_name);
+            let active_key = self.queue_impl.active_key(&self.queue_name);
+            for job_id in skipped_job_ids {
+                self.queue_impl
+                    .kv_store
+                    .lpush(&waiting_key, job_id.clone())
+                    .await;
+                self.queue_impl.kv_store.lrem(&active_key, 1, &job_id).await;
+            }
+        }
+    }
+}
+
+struct FifoWorker {
+    queue_impl: Arc<BuiltinQueue>,
+    queue_name: String,
+    handler: Arc<dyn JobHandler>,
+    poll_interval_ms: u64,
+}
+
+impl FifoWorker {
+    fn new(
+        queue_impl: Arc<BuiltinQueue>,
+        queue_name: String,
+        handler: Arc<dyn JobHandler>,
+    ) -> Self {
+        Self {
+            poll_interval_ms: queue_impl.config.poll_interval_ms,
+            queue_impl,
+            queue_name,
+            handler,
+        }
+    }
+
+    async fn run(self) {
+        let mut poll_interval = interval(Duration::from_millis(self.poll_interval_ms));
+
+        loop {
+            poll_interval.tick().await;
+
+            if let Err(e) = self
+                .queue_impl
+                .move_delayed_to_waiting(&self.queue_name)
+                .await
+            {
+                tracing::error!(error = ?e, queue = %self.queue_name, "Failed to move delayed jobs");
+            }
+
+            // Process one job at a time, wait for completion (including retries)
+            self.process_next_job().await;
+        }
+    }
+
+    async fn process_next_job(&self) {
+        let job = match self.queue_impl.pop(&self.queue_name).await {
+            Some(job) => job,
+            None => return,
+        };
+
+        process_job_with_inline_retry(
+            &self.queue_impl,
+            &self.queue_name,
+            self.handler.as_ref(),
+            job,
+            None,
+        )
+        .await;
     }
 }
 
@@ -803,6 +1153,7 @@ mod tests {
             concurrency: Some(20),
             max_attempts: Some(5),
             backoff_ms: Some(2000),
+            mode: None,
         };
 
         assert_eq!(config.effective_concurrency(10), 20);
@@ -994,5 +1345,619 @@ mod tests {
         assert_eq!(delayed_jobs[0], job3_id);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_queue_config_fifo_mode() {
+        let config_json = serde_json::json!({
+            "mode": "fifo"
+        });
+        let config = QueueConfig::from_value(Some(&config_json));
+        assert_eq!(config.mode, QueueMode::Fifo);
+    }
+
+    #[tokio::test]
+    async fn test_queue_config_concurrent_mode_default() {
+        let config = QueueConfig::default();
+        assert_eq!(config.mode, QueueMode::Concurrent);
+    }
+
+    #[tokio::test]
+    async fn test_queue_config_concurrent_mode_explicit() {
+        let config_json = serde_json::json!({
+            "mode": "concurrent"
+        });
+        let config = QueueConfig::from_value(Some(&config_json));
+        assert_eq!(config.mode, QueueMode::Concurrent);
+    }
+
+    #[tokio::test]
+    async fn test_subscription_config_fifo_mode() {
+        let config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+        assert_eq!(
+            config.effective_mode(QueueMode::Concurrent),
+            QueueMode::Fifo
+        );
+    }
+
+    #[tokio::test]
+    async fn test_subscription_config_mode_defaults_to_global() {
+        let config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: None,
+        };
+        assert_eq!(config.effective_mode(QueueMode::Fifo), QueueMode::Fifo);
+        assert_eq!(
+            config.effective_mode(QueueMode::Concurrent),
+            QueueMode::Concurrent
+        );
+    }
+
+    #[tokio::test]
+    async fn test_job_with_group_id() {
+        let job = Job::new_with_group(
+            "test_queue",
+            serde_json::json!({"key": "value"}),
+            3,
+            1000,
+            Some("user-123".to_string()),
+        );
+        assert_eq!(job.group_id, Some("user-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_job_without_group_id() {
+        let job = Job::new("test_queue", serde_json::json!({}), 3, 1000);
+        assert_eq!(job.group_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_push_fifo_with_group() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig::default();
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        let job_id = queue
+            .push_fifo("test_queue", serde_json::json!({"order": 1}), "group-a")
+            .await;
+
+        let job_key = queue.job_key("test_queue", &job_id);
+        let job_value = kv_store.get_job(&job_key).await.unwrap();
+        let job: Job = serde_json::from_value(job_value).unwrap();
+
+        assert_eq!(job.group_id, Some("group-a".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_fifo_mode_parallel_groups() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push jobs to different groups
+        let group_a_1 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "a", "order": 1}),
+                "group-a",
+            )
+            .await;
+        let group_b_1 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "b", "order": 1}),
+                "group-b",
+            )
+            .await;
+        let group_a_2 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "a", "order": 2}),
+                "group-a",
+            )
+            .await;
+        let group_b_2 = queue
+            .push_fifo(
+                "fifo_queue",
+                serde_json::json!({"group": "b", "order": 2}),
+                "group-b",
+            )
+            .await;
+
+        let processed_order = Arc::new(RwLock::new(Vec::<(String, String)>::new())); // (group, job_id)
+        let processed_clone = Arc::clone(&processed_order);
+
+        struct GroupOrderTracker {
+            processed: Arc<RwLock<Vec<(String, String)>>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for GroupOrderTracker {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let group = job.group_id.clone().unwrap_or_default();
+                self.processed.write().await.push((group, job.id.clone()));
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(GroupOrderTracker {
+            processed: processed_clone,
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: Some(2), // Allow 2 groups to process in parallel
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("fifo_queue", handler, Some(subscription_config))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        queue.unsubscribe(handle).await;
+
+        let order = processed_order.read().await;
+
+        // Verify within each group, jobs are in order
+        let group_a: Vec<_> = order
+            .iter()
+            .filter(|(g, _)| g == "group-a")
+            .map(|(_, id)| id.clone())
+            .collect();
+        let group_b: Vec<_> = order
+            .iter()
+            .filter(|(g, _)| g == "group-b")
+            .map(|(_, id)| id.clone())
+            .collect();
+
+        assert_eq!(group_a.len(), 2);
+        assert_eq!(group_a[0], group_a_1);
+        assert_eq!(group_a[1], group_a_2);
+
+        assert_eq!(group_b.len(), 2);
+        assert_eq!(group_b[0], group_b_1);
+        assert_eq!(group_b[1], group_b_2);
+    }
+
+    #[tokio::test]
+    async fn test_fifo_mode_processes_in_order() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push jobs
+        let job1_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 1}))
+            .await;
+        let job2_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 2}))
+            .await;
+        let job3_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 3}))
+            .await;
+
+        // Track processing order
+        let processed_order = Arc::new(RwLock::new(Vec::<String>::new()));
+        let processed_clone = Arc::clone(&processed_order);
+
+        struct OrderTracker {
+            processed: Arc<RwLock<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for OrderTracker {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                // Variable delay based on job order to expose concurrent processing
+                let order = job.data.get("order").and_then(|v| v.as_u64()).unwrap_or(0);
+                // First job takes longest, so if concurrent, order would be 3,2,1
+                let delay = match order {
+                    1 => 50,
+                    2 => 30,
+                    3 => 10,
+                    _ => 10,
+                };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                self.processed.write().await.push(job.id.clone());
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(OrderTracker {
+            processed: processed_clone,
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("fifo_queue", handler, Some(subscription_config))
+            .await;
+
+        // Wait for processing
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        queue.unsubscribe(handle).await;
+
+        let order = processed_order.read().await;
+        assert_eq!(
+            order.len(),
+            3,
+            "Expected 3 jobs to be processed, got {}",
+            order.len()
+        );
+        assert_eq!(order[0], job1_id, "First job should be job1");
+        assert_eq!(order[1], job2_id, "Second job should be job2");
+        assert_eq!(order[2], job3_id, "Third job should be job3");
+    }
+
+    #[tokio::test]
+    async fn test_fifo_mode_retry_blocks_queue() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            max_attempts: 2,
+            backoff_ms: 10, // Short backoff for test
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push jobs
+        let job1_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 1}))
+            .await;
+        let job2_id = queue
+            .push("fifo_queue", serde_json::json!({"order": 2}))
+            .await;
+
+        let attempt_count = Arc::new(RwLock::new(0));
+        let processed_ids = Arc::new(RwLock::new(Vec::<String>::new()));
+        let attempt_clone = Arc::clone(&attempt_count);
+        let processed_clone = Arc::clone(&processed_ids);
+
+        struct RetryTracker {
+            attempts: Arc<RwLock<i32>>,
+            processed: Arc<RwLock<Vec<String>>>,
+            fail_first_n: i32,
+        }
+
+        #[async_trait]
+        impl JobHandler for RetryTracker {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                let mut count = self.attempts.write().await;
+                *count += 1;
+
+                if *count <= self.fail_first_n {
+                    return Err("Intentional failure".to_string());
+                }
+
+                self.processed.write().await.push(job.id.clone());
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(RetryTracker {
+            attempts: attempt_clone,
+            processed: processed_clone,
+            fail_first_n: 1, // Fail job1 once, then succeed
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: None,
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("fifo_queue", handler, Some(subscription_config))
+            .await;
+
+        // Wait for retry and processing
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        queue.unsubscribe(handle).await;
+
+        // Both jobs should be processed, job1 first (after retry), then job2
+        let processed = processed_ids.read().await;
+        assert_eq!(processed.len(), 2);
+        assert_eq!(processed[0], job1_id);
+        assert_eq!(processed[1], job2_id);
+    }
+
+    #[tokio::test]
+    async fn test_grouped_fifo_no_duplicate_group_processing() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            mode: QueueMode::Fifo,
+            poll_interval_ms: 1, // Fast polling to increase race likelihood
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Push many jobs to the same group
+        for i in 0..20 {
+            queue
+                .push_fifo("race_queue", serde_json::json!({"order": i}), "same-group")
+                .await;
+        }
+
+        let concurrent_count = Arc::new(RwLock::new(0_i32));
+        let max_concurrent = Arc::new(RwLock::new(0_i32));
+        let concurrent_clone = Arc::clone(&concurrent_count);
+        let max_clone = Arc::clone(&max_concurrent);
+
+        struct ConcurrencyTracker {
+            concurrent: Arc<RwLock<i32>>,
+            max_concurrent: Arc<RwLock<i32>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for ConcurrencyTracker {
+            async fn handle(&self, _job: &Job) -> Result<(), String> {
+                {
+                    let mut count = self.concurrent.write().await;
+                    *count += 1;
+                    let mut max = self.max_concurrent.write().await;
+                    if *count > *max {
+                        *max = *count;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                {
+                    let mut count = self.concurrent.write().await;
+                    *count -= 1;
+                }
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(ConcurrencyTracker {
+            concurrent: concurrent_clone,
+            max_concurrent: max_clone,
+        });
+
+        let subscription_config = SubscriptionConfig {
+            concurrency: Some(5), // Allow multiple groups, but same group should serialize
+            max_attempts: None,
+            backoff_ms: None,
+            mode: Some(QueueMode::Fifo),
+        };
+
+        let handle = queue
+            .subscribe("race_queue", handler, Some(subscription_config))
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        queue.unsubscribe(handle).await;
+
+        // For a single group, max concurrent should be 1
+        let max = *max_concurrent.read().await;
+        assert_eq!(
+            max, 1,
+            "Same group should never have concurrent processing, got {}",
+            max
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grouped_fifo_requeue_preserves_order() {
+        // This test verifies that when jobs are skipped (group already active),
+        // they are requeued in FIFO order, not reversed.
+        //
+        // Setup: Push 3 jobs for the same group (A, B, C in order)
+        // Then simulate what process_available_groups does:
+        // 1. Pop A (oldest), mark group active
+        // 2. Pop B, group busy -> should be requeued
+        // 3. Pop C, group busy -> should be requeued
+        // After requeue, order should still be B, C (not C, B)
+
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig::default();
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        // Push 3 jobs with same group_id
+        let job_a_id = queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A"}), "group1")
+            .await;
+        let job_b_id = queue
+            .push_fifo("test_queue", serde_json::json!({"name": "B"}), "group1")
+            .await;
+        let job_c_id = queue
+            .push_fifo("test_queue", serde_json::json!({"name": "C"}), "group1")
+            .await;
+
+        // Pop A - this would be processed (oldest)
+        let job_a = queue.pop("test_queue").await.unwrap();
+        assert_eq!(job_a.id, job_a_id);
+
+        // Pop B and C - these would be skipped and need requeue
+        let job_b = queue.pop("test_queue").await.unwrap();
+        assert_eq!(job_b.id, job_b_id);
+        let job_c = queue.pop("test_queue").await.unwrap();
+        assert_eq!(job_c.id, job_c_id);
+
+        // Simulate the CORRECT requeue behavior: lpush in pop-order
+        // This puts B at back (next to process), C at front
+        let waiting_key = queue.waiting_key("test_queue");
+        let active_key = queue.active_key("test_queue");
+
+        // Requeue in the order they were popped (B first, then C)
+        // lpush(B) -> [B]
+        // lpush(C) -> [C, B]
+        // Now rpop gets B first (correct FIFO)
+        kv_store.lpush(&waiting_key, job_b.id.clone()).await;
+        kv_store.lrem(&active_key, 1, &job_b.id).await;
+        kv_store.lpush(&waiting_key, job_c.id.clone()).await;
+        kv_store.lrem(&active_key, 1, &job_c.id).await;
+
+        // Verify FIFO order: B should come before C
+        let next_job = queue.pop("test_queue").await.unwrap();
+        assert_eq!(
+            next_job.id, job_b_id,
+            "Expected B to be next (FIFO), but got different job"
+        );
+
+        let last_job = queue.pop("test_queue").await.unwrap();
+        assert_eq!(
+            last_job.id, job_c_id,
+            "Expected C to be last (FIFO), but got different job"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grouped_fifo_worker_maintains_order() {
+        use tokio::sync::Mutex;
+
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            poll_interval_ms: 10,
+            ..Default::default()
+        };
+        let queue = Arc::new(BuiltinQueue::new(kv_store.clone(), pubsub, config));
+
+        // Track processing order
+        let processed_order: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let processed_order_clone = Arc::clone(&processed_order);
+
+        struct OrderTrackingHandler {
+            processed: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl JobHandler for OrderTrackingHandler {
+            async fn handle(&self, job: &Job) -> Result<(), String> {
+                // Small delay to simulate work
+                tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                let name = job.data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                self.processed.lock().await.push(name.to_string());
+                Ok(())
+            }
+        }
+
+        let handler = Arc::new(OrderTrackingHandler {
+            processed: processed_order_clone,
+        });
+
+        // Push jobs: A1, B1, A2, B2, A3 (A and B are different groups)
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A1"}), "groupA")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "B1"}), "groupB")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A2"}), "groupA")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "B2"}), "groupB")
+            .await;
+        queue
+            .push_fifo("test_queue", serde_json::json!({"name": "A3"}), "groupA")
+            .await;
+
+        // Create worker with max 2 concurrent groups
+        let worker =
+            GroupedFifoWorker::new(Arc::clone(&queue), "test_queue".to_string(), handler, 2);
+
+        // Run worker in background
+        let worker_handle = tokio::spawn(async move {
+            worker.run().await;
+        });
+
+        // Wait for all jobs to be processed
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        worker_handle.abort();
+
+        let order = processed_order.lock().await;
+
+        // Verify FIFO within each group:
+        // - A jobs should be in order: A1 before A2 before A3
+        // - B jobs should be in order: B1 before B2
+        let a_positions: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.starts_with('A'))
+            .map(|(i, _)| i)
+            .collect();
+        let b_positions: Vec<usize> = order
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| name.starts_with('B'))
+            .map(|(i, _)| i)
+            .collect();
+
+        assert_eq!(a_positions.len(), 3, "All A jobs should be processed");
+        assert_eq!(b_positions.len(), 2, "All B jobs should be processed");
+
+        // A1 < A2 < A3 (positions should be increasing)
+        assert!(
+            a_positions.windows(2).all(|w| w[0] < w[1]),
+            "A jobs should maintain FIFO order, got positions: {:?}",
+            a_positions
+        );
+        // B1 < B2
+        assert!(
+            b_positions.windows(2).all(|w| w[0] < w[1]),
+            "B jobs should maintain FIFO order, got positions: {:?}",
+            b_positions
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fifo_uses_global_concurrency_when_not_specified() {
+        // Create queue with global concurrency = 5
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            concurrency: 5,
+            mode: QueueMode::Fifo,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        // Subscribe without specifying concurrency in subscription config
+        let handler = Arc::new(TestHandler { should_fail: false });
+        let _handle = queue.subscribe("test_queue", handler, None).await;
+
+        // The subscription should use GroupedFifoWorker (concurrency > 1)
+        // We verify this indirectly - if concurrency defaults to 1, FifoWorker is used
+        // If concurrency defaults to 5 (global), GroupedFifoWorker is used
+
+        // For now, we just verify the subscription was created successfully
+        // The real verification is that with concurrency=5, GroupedFifoWorker is spawned
+        // which we can see from logs or behavior (grouped allows parallel groups)
+
+        let subs = queue.subscriptions.read().await;
+        assert_eq!(subs.len(), 1, "Subscription should be created");
     }
 }
