@@ -20,13 +20,16 @@ use crate::{
     modules::{
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         streams::{
-            StreamOutboundMessage, StreamWrapperMessage,
+            StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
     },
 };
-use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
+use iii_sdk::{
+    UpdateOp, UpdateResult,
+    types::{DeleteResult, SetResult},
+};
 
 const STREAM_TOPIC: &str = "stream::events";
 
@@ -303,22 +306,6 @@ impl StreamAdapter for RedisAdapter {
             }
         };
         let new_value = data.clone();
-        let timestamp = chrono::Utc::now().timestamp_millis();
-
-        drop(conn); // Release the lock
-
-        self.emit_event(StreamWrapperMessage {
-            timestamp,
-            stream_name: stream_name.to_string(),
-            group_id: group_id.to_string(),
-            id: Some(item_id.to_string()),
-            event: if old_value.is_some() {
-                StreamOutboundMessage::Update { data }
-            } else {
-                StreamOutboundMessage::Create { data }
-            },
-        })
-        .await?;
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, "Value set in Redis");
 
@@ -346,33 +333,50 @@ impl StreamAdapter for RedisAdapter {
         }
     }
 
-    async fn delete(&self, stream_name: &str, group_id: &str, item_id: &str) -> anyhow::Result<()> {
+    async fn delete(
+        &self,
+        stream_name: &str,
+        group_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<DeleteResult> {
         let stream_name = stream_name.to_string();
         let group_id = group_id.to_string();
         let item_id = item_id.to_string();
 
         let key = format!("stream:{}:{}", stream_name, group_id);
-        let mut conn = self.publisher.lock().await;
-        let timestamp = chrono::Utc::now().timestamp_millis();
 
-        conn.hdel::<String, String, ()>(key, item_id.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
+        // Use Lua script for atomic get-and-delete operation
+        // This script atomically gets the old value and deletes the field
+        let script = redis::Script::new(
+            r#"
+                local old_value = redis.call('HGET', KEYS[1], ARGV[1])
+                redis.call('HDEL', KEYS[1], ARGV[1])
+                return old_value
+            "#,
+        );
 
-        drop(conn); // Release the lock
+        let result: redis::RedisResult<Option<String>> = script
+            .key(&key)
+            .arg(&item_id)
+            .invoke_async(&mut *self.publisher.lock().await)
+            .await;
 
-        self.emit_event(StreamWrapperMessage {
-            timestamp,
-            stream_name: stream_name.to_string(),
-            group_id: group_id.to_string(),
-            id: Some(item_id.to_string()),
-            event: StreamOutboundMessage::Delete {
-                data: serde_json::json!({ "id": item_id }),
-            },
-        })
-        .await?;
+        let old_value = match result {
+            Ok(old) => old
+                .map(|s| {
+                    serde_json::from_str(&s)
+                        .map_err(|e| anyhow::anyhow!("Failed to deserialize old value: {}", e))
+                })
+                .transpose()?,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to atomically delete value from Redis: {}",
+                    e
+                ));
+            }
+        };
 
-        Ok(())
+        Ok(DeleteResult { old_value })
     }
 
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>> {

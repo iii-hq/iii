@@ -12,7 +12,10 @@ use std::{
     sync::Arc,
 };
 
-use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
+use iii_sdk::{
+    UpdateOp, UpdateResult,
+    types::{DeleteResult, SetResult},
+};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -326,7 +329,7 @@ impl BuiltinKvStore {
         None
     }
 
-    pub async fn delete(&self, index: String, key: String) -> Option<Value> {
+    pub async fn delete(&self, index: String, key: String) -> DeleteResult {
         let (removed, dirty_op) = {
             let mut store = self.store.write().await;
             let index_map = store.get_mut(&index);
@@ -342,13 +345,13 @@ impl BuiltinKvStore {
                 } else {
                     None
                 };
-                (removed, dirty_op)
+                (DeleteResult { old_value: removed }, dirty_op)
             } else {
-                (None, None)
+                (DeleteResult { old_value: None }, None)
             }
         };
 
-        if removed.is_some()
+        if removed.old_value.is_some()
             && self.file_store_dir.is_some()
             && let Some(dirty_op) = dirty_op
         {
@@ -662,7 +665,8 @@ mod test {
         let deleted = kv_store
             .delete(index.to_string(), key.to_string())
             .await
-            .expect("Item should exist for deletion");
+            .old_value
+            .unwrap_or_else(|| panic!("Item should exist for deletion"));
         assert_eq!(deleted, data);
 
         // Ensure item is deleted

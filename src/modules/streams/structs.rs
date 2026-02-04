@@ -57,6 +57,8 @@ pub enum StreamOutboundMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamWrapperMessage {
+    #[serde(rename = "type")]
+    pub event_type: String,
     pub timestamp: i64,
     #[serde(rename = "streamName")]
     pub stream_name: String,

@@ -20,6 +20,10 @@ use axum::{
 use chrono::Utc;
 use colored::Colorize;
 use function_macros::{function, service};
+use iii_sdk::{
+    UpdateResult,
+    types::{DeleteResult, SetResult},
+};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -37,7 +41,10 @@ use crate::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
                 StreamGetInput, StreamListGroupsInput, StreamSetInput, StreamUpdateInput,
             },
-            trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
+            trigger::{
+                JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
+                StreamTriggers,
+            },
             utils::{headers_to_map, query_to_multi_map},
         },
     },
@@ -48,7 +55,8 @@ use crate::{
 #[derive(Clone)]
 pub struct StreamCoreModule {
     config: StreamModuleConfig,
-    adapter: Arc<dyn StreamAdapter>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub adapter: Arc<dyn StreamAdapter>,
     engine: Arc<Engine>,
 
     pub triggers: Arc<StreamTriggers>,
@@ -169,6 +177,16 @@ impl Module for StreamCoreModule {
             })
             .await;
 
+        let _ = self
+            .engine
+            .register_trigger_type(TriggerType {
+                id: STREAM_TRIGGER_TYPE.to_string(),
+                _description: "Stream trigger".to_string(),
+                registrator: Box::new(self.clone()),
+                worker_id: None,
+            })
+            .await;
+
         tokio::spawn(async move {
             tracing::info!(
                 "Stream API listening on address: {}",
@@ -225,80 +243,212 @@ impl ConfigurableModule for StreamCoreModule {
     }
 }
 
+impl StreamCoreModule {
+    /// Invoke triggers for a given event type with condition checks
+    async fn invoke_triggers(&self, event_data: StreamWrapperMessage) {
+        let engine = self.engine.clone();
+        let event_stream_name = event_data.stream_name.clone();
+
+        // Collect relevant trigger IDs and clone the triggers we need
+        // Only triggers with matching stream_name are registered, so we only need to look up by stream_name
+        let triggers_to_invoke: Vec<StreamTrigger> = {
+            let by_name = self.triggers.stream_triggers_by_name.read().await;
+            let triggers_map = self.triggers.stream_triggers.read().await;
+            let mut triggers = Vec::new();
+
+            // Get triggers for this specific stream_name
+            if let Some(ids_for_stream) = by_name.get(&event_stream_name) {
+                for trigger_id in ids_for_stream {
+                    if let Some(trigger) = triggers_map.get(trigger_id) {
+                        let group_id = trigger.config.group_id.clone().unwrap_or("".to_string());
+                        let item_id = trigger.config.item_id.clone().unwrap_or("".to_string());
+                        let event_item_id = event_data.id.clone().unwrap_or("".to_string());
+
+                        if (!group_id.is_empty() && group_id != event_data.group_id)
+                            || (!item_id.is_empty() && item_id != event_item_id)
+                        {
+                            continue;
+                        }
+
+                        triggers.push(trigger.clone());
+                    }
+                }
+            }
+
+            triggers
+        };
+
+        if let Ok(event_data) = serde_json::to_value(event_data) {
+            tokio::spawn(async move {
+                for stream_trigger in triggers_to_invoke {
+                    let trigger = &stream_trigger.trigger;
+
+                    // Check condition if specified (using pre-parsed value)
+                    let condition_function_path =
+                        stream_trigger.config.condition_function_path.clone();
+
+                    if let Some(condition_function_path) = condition_function_path {
+                        tracing::debug!(
+                            condition_function_path = %condition_function_path,
+                            "Checking trigger conditions"
+                        );
+
+                        match engine
+                            .invoke_function(&condition_function_path, event_data.clone())
+                            .await
+                        {
+                            Ok(Some(result)) => {
+                                tracing::debug!(
+                                    condition_function_path = %condition_function_path,
+                                    result = ?result,
+                                    "Condition function result"
+                                );
+
+                                if let Some(passed) = result.as_bool()
+                                    && !passed
+                                {
+                                    tracing::debug!(
+                                        function_path = %trigger.function_path,
+                                        "Condition check failed, skipping handler"
+                                    );
+                                    continue;
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    condition_function_path = %condition_function_path,
+                                    "Condition function returned no result"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    condition_function_path = %condition_function_path,
+                                    error = ?err,
+                                    "Error invoking condition function"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Invoke the handler function
+                    tracing::debug!(
+                        function_path = %trigger.function_path,
+                        "Invoking trigger"
+                    );
+
+                    let call_result = engine
+                        .invoke_function(&trigger.function_path, event_data.clone())
+                        .await;
+
+                    match call_result {
+                        Ok(_) => {
+                            tracing::debug!(
+                                function_path = %trigger.function_path,
+                                "Trigger handler invoked successfully"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                function_path = %trigger.function_path,
+                                error = ?err,
+                                "Error invoking trigger handler"
+                            );
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::error!("Failed to convert event data to value");
+        }
+    }
+}
+
 #[service(name = "streams")]
 impl StreamCoreModule {
     #[function(name = "streams.set", description = "Set a value in a stream")]
-    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
         let data = input.data;
-        let data_clone = data.clone();
 
         let function_path = format!("streams.set({})", stream_name);
         let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
 
-        match function {
+        let result: anyhow::Result<SetResult> = match function {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.set function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
-                    Ok(result) => {
-                        let existed = result
-                            .as_ref()
-                            .and_then(|v| v.get("existed"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-
-                        let event = if existed {
-                            StreamOutboundMessage::Update { data }
-                        } else {
-                            StreamOutboundMessage::Create { data }
-                        };
-
-                        if let Err(e) = adapter
-                            .emit_event(StreamWrapperMessage {
-                                id: Some(item_id.clone()),
-                                timestamp: Utc::now().timestamp_millis(),
-                                stream_name: stream_name.clone(),
-                                group_id: group_id.clone(),
-                                event,
-                            })
-                            .await
-                        {
-                            tracing::error!(error = %e, "Failed to emit event");
+                    Ok(Some(result)) => match serde_json::from_value::<SetResult>(result) {
+                        Ok(result) => Ok(result),
+                        Err(e) => {
+                            return FunctionResult::Failure(ErrorBody {
+                                message: format!("Failed to convert result to value: {}", e),
+                                code: "JSON_ERROR".to_string(),
+                            });
                         }
-                    }
-                    Err(error) => {
-                        return FunctionResult::Failure(error);
-                    }
+                    },
+                    Ok(None) => Err(anyhow::anyhow!("Function returned no result")),
+                    Err(error) => Err(anyhow::anyhow!("Failed to invoke function: {:?}", error)),
                 }
             }
             None => {
-                match adapter
+                adapter
                     .set(&stream_name, &group_id, &item_id, data.clone())
                     .await
-                {
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to set value in stream");
-                        return FunctionResult::Failure(ErrorBody {
-                            message: format!("Failed to set value: {}", e),
-                            code: "STREAM_SET_ERROR".to_string(),
-                        });
-                    }
-                }
             }
-        }
+        };
 
-        FunctionResult::Success(Some(data_clone))
+        match result {
+            Ok(result) => {
+                let event = if result.old_value.is_some() {
+                    StreamOutboundMessage::Update {
+                        data: result.new_value.clone(),
+                    }
+                } else {
+                    StreamOutboundMessage::Create {
+                        data: result.new_value.clone(),
+                    }
+                };
+
+                let message = StreamWrapperMessage {
+                    event_type: "stream".to_string(),
+                    id: Some(item_id.clone()),
+                    timestamp: Utc::now().timestamp_millis(),
+                    stream_name: stream_name.clone(),
+                    group_id: group_id.clone(),
+                    event,
+                };
+
+                self.invoke_triggers(message.clone()).await;
+
+                if let Err(e) = adapter.emit_event(message).await {
+                    tracing::error!(error = %e, "Failed to emit event");
+                }
+
+                FunctionResult::Success(result)
+            }
+            Err(error) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to set value: {}", error),
+                code: "STREAM_SET_ERROR".to_string(),
+            }),
+        }
     }
 
     #[function(name = "streams.get", description = "Get a value from a stream")]
@@ -316,10 +466,17 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.get function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -343,66 +500,75 @@ impl StreamCoreModule {
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<DeleteResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        let data = self
-            .get(StreamGetInput {
-                stream_name: stream_name.clone(),
-                group_id: group_id.clone(),
-                item_id: item_id.clone(),
-            })
-            .await;
-
         let function_path = format!("streams.delete({})", stream_name);
         let function = self.engine.functions.get(&function_path);
         let adapter = self.adapter.clone();
 
-        match function {
+        let result: anyhow::Result<DeleteResult> = match function {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.delete function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
-
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+                let result = self.engine.invoke_function(&function_path, input).await;
                 match result {
-                    Ok(_) => {
-                        if let Err(e) = adapter
-                            .emit_event(StreamWrapperMessage {
-                                id: Some(item_id.clone()),
-                                timestamp: Utc::now().timestamp_millis(),
-                                stream_name: stream_name.clone(),
-                                group_id: group_id.clone(),
-                                event: StreamOutboundMessage::Delete {
-                                    data: serde_json::json!({ "id": item_id }),
-                                },
-                            })
-                            .await
-                        {
-                            tracing::error!(error = %e, "Failed to emit delete event");
-                        }
+                    Ok(Some(result)) => {
+                        let result = match serde_json::from_value::<DeleteResult>(result) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                return FunctionResult::Failure(ErrorBody {
+                                    message: format!("Failed to convert result to value: {}", e),
+                                    code: "JSON_ERROR".to_string(),
+                                });
+                            }
+                        };
+                        Ok(result)
                     }
-                    Err(error) => {
-                        return FunctionResult::Failure(error);
-                    }
+                    Ok(None) => Err(anyhow::anyhow!("Function returned no result")),
+                    Err(error) => Err(anyhow::anyhow!("Failed to invoke function: {:?}", error)),
                 }
             }
-            None => {
-                if let Err(e) = adapter.delete(&stream_name, &group_id, &item_id).await {
-                    tracing::error!(error = %e, "Failed to delete value from stream");
-                    return FunctionResult::Failure(ErrorBody {
-                        message: format!("Failed to delete value: {}", e),
-                        code: "STREAM_DELETE_ERROR".to_string(),
-                    });
-                }
-            }
-        }
+            None => adapter.delete(&stream_name, &group_id, &item_id).await,
+        };
 
-        data
+        match result {
+            Ok(result) => {
+                if let Some(old_value) = result.old_value.clone() {
+                    let message = StreamWrapperMessage {
+                        event_type: "stream".to_string(),
+                        id: Some(item_id.clone()),
+                        timestamp: Utc::now().timestamp_millis(),
+                        stream_name: stream_name.clone(),
+                        group_id: group_id.clone(),
+                        event: StreamOutboundMessage::Delete { data: old_value },
+                    };
+
+                    self.invoke_triggers(message.clone()).await;
+
+                    if let Err(e) = adapter.emit_event(message).await {
+                        tracing::error!(error = %e, "Failed to emit delete event");
+                    }
+                }
+
+                FunctionResult::Success(result)
+            }
+            Err(error) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to delete value: {}", error),
+                code: "STREAM_DELETE_ERROR".to_string(),
+            }),
+        }
     }
 
     #[function(
@@ -433,10 +599,17 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.getGroup function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -475,10 +648,16 @@ impl StreamCoreModule {
             Some(_) => {
                 tracing::debug!(function_path = %function_path, "Calling custom streams.listGroups function");
 
-                let result = self
-                    .engine
-                    .invoke_function(&function_path, serde_json::to_value(cloned_input).unwrap())
-                    .await;
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+                let result = self.engine.invoke_function(&function_path, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -505,42 +684,85 @@ impl StreamCoreModule {
     pub async fn update(
         &self,
         input: StreamUpdateInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<UpdateResult, ErrorBody> {
+        let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
         let ops = input.ops;
-        let adapter = self.adapter.clone();
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let result = match adapter.update(&stream_name, &group_id, &item_id, ops).await {
-            Ok(result) => result,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to update value in stream");
-                return FunctionResult::Failure(ErrorBody {
-                    message: format!("Failed to update value: {}", e),
-                    code: "STREAM_UPDATE_ERROR".to_string(),
-                });
+        let function_path = format!("streams.update({})", stream_name);
+        let function = self.engine.functions.get(&function_path);
+        let adapter = self.adapter.clone();
+
+        let result: anyhow::Result<UpdateResult> = match function {
+            Some(_) => {
+                tracing::debug!(function_path = %function_path, "Calling custom streams.set function");
+
+                let input = match serde_json::to_value(cloned_input) {
+                    Ok(input) => input,
+                    Err(e) => {
+                        return FunctionResult::Failure(ErrorBody {
+                            message: format!("Failed to convert input to value: {}", e),
+                            code: "JSON_ERROR".to_string(),
+                        });
+                    }
+                };
+                let result = self.engine.invoke_function(&function_path, input).await;
+
+                match result {
+                    Ok(Some(result)) => match serde_json::from_value::<UpdateResult>(result) {
+                        Ok(result) => Ok(result),
+                        Err(e) => {
+                            return FunctionResult::Failure(ErrorBody {
+                                message: format!("Failed to convert result to value: {}", e),
+                                code: "JSON_ERROR".to_string(),
+                            });
+                        }
+                    },
+                    Ok(None) => Err(anyhow::anyhow!("Function returned no result")),
+                    Err(error) => Err(anyhow::anyhow!("Failed to invoke function: {:?}", error)),
+                }
             }
+            None => adapter.update(&stream_name, &group_id, &item_id, ops).await,
         };
 
-        if let Err(e) = adapter
-            .emit_event(StreamWrapperMessage {
-                id: Some(item_id),
-                timestamp: Utc::now().timestamp_millis(),
-                stream_name,
-                group_id,
-                event: StreamOutboundMessage::Update {
-                    data: result.new_value.clone(),
-                },
-            })
-            .await
-        {
-            tracing::error!(error = %e, "Failed to emit update event");
-        }
+        match result {
+            Ok(result) => {
+                let event = if result.old_value.is_some() {
+                    StreamOutboundMessage::Update {
+                        data: result.new_value.clone(),
+                    }
+                } else {
+                    StreamOutboundMessage::Create {
+                        data: result.new_value.clone(),
+                    }
+                };
 
-        FunctionResult::Success(serde_json::to_value(result).ok())
+                let message = StreamWrapperMessage {
+                    event_type: "stream".to_string(),
+                    id: Some(item_id.clone()),
+                    timestamp: Utc::now().timestamp_millis(),
+                    stream_name: stream_name.clone(),
+                    group_id: group_id.clone(),
+                    event,
+                };
+
+                self.invoke_triggers(message.clone()).await;
+
+                if let Err(e) = adapter.emit_event(message).await {
+                    tracing::error!(error = %e, "Failed to emit event");
+                }
+
+                FunctionResult::Success(result)
+            }
+            Err(error) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to update value: {}", error),
+                code: "STREAM_SET_ERROR".to_string(),
+            }),
+        }
     }
 }
 
@@ -549,3 +771,351 @@ crate::register_module!(
     StreamCoreModule,
     enabled_by_default = true
 );
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use tokio::sync::mpsc;
+
+    use crate::{
+        builtins::pubsub_lite::Subscriber,
+        engine::Engine,
+        modules::streams::{
+            adapters::{StreamAdapter, StreamConnection},
+            config::StreamModuleConfig,
+        },
+    };
+
+    use super::*;
+
+    struct RecordingConnection {
+        tx: mpsc::UnboundedSender<StreamWrapperMessage>,
+    }
+
+    #[async_trait]
+    impl StreamConnection for RecordingConnection {
+        async fn cleanup(&self) {}
+
+        async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
+            let _ = self.tx.send(msg.clone());
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Subscriber for RecordingConnection {
+        async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+            let msg = match serde_json::from_value::<StreamWrapperMessage>((*message).clone()) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to deserialize stream message");
+                    return Err(anyhow::anyhow!("Failed to deserialize stream message"));
+                }
+            };
+            let _ = self.tx.send(msg);
+            Ok(())
+        }
+    }
+
+    fn create_test_module() -> StreamCoreModule {
+        let engine = Arc::new(Engine::new());
+        let config = StreamModuleConfig {
+            port: 0, // Use 0 for testing (OS will assign port)
+            host: "127.0.0.1".to_string(),
+            auth_function: None,
+            adapter: Some(crate::modules::module::AdapterEntry {
+                class: "modules::streams::adapters::KvStore".to_string(),
+                config: None,
+            }),
+        };
+
+        // Create adapter directly using kv_store adapter
+        let adapter: Arc<dyn StreamAdapter> =
+            Arc::new(crate::modules::streams::adapters::kv_store::BuiltinKvStoreAdapter::new(None));
+
+        StreamCoreModule::build(engine, config, adapter)
+    }
+
+    #[tokio::test]
+    async fn test_streams_module_set_get_delete() {
+        let module = create_test_module();
+        let stream_name = "test_stream";
+        let group_id = "test_group";
+        let item_id = "item1";
+        let data1 = serde_json::json!({"key": "value1"});
+        let data2 = serde_json::json!({"key": "value2"});
+
+        // Subscribe to events
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        module
+            .adapter
+            .subscribe(
+                "test-subscriber".to_string(),
+                Arc::new(RecordingConnection { tx }),
+            )
+            .await
+            .expect("Should subscribe successfully");
+
+        // Start event watcher
+        let watcher_adapter = module.adapter.clone();
+        let watcher = tokio::spawn(async move {
+            let _ = watcher_adapter.watch_events().await;
+        });
+        tokio::task::yield_now().await;
+
+        // Test set (create)
+        let set_result = module
+            .set(StreamSetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+                data: data1.clone(),
+            })
+            .await;
+
+        assert!(matches!(set_result, FunctionResult::Success(_)));
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for create event")
+            .expect("Should receive create event");
+
+        assert!(matches!(msg.event, StreamOutboundMessage::Create { .. }));
+
+        // Test get
+        let get_result = module
+            .get(StreamGetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+            })
+            .await;
+
+        match get_result {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value, data1);
+            }
+            _ => panic!("Expected successful get with value"),
+        }
+
+        // Test set (update)
+        let set_result = module
+            .set(StreamSetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+                data: data2.clone(),
+            })
+            .await;
+
+        assert!(matches!(set_result, FunctionResult::Success(_)));
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for update event")
+            .expect("Should receive update event");
+
+        assert!(matches!(msg.event, StreamOutboundMessage::Update { .. }));
+
+        // Verify updated value
+        let get_result = module
+            .get(StreamGetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+            })
+            .await;
+
+        match get_result {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value, data2);
+            }
+            _ => panic!("Expected successful get with updated value"),
+        }
+
+        // Test delete
+        let delete_result = module
+            .delete(StreamDeleteInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+            })
+            .await;
+
+        assert!(matches!(delete_result, FunctionResult::Success(_)));
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for delete event")
+            .expect("Should receive delete event");
+
+        assert!(matches!(msg.event, StreamOutboundMessage::Delete { .. }));
+
+        // Verify deleted
+        let get_result = module
+            .get(StreamGetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+            })
+            .await;
+
+        match get_result {
+            FunctionResult::Success(None) => {
+                // Expected - item was deleted
+            }
+            _ => panic!("Expected None after delete"),
+        }
+
+        watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn test_streams_module_update_existing_record() {
+        let module = create_test_module();
+        let stream_name = "test_stream";
+        let group_id = "test_group";
+        let item_id = "item1";
+        let initial_data = serde_json::json!({"key": "value1", "count": 5});
+        let updated_data = serde_json::json!({"key": "value2", "count": 10});
+
+        // Subscribe to events
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        module
+            .adapter
+            .subscribe(
+                "test-subscriber".to_string(),
+                Arc::new(RecordingConnection { tx }),
+            )
+            .await
+            .expect("Should subscribe successfully");
+
+        // Start event watcher
+        let watcher_adapter = module.adapter.clone();
+        let watcher = tokio::spawn(async move {
+            let _ = watcher_adapter.watch_events().await;
+        });
+        tokio::task::yield_now().await;
+
+        // Create initial record using set
+        module
+            .set(StreamSetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+                data: initial_data.clone(),
+            })
+            .await;
+
+        // Consume the create event
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for create event");
+
+        // Update existing record
+        let update_result = module
+            .update(StreamUpdateInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+                ops: vec![iii_sdk::UpdateOp::set("", updated_data.clone())],
+            })
+            .await;
+
+        assert!(matches!(update_result, FunctionResult::Success(_)));
+
+        // Verify Update event was emitted
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for update event")
+            .expect("Should receive update event");
+
+        assert!(matches!(msg.event, StreamOutboundMessage::Update { .. }));
+
+        // Verify the value was updated
+        let get_result = module
+            .get(StreamGetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+            })
+            .await;
+
+        match get_result {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value, updated_data);
+            }
+            _ => panic!("Expected successful get with updated value"),
+        }
+
+        watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn test_streams_module_update_new_record() {
+        let module = create_test_module();
+        let stream_name = "test_stream";
+        let group_id = "test_group";
+        let item_id = "new_item";
+        let new_data = serde_json::json!({"key": "new_value", "count": 1});
+
+        // Subscribe to events
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        module
+            .adapter
+            .subscribe(
+                "test-subscriber".to_string(),
+                Arc::new(RecordingConnection { tx }),
+            )
+            .await
+            .expect("Should subscribe successfully");
+
+        // Start event watcher
+        let watcher_adapter = module.adapter.clone();
+        let watcher = tokio::spawn(async move {
+            let _ = watcher_adapter.watch_events().await;
+        });
+        tokio::task::yield_now().await;
+
+        // Update non-existent record (should create it)
+        let update_result = module
+            .update(StreamUpdateInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+                ops: vec![iii_sdk::UpdateOp::set("", new_data.clone())],
+            })
+            .await;
+
+        assert!(matches!(update_result, FunctionResult::Success(_)));
+
+        // Verify Create event was emitted (not Update)
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("Timed out waiting for create event")
+            .expect("Should receive create event");
+
+        assert!(matches!(msg.event, StreamOutboundMessage::Create { .. }));
+
+        // Verify the value was created
+        let get_result = module
+            .get(StreamGetInput {
+                stream_name: stream_name.to_string(),
+                group_id: group_id.to_string(),
+                item_id: item_id.to_string(),
+            })
+            .await;
+
+        match get_result {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value, new_data);
+            }
+            _ => panic!("Expected successful get with new value"),
+        }
+
+        watcher.abort();
+    }
+}
