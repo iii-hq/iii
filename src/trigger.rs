@@ -9,6 +9,7 @@ use std::{pin::Pin, sync::Arc};
 use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -31,7 +32,7 @@ pub trait TriggerRegistrator: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
 }
 
-#[derive(Clone, Eq)]
+#[derive(Clone, Eq, Serialize, Deserialize)]
 pub struct Trigger {
     pub id: String,
     pub trigger_type: String,
@@ -153,10 +154,17 @@ impl TriggerRegistry {
             return Err(anyhow::anyhow!("Trigger type not found"));
         };
 
-        let _: Result<(), anyhow::Error> = trigger_type
+        match trigger_type
             .registrator
             .register_trigger(trigger.clone())
-            .await;
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!(error = %err, "Error registering trigger");
+                return Err(err);
+            }
+        }
 
         drop(trigger_type);
 
