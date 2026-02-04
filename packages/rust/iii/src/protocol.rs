@@ -58,6 +58,9 @@ pub enum Message {
     },
     Ping,
     Pong,
+    WorkerRegistered {
+        worker_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

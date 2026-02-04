@@ -23,7 +23,7 @@ use crate::{
             config::StateModuleConfig,
             structs::{
                 StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput,
-                StateGetInput, StateSetInput, StateUpdateInput,
+                StateGetInput, StateListGroupsInput, StateSetInput, StateUpdateInput,
             },
             trigger::{StateTriggers, TRIGGER_TYPE},
         },
@@ -355,6 +355,22 @@ impl StateCoreModule {
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to list values: {}", e),
                 code: "LIST_ERROR".to_string(),
+            }),
+        }
+    }
+
+    #[function(name = "state.list_groups", description = "List all state groups")]
+    pub async fn list_groups(&self, _input: StateListGroupsInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.adapter.list_groups().await {
+            Ok(groups) => {
+                let result = serde_json::json!({
+                    "groups": groups
+                });
+                FunctionResult::Success(Some(result))
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to list groups: {}", e),
+                code: "LIST_GROUPS_ERROR".to_string(),
             }),
         }
     }

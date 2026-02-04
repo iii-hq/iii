@@ -20,7 +20,7 @@ use crate::{
     modules::{
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
         streams::{
-            StreamWrapperMessage,
+            StreamMetadata, StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
@@ -414,6 +414,50 @@ impl StreamAdapter for RedisAdapter {
                 .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
                 .collect()),
             Err(e) => Err(anyhow::anyhow!("Failed to list groups from Redis: {}", e)),
+        }
+    }
+
+    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+        use std::collections::{HashMap, HashSet};
+
+        let mut conn = self.publisher.lock().await;
+        let pattern = "stream:*";
+
+        match conn.keys::<_, Vec<String>>(pattern).await {
+            Ok(keys) => {
+                let mut stream_map: HashMap<String, HashSet<String>> = HashMap::new();
+
+                // Parse keys: stream:<stream_name>:<group_id>
+                for key in keys {
+                    let parts: Vec<&str> = key.split(':').collect();
+                    if parts.len() >= 3 && parts[0] == "stream" {
+                        let stream_name = parts[1].to_string();
+                        let group_id = parts[2].to_string();
+
+                        stream_map
+                            .entry(stream_name)
+                            .or_insert_with(HashSet::new)
+                            .insert(group_id);
+                    }
+                }
+
+                // Convert to StreamMetadata
+                let mut streams: Vec<StreamMetadata> = stream_map
+                    .into_iter()
+                    .map(|(id, groups)| {
+                        let mut groups_vec: Vec<String> = groups.into_iter().collect();
+                        groups_vec.sort();
+                        StreamMetadata {
+                            id,
+                            groups: groups_vec,
+                        }
+                    })
+                    .collect();
+
+                streams.sort_by(|a, b| a.id.cmp(&b.id));
+                Ok(streams)
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to list streams from Redis: {}", e)),
         }
     }
 

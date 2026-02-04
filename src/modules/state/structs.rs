@@ -40,6 +40,9 @@ pub struct StateGetGroupInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateListGroupsInput {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateEventType {
     #[serde(rename = "state:created")]
     Created,

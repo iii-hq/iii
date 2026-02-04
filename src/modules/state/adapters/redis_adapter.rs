@@ -308,6 +308,36 @@ impl StateAdapter for StateRedisAdapter {
         Ok(result)
     }
 
+    async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
+        let mut conn = self.publisher.lock().await;
+        let mut cursor = 0u64;
+        let mut groups = Vec::new();
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg("state:*")
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut *conn)
+                .await?;
+
+            for key in keys {
+                if let Some(group_id) = key.strip_prefix("state:") {
+                    groups.push(group_id.to_string());
+                }
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(groups)
+    }
+
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::debug!("Destroying StateRedisAdapter");
         Ok(())
@@ -440,3 +470,41 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFutu
 }
 
 crate::register_adapter!(<StateAdapterRegistration> "modules::state::adapters::RedisAdapter", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    async fn setup_test_adapter() -> StateRedisAdapter {
+        let redis_url = "redis://localhost:6379".to_string();
+        StateRedisAdapter::new(redis_url).await.unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires Redis running
+    async fn test_list_groups_redis() {
+        let adapter = setup_test_adapter().await;
+
+        // Clean up first
+        let groups = adapter.list_groups().await.unwrap();
+        for group in groups {
+            let items = adapter.list(&group).await.unwrap();
+            for item in items {
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    let _ = adapter.delete(&group, id).await;
+                }
+            }
+        }
+
+        // Add test data
+        adapter.set("test_group1", "item1", json!({"value": 1})).await.unwrap();
+        adapter.set("test_group2", "item1", json!({"value": 2})).await.unwrap();
+
+        let mut groups = adapter.list_groups().await.unwrap();
+        groups.sort();
+
+        assert!(groups.contains(&"test_group1".to_string()));
+        assert!(groups.contains(&"test_group2".to_string()));
+    }
+}

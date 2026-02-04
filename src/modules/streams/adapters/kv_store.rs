@@ -19,7 +19,7 @@ use crate::{
     builtins::{kv::BuiltinKvStore, pubsub_lite::BuiltInPubSubLite},
     engine::Engine,
     modules::streams::{
-        StreamWrapperMessage,
+        StreamMetadata, StreamWrapperMessage,
         adapters::{StreamAdapter, StreamConnection},
         registry::{StreamAdapterFuture, StreamAdapterRegistration},
     },
@@ -132,6 +132,43 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
             .into_iter()
             .filter_map(|key| key.strip_prefix(&prefix.clone()).map(|s| s.to_string()))
             .collect())
+    }
+
+    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+        use std::collections::{HashMap, HashSet};
+
+        let all_keys = self.storage.list_keys_with_prefix("".to_string()).await;
+        let mut stream_map: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // Parse keys to extract stream names and groups
+        for key in all_keys {
+            let parts: Vec<&str> = key.split(':').collect();
+            if parts.len() >= 2 {
+                let stream_name = parts[0].to_string();
+                let group_id = parts[1].to_string();
+
+                stream_map
+                    .entry(stream_name)
+                    .or_insert_with(HashSet::new)
+                    .insert(group_id);
+            }
+        }
+
+        // Convert to StreamMetadata
+        let mut streams: Vec<StreamMetadata> = stream_map
+            .into_iter()
+            .map(|(id, groups)| {
+                let mut groups_vec: Vec<String> = groups.into_iter().collect();
+                groups_vec.sort();
+                StreamMetadata {
+                    id,
+                    groups: groups_vec,
+                }
+            })
+            .collect();
+
+        streams.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(streams)
     }
 
     async fn subscribe(
