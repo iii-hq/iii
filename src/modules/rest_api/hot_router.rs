@@ -42,8 +42,12 @@ impl Service<Request<Body>> for HotRouter {
         let router_arc = self.inner.clone();
         let engine = self.engine.clone();
         Box::pin(async move {
-            let router_guard = router_arc.read().await;
-            let router_with_extension = router_guard.clone().layer(axum::extract::Extension(engine));
+            let router_clone = {
+                let router_guard = router_arc.read().await;
+                router_guard.clone()
+            };
+            
+            let router_with_extension = router_clone.layer(axum::extract::Extension(engine));
             let mut router_service = router_with_extension.into_service();
             
             use tower::Service;

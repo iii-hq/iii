@@ -85,6 +85,10 @@ impl UrlValidator {
     }
 
     async fn is_private_ip(&self, host: &str) -> Result<bool, SecurityError> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(is_private_ip(&ip));
+        }
+
         let addrs = tokio::net::lookup_host(format!("{}:443", host))
             .await
             .map_err(|_| SecurityError::DnsLookupFailed)?;

@@ -1,5 +1,6 @@
 use std::{pin::Pin, sync::Arc};
 
+use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
 
@@ -16,6 +17,7 @@ pub struct HttpTriggerRegistrator {
     http_invoker: Arc<HttpInvoker>,
     functions: Arc<FunctionsRegistry>,
     kv_store: Arc<BuiltinKvStore>,
+    triggers: Arc<DashMap<String, Trigger>>,
 }
 
 impl HttpTriggerRegistrator {
@@ -24,6 +26,7 @@ impl HttpTriggerRegistrator {
             http_invoker,
             functions,
             kv_store,
+            triggers: Arc::new(DashMap::new()),
         }
     }
 
@@ -99,15 +102,56 @@ impl HttpTriggerRegistrator {
 impl TriggerRegistrator for HttpTriggerRegistrator {
     fn register_trigger(
         &self,
-        _trigger: Trigger,
+        trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
+        let functions = self.functions.clone();
+        let kv_store = self.kv_store.clone();
+        let triggers = self.triggers.clone();
+        
+        Box::pin(async move {
+            functions
+                .get(&trigger.function_path)
+                .ok_or_else(|| anyhow::anyhow!("Function '{}' not found", trigger.function_path))?;
+
+            let index = format!("http_function:{}", trigger.function_path);
+            kv_store
+                .get(index, "config".to_string())
+                .await
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "HTTP function config not found for '{}'",
+                        trigger.function_path
+                    )
+                })?;
+
+            tracing::info!(
+                trigger_id = %trigger.id,
+                trigger_type = %trigger.trigger_type,
+                function_path = %trigger.function_path,
+                "Registering HTTP trigger"
+            );
+
+            triggers.insert(trigger.id.clone(), trigger);
+            Ok(())
+        })
     }
 
     fn unregister_trigger(
         &self,
-        _trigger: Trigger,
+        trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
+        let triggers = self.triggers.clone();
+        
+        Box::pin(async move {
+            tracing::info!(
+                trigger_id = %trigger.id,
+                trigger_type = %trigger.trigger_type,
+                function_path = %trigger.function_path,
+                "Unregistering HTTP trigger"
+            );
+
+            triggers.remove(&trigger.id);
+            Ok(())
+        })
     }
 }

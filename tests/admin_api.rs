@@ -339,13 +339,16 @@ async fn test_admin_api_delete_function() {
         }
     });
 
-    client
+    let response = client
         .post("http://127.0.0.1:49141/admin/functions")
         .header("Authorization", "Bearer test-token-delete")
         .json(&register_payload)
         .send()
         .await
         .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     // Verify it exists
     assert!(engine.functions.get("delete.test").is_some());
