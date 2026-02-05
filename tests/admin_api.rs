@@ -14,9 +14,11 @@ use serial_test::serial;
 async fn setup_engine_with_modules(_port: u16) -> Arc<Engine> {
     let engine = Arc::new(Engine::new());
 
-    let mut security_config = SecurityConfig::default();
-    security_config.require_https = false;
-    security_config.url_allowlist = vec!["*".to_string()];
+    let security_config = SecurityConfig {
+        require_https: false,
+        url_allowlist: vec!["*".to_string()],
+        ..SecurityConfig::default()
+    };
 
     let http_functions_config = HttpFunctionsConfig {
         functions: Vec::new(),
