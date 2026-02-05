@@ -1,12 +1,6 @@
-mod http_functions;
-mod http_triggers;
 pub mod persistence;
 
 use serde::Deserialize;
-
-pub use http_functions::HttpFunctionConfig;
-pub use persistence::{HttpAuthRef, resolve_auth_ref};
-pub use http_triggers::HttpTriggerConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {

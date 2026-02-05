@@ -1,8 +1,10 @@
+pub mod config;
 pub mod functions;
 pub mod middleware;
 pub mod module;
 
-pub use module::{AdminApiConfig, AdminApiModule};
+pub use config::AdminApiConfig;
+pub use module::AdminApiModule;
 
 use std::sync::Arc;
 

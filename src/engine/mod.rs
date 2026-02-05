@@ -17,10 +17,12 @@ use uuid::Uuid;
 
 use crate::{
     builtins::kv::BuiltinKvStore,
-    config::{HttpFunctionConfig, HttpTriggerConfig, SecurityConfig, resolve_auth_ref},
+    config::SecurityConfig,
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry, RegistrationSource},
     invocation::{
         InvocationHandler, InvokerRegistry,
+        auth::resolve_auth_ref,
+        http_function::HttpFunctionConfig,
         http_invoker::{HttpInvoker, HttpInvokerConfig},
         invoker::Invoker,
         method::InvocationMethod,
@@ -28,6 +30,7 @@ use crate::{
     },
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
     protocol::{ErrorBody, Message},
+    triggers::http_trigger::HttpTriggerConfig,
     services::{Service, ServicesRegistry},
     telemetry::{
         SpanExt, ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,

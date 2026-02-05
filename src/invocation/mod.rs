@@ -24,6 +24,8 @@ use crate::{
     telemetry::SpanExt,
 };
 
+pub mod auth;
+pub mod http_function;
 pub mod http_invoker;
 pub mod invoker;
 pub mod method;

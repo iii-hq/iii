@@ -12,11 +12,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    config::{HttpAuthRef, HttpFunctionConfig},
     config::persistence::{delete_http_function_from_kv, store_http_function_in_kv},
     engine::Engine,
     function::RegistrationSource,
-    invocation::method::{HttpMethod, InvocationMethod},
+    invocation::{
+        auth::HttpAuthRef,
+        http_function::HttpFunctionConfig,
+        method::{HttpAuth, HttpMethod, InvocationMethod},
+    },
 };
 
 use super::middleware::auth_middleware;
@@ -56,10 +59,10 @@ pub struct HttpInvocationConfig {
 }
 
 pub fn router(engine: Arc<Engine>) -> Router {
-    use axum::extract::Extension;
     Router::new()
         .route("/admin/functions", post(register_function))
         .route("/admin/functions", get(list_functions))
+        .route("/admin/functions/{path}", get(get_function))
         .route("/admin/functions/{path}", put(update_function))
         .route("/admin/functions/{path}", delete(unregister_function))
         .layer(middleware::from_fn(auth_middleware))
@@ -235,7 +238,7 @@ pub async fn list_functions(
         .iter()
         .map(|entry| {
             let function = entry.value();
-            json!({
+            let mut func_json = json!({
                 "function_path": function.function_path,
                 "invocation_type": match &function.invocation_method {
                     InvocationMethod::WebSocket { .. } => "websocket",
@@ -243,11 +246,85 @@ pub async fn list_functions(
                 },
                 "registered_at": function.registered_at,
                 "registration_source": &function.registration_source,
-            })
+            });
+
+            if let Some(ref description) = function.description {
+                func_json["description"] = json!(description);
+            }
+            if let Some(ref metadata) = function.metadata {
+                func_json["metadata"] = json!(metadata);
+            }
+
+            func_json
         })
         .collect();
 
     Ok(Json(json!({ "functions": functions })))
+}
+
+pub async fn get_function(
+    Extension(engine): Extension<Arc<Engine>>,
+    Path(function_path): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let function = engine
+        .functions
+        .get(&function_path)
+        .ok_or((StatusCode::NOT_FOUND, "Function not found".to_string()))?;
+
+    let (invocation_type, url, method, timeout_ms, headers, auth) = match &function.invocation_method {
+        InvocationMethod::Http { url, method, timeout_ms, headers, auth } => (
+            "http",
+            Some(url.as_str()),
+            Some(format!("{:?}", method)),
+            *timeout_ms,
+            Some(headers),
+            auth.as_ref(),
+        ),
+        InvocationMethod::WebSocket { .. } => ("websocket", None, None, None, None, None),
+    };
+
+    let mut response = json!({
+        "function_path": function.function_path,
+        "invocation_type": invocation_type,
+        "registered_at": function.registered_at,
+        "registration_source": &function.registration_source,
+    });
+
+    if let Some(url) = url {
+        response["url"] = json!(url);
+    }
+    if let Some(method) = method {
+        response["method"] = json!(method);
+    }
+    if let Some(timeout) = timeout_ms {
+        response["timeout_ms"] = json!(timeout);
+    }
+    if let Some(headers) = headers {
+        response["headers"] = json!(headers);
+    }
+    if let Some(auth) = auth {
+        response["auth"] = json!({
+            "type": match auth {
+                HttpAuth::Hmac { .. } => "hmac",
+                HttpAuth::Bearer { .. } => "bearer",
+                HttpAuth::ApiKey { .. } => "apikey",
+            }
+        });
+    }
+    if let Some(ref description) = function.description {
+        response["description"] = json!(description);
+    }
+    if let Some(ref metadata) = function.metadata {
+        response["metadata"] = json!(metadata);
+    }
+    if let Some(ref request_format) = function.request_format {
+        response["request_format"] = json!(request_format);
+    }
+    if let Some(ref response_format) = function.response_format {
+        response["response_format"] = json!(response_format);
+    }
+
+    Ok(Json(response))
 }
 
 /// Validates that the function path is safe and follows naming conventions.

@@ -4,14 +4,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{
-    config::persistence::HttpAuthRef,
-    invocation::method::HttpMethod,
-};
+use crate::invocation::method::HttpMethod;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpFunctionConfig {
-    #[serde(alias = "path")]
+    #[serde(rename = "path", alias = "function_path")]
     pub function_path: String,
     pub url: String,
     #[serde(default = "default_method")]
@@ -22,7 +19,7 @@ pub struct HttpFunctionConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
-    pub auth: Option<HttpAuthRef>,
+    pub auth: Option<crate::invocation::auth::HttpAuthRef>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]

@@ -2,14 +2,16 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use iii::{
-        config::{
-            HttpFunctionConfig,
-            SecurityConfig,
-            persistence::{load_http_functions_from_kv, store_http_function_in_kv},
-        },
+    config::{
+        SecurityConfig,
+        persistence::{load_http_functions_from_kv, store_http_function_in_kv},
+    },
     engine::Engine,
-    invocation::url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
-    invocation::method::HttpMethod,
+    invocation::{
+        http_function::HttpFunctionConfig,
+        method::HttpMethod,
+        url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
+    },
 };
 
 #[tokio::test]

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use iii::{
-    admin_api::{AdminApiConfig, AdminApiModule},
+    modules::admin_api::{AdminApiConfig, AdminApiModule},
+    modules::module::Module,
     config::SecurityConfig,
     engine::Engine,
-    modules::module::Module,
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -28,6 +28,9 @@ async fn test_admin_api_requires_authentication() {
     .unwrap();
 
     module.initialize().await.unwrap();
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
 
     // Wait for server to start
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -60,6 +63,9 @@ async fn test_admin_api_list_functions() {
     .unwrap();
 
     module.initialize().await.unwrap();
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -99,6 +105,9 @@ async fn test_admin_api_register_function() {
     .unwrap();
 
     module.initialize().await.unwrap();
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -163,6 +172,9 @@ async fn test_admin_api_register_duplicate_function() {
 
     module.initialize().await.unwrap();
 
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
+
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let client = reqwest::Client::new();
@@ -220,6 +232,9 @@ async fn test_admin_api_update_function() {
     .unwrap();
 
     module.initialize().await.unwrap();
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -289,6 +304,9 @@ async fn test_admin_api_delete_function() {
 
     module.initialize().await.unwrap();
 
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
+
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     let client = reqwest::Client::new();
@@ -349,6 +367,9 @@ async fn test_admin_api_invalid_function_path() {
     .unwrap();
 
     module.initialize().await.unwrap();
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    module.start_background_tasks(shutdown_rx).await.unwrap();
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
