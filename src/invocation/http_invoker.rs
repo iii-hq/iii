@@ -107,19 +107,20 @@ impl HttpInvoker {
     fn parse_error_response(status: reqwest::StatusCode, bytes: &[u8]) -> ErrorBody {
         let error_json: Option<Value> = serde_json::from_slice(bytes).ok();
         if let Some(error_json) = error_json
-            && let Some(error_obj) = error_json.get("error") {
-                let code = error_obj
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("http_error")
-                    .to_string();
-                let message = error_obj
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("HTTP request failed")
-                    .to_string();
-                return ErrorBody { code, message };
-            }
+            && let Some(error_obj) = error_json.get("error")
+        {
+            let code = error_obj
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("http_error")
+                .to_string();
+            let message = error_obj
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("HTTP request failed")
+                .to_string();
+            return ErrorBody { code, message };
+        }
 
         ErrorBody {
             code: "http_error".into(),

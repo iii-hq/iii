@@ -251,27 +251,28 @@ pub async fn list_functions(
     let mut functions = Vec::new();
     for key in keys {
         if let Some(value) = kv_store.get(key.clone(), "config".to_string()).await
-            && let Ok(config) = serde_json::from_value::<HttpFunctionConfig>(value) {
-                let mut func_json = json!({
-                    "function_path": config.function_path,
-                    "invocation_type": "http",
-                    "url": config.url,
-                    "method": format!("{:?}", config.method),
-                    "registered_at": config.registered_at,
-                });
+            && let Ok(config) = serde_json::from_value::<HttpFunctionConfig>(value)
+        {
+            let mut func_json = json!({
+                "function_path": config.function_path,
+                "invocation_type": "http",
+                "url": config.url,
+                "method": format!("{:?}", config.method),
+                "registered_at": config.registered_at,
+            });
 
-                if let Some(ref description) = config.description {
-                    func_json["description"] = json!(description);
-                }
-                if let Some(ref metadata) = config.metadata {
-                    func_json["metadata"] = json!(metadata);
-                }
-                if let Some(ref updated_at) = config.updated_at {
-                    func_json["updated_at"] = json!(updated_at);
-                }
-
-                functions.push(func_json);
+            if let Some(ref description) = config.description {
+                func_json["description"] = json!(description);
             }
+            if let Some(ref metadata) = config.metadata {
+                func_json["metadata"] = json!(metadata);
+            }
+            if let Some(ref updated_at) = config.updated_at {
+                func_json["updated_at"] = json!(updated_at);
+            }
+
+            functions.push(func_json);
+        }
     }
 
     Ok(Json(json!({ "functions": functions })))
@@ -407,12 +408,13 @@ fn validate_auth_env_vars(auth_ref: &HttpAuthRef) -> Result<(), String> {
 /// Validates input sizes to prevent abuse and resource exhaustion.
 fn validate_input_sizes(payload: &RegisterFunctionRequest) -> Result<(), (StatusCode, String)> {
     if let Some(ref desc) = payload.description
-        && desc.len() > 2000 {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "Description cannot exceed 2000 characters".to_string(),
-            ));
-        }
+        && desc.len() > 2000
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Description cannot exceed 2000 characters".to_string(),
+        ));
+    }
 
     if payload.invocation.headers.len() > 50 {
         return Err((

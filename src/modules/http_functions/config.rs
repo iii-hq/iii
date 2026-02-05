@@ -11,8 +11,7 @@ use crate::{
     triggers::http_trigger::HttpTriggerConfig,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HttpFunctionsConfig {
     #[serde(default)]
     pub functions: Vec<HttpFunctionConfig>,
@@ -21,4 +20,3 @@ pub struct HttpFunctionsConfig {
     #[serde(default)]
     pub security: SecurityConfig,
 }
-
