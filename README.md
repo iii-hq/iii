@@ -39,6 +39,43 @@ To check that the binary is on your PATH and see the current version:
 command -v iii && iii --version
 ```
 
+Docker
+------
+
+Pull the pre-built image:
+```bash
+docker pull iiidev/iii:latest
+```
+
+Run with a config file:
+```bash
+docker run -p 3111:3111 -p 49134:49134 \
+  -v ./config.yaml:/app/config.yaml:ro \
+  iiidev/iii:latest
+```
+
+**Production (hardened)**:
+```bash
+docker run --read-only --tmpfs /tmp \
+  --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+  --security-opt=no-new-privileges:true \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -p 3111:3111 -p 49134:49134 -p 3112:3112 -p 9464:9464 \
+  iiidev/iii:latest
+```
+
+**Docker Compose** (full stack with Redis + RabbitMQ):
+```bash
+docker compose up -d
+```
+
+| Port | Service |
+|------|---------|
+| 49134 | WebSocket (worker connections) |
+| 3111 | REST API |
+| 3112 | Streams API |
+| 9464 | Prometheus metrics |
+
 Run the engine:
 
 ```bash
@@ -158,3 +195,27 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 
 - Format/lint: `cargo fmt && cargo clippy -- -D warnings`
 - Watch run: `make watch` (or `make watch-debug` for verbose logs)
+
+### Building Docker Images Locally
+
+```bash
+# Production image (distroless runtime)
+docker build -t iii:local .
+
+# Debug image (Debian with shell, htop, vim)
+docker build -f Dockerfile.debug -t iii:debug .
+
+# Run locally built image
+docker run --rm iii:local --version
+```
+
+### Security
+
+The Docker images include:
+- Distroless runtime (no shell, minimal attack surface)
+- Non-root user execution
+- Trivy vulnerability scanning in CI
+- SBOM (Software Bill of Materials) attestation
+- Build provenance
+
+For production deployments, always use the hardened runtime flags documented above.
