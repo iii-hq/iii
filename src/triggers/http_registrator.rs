@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::{
     builtins::kv::BuiltinKvStore,
+    engine::Engine,
     function::FunctionsRegistry,
     invocation::{auth::resolve_auth_ref, http_function::HttpFunctionConfig, http_invoker::HttpInvoker},
     protocol::ErrorBody,
@@ -27,6 +28,34 @@ impl HttpTriggerRegistrator {
             functions,
             kv_store,
             triggers: Arc::new(DashMap::new()),
+        }
+    }
+
+    pub async fn dispatch_http_triggers_from_engine<F, P>(
+        engine: &Arc<Engine>,
+        trigger_type: &str,
+        filter: F,
+        payload_builder: P,
+    )
+    where
+        F: Fn(&Trigger) -> bool,
+        P: Fn(&Trigger) -> Value,
+    {
+        if let Some(http_module) = engine
+            .service_registry
+            .get_service::<crate::modules::http_functions::HttpFunctionsModule>("http_functions")
+        {
+            let registrator = Self::new(
+                http_module.http_invoker().clone(),
+                engine.functions.clone(),
+                http_module.kv_store().clone(),
+            );
+            registrator.deliver_to_matching_triggers(
+                &engine.trigger_registry,
+                trigger_type,
+                filter,
+                payload_builder,
+            ).await;
         }
     }
 

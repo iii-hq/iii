@@ -62,41 +62,31 @@ impl EventCoreModule {
         let topic_for_payload = topic.clone();
         let event_data_for_payload = event_data.clone();
         
-        if let Some(http_module) = self.engine
-            .service_registry
-            .get_service::<crate::modules::http_functions::HttpFunctionsModule>("http_functions")
-        {
-            let http_trigger_registrator = crate::triggers::http_registrator::HttpTriggerRegistrator::new(
-                http_module.http_invoker().clone(),
-                self.engine.functions.clone(),
-                http_module.kv_store().clone(),
-            );
-            http_trigger_registrator.deliver_to_matching_triggers(
-                &self.engine.trigger_registry,
-                "http_event",
-                move |trigger| {
-                    trigger.config
-                        .get("topic")
-                        .and_then(|v| v.as_str())
-                        .map(|value| value == topic_for_filter)
-                        .unwrap_or(false)
-                },
-                move |trigger| {
-                    json!({
-                        "trigger": {
-                            "type": "event",
-                            "id": trigger.id,
-                            "topic": topic_for_payload.clone(),
-                            "function_path": trigger.function_path,
-                        },
-                        "event": {
-                            "topic": topic_for_payload.clone(),
-                            "data": event_data_for_payload.clone(),
-                        }
-                    })
-                },
-            ).await;
-        }
+        crate::triggers::http_registrator::HttpTriggerRegistrator::dispatch_http_triggers_from_engine(
+            &self.engine,
+            "http_event",
+            move |trigger| {
+                trigger.config
+                    .get("topic")
+                    .and_then(|v| v.as_str())
+                    .map(|value| value == topic_for_filter)
+                    .unwrap_or(false)
+            },
+            move |trigger| {
+                json!({
+                    "trigger": {
+                        "type": "event",
+                        "id": trigger.id,
+                        "topic": topic_for_payload.clone(),
+                        "function_path": trigger.function_path,
+                    },
+                    "event": {
+                        "topic": topic_for_payload.clone(),
+                        "data": event_data_for_payload.clone(),
+                    }
+                })
+            },
+        ).await;
 
         FunctionResult::Success(None)
     }
