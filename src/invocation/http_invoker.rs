@@ -14,6 +14,14 @@ use crate::{
     protocol::ErrorBody,
 };
 
+pub struct HttpEndpointParams<'a> {
+    pub url: &'a str,
+    pub method: &'a HttpMethod,
+    pub timeout_ms: &'a Option<u64>,
+    pub headers: &'a HashMap<String, String>,
+    pub auth: &'a Option<HttpAuth>,
+}
+
 pub struct HttpInvokerConfig {
     pub url_validator: UrlValidatorConfig,
     pub default_timeout_ms: u64,
@@ -59,27 +67,24 @@ impl HttpInvoker {
 
     fn build_base_request(
         &self,
-        url: &str,
-        method: &HttpMethod,
-        timeout_ms: &Option<u64>,
-        headers: &HashMap<String, String>,
+        endpoint: &HttpEndpointParams,
         function_path: &str,
         invocation_id: &str,
         timestamp: u64,
         body: Vec<u8>,
     ) -> reqwest::RequestBuilder {
-        let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
+        let timeout = endpoint.timeout_ms.unwrap_or(self.default_timeout_ms);
 
         let mut request = self
             .client
-            .request(http_method_to_reqwest(method), url)
+            .request(http_method_to_reqwest(endpoint.method), endpoint.url)
             .timeout(Duration::from_millis(timeout))
             .header("Content-Type", "application/json")
             .header("x-iii-Function-Path", function_path)
             .header("x-iii-Invocation-ID", invocation_id)
             .header("x-iii-Timestamp", timestamp.to_string());
 
-        for (key, value) in headers {
+        for (key, value) in endpoint.headers {
             request = request.header(key, value);
         }
 
@@ -131,17 +136,13 @@ impl HttpInvoker {
     pub async fn deliver_webhook(
         &self,
         function_path: &str,
-        url: &str,
-        method: &HttpMethod,
-        timeout_ms: &Option<u64>,
-        headers: &HashMap<String, String>,
-        auth: &Option<HttpAuth>,
+        endpoint: &HttpEndpointParams<'_>,
         trigger_type: &str,
         trigger_id: &str,
         payload: Value,
     ) -> Result<(), ErrorBody> {
         self.url_validator
-            .validate(url)
+            .validate(endpoint.url)
             .await
             .map_err(|e| ErrorBody {
                 code: "url_validation_failed".into(),
@@ -165,10 +166,7 @@ impl HttpInvoker {
         let trace_id_value = format!("trace-{}", Uuid::new_v4());
 
         let mut request = self.build_base_request(
-            url,
-            method,
-            timeout_ms,
-            headers,
+            endpoint,
             function_path,
             &invocation_id,
             timestamp,
@@ -180,7 +178,7 @@ impl HttpInvoker {
             .header("x-iii-Trigger-Type", trigger_type)
             .header("x-iii-Trigger-ID", trigger_id);
 
-        request = self.apply_auth(request, auth, &body, timestamp);
+        request = self.apply_auth(request, endpoint.auth, &body, timestamp);
 
         let response = request.send().await.map_err(|err| ErrorBody {
             code: "http_request_failed".into(),
@@ -203,18 +201,14 @@ impl HttpInvoker {
     pub async fn invoke_http(
         &self,
         function_path: &str,
-        url: &str,
-        method: &HttpMethod,
-        timeout_ms: &Option<u64>,
-        headers: &HashMap<String, String>,
-        auth: &Option<HttpAuth>,
+        endpoint: &HttpEndpointParams<'_>,
         invocation_id: Uuid,
         data: Value,
         caller_function: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<Option<Value>, ErrorBody> {
         self.url_validator
-            .validate(url)
+            .validate(endpoint.url)
             .await
             .map_err(|e| ErrorBody {
                 code: "url_validation_failed".into(),
@@ -235,10 +229,7 @@ impl HttpInvoker {
         })?;
 
         let mut request = self.build_base_request(
-            url,
-            method,
-            timeout_ms,
-            headers,
+            endpoint,
             function_path,
             &invocation_id.to_string(),
             timestamp,
@@ -252,7 +243,7 @@ impl HttpInvoker {
             request = request.header("x-iii-Trace-ID", trace);
         }
 
-        request = self.apply_auth(request, auth, &body, timestamp);
+        request = self.apply_auth(request, endpoint.auth, &body, timestamp);
 
         let response = request.send().await.map_err(|err| ErrorBody {
             code: "http_request_failed".into(),

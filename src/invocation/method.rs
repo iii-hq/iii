@@ -3,6 +3,14 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub struct HttpEndpointRef<'a> {
+    pub url: &'a String,
+    pub method: &'a HttpMethod,
+    pub timeout_ms: &'a Option<u64>,
+    pub headers: &'a HashMap<String, String>,
+    pub auth: &'a Option<HttpAuth>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InvocationMethod {
@@ -12,7 +20,6 @@ pub enum InvocationMethod {
     Http {
         url: String,
         method: HttpMethod,
-        /// Request timeout in milliseconds. None means use the default timeout.
         timeout_ms: Option<u64>,
         headers: HashMap<String, String>,
         auth: Option<HttpAuth>,
@@ -27,15 +34,7 @@ impl InvocationMethod {
         }
     }
 
-    pub fn as_http(
-        &self,
-    ) -> Option<(
-        &String,
-        &HttpMethod,
-        &Option<u64>,
-        &HashMap<String, String>,
-        &Option<HttpAuth>,
-    )> {
+    pub fn as_http(&self) -> Option<HttpEndpointRef<'_>> {
         match self {
             InvocationMethod::Http {
                 url,
@@ -43,7 +42,13 @@ impl InvocationMethod {
                 timeout_ms,
                 headers,
                 auth,
-            } => Some((url, method, timeout_ms, headers, auth)),
+            } => Some(HttpEndpointRef {
+                url,
+                method,
+                timeout_ms,
+                headers,
+                auth,
+            }),
             _ => None,
         }
     }

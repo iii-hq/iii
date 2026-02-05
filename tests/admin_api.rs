@@ -1,6 +1,3 @@
-// NOTE: These tests must be run serially with: cargo test --test admin_api -- --test-threads=1
-// This is because they modify global environment variables (III_ADMIN_TOKEN) which conflict when run in parallel.
-
 use std::sync::Arc;
 
 use iii::{
@@ -12,6 +9,7 @@ use iii::{
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
+use serial_test::serial;
 
 async fn setup_engine_with_modules(_port: u16) -> Arc<Engine> {
     let engine = Arc::new(Engine::new());
@@ -39,6 +37,7 @@ async fn setup_engine_with_modules(_port: u16) -> Arc<Engine> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_requires_authentication() {
     // Don't set III_ADMIN_TOKEN - should fail
     unsafe {
@@ -75,6 +74,7 @@ async fn test_admin_api_requires_authentication() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_list_functions() {
     unsafe {
         std::env::set_var("III_ADMIN_TOKEN", "test-token-123");
@@ -112,6 +112,7 @@ async fn test_admin_api_list_functions() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_register_function() {
     unsafe {
         std::env::set_var("III_ADMIN_TOKEN", "test-token-456");
@@ -183,6 +184,7 @@ async fn test_admin_api_register_function() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_register_duplicate_function() {
     unsafe {
         std::env::set_var("III_ADMIN_TOKEN", "test-token-789");
@@ -240,6 +242,7 @@ async fn test_admin_api_register_duplicate_function() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_update_function() {
     unsafe {
         std::env::set_var("III_ADMIN_TOKEN", "test-token-update");
@@ -307,6 +310,7 @@ async fn test_admin_api_update_function() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_delete_function() {
     unsafe {
         std::env::set_var("III_ADMIN_TOKEN", "test-token-delete");
@@ -370,6 +374,7 @@ async fn test_admin_api_delete_function() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_admin_api_invalid_function_path() {
     unsafe {
         std::env::set_var("III_ADMIN_TOKEN", "test-token-invalid");

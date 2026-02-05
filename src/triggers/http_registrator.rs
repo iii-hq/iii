@@ -9,7 +9,9 @@ use crate::{
     engine::Engine,
     function::FunctionsRegistry,
     invocation::{
-        auth::resolve_auth_ref, http_function::HttpFunctionConfig, http_invoker::HttpInvoker,
+        auth::resolve_auth_ref,
+        http_function::HttpFunctionConfig,
+        http_invoker::{HttpEndpointParams, HttpInvoker},
     },
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry},
@@ -96,14 +98,18 @@ impl HttpTriggerRegistrator {
 
         let auth = config.auth.as_ref().map(resolve_auth_ref).transpose()?;
 
+        let endpoint = HttpEndpointParams {
+            url: &config.url,
+            method: &config.method,
+            timeout_ms: &config.timeout_ms,
+            headers: &config.headers,
+            auth: &auth,
+        };
+
         self.http_invoker
             .deliver_webhook(
                 &trigger.function_path,
-                &config.url,
-                &config.method,
-                &config.timeout_ms,
-                &config.headers,
-                &auth,
+                &endpoint,
                 &trigger.trigger_type,
                 &trigger.id,
                 payload,

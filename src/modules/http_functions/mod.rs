@@ -21,7 +21,7 @@ use crate::{
     invocation::{
         auth::resolve_auth_ref,
         http_function::HttpFunctionConfig,
-        http_invoker::{HttpInvoker, HttpInvokerConfig},
+        http_invoker::{HttpEndpointParams, HttpInvoker, HttpInvokerConfig},
         method::HttpAuth,
         url_validator::UrlValidatorConfig,
     },
@@ -33,6 +33,8 @@ use crate::{
 };
 
 use config::HttpFunctionsConfig;
+
+type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
 
 #[derive(Clone)]
 pub struct HttpFunctionsModule {
@@ -48,12 +50,7 @@ impl HttpFunctionsModule {
         &self,
         config: HttpFunctionConfig,
         auth: Option<HttpAuth>,
-    ) -> crate::engine::Handler<
-        impl Fn(Value) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>
-        + Send
-        + Sync
-        + 'static,
-    > {
+    ) -> crate::engine::Handler<impl Fn(Value) -> HandlerFuture + Send + Sync + 'static> {
         let invoker = self.http_invoker.clone();
         let function_path = config.function_path.clone();
         let url = config.url.clone();
@@ -61,39 +58,39 @@ impl HttpFunctionsModule {
         let timeout_ms = config.timeout_ms;
         let headers = config.headers.clone();
 
-        crate::engine::Handler::new(
-            move |input: Value| -> Pin<
-                Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>,
-            > {
-                let invoker = invoker.clone();
-                let function_path = function_path.clone();
-                let url = url.clone();
-                let method = method.clone();
-                let headers = headers.clone();
-                let auth = auth.clone();
+        crate::engine::Handler::new(move |input: Value| -> HandlerFuture {
+            let invoker = invoker.clone();
+            let function_path = function_path.clone();
+            let url = url.clone();
+            let method = method.clone();
+            let headers = headers.clone();
+            let auth = auth.clone();
 
-                Box::pin(async move {
-                    match invoker
-                        .invoke_http(
-                            &function_path,
-                            &url,
-                            &method,
-                            &timeout_ms,
-                            &headers,
-                            &auth,
-                            uuid::Uuid::new_v4(),
-                            input,
-                            None,
-                            None,
-                        )
-                        .await
-                    {
-                        Ok(result) => FunctionResult::Success(result),
-                        Err(e) => FunctionResult::Failure(e),
-                    }
-                })
-            },
-        )
+            Box::pin(async move {
+                let endpoint = HttpEndpointParams {
+                    url: &url,
+                    method: &method,
+                    timeout_ms: &timeout_ms,
+                    headers: &headers,
+                    auth: &auth,
+                };
+
+                match invoker
+                    .invoke_http(
+                        &function_path,
+                        &endpoint,
+                        uuid::Uuid::new_v4(),
+                        input,
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(result) => FunctionResult::Success(result),
+                    Err(e) => FunctionResult::Failure(e),
+                }
+            })
+        })
     }
 
     pub async fn register_http_function(
