@@ -39,7 +39,8 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamListGroupsInput, StreamSetInput, StreamUpdateInput,
+                StreamGetInput, StreamListAllInput, StreamListGroupsInput, StreamSetInput,
+                StreamUpdateInput,
             },
             trigger::{
                 JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
@@ -674,6 +675,43 @@ impl StreamCoreModule {
                     })
                 }
             },
+        }
+    }
+
+    #[function(
+        name = "streams.listAll",
+        description = "List all available streams with metadata"
+    )]
+    pub async fn list_all(
+        &self,
+        _input: StreamListAllInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let adapter = self.adapter.clone();
+
+        match adapter.list_all_streams().await {
+            Ok(streams) => {
+                let streams_json: Vec<Value> = streams
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id,
+                            "groups": s.groups,
+                        })
+                    })
+                    .collect();
+
+                FunctionResult::Success(Some(serde_json::json!({
+                    "streams": streams_json,
+                    "count": streams_json.len()
+                })))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to list all streams");
+                FunctionResult::Failure(ErrorBody {
+                    message: format!("Failed to list streams: {}", e),
+                    code: "STREAM_LIST_ALL_ERROR".to_string(),
+                })
+            }
         }
     }
 

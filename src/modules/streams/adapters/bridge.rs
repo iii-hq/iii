@@ -25,7 +25,7 @@ use crate::{
         },
         pubsub::{PubSubInput, SubscribeTrigger},
         streams::{
-            StreamWrapperMessage,
+            StreamMetadata, StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
@@ -214,6 +214,12 @@ impl StreamAdapter for BridgeAdapter {
         serde_json::from_value::<Vec<String>>(value).map_err(|e| {
             anyhow::anyhow!("Failed to deserialize list keys with prefix result: {}", e)
         })
+    }
+
+    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+        // Bridge adapter cannot discover streams on its own
+        // Would need to implement a bridge function on the remote side to support this
+        Ok(vec![])
     }
 
     async fn subscribe(

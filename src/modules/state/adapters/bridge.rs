@@ -134,6 +134,26 @@ impl StateAdapter for BridgeAdapter {
         serde_json::from_value::<Vec<Value>>(value)
             .map_err(|e| anyhow::anyhow!("Failed to deserialize list result: {}", e))
     }
+
+    async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
+        let value = self
+            .bridge
+            .invoke_function("kv_server.list_groups", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
+
+        // Validate that the response contains a "groups" field that is an array
+        let groups_value = value.get("groups").ok_or_else(|| {
+            anyhow::anyhow!("invalid kv_server.list_groups response: missing 'groups' field")
+        })?;
+
+        serde_json::from_value::<Vec<String>>(groups_value.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "invalid kv_server.list_groups response: invalid 'groups' field: {}",
+                e
+            )
+        })
+    }
 }
 
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFuture {
