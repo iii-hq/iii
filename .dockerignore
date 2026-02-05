@@ -1,0 +1,93 @@
+# =============================================================================
+# .dockerignore - Exclude files from Docker build context
+# =============================================================================
+
+# Build artifacts
+target/
+.bin/
+*.o
+*.a
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# Documentation (keep README for reference)
+*.md
+!README.md
+docs/
+
+# Examples and tests
+examples/
+tests/
+
+# CI/CD
+.github/
+
+# Local config files (use volumes instead)
+config-*.yaml
+!config.yaml
+
+# Node/Python packages (separate SDK builds)
+packages/node/
+packages/python/
+
+# Docker nested folders
+packages/docker/
+
+# Misc
+*.pdf
+*.log
+.DS_Store
+Thumbs.db
+
+# Pre-commit
+.pre-commit-config.yaml
+
+# =============================================================================
+# SECURITY: Exclude sensitive files
+# =============================================================================
+# Environment files
+.env
+.env.*
+*.env
+
+# Private keys and secrets
+*.pem
+*.key
+*.p12
+*.pfx
+private*
+secret*
+credentials*
+
+# SSH keys
+id_rsa*
+id_ed25519*
+*.pub
+
+# AWS/Cloud credentials
+.aws/
+.gcloud/
+.azure/
+
+# Terraform state (may contain secrets)
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Debug/profiling artifacts
+*.dSYM/
+*.su
+*.idb
+*.pdb
+perf.data*
+flamegraph*

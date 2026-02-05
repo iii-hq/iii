@@ -1,0 +1,33 @@
+FROM rust:slim-bookworm AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY . .
+
+RUN cargo build --release && strip target/release/iii
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl procps net-tools htop vim-tiny \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --system --create-home --shell /bin/bash iii
+
+WORKDIR /app
+COPY --from=builder --chown=iii:iii /build/target/release/iii /app/iii
+USER iii
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:3111/health || /app/iii --version
+
+EXPOSE 49134 3111 3112 9464
+ENTRYPOINT ["/app/iii"]
+CMD ["--config", "/app/config.yaml"]
+
+LABEL org.opencontainers.image.title="III Engine (Debug)" \
+      org.opencontainers.image.description="Debug build with shell access"
