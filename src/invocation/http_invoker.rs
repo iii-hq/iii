@@ -69,7 +69,7 @@ impl HttpInvoker {
         body: Vec<u8>,
     ) -> reqwest::RequestBuilder {
         let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
-        
+
         let mut request = self
             .client
             .request(http_method_to_reqwest(method), url)

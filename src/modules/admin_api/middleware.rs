@@ -5,10 +5,7 @@ use axum::{
     response::Response,
 };
 
-pub async fn auth_middleware(
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
+pub async fn auth_middleware(request: Request<Body>, next: Next) -> Result<Response, StatusCode> {
     let token = std::env::var("III_ADMIN_TOKEN").unwrap_or_default();
     if token.is_empty() {
         return Err(StatusCode::UNAUTHORIZED);

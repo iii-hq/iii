@@ -141,7 +141,6 @@ impl RestApiCoreModule {
             &self.routers_registry,
         );
 
-
         new_router = new_router.layer(cors_layer);
 
         new_router = new_router.layer(TimeoutLayer::with_status_code(
@@ -198,7 +197,10 @@ impl RestApiCoreModule {
         api_handler: Arc<RestApiCoreModule>,
         routers_registry: &DashMap<String, PathRouter>,
     ) -> Router {
-        use axum::{extract::Extension, routing::{delete, get, post, put}};
+        use axum::{
+            extract::Extension,
+            routing::{delete, get, post, put},
+        };
 
         let mut router = Router::new();
 

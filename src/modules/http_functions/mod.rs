@@ -13,7 +13,9 @@ use serde_json::Value;
 
 use crate::{
     builtins::kv::BuiltinKvStore,
-    config::persistence::{delete_http_function_from_kv, load_http_functions_from_kv, store_http_function_in_kv},
+    config::persistence::{
+        delete_http_function_from_kv, load_http_functions_from_kv, store_http_function_in_kv,
+    },
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionResult,
     invocation::{
@@ -46,7 +48,12 @@ impl HttpFunctionsModule {
         &self,
         config: HttpFunctionConfig,
         auth: Option<HttpAuth>,
-    ) -> crate::engine::Handler<impl Fn(Value) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>> + Send + Sync + 'static> {
+    ) -> crate::engine::Handler<
+        impl Fn(Value) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+    > {
         let invoker = self.http_invoker.clone();
         let function_path = config.function_path.clone();
         let url = config.url.clone();
@@ -54,35 +61,39 @@ impl HttpFunctionsModule {
         let timeout_ms = config.timeout_ms;
         let headers = config.headers.clone();
 
-        crate::engine::Handler::new(move |input: Value| -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>> {
-            let invoker = invoker.clone();
-            let function_path = function_path.clone();
-            let url = url.clone();
-            let method = method.clone();
-            let headers = headers.clone();
-            let auth = auth.clone();
+        crate::engine::Handler::new(
+            move |input: Value| -> Pin<
+                Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>,
+            > {
+                let invoker = invoker.clone();
+                let function_path = function_path.clone();
+                let url = url.clone();
+                let method = method.clone();
+                let headers = headers.clone();
+                let auth = auth.clone();
 
-            Box::pin(async move {
-                match invoker
-                    .invoke_http(
-                        &function_path,
-                        &url,
-                        &method,
-                        &timeout_ms,
-                        &headers,
-                        &auth,
-                        uuid::Uuid::new_v4(),
-                        input,
-                        None,
-                        None,
-                    )
-                    .await
-                {
-                    Ok(result) => FunctionResult::Success(result),
-                    Err(e) => FunctionResult::Failure(e),
-                }
-            })
-        })
+                Box::pin(async move {
+                    match invoker
+                        .invoke_http(
+                            &function_path,
+                            &url,
+                            &method,
+                            &timeout_ms,
+                            &headers,
+                            &auth,
+                            uuid::Uuid::new_v4(),
+                            input,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(result) => FunctionResult::Success(result),
+                        Err(e) => FunctionResult::Failure(e),
+                    }
+                })
+            },
+        )
     }
 
     pub async fn register_http_function(
@@ -116,10 +127,7 @@ impl HttpFunctionsModule {
         Ok(())
     }
 
-    pub async fn persist_and_register(
-        &self,
-        config: HttpFunctionConfig,
-    ) -> Result<(), ErrorBody> {
+    pub async fn persist_and_register(&self, config: HttpFunctionConfig) -> Result<(), ErrorBody> {
         store_http_function_in_kv(&self.kv_store, &config).await?;
         self.register_http_function(config).await
     }
@@ -129,17 +137,16 @@ impl HttpFunctionsModule {
         delete_http_function_from_kv(&self.kv_store, function_path).await
     }
 
-    pub async fn register_http_trigger(
-        &self,
-        config: HttpTriggerConfig,
-    ) -> Result<(), ErrorBody> {
-        let _function = self.engine.functions.get(&config.function_path)
+    pub async fn register_http_trigger(&self, config: HttpTriggerConfig) -> Result<(), ErrorBody> {
+        let _function = self
+            .engine
+            .functions
+            .get(&config.function_path)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
                 message: format!(
                     "http_trigger '{}' references '{}' but no function with that path exists",
-                    config.trigger_id,
-                    config.function_path
+                    config.trigger_id, config.function_path
                 ),
             })?;
 
@@ -151,12 +158,15 @@ impl HttpFunctionsModule {
             worker_id: None,
         };
 
-        self.engine.trigger_registry.register_trigger(trigger).await
+        self.engine
+            .trigger_registry
+            .register_trigger(trigger)
+            .await
             .map_err(|e| ErrorBody {
                 code: "trigger_registration_failed".into(),
                 message: e.to_string(),
             })?;
-        
+
         Ok(())
     }
 
@@ -186,7 +196,7 @@ impl Module for HttpFunctionsModule {
         } else {
             config.security.url_allowlist.clone()
         };
-        
+
         let url_validator = UrlValidatorConfig {
             allowlist,
             block_private_ips: config.security.block_private_ips,
@@ -221,27 +231,32 @@ impl Module for HttpFunctionsModule {
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        self.engine.service_registry.register_service(
-            "http_functions",
-            Arc::new(self.clone()),
-        );
+        self.engine
+            .service_registry
+            .register_service("http_functions", Arc::new(self.clone()));
 
         let registrator_cron = (*self.http_trigger_registrator).clone();
         let registrator_event = (*self.http_trigger_registrator).clone();
-        
-        self.engine.trigger_registry.register_trigger_type(TriggerType {
-            id: "http_cron".to_string(),
-            _description: "HTTP Cron Trigger".to_string(),
-            registrator: Box::new(registrator_cron),
-            worker_id: None,
-        }).await?;
-        
-        self.engine.trigger_registry.register_trigger_type(TriggerType {
-            id: "http_event".to_string(),
-            _description: "HTTP Event Trigger".to_string(),
-            registrator: Box::new(registrator_event),
-            worker_id: None,
-        }).await?;
+
+        self.engine
+            .trigger_registry
+            .register_trigger_type(TriggerType {
+                id: "http_cron".to_string(),
+                _description: "HTTP Cron Trigger".to_string(),
+                registrator: Box::new(registrator_cron),
+                worker_id: None,
+            })
+            .await?;
+
+        self.engine
+            .trigger_registry
+            .register_trigger_type(TriggerType {
+                id: "http_event".to_string(),
+                _description: "HTTP Event Trigger".to_string(),
+                registrator: Box::new(registrator_event),
+                worker_id: None,
+            })
+            .await?;
 
         for func_config in &self.config.functions {
             self.persist_and_register(func_config.clone())
@@ -263,4 +278,7 @@ impl Module for HttpFunctionsModule {
     }
 }
 
-crate::register_module!("modules::http_functions::HttpFunctionsModule", HttpFunctionsModule);
+crate::register_module!(
+    "modules::http_functions::HttpFunctionsModule",
+    HttpFunctionsModule
+);

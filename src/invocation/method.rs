@@ -27,10 +27,23 @@ impl InvocationMethod {
         }
     }
 
-    pub fn as_http(&self) -> Option<(&String, &HttpMethod, &Option<u64>, &HashMap<String, String>, &Option<HttpAuth>)> {
+    pub fn as_http(
+        &self,
+    ) -> Option<(
+        &String,
+        &HttpMethod,
+        &Option<u64>,
+        &HashMap<String, String>,
+        &Option<HttpAuth>,
+    )> {
         match self {
-            InvocationMethod::Http { url, method, timeout_ms, headers, auth } => 
-                Some((url, method, timeout_ms, headers, auth)),
+            InvocationMethod::Http {
+                url,
+                method,
+                timeout_ms,
+                headers,
+                auth,
+            } => Some((url, method, timeout_ms, headers, auth)),
             _ => None,
         }
     }

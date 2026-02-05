@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    builtins::kv::BuiltinKvStore,
-    engine::Engine,
-    invocation::http_function::HttpFunctionConfig,
+    builtins::kv::BuiltinKvStore, engine::Engine, invocation::http_function::HttpFunctionConfig,
     protocol::ErrorBody,
 };
 

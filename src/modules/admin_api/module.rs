@@ -46,10 +46,7 @@ impl Module for AdminApiModule {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let listener = TcpListener::bind(&addr).await?;
 
-        tracing::info!(
-            "Admin API bound to address: {}",
-            addr.bright_cyan().bold()
-        );
+        tracing::info!("Admin API bound to address: {}", addr.bright_cyan().bold());
 
         *self.listener.lock().await = Some(listener);
 

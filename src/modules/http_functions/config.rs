@@ -7,8 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::SecurityConfig,
-    invocation::http_function::HttpFunctionConfig,
+    config::SecurityConfig, invocation::http_function::HttpFunctionConfig,
     triggers::http_trigger::HttpTriggerConfig,
 };
 

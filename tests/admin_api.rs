@@ -5,43 +5,45 @@ use std::sync::Arc;
 
 use iii::{
     config::SecurityConfig,
+    engine::Engine,
     modules::admin_api::{AdminApiConfig, AdminApiModule},
     modules::http_functions::{HttpFunctionsModule, config::HttpFunctionsConfig},
     modules::module::Module,
-    engine::Engine,
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 
 async fn setup_engine_with_modules(_port: u16) -> Arc<Engine> {
     let engine = Arc::new(Engine::new());
-    
+
     let mut security_config = SecurityConfig::default();
     security_config.require_https = false;
     security_config.url_allowlist = vec!["*".to_string()];
-    
+
     let http_functions_config = HttpFunctionsConfig {
         functions: Vec::new(),
         triggers: Vec::new(),
         security: security_config,
     };
-    
+
     let http_functions_module = HttpFunctionsModule::create(
         engine.clone(),
         Some(serde_json::to_value(&http_functions_config).unwrap()),
     )
     .await
     .unwrap();
-    
+
     http_functions_module.initialize().await.unwrap();
-    
+
     engine
 }
 
 #[tokio::test]
 async fn test_admin_api_requires_authentication() {
     // Don't set III_ADMIN_TOKEN - should fail
-    unsafe { std::env::remove_var("III_ADMIN_TOKEN"); }
+    unsafe {
+        std::env::remove_var("III_ADMIN_TOKEN");
+    }
 
     let engine = setup_engine_with_modules(49136).await;
     let config = AdminApiConfig {
@@ -49,12 +51,10 @@ async fn test_admin_api_requires_authentication() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 
@@ -76,7 +76,9 @@ async fn test_admin_api_requires_authentication() {
 
 #[tokio::test]
 async fn test_admin_api_list_functions() {
-    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-123"); }
+    unsafe {
+        std::env::set_var("III_ADMIN_TOKEN", "test-token-123");
+    }
 
     let engine = setup_engine_with_modules(49137).await;
     let config = AdminApiConfig {
@@ -84,12 +86,10 @@ async fn test_admin_api_list_functions() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 
@@ -113,8 +113,12 @@ async fn test_admin_api_list_functions() {
 
 #[tokio::test]
 async fn test_admin_api_register_function() {
-    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-456"); }
-    unsafe { std::env::set_var("TEST_HMAC_SECRET", "my-secret-key"); }
+    unsafe {
+        std::env::set_var("III_ADMIN_TOKEN", "test-token-456");
+    }
+    unsafe {
+        std::env::set_var("TEST_HMAC_SECRET", "my-secret-key");
+    }
 
     let engine = setup_engine_with_modules(49138).await;
     let config = AdminApiConfig {
@@ -122,12 +126,10 @@ async fn test_admin_api_register_function() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 
@@ -182,7 +184,9 @@ async fn test_admin_api_register_function() {
 
 #[tokio::test]
 async fn test_admin_api_register_duplicate_function() {
-    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-789"); }
+    unsafe {
+        std::env::set_var("III_ADMIN_TOKEN", "test-token-789");
+    }
 
     let engine = setup_engine_with_modules(49139).await;
     let config = AdminApiConfig {
@@ -190,12 +194,10 @@ async fn test_admin_api_register_duplicate_function() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 
@@ -239,7 +241,9 @@ async fn test_admin_api_register_duplicate_function() {
 
 #[tokio::test]
 async fn test_admin_api_update_function() {
-    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-update"); }
+    unsafe {
+        std::env::set_var("III_ADMIN_TOKEN", "test-token-update");
+    }
 
     let engine = setup_engine_with_modules(49140).await;
     let config = AdminApiConfig {
@@ -247,12 +251,10 @@ async fn test_admin_api_update_function() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 
@@ -306,7 +308,9 @@ async fn test_admin_api_update_function() {
 
 #[tokio::test]
 async fn test_admin_api_delete_function() {
-    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-delete"); }
+    unsafe {
+        std::env::set_var("III_ADMIN_TOKEN", "test-token-delete");
+    }
 
     let engine = setup_engine_with_modules(49141).await;
     let config = AdminApiConfig {
@@ -314,12 +318,10 @@ async fn test_admin_api_delete_function() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 
@@ -369,7 +371,9 @@ async fn test_admin_api_delete_function() {
 
 #[tokio::test]
 async fn test_admin_api_invalid_function_path() {
-    unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-invalid"); }
+    unsafe {
+        std::env::set_var("III_ADMIN_TOKEN", "test-token-invalid");
+    }
 
     let engine = setup_engine_with_modules(49142).await;
     let config = AdminApiConfig {
@@ -377,12 +381,10 @@ async fn test_admin_api_invalid_function_path() {
         host: "127.0.0.1".to_string(),
     };
 
-    let module = AdminApiModule::create(
-        engine.clone(),
-        Some(serde_json::to_value(&config).unwrap()),
-    )
-    .await
-    .unwrap();
+    let module =
+        AdminApiModule::create(engine.clone(), Some(serde_json::to_value(&config).unwrap()))
+            .await
+            .unwrap();
 
     module.initialize().await.unwrap();
 

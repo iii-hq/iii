@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    invocation::method::HttpAuth,
-    protocol::ErrorBody,
-};
+use crate::{invocation::method::HttpAuth, protocol::ErrorBody};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]

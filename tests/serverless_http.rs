@@ -1,6 +1,4 @@
-use iii::{
-    invocation::url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
-};
+use iii::invocation::url_validator::{SecurityError, UrlValidator, UrlValidatorConfig};
 
 #[tokio::test]
 async fn test_url_validator_private_ip() {

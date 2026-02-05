@@ -61,7 +61,7 @@ impl EventCoreModule {
         let topic_for_filter = topic.clone();
         let topic_for_payload = topic.clone();
         let event_data_for_payload = event_data.clone();
-        
+
         crate::triggers::http_registrator::HttpTriggerRegistrator::dispatch_http_triggers_from_engine(
             &self.engine,
             "http_event",

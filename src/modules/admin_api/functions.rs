@@ -13,11 +13,7 @@ use serde_json::{Value, json};
 
 use crate::{
     engine::Engine,
-    invocation::{
-        auth::HttpAuthRef,
-        http_function::HttpFunctionConfig,
-        method::HttpMethod,
-    },
+    invocation::{auth::HttpAuthRef, http_function::HttpFunctionConfig, method::HttpMethod},
     modules::http_functions::HttpFunctionsModule,
 };
 
@@ -81,8 +77,7 @@ pub async fn register_function(
         ))?;
 
     // Validate function path
-    validate_function_path(&payload.function_path)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    validate_function_path(&payload.function_path).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // Check for duplicate registration
     if engine.functions.get(&payload.function_path).is_some() {
@@ -108,8 +103,7 @@ pub async fn register_function(
 
     // Validate that environment variables exist for auth configuration
     if let Some(ref auth_ref) = payload.invocation.auth {
-        validate_auth_env_vars(auth_ref)
-            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        validate_auth_env_vars(auth_ref).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     }
 
     let kv_config = HttpFunctionConfig {
@@ -189,8 +183,7 @@ pub async fn update_function(
 
         // Validate that environment variables exist for auth configuration
         if let Some(ref auth_ref) = invocation.auth {
-            validate_auth_env_vars(auth_ref)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            validate_auth_env_vars(auth_ref).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
         }
 
         kv_config.url = invocation.url;
@@ -251,7 +244,9 @@ pub async fn list_functions(
         ))?;
 
     let kv_store = http_module.kv_store();
-    let keys = kv_store.list_keys_with_prefix("http_function:".to_string()).await;
+    let keys = kv_store
+        .list_keys_with_prefix("http_function:".to_string())
+        .await;
 
     let mut functions = Vec::new();
     for key in keys {
@@ -305,10 +300,13 @@ pub async fn get_function(
         .kv_store()
         .get(index, "config".to_string())
         .await
-        .ok_or((StatusCode::NOT_FOUND, "Function config not found in KV store".to_string()))?;
-    
-    let config: HttpFunctionConfig =
-        serde_json::from_value(value).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "Function config not found in KV store".to_string(),
+        ))?;
+
+    let config: HttpFunctionConfig = serde_json::from_value(value)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut response = json!({
         "function_path": config.function_path,
@@ -429,8 +427,7 @@ fn validate_input_sizes(payload: &RegisterFunctionRequest) -> Result<(), (Status
         if key.len() > 256 || value.len() > 4096 {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "Header key cannot exceed 256 chars and value cannot exceed 4096 chars"
-                    .to_string(),
+                "Header key cannot exceed 256 chars and value cannot exceed 4096 chars".to_string(),
             ));
         }
     }

@@ -46,10 +46,10 @@ impl Service<Request<Body>> for HotRouter {
                 let router_guard = router_arc.read().await;
                 router_guard.clone()
             };
-            
+
             let router_with_extension = router_clone.layer(axum::extract::Extension(engine));
             let mut router_service = router_with_extension.into_service();
-            
+
             use tower::Service;
             match Service::call(&mut router_service, req).await {
                 Ok(response) => Ok(response),

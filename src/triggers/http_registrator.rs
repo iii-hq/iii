@@ -8,7 +8,9 @@ use crate::{
     builtins::kv::BuiltinKvStore,
     engine::Engine,
     function::FunctionsRegistry,
-    invocation::{auth::resolve_auth_ref, http_function::HttpFunctionConfig, http_invoker::HttpInvoker},
+    invocation::{
+        auth::resolve_auth_ref, http_function::HttpFunctionConfig, http_invoker::HttpInvoker,
+    },
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry},
 };
@@ -22,7 +24,11 @@ pub struct HttpTriggerRegistrator {
 }
 
 impl HttpTriggerRegistrator {
-    pub fn new(http_invoker: Arc<HttpInvoker>, functions: Arc<FunctionsRegistry>, kv_store: Arc<BuiltinKvStore>) -> Self {
+    pub fn new(
+        http_invoker: Arc<HttpInvoker>,
+        functions: Arc<FunctionsRegistry>,
+        kv_store: Arc<BuiltinKvStore>,
+    ) -> Self {
         Self {
             http_invoker,
             functions,
@@ -36,49 +42,57 @@ impl HttpTriggerRegistrator {
         trigger_type: &str,
         filter: F,
         payload_builder: P,
-    )
-    where
+    ) where
         F: Fn(&Trigger) -> bool,
         P: Fn(&Trigger) -> Value,
     {
         if let Some(http_module) = engine
             .service_registry
-            .get_service::<crate::modules::http_functions::HttpFunctionsModule>("http_functions")
-        {
+            .get_service::<crate::modules::http_functions::HttpFunctionsModule>(
+            "http_functions",
+        ) {
             let registrator = Self::new(
                 http_module.http_invoker().clone(),
                 engine.functions.clone(),
                 http_module.kv_store().clone(),
             );
-            registrator.deliver_to_matching_triggers(
-                &engine.trigger_registry,
-                trigger_type,
-                filter,
-                payload_builder,
-            ).await;
+            registrator
+                .deliver_to_matching_triggers(
+                    &engine.trigger_registry,
+                    trigger_type,
+                    filter,
+                    payload_builder,
+                )
+                .await;
         }
     }
 
     pub async fn deliver(&self, trigger: &Trigger, payload: Value) -> Result<(), ErrorBody> {
-        self.functions.get(&trigger.function_path)
+        self.functions
+            .get(&trigger.function_path)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
                 message: format!("Function '{}' not found", trigger.function_path),
             })?;
 
         let index = format!("http_function:{}", trigger.function_path);
-        let value = self.kv_store
+        let value = self
+            .kv_store
             .get(index, "config".to_string())
             .await
             .ok_or_else(|| ErrorBody {
                 code: "config_not_found".into(),
-                message: format!("HTTP function config not found for '{}'", trigger.function_path),
+                message: format!(
+                    "HTTP function config not found for '{}'",
+                    trigger.function_path
+                ),
             })?;
 
-        let config: HttpFunctionConfig = serde_json::from_value(value).map_err(|err| ErrorBody {
-            code: "config_decode_failed".into(),
-            message: err.to_string(),
-        })?;
+        let config: HttpFunctionConfig =
+            serde_json::from_value(value).map_err(|err| ErrorBody {
+                code: "config_decode_failed".into(),
+                message: err.to_string(),
+            })?;
 
         let auth = config.auth.as_ref().map(resolve_auth_ref).transpose()?;
 
@@ -103,12 +117,12 @@ impl HttpTriggerRegistrator {
         trigger_type: &str,
         filter: F,
         payload_builder: P,
-    )
-    where
+    ) where
         F: Fn(&Trigger) -> bool,
         P: Fn(&Trigger) -> Value,
     {
-        let triggers: Vec<Trigger> = trigger_registry.triggers
+        let triggers: Vec<Trigger> = trigger_registry
+            .triggers
             .iter()
             .filter(|entry| {
                 let trigger = entry.value();
@@ -120,7 +134,7 @@ impl HttpTriggerRegistrator {
         for trigger in triggers {
             let registrator = self.clone();
             let payload = payload_builder(&trigger);
-            
+
             tokio::spawn(async move {
                 let _ = registrator.deliver(&trigger, payload).await;
             });
@@ -136,7 +150,7 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
         let functions = self.functions.clone();
         let kv_store = self.kv_store.clone();
         let triggers = self.triggers.clone();
-        
+
         Box::pin(async move {
             functions
                 .get(&trigger.function_path)
@@ -170,7 +184,7 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         let triggers = self.triggers.clone();
-        
+
         Box::pin(async move {
             tracing::info!(
                 trigger_id = %trigger.id,
