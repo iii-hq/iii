@@ -149,7 +149,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
 
                 stream_map
                     .entry(stream_name)
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(group_id);
             }
         }
