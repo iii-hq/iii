@@ -422,40 +422,53 @@ impl StreamAdapter for RedisAdapter {
 
         let mut conn = self.publisher.lock().await;
         let pattern = "stream:*";
+        let mut stream_map: HashMap<String, HashSet<String>> = HashMap::new();
 
-        match conn.keys::<_, Vec<String>>(pattern).await {
-            Ok(keys) => {
-                let mut stream_map: HashMap<String, HashSet<String>> = HashMap::new();
+        // Use SCAN instead of KEYS to avoid blocking Redis
+        let mut cursor = 0u64;
+        loop {
+            let result: (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(pattern)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to scan streams from Redis: {}", e))?;
 
-                // Parse keys: stream:<stream_name>:<group_id>
-                for key in keys {
-                    let parts: Vec<&str> = key.split(':').collect();
-                    if parts.len() >= 3 && parts[0] == "stream" {
-                        let stream_name = parts[1].to_string();
-                        let group_id = parts[2].to_string();
+            let (next_cursor, keys) = result;
 
-                        stream_map.entry(stream_name).or_default().insert(group_id);
-                    }
+            // Parse keys: stream:<stream_name>:<group_id>
+            for key in keys {
+                let parts: Vec<&str> = key.split(':').collect();
+                if parts.len() >= 3 && parts[0] == "stream" {
+                    let stream_name = parts[1].to_string();
+                    let group_id = parts[2].to_string();
+
+                    stream_map.entry(stream_name).or_default().insert(group_id);
                 }
-
-                // Convert to StreamMetadata
-                let mut streams: Vec<StreamMetadata> = stream_map
-                    .into_iter()
-                    .map(|(id, groups)| {
-                        let mut groups_vec: Vec<String> = groups.into_iter().collect();
-                        groups_vec.sort();
-                        StreamMetadata {
-                            id,
-                            groups: groups_vec,
-                        }
-                    })
-                    .collect();
-
-                streams.sort_by(|a, b| a.id.cmp(&b.id));
-                Ok(streams)
             }
-            Err(e) => Err(anyhow::anyhow!("Failed to list streams from Redis: {}", e)),
+
+            cursor = next_cursor;
+            if cursor == 0 {
+                break;
+            }
         }
+
+        // Convert to StreamMetadata
+        let mut streams: Vec<StreamMetadata> = stream_map
+            .into_iter()
+            .map(|(id, groups)| {
+                let mut groups_vec: Vec<String> = groups.into_iter().collect();
+                groups_vec.sort();
+                StreamMetadata {
+                    id,
+                    groups: groups_vec,
+                }
+            })
+            .collect();
+
+        streams.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(streams)
     }
 
     async fn subscribe(
