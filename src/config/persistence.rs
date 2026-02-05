@@ -1,21 +1,25 @@
+use std::sync::Arc;
+
 use crate::{
-    invocation::http_function::HttpFunctionConfig,
+    builtins::kv::BuiltinKvStore,
     engine::Engine,
-    function::RegistrationSource,
+    invocation::http_function::HttpFunctionConfig,
     protocol::ErrorBody,
 };
 
 const HTTP_FUNCTION_PREFIX: &str = "http_function:";
 
-pub async fn load_http_functions_from_kv(engine: &Engine) -> Result<(), ErrorBody> {
-    let keys = engine
-        .kv_store
+pub async fn load_http_functions_from_kv(
+    kv_store: &Arc<BuiltinKvStore>,
+    engine: &Arc<Engine>,
+    http_module: &crate::modules::http_functions::HttpFunctionsModule,
+) -> Result<(), ErrorBody> {
+    let keys = kv_store
         .list_keys_with_prefix(HTTP_FUNCTION_PREFIX.to_string())
         .await;
 
     for index in keys {
-        let value = engine
-            .kv_store
+        let value = kv_store
             .get(index.clone(), "config".to_string())
             .await
             .ok_or_else(|| ErrorBody {
@@ -33,19 +37,14 @@ pub async fn load_http_functions_from_kv(engine: &Engine) -> Result<(), ErrorBod
             continue;
         }
 
-        engine
-            .register_http_function_from_persistence(
-                config,
-                RegistrationSource::AdminApi,
-            )
-            .await?;
+        http_module.register_http_function(config).await?;
     }
 
     Ok(())
 }
 
 pub async fn store_http_function_in_kv(
-    engine: &Engine,
+    kv_store: &Arc<BuiltinKvStore>,
     config: &HttpFunctionConfig,
 ) -> Result<(), ErrorBody> {
     let index = format!("{}{}", HTTP_FUNCTION_PREFIX, config.function_path);
@@ -54,19 +53,16 @@ pub async fn store_http_function_in_kv(
         message: err.to_string(),
     })?;
 
-    engine
-        .kv_store
-        .set(index, "config".to_string(), value)
-        .await;
+    kv_store.set(index, "config".to_string(), value).await;
 
     Ok(())
 }
 
 pub async fn delete_http_function_from_kv(
-    engine: &Engine,
+    kv_store: &Arc<BuiltinKvStore>,
     function_path: &str,
 ) -> Result<(), ErrorBody> {
     let index = format!("{}{}", HTTP_FUNCTION_PREFIX, function_path);
-    engine.kv_store.delete(index, "config".to_string()).await;
+    kv_store.delete(index, "config".to_string()).await;
     Ok(())
 }

@@ -6,15 +6,12 @@
 
 use std::{collections::HashSet, pin::Pin, sync::Arc};
 
-use chrono::{DateTime, Utc};
 use colored::Colorize;
 use dashmap::DashMap;
 use futures::Future;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::invocation::method::InvocationMethod;
 use crate::protocol::*;
 
 pub enum FunctionResult<T, E> {
@@ -28,23 +25,12 @@ pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
 
 #[derive(Clone)]
 pub struct Function {
-    pub function_path: String,
-    pub description: Option<String>,
+    pub handler: Arc<HandlerFn>,
+    pub _function_path: String,
+    pub _description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
     pub metadata: Option<Value>,
-    pub invocation_method: InvocationMethod,
-    pub registered_at: DateTime<Utc>,
-    pub registration_source: RegistrationSource,
-    pub handler: Option<Arc<HandlerFn>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RegistrationSource {
-    Config,
-    AdminApi,
-    WebSocket { worker_id: Uuid },
 }
 
 impl Function {
@@ -53,16 +39,7 @@ impl Function {
         invocation_id: Option<Uuid>,
         data: Value,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let handler = match self.handler.as_ref() {
-            Some(handler) => handler,
-            None => {
-                return FunctionResult::Failure(ErrorBody {
-                    code: "handler_not_available".into(),
-                    message: "Function handler not available".into(),
-                });
-            }
-        };
-        (handler)(invocation_id, data.clone()).await
+        (self.handler)(invocation_id, data.clone()).await
     }
 }
 

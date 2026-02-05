@@ -4,8 +4,9 @@ use futures::Future;
 use serde_json::Value;
 
 use crate::{
+    builtins::kv::BuiltinKvStore,
     function::FunctionsRegistry,
-    invocation::http_invoker::HttpInvoker,
+    invocation::{auth::resolve_auth_ref, http_function::HttpFunctionConfig, http_invoker::HttpInvoker},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry},
 };
@@ -14,25 +15,53 @@ use crate::{
 pub struct HttpTriggerRegistrator {
     http_invoker: Arc<HttpInvoker>,
     functions: Arc<FunctionsRegistry>,
+    kv_store: Arc<BuiltinKvStore>,
 }
 
 impl HttpTriggerRegistrator {
-    pub fn new(http_invoker: Arc<HttpInvoker>, functions: Arc<FunctionsRegistry>) -> Self {
+    pub fn new(http_invoker: Arc<HttpInvoker>, functions: Arc<FunctionsRegistry>, kv_store: Arc<BuiltinKvStore>) -> Self {
         Self {
             http_invoker,
             functions,
+            kv_store,
         }
     }
 
     pub async fn deliver(&self, trigger: &Trigger, payload: Value) -> Result<(), ErrorBody> {
-        let function = self.functions.get(&trigger.function_path)
+        self.functions.get(&trigger.function_path)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
                 message: format!("Function '{}' not found", trigger.function_path),
             })?;
 
+        let index = format!("http_function:{}", trigger.function_path);
+        let value = self.kv_store
+            .get(index, "config".to_string())
+            .await
+            .ok_or_else(|| ErrorBody {
+                code: "config_not_found".into(),
+                message: format!("HTTP function config not found for '{}'", trigger.function_path),
+            })?;
+
+        let config: HttpFunctionConfig = serde_json::from_value(value).map_err(|err| ErrorBody {
+            code: "config_decode_failed".into(),
+            message: err.to_string(),
+        })?;
+
+        let auth = config.auth.as_ref().map(resolve_auth_ref).transpose()?;
+
         self.http_invoker
-            .deliver_webhook(&function, &trigger.trigger_type, &trigger.id, payload)
+            .deliver_webhook(
+                &trigger.function_path,
+                &config.url,
+                &config.method,
+                &config.timeout_ms,
+                &config.headers,
+                &auth,
+                &trigger.trigger_type,
+                &trigger.id,
+                payload,
+            )
             .await
     }
 
@@ -57,14 +86,11 @@ impl HttpTriggerRegistrator {
             .collect();
 
         for trigger in triggers {
-            let http_invoker = self.http_invoker.clone();
-            let functions = self.functions.clone();
+            let registrator = self.clone();
             let payload = payload_builder(&trigger);
             
             tokio::spawn(async move {
-                if let Some(function) = functions.get(&trigger.function_path) {
-                    let _ = http_invoker.deliver_webhook(&function, &trigger.trigger_type, &trigger.id, payload).await;
-                }
+                let _ = registrator.deliver(&trigger, payload).await;
             });
         }
     }

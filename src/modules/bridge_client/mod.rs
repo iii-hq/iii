@@ -100,7 +100,6 @@ impl Module for BridgeClientModule {
                 request_format: None,
                 response_format: None,
                 metadata: None,
-                worker_id: None,
             },
             Handler::new(move |input: Value| {
                 let bridge = bridge.clone();
@@ -146,7 +145,6 @@ impl Module for BridgeClientModule {
                 request_format: None,
                 response_format: None,
                 metadata: None,
-                worker_id: None,
             },
             Handler::new(move |input: Value| {
                 let bridge = bridge.clone();
@@ -190,7 +188,6 @@ impl Module for BridgeClientModule {
                     request_format: None,
                     response_format: None,
                     metadata: None,
-                    worker_id: None,
                 },
                 Handler::new(move |input: Value| {
                     let bridge = bridge.clone();

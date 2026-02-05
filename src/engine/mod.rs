@@ -7,7 +7,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
@@ -16,21 +15,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
-    builtins::kv::BuiltinKvStore,
-    config::SecurityConfig,
-    function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry, RegistrationSource},
-    invocation::{
-        InvocationHandler, InvokerRegistry,
-        auth::resolve_auth_ref,
-        http_function::HttpFunctionConfig,
-        http_invoker::{HttpInvoker, HttpInvokerConfig},
-        invoker::Invoker,
-        method::InvocationMethod,
-        url_validator::UrlValidatorConfig,
-    },
+    function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
+    invocation::InvocationHandler,
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
     protocol::{ErrorBody, Message},
-    triggers::http_trigger::HttpTriggerConfig,
     services::{Service, ServicesRegistry},
     telemetry::{
         SpanExt, ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics,
@@ -106,7 +94,6 @@ pub struct RegisterFunctionRequest {
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
     pub metadata: Option<Value>,
-    pub worker_id: Option<Uuid>,
 }
 
 pub struct Handler<H> {
@@ -149,200 +136,24 @@ pub trait EngineTrait: Send + Sync {
         F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
 }
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerRegistry>,
     pub functions: Arc<FunctionsRegistry>,
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
-    pub invoker_registry: Arc<InvokerRegistry>,
-    pub http_invoker: Arc<HttpInvoker>,
-    pub http_trigger_registrator: Arc<crate::triggers::http_registrator::HttpTriggerRegistrator>,
-    pub kv_store: Arc<BuiltinKvStore>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        let security = SecurityConfig::default();
-        Self::new_with_security(security, None).expect("Failed to initialize engine")
-    }
-
-    pub fn new_with_security(
-        security: SecurityConfig,
-        kv_store_config: Option<Value>,
-    ) -> anyhow::Result<Self> {
-        let allowlist = if security.url_allowlist.is_empty() {
-            vec!["*".to_string()]
-        } else {
-            security.url_allowlist.clone()
-        };
-        let url_validator = UrlValidatorConfig {
-            allowlist,
-            block_private_ips: security.block_private_ips,
-            require_https: security.require_https,
-        };
-        let http_invoker = Arc::new(HttpInvoker::new(HttpInvokerConfig {
-            url_validator: url_validator.clone(),
-            ..HttpInvokerConfig::default()
-        })?);
-
-        let kv_store = Arc::new(BuiltinKvStore::new(kv_store_config));
-
-        let invoker_registry = InvokerRegistry::new_with_http(http_invoker.clone());
-        let invoker_registry = Arc::new(invoker_registry);
-
-        let functions = Arc::new(FunctionsRegistry::new());
-        let http_trigger_registrator = Arc::new(crate::triggers::http_registrator::HttpTriggerRegistrator::new(
-            http_invoker.clone(),
-            functions.clone(),
-        ));
-
-        Ok(Self {
+        Self {
             worker_registry: Arc::new(WorkerRegistry::new()),
-            functions,
+            functions: Arc::new(FunctionsRegistry::new()),
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
-            invocations: Arc::new(InvocationHandler::new(invoker_registry.clone())),
-            invoker_registry,
-            http_invoker,
-            http_trigger_registrator,
-            kv_store,
-        })
-    }
-
-    pub async fn register_invoker(&self, invoker: Arc<dyn Invoker>) {
-        self.invoker_registry.register(invoker).await;
-    }
-
-    pub async fn register_http_function_from_config(
-        &self,
-        config: HttpFunctionConfig,
-    ) -> Result<(), ErrorBody> {
-        self.http_invoker
-            .url_validator()
-            .validate(&config.url)
-            .await
-            .map_err(|e| ErrorBody {
-                code: "url_validation_failed".into(),
-                message: e.to_string(),
-            })?;
-
-        let auth = match config.auth.as_ref() {
-            Some(auth) => Some(resolve_auth_ref(auth).map_err(|err| ErrorBody {
-                code: "auth_resolution_failed".into(),
-                message: err.message,
-            })?),
-            None => None,
-        };
-
-        let invocation_method = InvocationMethod::Http {
-            url: config.url,
-            method: config.method,
-            timeout_ms: config.timeout_ms,
-            headers: config.headers,
-            auth,
-        };
-
-        let function = Function {
-            function_path: config.function_path.clone(),
-            description: config.description,
-            request_format: config.request_format,
-            response_format: config.response_format,
-            metadata: config.metadata,
-            invocation_method,
-            registered_at: config.registered_at.unwrap_or_else(Utc::now),
-            registration_source: RegistrationSource::Config,
-            handler: None,
-        };
-
-        self.service_registry
-            .register_service_from_func_path(&config.function_path);
-        self.functions
-            .register_function(config.function_path.clone(), function);
-        Ok(())
-    }
-
-    /// Unified method for registering HTTP functions from persistence (KV store or Admin API).
-    /// This eliminates code duplication between Admin API and persistence loading.
-    pub async fn register_http_function_from_persistence(
-        &self,
-        config: HttpFunctionConfig,
-        registration_source: RegistrationSource,
-    ) -> Result<(), ErrorBody> {
-        let auth = config.auth
-            .as_ref()
-            .map(resolve_auth_ref)
-            .transpose()?;
-
-        let invocation_method = InvocationMethod::Http {
-            url: config.url,
-            method: config.method,
-            timeout_ms: config.timeout_ms,
-            headers: config.headers,
-            auth,
-        };
-
-        let function = Function {
-            function_path: config.function_path.clone(),
-            description: config.description,
-            request_format: config.request_format,
-            response_format: config.response_format,
-            metadata: config.metadata,
-            invocation_method,
-            registered_at: config.registered_at.unwrap_or_else(Utc::now),
-            registration_source,
-            handler: None,
-        };
-
-        self.service_registry
-            .register_service_from_func_path(&config.function_path);
-        self.functions
-            .register_function(config.function_path, function);
-
-        Ok(())
-    }
-
-    pub async fn register_http_trigger_from_config(
-        &self,
-        config: HttpTriggerConfig,
-    ) -> Result<(), ErrorBody> {
-        let function = self.functions.get(&config.function_path)
-            .ok_or_else(|| ErrorBody {
-                code: "function_not_found".into(),
-                message: format!(
-                    "http_trigger '{}' references '{}' but no http_function with that path exists",
-                    config.trigger_id,
-                    config.function_path
-                ),
-            })?;
-
-        if !matches!(&function.invocation_method, InvocationMethod::Http { .. }) {
-            return Err(ErrorBody {
-                code: "invalid_function_type".into(),
-                message: format!(
-                    "http_trigger '{}' references '{}' which is not an HTTP function",
-                    config.trigger_id,
-                    config.function_path
-                ),
-            });
+            invocations: Arc::new(InvocationHandler::new()),
         }
-
-        let trigger = Trigger {
-            id: config.trigger_id,
-            trigger_type: format!("http_{}", config.trigger_type),
-            function_path: config.function_path,
-            config: config.config,
-            worker_id: None,
-        };
-
-        self.trigger_registry.register_trigger(trigger).await
-            .map_err(|e| ErrorBody {
-                code: "trigger_registration_failed".into(),
-                message: e.to_string(),
-            })?;
-        
-        Ok(())
     }
 
     async fn send_msg(&self, worker: &Worker, msg: Message) -> bool {
@@ -659,7 +470,6 @@ impl Engine {
                         request_format: req.clone(),
                         response_format: res.clone(),
                         metadata: metadata.clone(),
-                        worker_id: Some(worker.id),
                     },
                     Box::new(worker.clone()),
                 );
@@ -919,32 +729,22 @@ impl EngineTrait for Engine {
             request_format,
             response_format,
             metadata,
-            worker_id,
         } = request;
 
         let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
         let handler_function_path = function_path.clone();
-        let resolved_worker_id = worker_id.unwrap_or_else(Uuid::nil);
-        let registration_source = worker_id
-            .map(|worker_id| RegistrationSource::WebSocket { worker_id })
-            .unwrap_or(RegistrationSource::Config);
 
         let function = Function {
-            handler: Some(Arc::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input| {
                 let handler = handler_arc.clone();
                 let path = handler_function_path.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
-            })),
-            function_path: function_path.clone(),
-            description,
+            }),
+            _function_path: function_path.clone(),
+            _description: description,
             request_format,
             response_format,
             metadata,
-            invocation_method: InvocationMethod::WebSocket {
-                worker_id: resolved_worker_id,
-            },
-            registered_at: Utc::now(),
-            registration_source,
         };
 
         self.functions.register_function(function_path, function);
@@ -956,21 +756,17 @@ impl EngineTrait for Engine {
         F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
-        let worker_id = request.worker_id.unwrap_or_else(Uuid::nil);
 
         let function = Function {
-            handler: Some(Arc::new(move |_id, input| {
+            handler: Arc::new(move |_id, input| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
-            })),
-            function_path: request.function_path.clone(),
-            description: request.description,
+            }),
+            _function_path: request.function_path.clone(),
+            _description: request.description,
             request_format: request.request_format,
             response_format: request.response_format,
             metadata: request.metadata,
-            invocation_method: InvocationMethod::WebSocket { worker_id },
-            registered_at: Utc::now(),
-            registration_source: RegistrationSource::Config,
         };
 
         self.functions

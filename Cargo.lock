@@ -1498,6 +1498,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "serial_test",
+ "subtle",
  "tokio",
  "tower",
  "tower-http",

@@ -1,20 +1,49 @@
+// NOTE: These tests must be run serially with: cargo test --test admin_api -- --test-threads=1
+// This is because they modify global environment variables (III_ADMIN_TOKEN) which conflict when run in parallel.
+
 use std::sync::Arc;
 
 use iii::{
-    modules::admin_api::{AdminApiConfig, AdminApiModule},
-    modules::module::Module,
     config::SecurityConfig,
+    modules::admin_api::{AdminApiConfig, AdminApiModule},
+    modules::http_functions::{HttpFunctionsModule, config::HttpFunctionsConfig},
+    modules::module::Module,
     engine::Engine,
 };
 use reqwest::StatusCode;
 use serde_json::{Value, json};
+
+async fn setup_engine_with_modules(_port: u16) -> Arc<Engine> {
+    let engine = Arc::new(Engine::new());
+    
+    let mut security_config = SecurityConfig::default();
+    security_config.require_https = false;
+    security_config.url_allowlist = vec!["*".to_string()];
+    
+    let http_functions_config = HttpFunctionsConfig {
+        functions: Vec::new(),
+        triggers: Vec::new(),
+        security: security_config,
+    };
+    
+    let http_functions_module = HttpFunctionsModule::create(
+        engine.clone(),
+        Some(serde_json::to_value(&http_functions_config).unwrap()),
+    )
+    .await
+    .unwrap();
+    
+    http_functions_module.initialize().await.unwrap();
+    
+    engine
+}
 
 #[tokio::test]
 async fn test_admin_api_requires_authentication() {
     // Don't set III_ADMIN_TOKEN - should fail
     unsafe { std::env::remove_var("III_ADMIN_TOKEN"); }
 
-    let engine = Arc::new(Engine::new_with_security(SecurityConfig::default(), None).unwrap());
+    let engine = setup_engine_with_modules(49136).await;
     let config = AdminApiConfig {
         port: 49136, // Different port to avoid conflicts
         host: "127.0.0.1".to_string(),
@@ -49,7 +78,7 @@ async fn test_admin_api_requires_authentication() {
 async fn test_admin_api_list_functions() {
     unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-123"); }
 
-    let engine = Arc::new(Engine::new_with_security(SecurityConfig::default(), None).unwrap());
+    let engine = setup_engine_with_modules(49137).await;
     let config = AdminApiConfig {
         port: 49137,
         host: "127.0.0.1".to_string(),
@@ -87,11 +116,7 @@ async fn test_admin_api_register_function() {
     unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-456"); }
     unsafe { std::env::set_var("TEST_HMAC_SECRET", "my-secret-key"); }
 
-    let mut security = SecurityConfig::default();
-    security.url_allowlist = vec!["example.com".to_string()];
-    security.require_https = false;
-
-    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
+    let engine = setup_engine_with_modules(49138).await;
     let config = AdminApiConfig {
         port: 49138,
         host: "127.0.0.1".to_string(),
@@ -139,7 +164,13 @@ async fn test_admin_api_register_function() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    if status != StatusCode::OK {
+        let body = response.text().await.unwrap();
+        eprintln!("Status: {}, Body: {}", status, body);
+        panic!("Expected OK, got {}", status);
+    }
+    assert_eq!(status, StatusCode::OK);
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["status"], "registered");
     assert_eq!(body["function_path"], "test.function");
@@ -153,11 +184,7 @@ async fn test_admin_api_register_function() {
 async fn test_admin_api_register_duplicate_function() {
     unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-789"); }
 
-    let mut security = SecurityConfig::default();
-    security.url_allowlist = vec!["example.com".to_string()];
-    security.require_https = false;
-
-    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
+    let engine = setup_engine_with_modules(49139).await;
     let config = AdminApiConfig {
         port: 49139,
         host: "127.0.0.1".to_string(),
@@ -214,11 +241,7 @@ async fn test_admin_api_register_duplicate_function() {
 async fn test_admin_api_update_function() {
     unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-update"); }
 
-    let mut security = SecurityConfig::default();
-    security.url_allowlist = vec!["example.com".to_string()];
-    security.require_https = false;
-
-    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
+    let engine = setup_engine_with_modules(49140).await;
     let config = AdminApiConfig {
         port: 49140,
         host: "127.0.0.1".to_string(),
@@ -285,11 +308,7 @@ async fn test_admin_api_update_function() {
 async fn test_admin_api_delete_function() {
     unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-delete"); }
 
-    let mut security = SecurityConfig::default();
-    security.url_allowlist = vec!["example.com".to_string()];
-    security.require_https = false;
-
-    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
+    let engine = setup_engine_with_modules(49141).await;
     let config = AdminApiConfig {
         port: 49141,
         host: "127.0.0.1".to_string(),
@@ -349,11 +368,7 @@ async fn test_admin_api_delete_function() {
 async fn test_admin_api_invalid_function_path() {
     unsafe { std::env::set_var("III_ADMIN_TOKEN", "test-token-invalid"); }
 
-    let mut security = SecurityConfig::default();
-    security.url_allowlist = vec!["*".to_string()];
-    security.require_https = false;
-
-    let engine = Arc::new(Engine::new_with_security(security, None).unwrap());
+    let engine = setup_engine_with_modules(49142).await;
     let config = AdminApiConfig {
         port: 49142,
         host: "127.0.0.1".to_string(),

@@ -1,15 +1,12 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use reqwest::{Client, Method};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    function::Function,
     invocation::{
-        invoker::Invoker,
         method::{HttpAuth, HttpMethod},
         signature::sign_request,
         url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
@@ -133,19 +130,16 @@ impl HttpInvoker {
 
     pub async fn deliver_webhook(
         &self,
-        function: &Function,
+        function_path: &str,
+        url: &str,
+        method: &HttpMethod,
+        timeout_ms: &Option<u64>,
+        headers: &HashMap<String, String>,
+        auth: &Option<HttpAuth>,
         trigger_type: &str,
         trigger_id: &str,
         payload: Value,
     ) -> Result<(), ErrorBody> {
-        let Some((url, method, timeout_ms, headers, auth)) = function.invocation_method.as_http()
-        else {
-            return Err(ErrorBody {
-                code: "invalid_invocation_method".into(),
-                message: "Expected HTTP invocation method".into(),
-            });
-        };
-
         self.url_validator
             .validate(url)
             .await
@@ -175,7 +169,7 @@ impl HttpInvoker {
             method,
             timeout_ms,
             headers,
-            &function.function_path,
+            function_path,
             &invocation_id,
             timestamp,
             body.clone(),
@@ -206,22 +200,19 @@ impl HttpInvoker {
         Err(Self::parse_error_response(status, &bytes))
     }
 
-    async fn invoke_impl(
+    pub async fn invoke_http(
         &self,
-        function: &Function,
+        function_path: &str,
+        url: &str,
+        method: &HttpMethod,
+        timeout_ms: &Option<u64>,
+        headers: &HashMap<String, String>,
+        auth: &Option<HttpAuth>,
         invocation_id: Uuid,
         data: Value,
         caller_function: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<Option<Value>, ErrorBody> {
-        let Some((url, method, timeout_ms, headers, auth)) = function.invocation_method.as_http()
-        else {
-            return Err(ErrorBody {
-                code: "invalid_invocation_method".into(),
-                message: "Expected HTTP invocation method".into(),
-            });
-        };
-
         self.url_validator
             .validate(url)
             .await
@@ -248,7 +239,7 @@ impl HttpInvoker {
             method,
             timeout_ms,
             headers,
-            &function.function_path,
+            function_path,
             &invocation_id.to_string(),
             timestamp,
             body.clone(),
@@ -289,24 +280,8 @@ impl HttpInvoker {
     }
 }
 
-#[async_trait]
-impl Invoker for HttpInvoker {
-    fn method_type(&self) -> &'static str {
-        "http"
-    }
-
-    async fn invoke(
-        &self,
-        function: &Function,
-        invocation_id: Uuid,
-        data: Value,
-        caller_function: Option<&str>,
-        trace_id: Option<&str>,
-    ) -> Result<Option<Value>, ErrorBody> {
-        self.invoke_impl(function, invocation_id, data, caller_function, trace_id)
-            .await
-    }
-}
+// Invoker trait is no longer needed for the new design
+// HTTP functions use handler wrappers instead
 
 fn http_method_to_reqwest(method: &HttpMethod) -> Method {
     match method {

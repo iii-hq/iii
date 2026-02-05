@@ -156,28 +156,38 @@ impl CronAdapter {
                         }
                     }
 
-                    engine.http_trigger_registrator.deliver_to_matching_triggers(
-                        &engine.trigger_registry,
-                        "http_cron",
-                        |trigger| {
-                            trigger.config.get("cron_id")
-                                .and_then(|v| v.as_str())
-                                .map(|v| v == job_id)
-                                .unwrap_or(false)
-                        },
-                        |trigger| {
-                            json!({
-                                "trigger": {
-                                    "type": "cron",
-                                    "id": trigger.id,
-                                    "scheduled_at": next.to_rfc3339(),
-                                    "fired_at": chrono::Utc::now().to_rfc3339(),
-                                    "function_path": trigger.function_path,
-                                },
-                                "config": trigger.config,
-                            })
-                        },
-                    ).await;
+                    if let Some(http_module) = engine
+                        .service_registry
+                        .get_service::<crate::modules::http_functions::HttpFunctionsModule>("http_functions")
+                    {
+                        let http_trigger_registrator = crate::triggers::http_registrator::HttpTriggerRegistrator::new(
+                            http_module.http_invoker().clone(),
+                            engine.functions.clone(),
+                            http_module.kv_store().clone(),
+                        );
+                        http_trigger_registrator.deliver_to_matching_triggers(
+                            &engine.trigger_registry,
+                            "http_cron",
+                            |trigger| {
+                                trigger.config.get("cron_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|v| v == job_id)
+                                    .unwrap_or(false)
+                            },
+                            |trigger| {
+                                json!({
+                                    "trigger": {
+                                        "type": "cron",
+                                        "id": trigger.id,
+                                        "scheduled_at": next.to_rfc3339(),
+                                        "fired_at": chrono::Utc::now().to_rfc3339(),
+                                        "function_path": trigger.function_path,
+                                    },
+                                    "config": trigger.config,
+                                })
+                            },
+                        ).await;
+                    }
 
                     let _ = engine.invoke_function(&func_path, event_data).await;
 

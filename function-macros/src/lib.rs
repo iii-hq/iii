@@ -242,7 +242,6 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                     request_format: None,
                                     response_format: None,
                                     metadata: None,
-                                    worker_id: None,
                                 },
                                 #handler_ident,
                             );

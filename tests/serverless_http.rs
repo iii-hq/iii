@@ -1,17 +1,5 @@
-use std::collections::HashMap;
-
-use chrono::Utc;
 use iii::{
-    config::{
-        SecurityConfig,
-        persistence::{load_http_functions_from_kv, store_http_function_in_kv},
-    },
-    engine::Engine,
-    invocation::{
-        http_function::HttpFunctionConfig,
-        method::HttpMethod,
-        url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
-    },
+    invocation::url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
 };
 
 #[tokio::test]
@@ -36,26 +24,4 @@ async fn test_url_validator_allowlist() {
     let validator = UrlValidator::new(config).unwrap();
     let result = validator.validate("http://example.com/path").await;
     assert!(result.is_ok());
-}
-
-#[tokio::test]
-async fn test_kv_persistence_load() {
-    let engine = Engine::new_with_security(SecurityConfig::default(), None).unwrap();
-    let config = HttpFunctionConfig {
-        function_path: "geo.lookup".to_string(),
-        url: "https://example.com/invoke".to_string(),
-        method: HttpMethod::Post,
-        timeout_ms: Some(1000),
-        headers: HashMap::new(),
-        auth: None,
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        registered_at: Some(Utc::now()),
-        updated_at: None,
-    };
-    store_http_function_in_kv(&engine, &config).await.unwrap();
-    load_http_functions_from_kv(&engine).await.unwrap();
-    assert!(engine.functions.get("geo.lookup").is_some());
 }

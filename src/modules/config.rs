@@ -20,15 +20,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 
 use super::{module::Module, registry::ModuleRegistration};
-use crate::config::SecurityConfig;
-use crate::{
-    config::persistence::load_http_functions_from_kv,
-    engine::Engine,
-    invocation::http_function::HttpFunctionConfig,
-    triggers::http_trigger::HttpTriggerConfig,
-    trigger::TriggerType,
-    triggers::http_registrator::HttpTriggerRegistrator,
-};
+use crate::engine::Engine;
 
 // =============================================================================
 // Constants
@@ -52,12 +44,6 @@ pub struct EngineConfig {
     pub port: u16,
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
-    #[serde(default)]
-    pub http_functions: Vec<HttpFunctionConfig>,
-    #[serde(default)]
-    pub http_triggers: Vec<HttpTriggerConfig>,
-    #[serde(default)]
-    pub security: Option<SecurityConfig>,
 }
 
 impl EngineConfig {
@@ -67,9 +53,6 @@ impl EngineConfig {
         Self {
             port: DEFAULT_PORT,
             modules,
-            http_functions: Vec::new(),
-            http_triggers: Vec::new(),
-            security: None,
         }
     }
 
@@ -123,9 +106,6 @@ impl EngineConfig {
                 Ok(Self {
                     port: DEFAULT_PORT,
                     modules: default_module_entries(),
-                    http_functions: Vec::new(),
-                    http_triggers: Vec::new(),
-                    security: None,
                 })
             }
         }
@@ -361,9 +341,6 @@ impl EngineBuilder {
             self.config = Some(EngineConfig {
                 modules: Vec::new(),
                 port: DEFAULT_PORT,
-                http_functions: Vec::new(),
-                http_triggers: Vec::new(),
-                security: None,
             });
         }
 
@@ -380,50 +357,7 @@ impl EngineBuilder {
     pub async fn build(mut self) -> anyhow::Result<Self> {
         let config = self.config.take().expect("No module configs founded");
 
-        let security = config.security.clone().unwrap_or_default();
-        let kv_store_config = config
-            .modules
-            .iter()
-            .find(|entry| entry.class == "modules::kv_server::KvServer")
-            .and_then(|entry| entry.config.clone());
-        self.engine = Arc::new(Engine::new_with_security(security, kv_store_config)?);
-
-        for http_function in config.http_functions.clone() {
-            self.engine
-                .register_http_function_from_config(http_function)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.message))?;
-        }
-
-        load_http_functions_from_kv(&self.engine)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.message))?;
-
-        let http_trigger_registrator = HttpTriggerRegistrator::new(
-            self.engine.http_invoker.clone(),
-            self.engine.functions.clone(),
-        );
-        
-        self.engine.trigger_registry.register_trigger_type(TriggerType {
-            id: "http_cron".to_string(),
-            _description: "HTTP Cron Trigger".to_string(),
-            registrator: Box::new(http_trigger_registrator.clone()),
-            worker_id: None,
-        }).await?;
-        
-        self.engine.trigger_registry.register_trigger_type(TriggerType {
-            id: "http_event".to_string(),
-            _description: "HTTP Event Trigger".to_string(),
-            registrator: Box::new(http_trigger_registrator),
-            worker_id: None,
-        }).await?;
-
-        for http_trigger in config.http_triggers.clone() {
-            self.engine
-                .register_http_trigger_from_config(http_trigger)
-                .await
-                .map_err(|e| anyhow::anyhow!(e.message))?;
-        }
+        self.engine = Arc::new(Engine::new());
 
         tracing::info!("Building engine with {} modules", config.modules.len());
 

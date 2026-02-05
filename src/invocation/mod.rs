@@ -4,22 +4,18 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use opentelemetry::KeyValue;
 use serde_json::Value;
-use tokio::sync::{
-    RwLock,
-    oneshot::{self, error::RecvError},
-};
+use tokio::sync::oneshot::{self, error::RecvError};
 use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
-    invocation::invoker::Invoker,
     protocol::ErrorBody,
     telemetry::SpanExt,
 };
@@ -45,45 +41,14 @@ pub struct Invocation {
 
 type Invocations = Arc<DashMap<Uuid, Invocation>>;
 
-pub struct InvokerRegistry {
-    invokers: RwLock<HashMap<&'static str, Arc<dyn Invoker>>>,
-}
-
-impl InvokerRegistry {
-    pub fn new() -> Self {
-        Self {
-            invokers: RwLock::new(HashMap::new()),
-        }
-    }
-
-    pub fn new_with_http(http_invoker: Arc<http_invoker::HttpInvoker>) -> Self {
-        let mut invokers = HashMap::new();
-        invokers.insert("http", http_invoker as Arc<dyn Invoker>);
-        Self {
-            invokers: RwLock::new(invokers),
-        }
-    }
-
-    pub async fn register(&self, invoker: Arc<dyn Invoker>) {
-        let mut invokers = self.invokers.write().await;
-        invokers.insert(invoker.method_type(), invoker);
-    }
-
-    pub async fn get(&self, method_type: &str) -> Option<Arc<dyn Invoker>> {
-        let invokers = self.invokers.read().await;
-        invokers.get(method_type).cloned()
-    }
-}
-
+#[derive(Default)]
 pub struct InvocationHandler {
     invocations: Invocations,
-    registry: Arc<InvokerRegistry>,
 }
 impl InvocationHandler {
-    pub fn new(registry: Arc<InvokerRegistry>) -> Self {
+    pub fn new() -> Self {
         Self {
             invocations: Arc::new(DashMap::new()),
-            registry,
         }
     }
 
@@ -131,59 +96,20 @@ impl InvocationHandler {
         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
         async {
-            let (_sender, _receiver) = tokio::sync::oneshot::channel::<Result<Option<Value>, ErrorBody>>();
+            let (sender, receiver) = tokio::sync::oneshot::channel();
             let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
-        let method_type = function_handler.invocation_method.method_type();
+            let invocation = Invocation {
+                id: invocation_id,
+                function_path: function_path.clone(),
+                worker_id,
+                sender,
+                traceparent,
+                baggage,
+            };
 
-        if method_type == "websocket" {
-            return self
-                .handle_websocket_invocation(
-                    invocation_id,
-                    worker_id,
-                    function_path,
-                    body,
-                    function_handler,
-                )
-                .await;
-        }
-
-        if let Some(invoker) = self.registry.get(method_type).await {
-            let result = invoker
-                .invoke(&function_handler, invocation_id, body, None, None)
-                .await;
-            return Ok(result);
-        }
-
-        Ok(Err(ErrorBody {
-            code: "unsupported_invocation_method".into(),
-            message: format!("No invoker registered for: {}", method_type),
-        }))
-        }
-        .instrument(span)
-        .await
-    }
-
-    async fn handle_websocket_invocation(
-        &self,
-        invocation_id: Uuid,
-        worker_id: Option<Uuid>,
-        function_path: String,
-        body: Value,
-        function_handler: Function,
-    ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let invocation = Invocation {
-            id: invocation_id,
-            function_path: function_path.clone(),
-            worker_id,
-            sender,
-            traceparent: None,
-            baggage: None,
-        };
-
-        // Start timer for invocation duration
-        let start_time = std::time::Instant::now();
-        let metrics = get_engine_metrics();
+            // Start timer for invocation duration
+            let start_time = std::time::Instant::now();
+            let metrics = get_engine_metrics();
 
             let result = function_handler
                 .call_handler(Some(invocation_id), body)
@@ -315,6 +241,9 @@ impl InvocationHandler {
                 }
             }
 
-        receiver.await
+            receiver.await
+        }
+        .instrument(span)
+        .await
     }
 }

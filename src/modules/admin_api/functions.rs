@@ -12,14 +12,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    config::persistence::{delete_http_function_from_kv, store_http_function_in_kv},
     engine::Engine,
-    function::RegistrationSource,
     invocation::{
         auth::HttpAuthRef,
         http_function::HttpFunctionConfig,
-        method::{HttpAuth, HttpMethod, InvocationMethod},
+        method::HttpMethod,
     },
+    modules::http_functions::HttpFunctionsModule,
 };
 
 use super::middleware::auth_middleware;
@@ -73,6 +72,14 @@ pub async fn register_function(
     Extension(engine): Extension<Arc<Engine>>,
     Json(payload): Json<RegisterFunctionRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let http_module = engine
+        .service_registry
+        .get_service::<HttpFunctionsModule>("http_functions")
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HTTP functions module not loaded".to_string(),
+        ))?;
+
     // Validate function path
     validate_function_path(&payload.function_path)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
@@ -92,8 +99,8 @@ pub async fn register_function(
     validate_input_sizes(&payload)?;
 
     // Validate URL
-    engine
-        .http_invoker
+    http_module
+        .http_invoker()
         .url_validator()
         .validate(&payload.invocation.url)
         .await
@@ -120,15 +127,8 @@ pub async fn register_function(
         updated_at: None,
     };
 
-    store_http_function_in_kv(&engine, &kv_config)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
-
-    engine
-        .register_http_function_from_persistence(
-            kv_config,
-            RegistrationSource::AdminApi,
-        )
+    http_module
+        .persist_and_register(kv_config)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
@@ -144,14 +144,22 @@ pub async fn update_function(
     Path(function_path): Path<String>,
     Json(payload): Json<UpdateFunctionRequest>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    let http_module = engine
+        .service_registry
+        .get_service::<HttpFunctionsModule>("http_functions")
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HTTP functions module not loaded".to_string(),
+        ))?;
+
     engine
         .functions
         .get(&function_path)
         .ok_or((StatusCode::NOT_FOUND, "Function not found".to_string()))?;
 
     let index = format!("http_function:{}", function_path);
-    let value = engine
-        .kv_store
+    let value = http_module
+        .kv_store()
         .get(index.clone(), "config".to_string())
         .await
         .ok_or((StatusCode::NOT_FOUND, "KV config not found".to_string()))?;
@@ -172,8 +180,8 @@ pub async fn update_function(
     }
 
     if let Some(invocation) = payload.invocation {
-        engine
-            .http_invoker
+        http_module
+            .http_invoker()
             .url_validator()
             .validate(&invocation.url)
             .await
@@ -195,15 +203,8 @@ pub async fn update_function(
     // Set updated_at timestamp (don't modify registered_at)
     kv_config.updated_at = Some(Utc::now());
 
-    store_http_function_in_kv(&engine, &kv_config)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
-
-    engine
-        .register_http_function_from_persistence(
-            kv_config,
-            RegistrationSource::AdminApi,
-        )
+    http_module
+        .persist_and_register(kv_config)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
@@ -218,11 +219,19 @@ pub async fn unregister_function(
     Path(function_path): Path<String>,
     Extension(engine): Extension<Arc<Engine>>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    delete_http_function_from_kv(&engine, &function_path)
+    let http_module = engine
+        .service_registry
+        .get_service::<HttpFunctionsModule>("http_functions")
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HTTP functions module not loaded".to_string(),
+        ))?;
+
+    http_module
+        .unregister_http_function(&function_path)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
-    engine.functions.remove(&function_path);
     engine
         .service_registry
         .remove_function_from_services(&function_path);
@@ -233,31 +242,43 @@ pub async fn unregister_function(
 pub async fn list_functions(
     Extension(engine): Extension<Arc<Engine>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let functions: Vec<Value> = engine
-        .functions
-        .iter()
-        .map(|entry| {
-            let function = entry.value();
-            let mut func_json = json!({
-                "function_path": function.function_path,
-                "invocation_type": match &function.invocation_method {
-                    InvocationMethod::WebSocket { .. } => "websocket",
-                    InvocationMethod::Http { .. } => "http",
-                },
-                "registered_at": function.registered_at,
-                "registration_source": &function.registration_source,
-            });
+    let http_module = engine
+        .service_registry
+        .get_service::<HttpFunctionsModule>("http_functions")
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HTTP functions module not loaded".to_string(),
+        ))?;
 
-            if let Some(ref description) = function.description {
-                func_json["description"] = json!(description);
-            }
-            if let Some(ref metadata) = function.metadata {
-                func_json["metadata"] = json!(metadata);
-            }
+    let kv_store = http_module.kv_store();
+    let keys = kv_store.list_keys_with_prefix("http_function:".to_string()).await;
 
-            func_json
-        })
-        .collect();
+    let mut functions = Vec::new();
+    for key in keys {
+        if let Some(value) = kv_store.get(key.clone(), "config".to_string()).await {
+            if let Ok(config) = serde_json::from_value::<HttpFunctionConfig>(value) {
+                let mut func_json = json!({
+                    "function_path": config.function_path,
+                    "invocation_type": "http",
+                    "url": config.url,
+                    "method": format!("{:?}", config.method),
+                    "registered_at": config.registered_at,
+                });
+
+                if let Some(ref description) = config.description {
+                    func_json["description"] = json!(description);
+                }
+                if let Some(ref metadata) = config.metadata {
+                    func_json["metadata"] = json!(metadata);
+                }
+                if let Some(ref updated_at) = config.updated_at {
+                    func_json["updated_at"] = json!(updated_at);
+                }
+
+                functions.push(func_json);
+            }
+        }
+    }
 
     Ok(Json(json!({ "functions": functions })))
 }
@@ -266,62 +287,53 @@ pub async fn get_function(
     Extension(engine): Extension<Arc<Engine>>,
     Path(function_path): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let function = engine
+    let http_module = engine
+        .service_registry
+        .get_service::<HttpFunctionsModule>("http_functions")
+        .ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "HTTP functions module not loaded".to_string(),
+        ))?;
+
+    engine
         .functions
         .get(&function_path)
         .ok_or((StatusCode::NOT_FOUND, "Function not found".to_string()))?;
 
-    let (invocation_type, url, method, timeout_ms, headers, auth) = match &function.invocation_method {
-        InvocationMethod::Http { url, method, timeout_ms, headers, auth } => (
-            "http",
-            Some(url.as_str()),
-            Some(format!("{:?}", method)),
-            *timeout_ms,
-            Some(headers),
-            auth.as_ref(),
-        ),
-        InvocationMethod::WebSocket { .. } => ("websocket", None, None, None, None, None),
-    };
+    let index = format!("http_function:{}", function_path);
+    let value = http_module
+        .kv_store()
+        .get(index, "config".to_string())
+        .await
+        .ok_or((StatusCode::NOT_FOUND, "Function config not found in KV store".to_string()))?;
+    
+    let config: HttpFunctionConfig =
+        serde_json::from_value(value).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut response = json!({
-        "function_path": function.function_path,
-        "invocation_type": invocation_type,
-        "registered_at": function.registered_at,
-        "registration_source": &function.registration_source,
+        "function_path": config.function_path,
+        "invocation_type": "http",
+        "url": config.url,
+        "method": format!("{:?}", config.method),
+        "timeout_ms": config.timeout_ms,
+        "headers": config.headers,
+        "registered_at": config.registered_at,
     });
 
-    if let Some(url) = url {
-        response["url"] = json!(url);
-    }
-    if let Some(method) = method {
-        response["method"] = json!(method);
-    }
-    if let Some(timeout) = timeout_ms {
-        response["timeout_ms"] = json!(timeout);
-    }
-    if let Some(headers) = headers {
-        response["headers"] = json!(headers);
-    }
-    if let Some(auth) = auth {
-        response["auth"] = json!({
-            "type": match auth {
-                HttpAuth::Hmac { .. } => "hmac",
-                HttpAuth::Bearer { .. } => "bearer",
-                HttpAuth::ApiKey { .. } => "apikey",
-            }
-        });
-    }
-    if let Some(ref description) = function.description {
+    if let Some(ref description) = config.description {
         response["description"] = json!(description);
     }
-    if let Some(ref metadata) = function.metadata {
+    if let Some(ref metadata) = config.metadata {
         response["metadata"] = json!(metadata);
     }
-    if let Some(ref request_format) = function.request_format {
+    if let Some(ref request_format) = config.request_format {
         response["request_format"] = json!(request_format);
     }
-    if let Some(ref response_format) = function.response_format {
+    if let Some(ref response_format) = config.response_format {
         response["response_format"] = json!(response_format);
+    }
+    if let Some(ref updated_at) = config.updated_at {
+        response["updated_at"] = json!(updated_at);
     }
 
     Ok(Json(response))
