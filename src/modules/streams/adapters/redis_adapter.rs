@@ -434,10 +434,7 @@ impl StreamAdapter for RedisAdapter {
                         let stream_name = parts[1].to_string();
                         let group_id = parts[2].to_string();
 
-                        stream_map
-                            .entry(stream_name)
-                            .or_default()
-                            .insert(group_id);
+                        stream_map.entry(stream_name).or_default().insert(group_id);
                     }
                 }
 

@@ -137,20 +137,21 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
     async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
         use std::collections::{HashMap, HashSet};
 
-        let all_keys = self.storage.list_keys_with_prefix("".to_string()).await;
+        let all_keys = self
+            .storage
+            .list_keys_with_prefix("stream:".to_string())
+            .await;
         let mut stream_map: HashMap<String, HashSet<String>> = HashMap::new();
 
         // Parse keys to extract stream names and groups
         for key in all_keys {
             let parts: Vec<&str> = key.split(':').collect();
-            if parts.len() >= 2 {
-                let stream_name = parts[0].to_string();
-                let group_id = parts[1].to_string();
+            // Ensure key follows format "stream:<stream_name>:<group_id>"
+            if parts.len() >= 3 && parts[0] == "stream" {
+                let stream_name = parts[1].to_string();
+                let group_id = parts[2].to_string();
 
-                stream_map
-                    .entry(stream_name)
-                    .or_default()
-                    .insert(group_id);
+                stream_map.entry(stream_name).or_default().insert(group_id);
             }
         }
 

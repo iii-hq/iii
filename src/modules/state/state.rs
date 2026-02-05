@@ -366,8 +366,16 @@ impl StateCoreModule {
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         match self.adapter.list_groups().await {
             Ok(groups) => {
+                // Normalize: deduplicate and sort
+                let mut normalized_groups: Vec<String> = groups
+                    .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                normalized_groups.sort();
+
                 let result = serde_json::json!({
-                    "groups": groups
+                    "groups": normalized_groups
                 });
                 FunctionResult::Success(Some(result))
             }

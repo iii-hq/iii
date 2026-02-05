@@ -486,16 +486,9 @@ mod tests {
     async fn test_list_groups_redis() {
         let adapter = setup_test_adapter().await;
 
-        // Clean up first
-        let groups = adapter.list_groups().await.unwrap();
-        for group in groups {
-            let items = adapter.list(&group).await.unwrap();
-            for item in items {
-                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                    let _ = adapter.delete(&group, id).await;
-                }
-            }
-        }
+        // Clean up known test keys before running
+        let _ = adapter.delete("test_group1", "item1").await;
+        let _ = adapter.delete("test_group2", "item1").await;
 
         // Add test data
         adapter

@@ -142,17 +142,17 @@ impl StateAdapter for BridgeAdapter {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
 
-        let groups = value
-            .get("groups")
-            .and_then(|g| g.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Validate that the response contains a "groups" field that is an array
+        let groups_value = value.get("groups").ok_or_else(|| {
+            anyhow::anyhow!("invalid kv_server.list_groups response: missing 'groups' field")
+        })?;
 
-        Ok(groups)
+        serde_json::from_value::<Vec<String>>(groups_value.clone()).map_err(|e| {
+            anyhow::anyhow!(
+                "invalid kv_server.list_groups response: invalid 'groups' field: {}",
+                e
+            )
+        })
     }
 }
 
