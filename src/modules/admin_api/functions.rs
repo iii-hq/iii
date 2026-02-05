@@ -250,8 +250,8 @@ pub async fn list_functions(
 
     let mut functions = Vec::new();
     for key in keys {
-        if let Some(value) = kv_store.get(key.clone(), "config".to_string()).await {
-            if let Ok(config) = serde_json::from_value::<HttpFunctionConfig>(value) {
+        if let Some(value) = kv_store.get(key.clone(), "config".to_string()).await
+            && let Ok(config) = serde_json::from_value::<HttpFunctionConfig>(value) {
                 let mut func_json = json!({
                     "function_path": config.function_path,
                     "invocation_type": "http",
@@ -272,7 +272,6 @@ pub async fn list_functions(
 
                 functions.push(func_json);
             }
-        }
     }
 
     Ok(Json(json!({ "functions": functions })))
@@ -407,14 +406,13 @@ fn validate_auth_env_vars(auth_ref: &HttpAuthRef) -> Result<(), String> {
 
 /// Validates input sizes to prevent abuse and resource exhaustion.
 fn validate_input_sizes(payload: &RegisterFunctionRequest) -> Result<(), (StatusCode, String)> {
-    if let Some(ref desc) = payload.description {
-        if desc.len() > 2000 {
+    if let Some(ref desc) = payload.description
+        && desc.len() > 2000 {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "Description cannot exceed 2000 characters".to_string(),
             ));
         }
-    }
 
     if payload.invocation.headers.len() > 50 {
         return Err((

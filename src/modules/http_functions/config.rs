@@ -12,6 +12,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct HttpFunctionsConfig {
     #[serde(default)]
     pub functions: Vec<HttpFunctionConfig>,
@@ -21,12 +22,3 @@ pub struct HttpFunctionsConfig {
     pub security: SecurityConfig,
 }
 
-impl Default for HttpFunctionsConfig {
-    fn default() -> Self {
-        Self {
-            functions: Vec::new(),
-            triggers: Vec::new(),
-            security: SecurityConfig::default(),
-        }
-    }
-}
