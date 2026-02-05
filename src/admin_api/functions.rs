@@ -102,7 +102,6 @@ pub async fn register_function(
             .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     }
 
-    let registered_at = Utc::now();
     let kv_config = HttpFunctionConfig {
         function_path: payload.function_path.clone(),
         url: payload.invocation.url.clone(),
@@ -114,7 +113,7 @@ pub async fn register_function(
         request_format: payload.request_format.clone(),
         response_format: payload.response_format.clone(),
         metadata: payload.metadata.clone(),
-        registered_at: Some(registered_at),
+        registered_at: Some(Utc::now()),
         updated_at: None,
     };
 
@@ -124,17 +123,7 @@ pub async fn register_function(
 
     engine
         .register_http_function_from_persistence(
-            payload.function_path.clone(),
-            payload.invocation.url,
-            payload.invocation.method,
-            payload.invocation.timeout_ms,
-            payload.invocation.headers,
-            payload.invocation.auth,
-            payload.description,
-            payload.request_format,
-            payload.response_format,
-            payload.metadata,
-            registered_at,
+            kv_config,
             RegistrationSource::AdminApi,
         )
         .await
@@ -207,23 +196,13 @@ pub async fn update_function(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
-        engine
-            .register_http_function_from_persistence(
-                function_path.clone(),
-                kv_config.url,
-                kv_config.method,
-                kv_config.timeout_ms,
-                kv_config.headers,
-                kv_config.auth,
-                kv_config.description,
-                kv_config.request_format,
-                kv_config.response_format,
-                kv_config.metadata,
-                kv_config.registered_at.unwrap_or_else(Utc::now),
-                RegistrationSource::AdminApi,
-            )
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
+    engine
+        .register_http_function_from_persistence(
+            kv_config,
+            RegistrationSource::AdminApi,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?;
 
     Ok(Json(json!({
         "status": "updated",

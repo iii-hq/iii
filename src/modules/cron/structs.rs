@@ -156,41 +156,28 @@ impl CronAdapter {
                         }
                     }
 
-                    let http_triggers: Vec<crate::trigger::Trigger> = engine.trigger_registry.triggers
-                        .iter()
-                        .filter(|entry| {
-                            let trigger = entry.value();
-                            trigger.trigger_type == "http_cron" && 
+                    engine.http_trigger_registrator.deliver_to_matching_triggers(
+                        &engine.trigger_registry,
+                        "http_cron",
+                        |trigger| {
                             trigger.config.get("cron_id")
                                 .and_then(|v| v.as_str())
                                 .map(|v| v == job_id)
                                 .unwrap_or(false)
-                        })
-                        .map(|entry| entry.value().clone())
-                        .collect();
-                    
-                    for trigger in http_triggers {
-                        let http_invoker = engine.http_invoker.clone();
-                        let functions = engine.functions.clone();
-                        let trigger_id = trigger.id.clone();
-                        let function_path = trigger.function_path.clone();
-                        let config = trigger.config.clone();
-                        let payload = json!({
-                            "trigger": {
-                                "type": "cron",
-                                "id": trigger_id,
-                                "scheduled_at": next.to_rfc3339(),
-                                "fired_at": chrono::Utc::now().to_rfc3339(),
-                                "function_path": function_path,
-                            },
-                            "config": config,
-                        });
-                        tokio::spawn(async move {
-                            if let Some(function) = functions.get(&trigger.function_path) {
-                                let _ = http_invoker.deliver_webhook(&function, "cron", &trigger.id, payload).await;
-                            }
-                        });
-                    }
+                        },
+                        |trigger| {
+                            json!({
+                                "trigger": {
+                                    "type": "cron",
+                                    "id": trigger.id,
+                                    "scheduled_at": next.to_rfc3339(),
+                                    "fired_at": chrono::Utc::now().to_rfc3339(),
+                                    "function_path": trigger.function_path,
+                                },
+                                "config": trigger.config,
+                            })
+                        },
+                    ).await;
 
                     let _ = engine.invoke_function(&func_path, event_data).await;
 

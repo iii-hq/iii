@@ -26,6 +26,14 @@ impl InvocationMethod {
             InvocationMethod::Http { .. } => "http",
         }
     }
+
+    pub fn as_http(&self) -> Option<(&String, &HttpMethod, &Option<u64>, &HashMap<String, String>, &Option<HttpAuth>)> {
+        match self {
+            InvocationMethod::Http { url, method, timeout_ms, headers, auth } => 
+                Some((url, method, timeout_ms, headers, auth)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

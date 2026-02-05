@@ -58,47 +58,35 @@ impl EventCoreModule {
         tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
         let _ = adapter.emit(&topic, event_data.clone()).await;
 
-        let http_triggers: Vec<Trigger> = self.engine.trigger_registry.triggers
-            .iter()
-            .filter(|entry| {
-                let trigger = entry.value();
-                if trigger.trigger_type != "http_event" {
-                    return false;
-                }
+        let topic_for_filter = topic.clone();
+        let topic_for_payload = topic.clone();
+        let event_data_for_payload = event_data.clone();
+        
+        self.engine.http_trigger_registrator.deliver_to_matching_triggers(
+            &self.engine.trigger_registry,
+            "http_event",
+            move |trigger| {
                 trigger.config
                     .get("topic")
                     .and_then(|v| v.as_str())
-                    .map(|value| value == topic)
+                    .map(|value| value == topic_for_filter)
                     .unwrap_or(false)
-            })
-            .map(|entry| entry.value().clone())
-            .collect();
-        
-        for trigger in http_triggers {
-            let http_invoker = self.engine.http_invoker.clone();
-            let functions = self.engine.functions.clone();
-            let trigger_id = trigger.id.clone();
-            let function_path = trigger.function_path.clone();
-            let topic_value = topic.clone();
-            let event_value = event_data.clone();
-            let payload = json!({
-                "trigger": {
-                    "type": "event",
-                    "id": trigger_id,
-                    "topic": topic_value.clone(),
-                    "function_path": function_path,
-                },
-                "event": {
-                    "topic": topic_value,
-                    "data": event_value,
-                }
-            });
-            tokio::spawn(async move {
-                if let Some(function) = functions.get(&trigger.function_path) {
-                    let _ = http_invoker.deliver_webhook(&function, "event", &trigger.id, payload).await;
-                }
-            });
-        }
+            },
+            move |trigger| {
+                json!({
+                    "trigger": {
+                        "type": "event",
+                        "id": trigger.id,
+                        "topic": topic_for_payload.clone(),
+                        "function_path": trigger.function_path,
+                    },
+                    "event": {
+                        "topic": topic_for_payload.clone(),
+                        "data": event_data_for_payload.clone(),
+                    }
+                })
+            },
+        ).await;
 
         FunctionResult::Success(None)
     }

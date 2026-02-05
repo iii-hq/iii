@@ -7,7 +7,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
@@ -23,7 +23,7 @@ use crate::{
         InvocationHandler, InvokerRegistry,
         http_invoker::{HttpInvoker, HttpInvokerConfig},
         invoker::Invoker,
-        method::{HttpMethod, InvocationMethod},
+        method::InvocationMethod,
         url_validator::UrlValidatorConfig,
     },
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
@@ -155,6 +155,7 @@ pub struct Engine {
     pub invocations: Arc<InvocationHandler>,
     pub invoker_registry: Arc<InvokerRegistry>,
     pub http_invoker: Arc<HttpInvoker>,
+    pub http_trigger_registrator: Arc<crate::triggers::http_registrator::HttpTriggerRegistrator>,
     pub kv_store: Arc<BuiltinKvStore>,
 }
 
@@ -188,14 +189,21 @@ impl Engine {
         let invoker_registry = InvokerRegistry::new_with_http(http_invoker.clone());
         let invoker_registry = Arc::new(invoker_registry);
 
+        let functions = Arc::new(FunctionsRegistry::new());
+        let http_trigger_registrator = Arc::new(crate::triggers::http_registrator::HttpTriggerRegistrator::new(
+            http_invoker.clone(),
+            functions.clone(),
+        ));
+
         Ok(Self {
             worker_registry: Arc::new(WorkerRegistry::new()),
-            functions: Arc::new(FunctionsRegistry::new()),
+            functions,
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new(invoker_registry.clone())),
             invoker_registry,
             http_invoker,
+            http_trigger_registrator,
             kv_store,
         })
     }
@@ -256,48 +264,38 @@ impl Engine {
     /// This eliminates code duplication between Admin API and persistence loading.
     pub async fn register_http_function_from_persistence(
         &self,
-        function_path: String,
-        url: String,
-        method: HttpMethod,
-        timeout_ms: Option<u64>,
-        headers: std::collections::HashMap<String, String>,
-        auth_ref: Option<crate::config::persistence::HttpAuthRef>,
-        description: Option<String>,
-        request_format: Option<Value>,
-        response_format: Option<Value>,
-        metadata: Option<Value>,
-        registered_at: DateTime<Utc>,
+        config: HttpFunctionConfig,
         registration_source: RegistrationSource,
     ) -> Result<(), ErrorBody> {
-        let auth = auth_ref
+        let auth = config.auth
             .as_ref()
             .map(resolve_auth_ref)
             .transpose()?;
 
         let invocation_method = InvocationMethod::Http {
-            url,
-            method,
-            timeout_ms,
-            headers,
+            url: config.url,
+            method: config.method,
+            timeout_ms: config.timeout_ms,
+            headers: config.headers,
             auth,
         };
 
         let function = Function {
-            function_path: function_path.clone(),
-            description,
-            request_format,
-            response_format,
-            metadata,
+            function_path: config.function_path.clone(),
+            description: config.description,
+            request_format: config.request_format,
+            response_format: config.response_format,
+            metadata: config.metadata,
             invocation_method,
-            registered_at,
+            registered_at: config.registered_at.unwrap_or_else(Utc::now),
             registration_source,
             handler: None,
         };
 
         self.service_registry
-            .register_service_from_func_path(&function_path);
+            .register_service_from_func_path(&config.function_path);
         self.functions
-            .register_function(function_path, function);
+            .register_function(config.function_path, function);
 
         Ok(())
     }

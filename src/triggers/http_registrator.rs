@@ -7,7 +7,7 @@ use crate::{
     function::FunctionsRegistry,
     invocation::http_invoker::HttpInvoker,
     protocol::ErrorBody,
-    trigger::{Trigger, TriggerRegistrator},
+    trigger::{Trigger, TriggerRegistrator, TriggerRegistry},
 };
 
 #[derive(Clone)]
@@ -34,6 +34,39 @@ impl HttpTriggerRegistrator {
         self.http_invoker
             .deliver_webhook(&function, &trigger.trigger_type, &trigger.id, payload)
             .await
+    }
+
+    pub async fn deliver_to_matching_triggers<F, P>(
+        &self,
+        trigger_registry: &TriggerRegistry,
+        trigger_type: &str,
+        filter: F,
+        payload_builder: P,
+    )
+    where
+        F: Fn(&Trigger) -> bool,
+        P: Fn(&Trigger) -> Value,
+    {
+        let triggers: Vec<Trigger> = trigger_registry.triggers
+            .iter()
+            .filter(|entry| {
+                let trigger = entry.value();
+                trigger.trigger_type == trigger_type && filter(trigger)
+            })
+            .map(|entry| entry.value().clone())
+            .collect();
+
+        for trigger in triggers {
+            let http_invoker = self.http_invoker.clone();
+            let functions = self.functions.clone();
+            let payload = payload_builder(&trigger);
+            
+            tokio::spawn(async move {
+                if let Some(function) = functions.get(&trigger.function_path) {
+                    let _ = http_invoker.deliver_webhook(&function, &trigger.trigger_type, &trigger.id, payload).await;
+                }
+            });
+        }
     }
 }
 

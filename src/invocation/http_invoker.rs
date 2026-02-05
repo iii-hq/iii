@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -9,7 +10,7 @@ use crate::{
     function::Function,
     invocation::{
         invoker::Invoker,
-        method::{HttpAuth, HttpMethod, InvocationMethod},
+        method::{HttpAuth, HttpMethod},
         signature::sign_request,
         url_validator::{SecurityError, UrlValidator, UrlValidatorConfig},
     },
@@ -59,6 +60,77 @@ impl HttpInvoker {
         &self.url_validator
     }
 
+    fn build_base_request(
+        &self,
+        url: &str,
+        method: &HttpMethod,
+        timeout_ms: &Option<u64>,
+        headers: &HashMap<String, String>,
+        function_path: &str,
+        invocation_id: &str,
+        timestamp: u64,
+        body: Vec<u8>,
+    ) -> reqwest::RequestBuilder {
+        let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
+        
+        let mut request = self
+            .client
+            .request(http_method_to_reqwest(method), url)
+            .timeout(Duration::from_millis(timeout))
+            .header("Content-Type", "application/json")
+            .header("x-iii-Function-Path", function_path)
+            .header("x-iii-Invocation-ID", invocation_id)
+            .header("x-iii-Timestamp", timestamp.to_string());
+
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+
+        request.body(body)
+    }
+
+    fn apply_auth(
+        &self,
+        request: reqwest::RequestBuilder,
+        auth: &Option<HttpAuth>,
+        body: &[u8],
+        timestamp: u64,
+    ) -> reqwest::RequestBuilder {
+        match auth {
+            Some(HttpAuth::Hmac { secret }) => {
+                let signature = sign_request(body, secret, timestamp);
+                request.header("x-iii-Signature", signature)
+            }
+            Some(HttpAuth::Bearer { token }) => request.bearer_auth(token),
+            Some(HttpAuth::ApiKey { header, value }) => request.header(header, value),
+            None => request,
+        }
+    }
+
+    fn parse_error_response(status: reqwest::StatusCode, bytes: &[u8]) -> ErrorBody {
+        let error_json: Option<Value> = serde_json::from_slice(bytes).ok();
+        if let Some(error_json) = error_json {
+            if let Some(error_obj) = error_json.get("error") {
+                let code = error_obj
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http_error")
+                    .to_string();
+                let message = error_obj
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("HTTP request failed")
+                    .to_string();
+                return ErrorBody { code, message };
+            }
+        }
+
+        ErrorBody {
+            code: "http_error".into(),
+            message: format!("HTTP {}", status),
+        }
+    }
+
     pub async fn deliver_webhook(
         &self,
         function: &Function,
@@ -66,13 +138,7 @@ impl HttpInvoker {
         trigger_id: &str,
         payload: Value,
     ) -> Result<(), ErrorBody> {
-        let InvocationMethod::Http {
-            url,
-            method,
-            timeout_ms,
-            headers,
-            auth,
-        } = &function.invocation_method
+        let Some((url, method, timeout_ms, headers, auth)) = function.invocation_method.as_http()
         else {
             return Err(ErrorBody {
                 code: "invalid_invocation_method".into(),
@@ -101,37 +167,28 @@ impl HttpInvoker {
             message: err.to_string(),
         })?;
 
-        let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
         let invocation_id = Uuid::new_v4().to_string();
         let trace_id_value = format!("trace-{}", Uuid::new_v4());
 
-        let mut request = self
-            .client
-            .request(http_method_to_reqwest(method), url)
-            .timeout(Duration::from_millis(timeout))
-            .header("Content-Type", "application/json")
-            .header("x-iii-Function-Path", &function.function_path)
-            .header("x-iii-Invocation-ID", &invocation_id)
-            .header("x-iii-Timestamp", timestamp.to_string())
+        let mut request = self.build_base_request(
+            url,
+            method,
+            timeout_ms,
+            headers,
+            &function.function_path,
+            &invocation_id,
+            timestamp,
+            body.clone(),
+        );
+
+        request = request
             .header("x-iii-Trace-ID", &trace_id_value)
             .header("x-iii-Trigger-Type", trigger_type)
             .header("x-iii-Trigger-ID", trigger_id);
 
-        for (key, value) in headers {
-            request = request.header(key, value);
-        }
+        request = self.apply_auth(request, auth, &body, timestamp);
 
-        request = match auth {
-            Some(HttpAuth::Hmac { secret }) => {
-                let signature = sign_request(&body, secret, timestamp);
-                request.header("x-iii-Signature", signature)
-            }
-            Some(HttpAuth::Bearer { token }) => request.bearer_auth(token),
-            Some(HttpAuth::ApiKey { header, value }) => request.header(header, value),
-            None => request,
-        };
-
-        let response = request.body(body).send().await.map_err(|err| ErrorBody {
+        let response = request.send().await.map_err(|err| ErrorBody {
             code: "http_request_failed".into(),
             message: err.to_string(),
         })?;
@@ -146,27 +203,7 @@ impl HttpInvoker {
             message: err.to_string(),
         })?;
 
-        let error_json: Option<Value> = serde_json::from_slice(&bytes).ok();
-        if let Some(error_json) = error_json {
-            if let Some(error_obj) = error_json.get("error") {
-                let code = error_obj
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("http_error")
-                    .to_string();
-                let message = error_obj
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("HTTP request failed")
-                    .to_string();
-                return Err(ErrorBody { code, message });
-            }
-        }
-
-        Err(ErrorBody {
-            code: "http_error".into(),
-            message: format!("HTTP {}", status),
-        })
+        Err(Self::parse_error_response(status, &bytes))
     }
 
     async fn invoke_impl(
@@ -177,13 +214,7 @@ impl HttpInvoker {
         caller_function: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<Option<Value>, ErrorBody> {
-        let InvocationMethod::Http {
-            url,
-            method,
-            timeout_ms,
-            headers,
-            auth,
-        } = &function.invocation_method
+        let Some((url, method, timeout_ms, headers, auth)) = function.invocation_method.as_http()
         else {
             return Err(ErrorBody {
                 code: "invalid_invocation_method".into(),
@@ -212,20 +243,16 @@ impl HttpInvoker {
             message: err.to_string(),
         })?;
 
-        let timeout = timeout_ms.unwrap_or(self.default_timeout_ms);
-
-        let mut request = self
-            .client
-            .request(http_method_to_reqwest(method), url)
-            .timeout(Duration::from_millis(timeout))
-            .header("Content-Type", "application/json")
-            .header("x-iii-Function-Path", &function.function_path)
-            .header("x-iii-Invocation-ID", invocation_id.to_string())
-            .header("x-iii-Timestamp", timestamp.to_string());
-
-        for (key, value) in headers {
-            request = request.header(key, value);
-        }
+        let mut request = self.build_base_request(
+            url,
+            method,
+            timeout_ms,
+            headers,
+            &function.function_path,
+            &invocation_id.to_string(),
+            timestamp,
+            body.clone(),
+        );
 
         if let Some(caller) = caller_function {
             request = request.header("x-iii-Caller-Function", caller);
@@ -234,17 +261,9 @@ impl HttpInvoker {
             request = request.header("x-iii-Trace-ID", trace);
         }
 
-        request = match auth {
-            Some(HttpAuth::Hmac { secret }) => {
-                let signature = sign_request(&body, secret, timestamp);
-                request.header("x-iii-Signature", signature)
-            }
-            Some(HttpAuth::Bearer { token }) => request.bearer_auth(token),
-            Some(HttpAuth::ApiKey { header, value }) => request.header(header, value),
-            None => request,
-        };
+        request = self.apply_auth(request, auth, &body, timestamp);
 
-        let response = request.body(body).send().await.map_err(|err| ErrorBody {
+        let response = request.send().await.map_err(|err| ErrorBody {
             code: "http_request_failed".into(),
             message: err.to_string(),
         })?;
@@ -266,27 +285,7 @@ impl HttpInvoker {
             return Ok(Some(result));
         }
 
-        let error_json: Option<Value> = serde_json::from_slice(&bytes).ok();
-        if let Some(error_json) = error_json {
-            if let Some(error_obj) = error_json.get("error") {
-                let code = error_obj
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("http_error")
-                    .to_string();
-                let message = error_obj
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("HTTP request failed")
-                    .to_string();
-                return Err(ErrorBody { code, message });
-            }
-        }
-
-        Err(ErrorBody {
-            code: "http_error".into(),
-            message: format!("HTTP {}", status),
-        })
+        Err(Self::parse_error_response(status, &bytes))
     }
 }
 

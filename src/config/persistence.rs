@@ -1,4 +1,3 @@
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -47,17 +46,7 @@ pub async fn load_http_functions_from_kv(engine: &Engine) -> Result<(), ErrorBod
 
         engine
             .register_http_function_from_persistence(
-                config.function_path,
-                config.url,
-                config.method,
-                config.timeout_ms,
-                config.headers,
-                config.auth,
-                config.description,
-                config.request_format,
-                config.response_format,
-                config.metadata,
-                config.registered_at.unwrap_or_else(Utc::now),
+                config,
                 RegistrationSource::AdminApi,
             )
             .await?;
