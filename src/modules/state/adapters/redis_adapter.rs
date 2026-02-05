@@ -498,8 +498,14 @@ mod tests {
         }
 
         // Add test data
-        adapter.set("test_group1", "item1", json!({"value": 1})).await.unwrap();
-        adapter.set("test_group2", "item1", json!({"value": 2})).await.unwrap();
+        adapter
+            .set("test_group1", "item1", json!({"value": 1}))
+            .await
+            .unwrap();
+        adapter
+            .set("test_group2", "item1", json!({"value": 2}))
+            .await
+            .unwrap();
 
         let mut groups = adapter.list_groups().await.unwrap();
         groups.sort();

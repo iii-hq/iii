@@ -360,7 +360,10 @@ impl StateCoreModule {
     }
 
     #[function(name = "state.list_groups", description = "List all state groups")]
-    pub async fn list_groups(&self, _input: StateListGroupsInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn list_groups(
+        &self,
+        _input: StateListGroupsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
         match self.adapter.list_groups().await {
             Ok(groups) => {
                 let result = serde_json::json!({

@@ -201,9 +201,18 @@ mod tests {
     async fn test_list_groups_multiple() {
         let adapter = BuiltinKvStoreAdapter::new(None);
 
-        adapter.set("group1", "item1", serde_json::json!({"test": 1})).await.unwrap();
-        adapter.set("group2", "item1", serde_json::json!({"test": 2})).await.unwrap();
-        adapter.set("group3", "item1", serde_json::json!({"test": 3})).await.unwrap();
+        adapter
+            .set("group1", "item1", serde_json::json!({"test": 1}))
+            .await
+            .unwrap();
+        adapter
+            .set("group2", "item1", serde_json::json!({"test": 2}))
+            .await
+            .unwrap();
+        adapter
+            .set("group3", "item1", serde_json::json!({"test": 3}))
+            .await
+            .unwrap();
 
         let mut groups = adapter.list_groups().await.unwrap();
         groups.sort();
