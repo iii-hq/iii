@@ -14,7 +14,7 @@ fn default_redis_url() -> String {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct EventModuleConfig {
+pub struct QueueModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
