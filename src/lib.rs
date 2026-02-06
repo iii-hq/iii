@@ -19,7 +19,7 @@ pub mod modules {
     pub mod bridge_client;
     pub mod config;
     pub mod cron;
-    pub mod event;
+    pub mod queue;
     pub mod kv_server;
     pub mod module;
     pub mod observability;
@@ -34,6 +34,6 @@ pub mod modules {
 }
 
 // Re-export commonly used types
-pub use modules::{config::EngineBuilder, event::EventAdapter};
+pub use modules::{config::EngineBuilder, queue::QueueAdapter};
 
 // todo: create a prelude module for commonly used traits and types
