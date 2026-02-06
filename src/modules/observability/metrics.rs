@@ -113,6 +113,26 @@ impl Default for MetricsConfig {
     }
 }
 
+/// Ensure GLOBAL_METER is initialized with at least a noop meter.
+/// This is safe to call multiple times — subsequent calls are no-ops.
+/// If OtelModule later calls `init_metrics()`, it will find the meter already set
+/// and log "Global meter already initialized".
+pub fn ensure_default_meter() {
+    if GLOBAL_METER.get().is_some() {
+        return;
+    }
+
+    // Initialize metric storage with defaults (needed for SDK metrics ingestion)
+    init_metric_storage(None, None);
+
+    let provider = SdkMeterProvider::builder().build();
+    let meter = provider.meter("iii-engine");
+    global::set_meter_provider(provider);
+    if GLOBAL_METER.set(meter).is_err() {
+        tracing::debug!("Global meter already initialized by another thread");
+    }
+}
+
 /// Initialize OpenTelemetry metrics with the given configuration.
 ///
 /// Returns true if metrics were successfully initialized, false otherwise.
@@ -1740,5 +1760,29 @@ pub fn get_rollup_storage() -> Option<Arc<RollupStorage>> {
 pub fn process_metrics_for_rollups(metrics: &[StoredMetric]) {
     if let Some(storage) = get_rollup_storage() {
         storage.process_metrics(metrics);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_default_meter_makes_get_meter_available() {
+        // After calling ensure_default_meter, get_meter() should return Some
+        ensure_default_meter();
+        assert!(
+            get_meter().is_some(),
+            "get_meter() should return Some after ensure_default_meter()"
+        );
+    }
+
+    #[test]
+    fn test_get_engine_metrics_does_not_panic_after_ensure_default_meter() {
+        ensure_default_meter();
+        // This should NOT panic
+        let metrics = get_engine_metrics();
+        // Verify we can use the metrics (they should be functional noop counters)
+        metrics.invocations_total.add(1, &[]);
     }
 }

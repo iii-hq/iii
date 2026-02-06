@@ -4,17 +4,12 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use serde::Deserialize;
+use crate::modules::{
+    queue::QueueAdapter,
+    registry::{AdapterFuture, AdapterRegistration},
+};
 
-use crate::modules::module::AdapterEntry;
-#[allow(dead_code)] // this is used as default value
-fn default_redis_url() -> String {
-    "redis://localhost:6379".to_string()
-}
+pub type QueueAdapterFuture = AdapterFuture<dyn QueueAdapter>;
+pub type QueueAdapterRegistration = AdapterRegistration<dyn QueueAdapter>;
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct EventModuleConfig {
-    #[serde(default)]
-    pub adapter: Option<AdapterEntry>,
-}
+inventory::collect!(QueueAdapterRegistration);

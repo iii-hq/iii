@@ -7,18 +7,18 @@
 pub mod adapters;
 mod config;
 #[allow(clippy::module_inception)]
-mod event;
+mod queue;
 pub mod registry;
 mod subscriber_config;
 
 use serde_json::Value;
 
-pub use self::event::EventCoreModule;
+pub use self::queue::QueueCoreModule;
 pub use self::subscriber_config::SubscriberQueueConfig;
 
 #[async_trait::async_trait]
-pub trait EventAdapter: Send + Sync + 'static {
-    async fn emit(&self, topic: &str, event_data: Value);
+pub trait QueueAdapter: Send + Sync + 'static {
+    async fn enqueue(&self, topic: &str, data: Value);
     async fn subscribe(
         &self,
         topic: &str,

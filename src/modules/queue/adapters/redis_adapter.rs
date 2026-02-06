@@ -19,9 +19,9 @@ use tokio::{
 use crate::{
     engine::{Engine, EngineTrait},
     modules::{
-        event::{
-            EventAdapter, SubscriberQueueConfig,
-            registry::{EventAdapterFuture, EventAdapterRegistration},
+        queue::{
+            QueueAdapter, SubscriberQueueConfig,
+            registry::{QueueAdapterFuture, QueueAdapterRegistration},
         },
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
     },
@@ -71,7 +71,7 @@ impl RedisAdapter {
     }
 }
 
-fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFuture {
     Box::pin(async move {
         let redis_url = config
             .as_ref()
@@ -79,36 +79,36 @@ fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFutur
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "redis://localhost:6379".to_string());
-        Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?) as Arc<dyn EventAdapter>)
+        Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?) as Arc<dyn QueueAdapter>)
     })
 }
 
-crate::register_adapter!(<EventAdapterRegistration> "modules::event::RedisAdapter", make_adapter);
+crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RedisAdapter", make_adapter);
 
 #[async_trait]
-impl EventAdapter for RedisAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
+impl QueueAdapter for RedisAdapter {
+    async fn enqueue(&self, topic: &str, data: Value) {
         let topic = topic.to_string();
-        let event_data = event_data.clone();
+        let data = data.clone();
         let publisher = Arc::clone(&self.publisher);
 
-        tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event to Redis");
+        tracing::debug!(topic = %topic, data = %data, "Publishing to Redis queue");
 
-        let event_json = match serde_json::to_string(&event_data) {
+        let json = match serde_json::to_string(&data) {
             Ok(json) => json,
             Err(e) => {
-                tracing::error!(error = %e, topic = %topic, "Failed to serialize event data");
+                tracing::error!(error = %e, topic = %topic, "Failed to serialize queue data");
                 return;
             }
         };
 
         let mut conn = publisher.lock().await;
 
-        if let Err(e) = conn.publish::<_, _, ()>(&topic, &event_json).await {
-            tracing::error!(error = %e, topic = %topic, "Failed to publish event to Redis");
+        if let Err(e) = conn.publish::<_, _, ()>(&topic, &json).await {
+            tracing::error!(error = %e, topic = %topic, "Failed to publish to Redis queue");
             return;
         } else {
-            tracing::debug!(topic = %topic, "Event published to Redis");
+            tracing::debug!(topic = %topic, "Published to Redis queue");
         }
     }
 
@@ -181,7 +181,7 @@ impl EventAdapter for RedisAdapter {
 
                 tracing::debug!(payload = %payload, "Received message from Redis");
 
-                let event_data: Value = match serde_json::from_str(&payload) {
+                let data: Value = match serde_json::from_str(&payload) {
                     Ok(data) => data,
                     Err(e) => {
                         tracing::error!(error = %e, topic = %topic_for_task, "Failed to parse message as JSON");
@@ -189,7 +189,7 @@ impl EventAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, "Received event from Redis, invoking function");
+                tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, "Received message from Redis queue, invoking function");
 
                 let engine = Arc::clone(&engine);
                 let function_id = function_id_for_task.clone();
@@ -201,7 +201,7 @@ impl EventAdapter for RedisAdapter {
                     );
 
                     match engine
-                        .invoke_function(condition_function_id, event_data.clone())
+                        .invoke_function(condition_function_id, data.clone())
                         .await
                     {
                         Ok(Some(result)) => {
@@ -234,7 +234,7 @@ impl EventAdapter for RedisAdapter {
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_id, event_data).await;
+                    let _ = engine.invoke_function(&function_id, data).await;
                 });
             }
 
