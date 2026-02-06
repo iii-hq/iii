@@ -79,7 +79,7 @@ impl Module for BridgeClientModule {
             .url
             .clone()
             .or_else(|| std::env::var("III_BRIDGE_URL").ok())
-            .unwrap_or_else(|| "ws://127.0.0.1:49134".to_string());
+            .unwrap_or_else(|| "ws://0.0.0.0:49134".to_string());
 
         let bridge = Bridge::new(&url);
 

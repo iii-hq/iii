@@ -180,7 +180,7 @@ impl ConfigurableModule for EventCoreModule {
     type Config = EventModuleConfig;
     type Adapter = dyn EventAdapter;
     type AdapterRegistration = super::registry::EventAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::event::RedisAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::event::BuiltinQueueAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn EventAdapter>>>> =

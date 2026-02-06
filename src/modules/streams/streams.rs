@@ -218,7 +218,7 @@ impl ConfigurableModule for StreamCoreModule {
     type Config = StreamModuleConfig;
     type Adapter = dyn StreamAdapter;
     type AdapterRegistration = super::registry::StreamAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::streams::adapters::RedisAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::streams::adapters::KvStore";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
