@@ -188,9 +188,7 @@ mod tests {
         let message = msg.to_message();
         match &message {
             Message::RegisterFunction {
-                id,
-                description,
-                ..
+                id, description, ..
             } => {
                 assert_eq!(id, "functions.echo");
                 assert_eq!(description.as_deref(), Some("Echo function"));
