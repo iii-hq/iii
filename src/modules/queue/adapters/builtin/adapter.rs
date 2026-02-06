@@ -21,9 +21,9 @@ use crate::{
         queue_kv::QueueKvStore,
     },
     engine::{Engine, EngineTrait},
-    modules::event::{
-        EventAdapter, SubscriberQueueConfig,
-        registry::{EventAdapterFuture, EventAdapterRegistration},
+    modules::queue::{
+        QueueAdapter, SubscriberQueueConfig,
+        registry::{QueueAdapterFuture, QueueAdapterRegistration},
     },
 };
 
@@ -78,7 +78,7 @@ impl Clone for BuiltinQueueAdapter {
     }
 }
 
-pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFuture {
     Box::pin(async move {
         let queue_config = QueueConfig::from_value(config.as_ref());
 
@@ -97,14 +97,14 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterF
             tracing::error!(error = ?e, "Failed to rebuild queue state from storage");
         }
 
-        Ok(adapter as Arc<dyn EventAdapter>)
+        Ok(adapter as Arc<dyn QueueAdapter>)
     })
 }
 
 #[async_trait]
-impl EventAdapter for BuiltinQueueAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
-        self.queue.push(topic, event_data).await;
+impl QueueAdapter for BuiltinQueueAdapter {
+    async fn emit(&self, topic: &str, data: Value) {
+        self.queue.push(topic, data).await;
     }
 
     async fn subscribe(
@@ -163,8 +163,8 @@ impl EventAdapter for BuiltinQueueAdapter {
 }
 
 crate::register_adapter!(
-    <EventAdapterRegistration>
-    "modules::event::BuiltinQueueAdapter",
+    <QueueAdapterRegistration>
+    "modules::queue::BuiltinQueueAdapter",
     make_adapter
 );
 
@@ -172,7 +172,7 @@ crate::register_adapter!(
 mod tests {
     use super::*;
     use crate::builtins::queue::QueueMode;
-    use crate::modules::event::SubscriberQueueConfig;
+    use crate::modules::queue::SubscriberQueueConfig;
 
     #[test]
     fn test_subscriber_queue_config_mode_mapping_fifo() {
