@@ -4,18 +4,34 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{any::Any, collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
 #[derive(Default)]
 pub struct ServicesRegistry {
     pub services: Arc<DashMap<String, Service>>,
+    module_services: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 impl ServicesRegistry {
     pub fn new() -> Self {
         ServicesRegistry {
             services: Arc::new(DashMap::new()),
+            module_services: Arc::new(DashMap::new()),
         }
+    }
+
+    pub fn register_service<T: Send + Sync + 'static>(&self, name: &str, service: Arc<T>) {
+        self.module_services
+            .insert(name.to_string(), service as Arc<dyn Any + Send + Sync>);
+    }
+
+    pub fn get_service<T: Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        self.module_services
+            .get(name)?
+            .value()
+            .clone()
+            .downcast::<T>()
+            .ok()
     }
 
     pub fn remove_function_from_services(&self, func_path: &str) {

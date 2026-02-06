@@ -16,7 +16,7 @@ use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{EventAdapter, SubscriberQueueConfig, config::EventModuleConfig};
 use crate::{
@@ -56,7 +56,37 @@ impl EventCoreModule {
         }
 
         tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-        let _ = adapter.emit(&topic, event_data).await;
+        let _ = adapter.emit(&topic, event_data.clone()).await;
+
+        let topic_for_filter = topic.clone();
+        let topic_for_payload = topic.clone();
+        let event_data_for_payload = event_data.clone();
+
+        crate::triggers::http_registrator::HttpTriggerRegistrator::dispatch_http_triggers_from_engine(
+            &self.engine,
+            "http_event",
+            move |trigger| {
+                trigger.config
+                    .get("topic")
+                    .and_then(|v| v.as_str())
+                    .map(|value| value == topic_for_filter)
+                    .unwrap_or(false)
+            },
+            move |trigger| {
+                json!({
+                    "trigger": {
+                        "type": "event",
+                        "id": trigger.id,
+                        "topic": topic_for_payload.clone(),
+                        "function_path": trigger.function_path,
+                    },
+                    "event": {
+                        "topic": topic_for_payload.clone(),
+                        "data": event_data_for_payload.clone(),
+                    }
+                })
+            },
+        ).await;
 
         FunctionResult::Success(None)
     }

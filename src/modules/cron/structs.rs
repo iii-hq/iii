@@ -9,6 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use colored::Colorize;
 use cron::Schedule;
+use serde_json::json;
 use tokio::{task::JoinHandle, time::sleep};
 
 use crate::engine::{Engine, EngineTrait};
@@ -155,7 +156,29 @@ impl CronAdapter {
                         }
                     }
 
-                    // Invoke the function
+                    crate::triggers::http_registrator::HttpTriggerRegistrator::dispatch_http_triggers_from_engine(
+                        &engine,
+                        "http_cron",
+                        |trigger| {
+                            trigger.config.get("cron_id")
+                                .and_then(|v| v.as_str())
+                                .map(|v| v == job_id)
+                                .unwrap_or(false)
+                        },
+                        |trigger| {
+                            json!({
+                                "trigger": {
+                                    "type": "cron",
+                                    "id": trigger.id,
+                                    "scheduled_at": next.to_rfc3339(),
+                                    "fired_at": chrono::Utc::now().to_rfc3339(),
+                                    "function_path": trigger.function_path,
+                                },
+                                "config": trigger.config,
+                            })
+                        },
+                    ).await;
+
                     let _ = engine.invoke_function(&func_path, event_data).await;
 
                     // Release the lock

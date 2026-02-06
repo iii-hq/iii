@@ -14,8 +14,7 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    extract::Extension,
-    http::{Request, Response, StatusCode},
+    http::{Request, Response},
     serve::IncomingStream,
 };
 use futures::Future;
@@ -43,22 +42,18 @@ impl Service<Request<Body>> for HotRouter {
         let router_arc = self.inner.clone();
         let engine = self.engine.clone();
         Box::pin(async move {
-            let router = router_arc.read().await;
-            // Clone the router and add the engine as Extension
-            // This allows using the router without state directly as Service
-            let router_with_extension = router.clone().layer(Extension(engine));
-            let mut svc = router_with_extension;
-            // The Router without state implements Service<Request<Body>> directly
-            match svc.call(req).await {
+            let router_clone = {
+                let router_guard = router_arc.read().await;
+                router_guard.clone()
+            };
+
+            let router_with_extension = router_clone.layer(axum::extract::Extension(engine));
+            let mut router_service = router_with_extension.into_service();
+
+            use tower::Service;
+            match Service::call(&mut router_service, req).await {
                 Ok(response) => Ok(response),
-                Err(_) => {
-                    tracing::error!("Error handling request in HotRouter");
-                    let error_response = Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Internal Server Error"))
-                        .unwrap();
-                    Ok(error_response)
-                }
+                Err(_infallible) => match _infallible {},
             }
         })
     }
