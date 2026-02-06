@@ -43,7 +43,7 @@ impl JobHandler for FunctionHandler {
     async fn handle(&self, job: &crate::builtins::queue::Job) -> Result<(), String> {
         match self
             .engine
-            .invoke_function(&self.function_id, job.data.clone())
+            .call(&self.function_id, job.data.clone())
             .await
         {
             Ok(_) => Ok(()),

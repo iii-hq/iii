@@ -77,7 +77,7 @@ impl Streams {
             ops,
         };
 
-        let result = self.bridge.invoke_function("streams.update", input).await?;
+        let result = self.bridge.call("streams.update", input).await?;
 
         serde_json::from_value(result).map_err(|e| BridgeError::Serde(e.to_string()))
     }

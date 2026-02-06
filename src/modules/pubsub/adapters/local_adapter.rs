@@ -60,7 +60,7 @@ impl PubSubAdapter for LocalAdapter {
                 let engine = Arc::clone(&self.engine);
 
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_id, event_data).await;
+                    let _ = engine.call(&function_id, event_data).await;
                 });
             }
         } else {

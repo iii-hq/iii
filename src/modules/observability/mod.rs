@@ -465,7 +465,7 @@ impl OtelModule {
                 let function_id = trigger.function_id.clone();
 
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_id, log_data).await;
+                    let _ = engine.call(&function_id, log_data).await;
                 });
             }
         }

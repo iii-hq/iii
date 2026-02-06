@@ -91,7 +91,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let update_result = self
             .bridge
-            .invoke_function("kv_server.update", update_data)
+            .call("kv_server.update", update_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value in kv_server: {}", e))?;
 
@@ -114,7 +114,7 @@ impl StreamAdapter for BridgeAdapter {
         tracing::debug!(data = ?data.clone(), "Emitting event");
 
         self.bridge
-            .invoke_function("publish", data)
+            .call("publish", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to publish event: {}", e))?;
         Ok(())
@@ -134,7 +134,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let set_result = self
             .bridge
-            .invoke_function("kv_server.set", set_data)
+            .call("kv_server.set", set_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
@@ -158,7 +158,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .invoke_function("kv_server.get", data)
+            .call("kv_server.get", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
 
@@ -178,7 +178,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let delete_result = self
             .bridge
-            .invoke_function("kv_server.delete", delete_data)
+            .call("kv_server.delete", delete_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
 
@@ -193,7 +193,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let value = self
             .bridge
-            .invoke_function("kv_server.list", data)
+            .call("kv_server.list", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get group from kv_server: {}", e))?;
 
@@ -207,7 +207,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .invoke_function("kv_server.list_keys_with_prefix", data)
+            .call("kv_server.list_keys_with_prefix", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
 

@@ -83,7 +83,7 @@ impl CustomQueueAdapter for InMemoryQueueAdapter {
         if let Some(subs) = subscribers.get(topic) {
             let mut invokes = vec![];
             for (_id, function_id) in subs {
-                let invoke = self.engine.invoke_function(function_id, event_data.clone());
+                let invoke = self.engine.call(function_id, event_data.clone());
                 invokes.push(invoke);
             }
             futures::future::join_all(invokes).await;

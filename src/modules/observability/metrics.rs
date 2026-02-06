@@ -1619,7 +1619,7 @@ impl AlertManager {
                     });
 
                     tokio::spawn(async move {
-                        match engine.invoke_function(&function_id, payload).await {
+                        match engine.call(&function_id, payload).await {
                             Ok(_) => {
                                 tracing::debug!(
                                     function_id = %function_id,

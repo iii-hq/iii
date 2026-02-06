@@ -122,7 +122,7 @@ impl CronAdapter {
                         );
 
                         match engine
-                            .invoke_function(condition_function_id, event_data.clone())
+                            .call(condition_function_id, event_data.clone())
                             .await
                         {
                             Ok(Some(result)) => {
@@ -156,7 +156,7 @@ impl CronAdapter {
                     }
 
                     // Invoke the function
-                    let _ = engine.invoke_function(&func_path, event_data).await;
+                    let _ = engine.call(&func_path, event_data).await;
 
                     // Release the lock
                     scheduler.release_lock(&job_id).await;

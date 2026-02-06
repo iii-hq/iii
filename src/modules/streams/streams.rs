@@ -38,7 +38,7 @@ use crate::{
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
-                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
+                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamListInput,
                 StreamGetInput, StreamListAllInput, StreamListGroupsInput, StreamSetInput,
                 StreamUpdateInput,
             },
@@ -83,7 +83,7 @@ async fn ws_handler(
         let input = serde_json::to_value(input);
 
         match input {
-            Ok(input) => match engine.invoke_function(&auth_function, input).await {
+            Ok(input) => match engine.call(&auth_function, input).await {
                 Ok(Some(result)) => {
                     let context = serde_json::from_value::<StreamAuthContext>(result);
 
@@ -294,7 +294,7 @@ impl StreamCoreModule {
                         );
 
                         match engine
-                            .invoke_function(&condition_function_id, event_data.clone())
+                            .call(&condition_function_id, event_data.clone())
                             .await
                         {
                             Ok(Some(result)) => {
@@ -339,7 +339,7 @@ impl StreamCoreModule {
                     );
 
                     let call_result = engine
-                        .invoke_function(&trigger.function_id, event_data.clone())
+                        .call(&trigger.function_id, event_data.clone())
                         .await;
 
                     match call_result {
@@ -392,7 +392,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_id, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(Some(result)) => match serde_json::from_value::<SetResult>(result) {
@@ -476,7 +476,7 @@ impl StreamCoreModule {
                     }
                 };
 
-                let result = self.engine.invoke_function(&function_id, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -522,7 +522,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_id, input).await;
+                let result = self.engine.call(&function_id, input).await;
                 match result {
                     Ok(Some(result)) => {
                         let result = match serde_json::from_value::<DeleteResult>(result) {
@@ -574,21 +574,13 @@ impl StreamCoreModule {
     #[function(id = "streams.list", description = "List all items in a stream group")]
     pub async fn list(
         &self,
-        input: StreamGetGroupInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.get_group(input).await
-    }
-
-    #[function(id = "streams.getGroup", description = "Get a group from a stream")]
-    pub async fn get_group(
-        &self,
-        input: StreamGetGroupInput,
+        input: StreamListInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
-        let function_id = format!("streams.getGroup({})", stream_name);
+        let function_id = format!("streams.list({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -606,7 +598,7 @@ impl StreamCoreModule {
                     }
                 };
 
-                let result = self.engine.invoke_function(&function_id, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -651,7 +643,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_id, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -741,7 +733,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_id, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(Some(result)) => match serde_json::from_value::<UpdateResult>(result) {
