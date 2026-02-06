@@ -1771,7 +1771,10 @@ mod tests {
     fn test_ensure_default_meter_makes_get_meter_available() {
         // After calling ensure_default_meter, get_meter() should return Some
         ensure_default_meter();
-        assert!(get_meter().is_some(), "get_meter() should return Some after ensure_default_meter()");
+        assert!(
+            get_meter().is_some(),
+            "get_meter() should return Some after ensure_default_meter()"
+        );
     }
 
     #[test]
