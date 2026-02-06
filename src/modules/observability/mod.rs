@@ -43,10 +43,43 @@ pub struct TracesListInput {
     offset: Option<usize>,
     /// Pagination limit (default: 100)
     limit: Option<usize>,
+    /// Filter by service name (case-insensitive substring match)
+    service_name: Option<String>,
+    /// Filter by span name (case-insensitive substring match)
+    name: Option<String>,
+    /// Filter by status (case-insensitive substring match)
+    status: Option<String>,
+    /// Minimum span duration in milliseconds (sub-ms precision)
+    min_duration_ms: Option<f64>,
+    /// Maximum span duration in milliseconds (sub-ms precision)
+    max_duration_ms: Option<f64>,
+    /// Start time in unix timestamp milliseconds (include spans overlapping after this)
+    start_time: Option<u64>,
+    /// End time in unix timestamp milliseconds (include spans overlapping before this)
+    end_time: Option<u64>,
+    /// Sort field: "duration" | "start_time" | "name" (default: "start_time")
+    sort_by: Option<String>,
+    /// Sort order: "asc" | "desc" (default: "asc")
+    sort_order: Option<String>,
+    /// Filter by span attributes (array of [key, value] pairs, AND logic, exact match)
+    attributes: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct TracesClearInput {}
+
+#[derive(Serialize, Deserialize)]
+pub struct TracesTreeInput {
+    /// Trace ID to build the tree for
+    trace_id: String,
+}
+
+#[derive(Serialize)]
+pub struct SpanTreeNode {
+    #[serde(flatten)]
+    pub span: otel::StoredSpan,
+    pub children: Vec<SpanTreeNode>,
+}
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct MetricsListInput {
@@ -208,6 +241,42 @@ pub struct OtelModule {
     engine: Arc<Engine>,
     /// Shutdown signal sender for background tasks
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+fn build_span_tree(spans: Vec<otel::StoredSpan>) -> Vec<SpanTreeNode> {
+    let mut children_map: HashMap<String, Vec<otel::StoredSpan>> = HashMap::new();
+    let mut roots: Vec<otel::StoredSpan> = Vec::new();
+
+    for span in spans {
+        match &span.parent_span_id {
+            Some(parent_id) => {
+                children_map
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(span);
+            }
+            None => roots.push(span),
+        }
+    }
+
+    fn build_node(
+        span: otel::StoredSpan,
+        children_map: &mut HashMap<String, Vec<otel::StoredSpan>>,
+    ) -> SpanTreeNode {
+        let children = children_map
+            .remove(&span.span_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|child| build_node(child, children_map))
+            .collect();
+
+        SpanTreeNode { span, children }
+    }
+
+    roots
+        .into_iter()
+        .map(|root| build_node(root, &mut children_map))
+        .collect()
 }
 
 #[service(name = "otel")]
@@ -490,21 +559,135 @@ impl OtelModule {
                     None => storage.get_spans(),
                 };
 
-                let total = all_spans.len();
+
+                let mut filtered: Vec<_> = all_spans
+                    .into_iter()
+                    .filter(|s| s.parent_span_id.is_none())
+                    .filter(|s| {
+                        if let Some(ref sn) = input.service_name {
+                            if !s.service_name.to_lowercase().contains(&sn.to_lowercase()) {
+                                return false;
+                            }
+                        }
+                        if let Some(ref n) = input.name {
+                            if !s.name.to_lowercase().contains(&n.to_lowercase()) {
+                                return false;
+                            }
+                        }
+                        if let Some(ref st) = input.status {
+                            if !s.status.to_lowercase().contains(&st.to_lowercase()) {
+                                return false;
+                            }
+                        }
+                        let duration_ns = s.end_time_unix_nano.saturating_sub(s.start_time_unix_nano);
+                        let duration_ms: f64 = duration_ns as f64 / 1_000_000.0;
+                        if let Some(min) = input.min_duration_ms {
+                            if duration_ms < min {
+                                return false;
+                            }
+                        }
+                        if let Some(max) = input.max_duration_ms {
+                            if duration_ms > max {
+                                return false;
+                            }
+                        }
+                        if let Some(start) = input.start_time {
+                            let start_ns = start * 1_000_000;
+                            if s.end_time_unix_nano < start_ns {
+                                return false;
+                            }
+                        }
+                        if let Some(end) = input.end_time {
+                            let end_ns = end * 1_000_000;
+                            if s.start_time_unix_nano > end_ns {
+                                return false;
+                            }
+                        }
+                        if let Some(ref attrs) = input.attributes {
+                            for pair in attrs {
+                                if pair.len() == 2 {
+                                    let key = &pair[0];
+                                    let value = &pair[1];
+                                    if !s.attributes.iter().any(|(k, v)| k == key && v == value) {
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                        true
+                    })
+                    .collect();
+
+                let sort_order_asc = input
+                    .sort_order
+                    .as_deref()
+                    .map(|o| o.eq_ignore_ascii_case("asc"))
+                    .unwrap_or(true);
+
+                filtered.sort_by(|a, b| {
+                    let cmp = match input.sort_by.as_deref().unwrap_or("start_time") {
+                        "duration" => {
+                            let da = a.end_time_unix_nano.saturating_sub(a.start_time_unix_nano)
+                                as f64;
+                            let db = b.end_time_unix_nano.saturating_sub(b.start_time_unix_nano)
+                                as f64;
+                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                        }
+                        "name" => a.name.cmp(&b.name),
+                        _ => a.start_time_unix_nano.cmp(&b.start_time_unix_nano),
+                    };
+                    if sort_order_asc {
+                        cmp
+                    } else {
+                        cmp.reverse()
+                    }
+                });
+
+                let total = filtered.len();
                 let offset = input.offset.unwrap_or(0);
                 let limit = input.limit.unwrap_or(100);
 
-                let spans: Vec<_> = all_spans
-                    .into_iter()
-                    .skip(offset)
-                    .take(limit)
-                    .collect();
+                let spans: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
 
                 let response = serde_json::json!({
                     "spans": spans,
                     "total": total,
                     "offset": offset,
                     "limit": limit,
+                });
+                FunctionResult::Success(Some(response))
+            }
+            None => {
+                FunctionResult::Failure(ErrorBody {
+                    code: "memory_exporter_not_enabled".to_string(),
+                    message: "In-memory span storage is not available. Set exporter: memory or both in config.".to_string(),
+                })
+            }
+        }
+    }
+
+    #[function(
+        id = "engine.traces.tree",
+        description = "Get trace tree with nested children (only available when exporter is 'memory' or 'both')"
+    )]
+    pub async fn get_trace_tree(
+        &self,
+        input: TracesTreeInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        match otel::get_span_storage() {
+            Some(storage) => {
+                let all_spans = storage.get_spans_by_trace_id(&input.trace_id);
+
+                if all_spans.is_empty() {
+                    return FunctionResult::Success(Some(serde_json::json!({
+                        "roots": [],
+                    })));
+                }
+
+                let roots = build_span_tree(all_spans);
+
+                let response = serde_json::json!({
+                    "roots": roots,
                 });
                 FunctionResult::Success(Some(response))
             }
