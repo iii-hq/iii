@@ -27,7 +27,7 @@ pub enum Message {
         trigger_type: String,
     },
     RegisterFunction {
-        function_id: String,
+        id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,7 +111,7 @@ impl UnregisterTriggerMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterFunctionMessage {
-    pub function_id: String,
+    pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,7 +125,7 @@ pub struct RegisterFunctionMessage {
 impl RegisterFunctionMessage {
     pub fn to_message(&self) -> Message {
         Message::RegisterFunction {
-            function_id: self.function_id.clone(),
+            id: self.id.clone(),
             description: self.description.clone(),
             request_format: self.request_format.clone(),
             response_format: self.response_format.clone(),
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn register_function_to_message_and_serializes_type() {
         let msg = RegisterFunctionMessage {
-            function_id: "functions.echo".to_string(),
+            id: "functions.echo".to_string(),
             description: Some("Echo function".to_string()),
             request_format: None,
             response_format: None,
@@ -188,11 +188,11 @@ mod tests {
         let message = msg.to_message();
         match &message {
             Message::RegisterFunction {
-                function_id,
+                id,
                 description,
                 ..
             } => {
-                assert_eq!(function_id, "functions.echo");
+                assert_eq!(id, "functions.echo");
                 assert_eq!(description.as_deref(), Some("Echo function"));
             }
             _ => panic!("unexpected message variant"),
@@ -200,7 +200,7 @@ mod tests {
 
         let serialized = serde_json::to_value(&message).unwrap();
         assert_eq!(serialized["type"], "registerfunction");
-        assert_eq!(serialized["function_id"], "functions.echo");
+        assert_eq!(serialized["id"], "functions.echo");
         assert_eq!(serialized["description"], "Echo function");
     }
 }

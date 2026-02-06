@@ -229,13 +229,13 @@ impl Bridge {
         let _ = self.inner.outbound.send(Outbound::Shutdown);
     }
 
-    pub fn register_function<F, Fut>(&self, function_id: impl Into<String>, handler: F)
+    pub fn register_function<F, Fut>(&self, id: impl Into<String>, handler: F)
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Value, BridgeError>> + Send + 'static,
     {
         let message = RegisterFunctionMessage {
-            function_id: function_id.into(),
+            id: id.into(),
             description: None,
             request_format: None,
             response_format: None,
@@ -247,7 +247,7 @@ impl Bridge {
 
     pub fn register_function_with_description<F, Fut>(
         &self,
-        function_id: impl Into<String>,
+        id: impl Into<String>,
         description: impl Into<String>,
         handler: F,
     ) where
@@ -255,7 +255,7 @@ impl Bridge {
         Fut: std::future::Future<Output = Result<Value, BridgeError>> + Send + 'static,
     {
         let message = RegisterFunctionMessage {
-            function_id: function_id.into(),
+            id: id.into(),
             description: Some(description.into()),
             request_format: None,
             response_format: None,
@@ -270,7 +270,7 @@ impl Bridge {
         F: Fn(Value) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Value, BridgeError>> + Send + 'static,
     {
-        let function_id = message.function_id.clone();
+        let function_id = message.id.clone();
         let bridge = self.clone();
 
         let user_handler = Arc::new(move |input: Value| Box::pin(handler(input)));
@@ -305,7 +305,7 @@ impl Bridge {
             .functions
             .lock()
             .unwrap()
-            .insert(message.function_id.clone(), data);
+            .insert(message.id.clone(), data);
         let _ = self.send_message(message.to_message());
     }
 
@@ -710,8 +710,8 @@ impl Bridge {
             let key = match message {
                 Message::RegisterTriggerType { id, .. } => format!("trigger_type:{id}"),
                 Message::RegisterTrigger { id, .. } => format!("trigger:{id}"),
-                Message::RegisterFunction { function_id, .. } => {
-                    format!("function:{function_id}")
+                Message::RegisterFunction { id, .. } => {
+                    format!("function:{id}")
                 }
                 Message::RegisterService { id, .. } => format!("service:{id}"),
                 _ => {
