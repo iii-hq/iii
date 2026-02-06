@@ -5,11 +5,11 @@
 // See LICENSE and PATENTS files for details.
 
 use crate::modules::{
-    event::EventAdapter,
+    queue::QueueAdapter,
     registry::{AdapterFuture, AdapterRegistration},
 };
 
-pub type EventAdapterFuture = AdapterFuture<dyn EventAdapter>;
-pub type EventAdapterRegistration = AdapterRegistration<dyn EventAdapter>;
+pub type QueueAdapterFuture = AdapterFuture<dyn QueueAdapter>;
+pub type QueueAdapterRegistration = AdapterRegistration<dyn QueueAdapter>;
 
-inventory::collect!(EventAdapterRegistration);
+inventory::collect!(QueueAdapterRegistration);
