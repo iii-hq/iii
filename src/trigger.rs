@@ -178,29 +178,168 @@ impl TriggerRegistry {
     pub async fn unregister_trigger(
         &self,
         id: String,
-        trigger_type: String,
+        _trigger_type: String,
     ) -> Result<(), anyhow::Error> {
-        tracing::info!(
-            "Unregistering trigger: {} of type: {}",
-            id.purple(),
-            trigger_type.purple()
-        );
-
         let Some(trigger_entry) = self.triggers.get(&id) else {
             return Err(anyhow::anyhow!("Trigger not found"));
         };
         let trigger = trigger_entry.value().clone();
         drop(trigger_entry);
 
-        if let Some(tt) = self.trigger_types.get(&trigger_type) {
-            let result: Result<(), anyhow::Error> =
-                tt.registrator.unregister_trigger(trigger.clone()).await;
+        tracing::info!(
+            "Unregistering trigger: {} of type: {}",
+            id.purple(),
+            trigger.trigger_type.purple()
+        );
 
-            result?
-        }
+        let Some(tt) = self.trigger_types.get(&trigger.trigger_type) else {
+            return Err(anyhow::anyhow!(
+                "Trigger type '{}' not found, cannot unregister trigger '{}'",
+                trigger.trigger_type,
+                id
+            ));
+        };
+
+        tt.registrator.unregister_trigger(trigger.clone()).await?;
+        drop(tt);
 
         self.triggers.remove(&id);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct MockRegistrator {
+        register_called: Arc<AtomicBool>,
+        unregister_called: Arc<AtomicBool>,
+    }
+
+    impl TriggerRegistrator for MockRegistrator {
+        fn register_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            self.register_called.store(true, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn unregister_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            self.unregister_called.store(true, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_calls_registrator() {
+        let registry = TriggerRegistry::new();
+        let unregister_called = Arc::new(AtomicBool::new(false));
+
+        let registrator = MockRegistrator {
+            register_called: Arc::new(AtomicBool::new(false)),
+            unregister_called: unregister_called.clone(),
+        };
+
+        registry.trigger_types.insert(
+            "api".to_string(),
+            TriggerType {
+                id: "api".to_string(),
+                _description: "test".to_string(),
+                registrator: Box::new(registrator),
+                worker_id: None,
+            },
+        );
+
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "api".to_string(),
+            function_id: "func1".to_string(),
+            config: serde_json::json!({"api_path": "users", "http_method": "GET"}),
+            worker_id: None,
+        };
+        registry.triggers.insert("t1".to_string(), trigger);
+
+        let result = registry
+            .unregister_trigger("t1".to_string(), "api".to_string())
+            .await;
+        assert!(result.is_ok());
+        assert!(
+            unregister_called.load(Ordering::SeqCst),
+            "registrator.unregister_trigger must be called"
+        );
+        assert!(
+            registry.triggers.get("t1").is_none(),
+            "trigger must be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_uses_stored_type_not_parameter() {
+        let registry = TriggerRegistry::new();
+        let unregister_called = Arc::new(AtomicBool::new(false));
+
+        let registrator = MockRegistrator {
+            register_called: Arc::new(AtomicBool::new(false)),
+            unregister_called: unregister_called.clone(),
+        };
+
+        registry.trigger_types.insert(
+            "api".to_string(),
+            TriggerType {
+                id: "api".to_string(),
+                _description: "test".to_string(),
+                registrator: Box::new(registrator),
+                worker_id: None,
+            },
+        );
+
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "api".to_string(),
+            function_id: "func1".to_string(),
+            config: serde_json::json!({"api_path": "users", "http_method": "GET"}),
+            worker_id: None,
+        };
+        registry.triggers.insert("t1".to_string(), trigger);
+
+        let result = registry
+            .unregister_trigger("t1".to_string(), "wrong".to_string())
+            .await;
+        assert!(result.is_ok());
+        assert!(
+            unregister_called.load(Ordering::SeqCst),
+            "registrator must be called using stored trigger_type"
+        );
+        assert!(registry.triggers.get("t1").is_none());
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_errors_when_type_not_found() {
+        let registry = TriggerRegistry::new();
+
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "nonexistent".to_string(),
+            function_id: "func1".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+        };
+        registry.triggers.insert("t1".to_string(), trigger);
+
+        let result = registry
+            .unregister_trigger("t1".to_string(), "nonexistent".to_string())
+            .await;
+        assert!(result.is_err(), "must error when trigger type not found");
+        assert!(
+            registry.triggers.get("t1").is_some(),
+            "trigger must not be removed on failure"
+        );
     }
 }
