@@ -34,7 +34,7 @@ use crate::engine::Engine;
 
 /// Default address for the engine server
 pub const DEFAULT_PORT: u16 = 49134;
-const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_HOST: &str = "0.0.0.0";
 
 // =============================================================================
 // EngineConfig (YAML structure)

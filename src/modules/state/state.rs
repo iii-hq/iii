@@ -80,7 +80,7 @@ impl ConfigurableModule for StateCoreModule {
     type Config = StateModuleConfig;
     type Adapter = dyn StateAdapter;
     type AdapterRegistration = super::registry::StateAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::state::adapters::RedisAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::state::adapters::KvStore";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StateAdapter>>>> =
