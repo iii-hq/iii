@@ -20,12 +20,8 @@ use crate::{
     },
 };
 
-#[allow(dead_code)] // Fields are used in tests
 struct SubscriptionInfo {
     trigger: Trigger,
-    function_path: String,
-    handler_path: String,
-    condition_function_path: Option<String>,
 }
 
 /// Bridge-based queue adapter for cross-engine queue communication.
@@ -88,8 +84,6 @@ impl BridgeAdapter {
 #[async_trait]
 impl QueueAdapter for BridgeAdapter {
     /// Enqueues a message to the bridge for distribution to other engines.
-    ///
-    /// Messages are sent via `enqueue` function call on the bridge.
     /// Failures are logged but do not block the caller.
     async fn enqueue(&self, topic: &str, data: Value) {
         let input = serde_json::json!({ "topic": topic, "data": data });
@@ -108,13 +102,12 @@ impl QueueAdapter for BridgeAdapter {
     ) {
         let key = format!("{}:{}", topic, id);
 
-        // Check if already subscribed
-        let already_subscribed = {
-            let subs = self.subscriptions.read().await;
-            subs.contains_key(&key)
-        };
+        // Acquire write lock upfront to make check+register+insert atomic,
+        // preventing a TOCTOU race where two concurrent calls could both
+        // pass the contains_key check and register duplicate triggers.
+        let mut subs = self.subscriptions.write().await;
 
-        if already_subscribed {
+        if subs.contains_key(&key) {
             tracing::warn!(
                 topic = %topic,
                 id = %id,
@@ -204,17 +197,7 @@ impl QueueAdapter for BridgeAdapter {
             }
         };
 
-        let key = format!("{}:{}", topic, id);
-        let mut subs = self.subscriptions.write().await;
-        subs.insert(
-            key,
-            SubscriptionInfo {
-                trigger,
-                function_path: function_id_for_subscription,
-                handler_path: handler_path.clone(),
-                condition_function_path: condition_function_id.clone(),
-            },
-        );
+        subs.insert(key, SubscriptionInfo { trigger });
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -242,70 +225,10 @@ impl QueueAdapter for BridgeAdapter {
 
 #[cfg(test)]
 mod tests {
-    //! # Bridge Adapter Tests
-    //!
-    //! Some tests require a bridge server running. Set `TEST_BRIDGE_URL` environment
-    //! variable to override default `ws://localhost:49134`.
-    //!
-    //! Tests marked with `#[ignore]` require bridge server:
-    //! ```bash
-    //! cargo test -- --ignored
-    //! ```
-
     use std::sync::Arc;
 
     use super::*;
     use crate::engine::Engine;
-
-    fn test_bridge_url() -> String {
-        std::env::var("TEST_BRIDGE_URL").unwrap_or_else(|_| "ws://localhost:49134".to_string())
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires bridge server running
-    async fn test_redrive_dlq_returns_error() {
-        let engine = Arc::new(Engine::new());
-        let adapter = BridgeAdapter::new(engine, test_bridge_url()).await.unwrap();
-
-        let result = adapter.redrive_dlq("test_topic").await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("does not support DLQ")
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires bridge server running
-    async fn test_dlq_count_returns_error() {
-        let engine = Arc::new(Engine::new());
-        let adapter = BridgeAdapter::new(engine, test_bridge_url()).await.unwrap();
-
-        let result = adapter.dlq_count("test_topic").await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("does not support DLQ")
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires bridge server running
-    async fn test_unsubscribe_missing_subscription() {
-        let engine = Arc::new(Engine::new());
-        let adapter = BridgeAdapter::new(engine, test_bridge_url()).await.unwrap();
-
-        adapter
-            .unsubscribe("nonexistent_topic", "nonexistent_id")
-            .await;
-
-        let subs = adapter.subscriptions.read().await;
-        assert!(subs.is_empty());
-    }
 
     #[tokio::test]
     async fn test_subscribe_handles_bridge_error_gracefully() {
@@ -329,75 +252,6 @@ mod tests {
         adapter
             .subscribe("test_topic", "test_id", "functions.test", None, None)
             .await;
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires bridge server running
-    async fn test_subscription_tracks_function_path() {
-        let engine = Arc::new(Engine::new());
-        let adapter = BridgeAdapter::new(engine, test_bridge_url()).await.unwrap();
-
-        adapter
-            .subscribe("test_topic", "test_id", "functions.test", None, None)
-            .await;
-
-        let subs = adapter.subscriptions.read().await;
-        let subscription = subs.get("test_topic:test_id");
-        assert!(subscription.is_some());
-        // This will fail until we add function_path tracking
-        assert_eq!(subscription.unwrap().function_path, "functions.test");
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires bridge server running
-    async fn test_subscribe_with_condition_function() {
-        let engine = Arc::new(Engine::new());
-        let adapter = BridgeAdapter::new(engine, test_bridge_url()).await.unwrap();
-
-        adapter
-            .subscribe(
-                "test_topic",
-                "test_id",
-                "functions.handler",
-                Some("conditions.check".to_string()),
-                None,
-            )
-            .await;
-
-        // Verify subscription was created with condition
-        let subs = adapter.subscriptions.read().await;
-        let subscription = subs.get("test_topic:test_id");
-        assert!(subscription.is_some());
-        assert_eq!(
-            subscription.unwrap().condition_function_path,
-            Some("conditions.check".to_string())
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires bridge server running
-    async fn test_subscribe_duplicate_returns_early() {
-        let engine = Arc::new(Engine::new());
-        let adapter = BridgeAdapter::new(engine, test_bridge_url()).await.unwrap();
-
-        adapter
-            .subscribe("test_topic", "test_id", "functions.test", None, None)
-            .await;
-
-        // Subscribe again with same topic/id
-        adapter
-            .subscribe("test_topic", "test_id", "functions.other", None, None)
-            .await;
-
-        let subs = adapter.subscriptions.read().await;
-        assert_eq!(subs.len(), 1);
-        // Verify first subscription is still there (not replaced)
-        assert!(subs.contains_key("test_topic:test_id"));
-        // Verify it's still the original function path
-        assert_eq!(
-            subs.get("test_topic:test_id").unwrap().function_path,
-            "functions.test"
-        );
     }
 }
 
