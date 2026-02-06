@@ -62,7 +62,7 @@ modules:
       # === Sampling Configuration ===
       # Basic sampling ratio (0.0 to 1.0). Use 1.0 to sample everything.
       sampling_ratio: 1.0
-      
+
       # Enables per-operation rules, per-service rules, and rate limiting
       # sampling:
       #   default: 0.1  # 10% default sampling rate for operations not matching any rule
@@ -150,10 +150,10 @@ modules:
       #     action: webhook
       #     webhook_url: https://hooks.slack.com/services/xxx
 
-  - class: modules::event::EventModule
+  - class: modules::queue::QueueModule
     config:
       adapter:
-        class: modules::event::RedisAdapter
+        class: modules::queue::RedisAdapter
         config:
           redis_url: redis://localhost:6379
 

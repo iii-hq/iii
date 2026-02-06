@@ -16,9 +16,9 @@ use uuid::Uuid;
 
 use crate::{
     engine::Engine,
-    modules::event::{
-        EventAdapter, SubscriberQueueConfig,
-        registry::{EventAdapterFuture, EventAdapterRegistration},
+    modules::queue::{
+        QueueAdapter, SubscriberQueueConfig,
+        registry::{QueueAdapterFuture, QueueAdapterRegistration},
     },
 };
 
@@ -104,17 +104,17 @@ impl Clone for RabbitMQAdapter {
     }
 }
 
-pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFuture {
     Box::pin(async move {
         let config = RabbitMQConfig::from_value(config.as_ref());
-        Ok(Arc::new(RabbitMQAdapter::new(config, engine).await?) as Arc<dyn EventAdapter>)
+        Ok(Arc::new(RabbitMQAdapter::new(config, engine).await?) as Arc<dyn QueueAdapter>)
     })
 }
 
 #[async_trait]
-impl EventAdapter for RabbitMQAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
-        let job = Job::new(topic, event_data, self.config.max_attempts);
+impl QueueAdapter for RabbitMQAdapter {
+    async fn enqueue(&self, topic: &str, data: Value) {
+        let job = Job::new(topic, data, self.config.max_attempts);
 
         if let Err(e) = self.topology.setup_topic(topic).await {
             tracing::error!(
@@ -135,7 +135,7 @@ impl EventAdapter for RabbitMQAdapter {
             tracing::debug!(
                 topic = %topic,
                 job_id = %job.id,
-                "Event emitted to RabbitMQ"
+                "Published to RabbitMQ queue"
             );
         }
     }
@@ -359,4 +359,4 @@ impl EventAdapter for RabbitMQAdapter {
     }
 }
 
-crate::register_adapter!(<EventAdapterRegistration> "modules::event::RabbitMQAdapter", make_adapter);
+crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RabbitMQAdapter", make_adapter);
