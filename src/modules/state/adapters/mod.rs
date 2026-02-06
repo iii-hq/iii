@@ -24,5 +24,6 @@ pub trait StateAdapter: Send + Sync {
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult>;
     async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>>;
+    async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     async fn destroy(&self) -> anyhow::Result<()>;
 }

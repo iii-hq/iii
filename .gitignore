@@ -18,3 +18,4 @@ app.log
 CLAUDE.md
 packages/docker/bun/iii
 docs/
+.omc/

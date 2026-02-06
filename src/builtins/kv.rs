@@ -565,6 +565,11 @@ impl BuiltinKvStore {
             .get(&index)
             .map_or(vec![], |topic| topic.values().cloned().collect())
     }
+
+    pub async fn list_groups(&self) -> Vec<String> {
+        let store = self.store.read().await;
+        store.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

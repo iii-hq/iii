@@ -17,7 +17,10 @@ use iii_sdk::{
 };
 use serde_json::Value;
 
-use crate::{builtins::pubsub_lite::Subscriber, modules::streams::StreamWrapperMessage};
+use crate::{
+    builtins::pubsub_lite::Subscriber,
+    modules::streams::{StreamMetadata, StreamWrapperMessage},
+};
 
 #[async_trait]
 pub trait StreamAdapter: Send + Sync {
@@ -46,6 +49,9 @@ pub trait StreamAdapter: Send + Sync {
     async fn get_group(&self, stream_name: &str, group_id: &str) -> anyhow::Result<Vec<Value>>;
 
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>>;
+
+    /// List all available streams with their metadata
+    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>>;
 
     async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()>;
 
