@@ -564,32 +564,32 @@ impl OtelModule {
                     .into_iter()
                     .filter(|s| s.parent_span_id.is_none())
                     .filter(|s| {
-                        if let Some(ref sn) = input.service_name {
-                            if !s.service_name.to_lowercase().contains(&sn.to_lowercase()) {
-                                return false;
-                            }
+                        if let Some(ref sn) = input.service_name
+                            && !s.service_name.to_lowercase().contains(&sn.to_lowercase())
+                        {
+                            return false;
                         }
-                        if let Some(ref n) = input.name {
-                            if !s.name.to_lowercase().contains(&n.to_lowercase()) {
-                                return false;
-                            }
+                        if let Some(ref n) = input.name
+                            && !s.name.to_lowercase().contains(&n.to_lowercase())
+                        {
+                            return false;
                         }
-                        if let Some(ref st) = input.status {
-                            if !s.status.to_lowercase().contains(&st.to_lowercase()) {
-                                return false;
-                            }
+                        if let Some(ref st) = input.status
+                            && !s.status.to_lowercase().contains(&st.to_lowercase())
+                        {
+                            return false;
                         }
                         let duration_ns = s.end_time_unix_nano.saturating_sub(s.start_time_unix_nano);
                         let duration_ms: f64 = duration_ns as f64 / 1_000_000.0;
-                        if let Some(min) = input.min_duration_ms {
-                            if duration_ms < min {
-                                return false;
-                            }
+                        if let Some(min) = input.min_duration_ms
+                            && duration_ms < min
+                        {
+                            return false;
                         }
-                        if let Some(max) = input.max_duration_ms {
-                            if duration_ms > max {
-                                return false;
-                            }
+                        if let Some(max) = input.max_duration_ms
+                            && duration_ms > max
+                        {
+                            return false;
                         }
                         if let Some(start) = input.start_time {
                             let start_ns = start * 1_000_000;
