@@ -201,16 +201,16 @@ impl BuiltinQueue {
         if !has_persisted_state {
             tracing::info!("No persisted queue state found, rebuilding from job records");
 
-            let job_keys = self.kv_store.list_job_keys("queue:").await;
+            let queue_names = self.kv_store.list_queue_names().await;
 
             let mut queue_jobs: HashMap<String, Vec<Job>> = HashMap::new();
 
-            for key in job_keys {
-                if key.contains(":jobs:")
-                    && let Some(job_value) = self.kv_store.get_job(&key).await
-                    && let Ok(job) = serde_json::from_value::<Job>(job_value)
-                {
-                    queue_jobs.entry(job.queue.clone()).or_default().push(job);
+            for queue_name in queue_names {
+                let jobs = self.kv_store.list_all_jobs(&queue_name).await;
+                for (_job_id, job_value) in jobs {
+                    if let Ok(job) = serde_json::from_value::<Job>(job_value) {
+                        queue_jobs.entry(job.queue.clone()).or_default().push(job);
+                    }
                 }
             }
 
@@ -245,23 +245,9 @@ impl BuiltinQueue {
         } else {
             tracing::info!("Queue state loaded from persisted lists/sorted_sets");
 
-            let queue_names_set: std::collections::HashSet<String> = {
-                let job_keys = self.kv_store.list_job_keys("queue:").await;
-                job_keys
-                    .iter()
-                    .filter(|k| k.contains(":jobs:"))
-                    .filter_map(|k| {
-                        let parts: Vec<&str> = k.split(':').collect();
-                        if parts.len() >= 2 {
-                            Some(parts[1].to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
+            let queue_names = self.kv_store.list_queue_names().await;
 
-            for queue_name in queue_names_set {
+            for queue_name in queue_names {
                 if let Err(e) = self.move_delayed_to_waiting(&queue_name).await {
                     tracing::error!(error = ?e, queue = %queue_name, "Failed to move expired delayed jobs to waiting");
                 }
@@ -269,10 +255,6 @@ impl BuiltinQueue {
         }
 
         Ok(())
-    }
-
-    pub(crate) fn job_key(&self, queue: &str, job_id: &str) -> String {
-        format!("queue:{}:jobs:{}", queue, job_id)
     }
 
     fn waiting_key(&self, queue: &str) -> String {
@@ -300,12 +282,11 @@ impl BuiltinQueue {
         );
         let job_id = job.id.clone();
 
-        let job_key = self.job_key(queue, &job.id);
         // Job serialization should never fail as all fields are basic types.
         // If it does fail, it indicates a bug in the code that should be fixed.
         let job_json =
             serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
-        self.kv_store.set_job(&job_key, job_json).await;
+        self.kv_store.set_job(queue, &job.id, job_json).await;
 
         let waiting_key = self.waiting_key(queue);
         self.kv_store.lpush(&waiting_key, job.id.clone()).await;
@@ -331,12 +312,11 @@ impl BuiltinQueue {
         );
         let job_id = job.id.clone();
 
-        let job_key = self.job_key(queue, &job.id);
         // Job serialization should never fail as all fields are basic types.
         // If it does fail, it indicates a bug in the code that should be fixed.
         let job_json =
             serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
-        self.kv_store.set_job(&job_key, job_json).await;
+        self.kv_store.set_job(queue, &job.id, job_json).await;
 
         let waiting_key = self.waiting_key(queue);
         self.kv_store.lpush(&waiting_key, job.id.clone()).await;
@@ -370,12 +350,11 @@ impl BuiltinQueue {
 
         job.process_at = Some(process_at);
 
-        let job_key = self.job_key(queue, &job.id);
         // Job serialization should never fail as all fields are basic types.
         // If it does fail, it indicates a bug in the code that should be fixed.
         let job_json =
             serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
-        self.kv_store.set_job(&job_key, job_json).await;
+        self.kv_store.set_job(queue, &job.id, job_json).await;
 
         let delayed_key = self.delayed_key(queue);
         self.kv_store
@@ -394,8 +373,7 @@ impl BuiltinQueue {
         let active_key = self.active_key(queue);
         self.kv_store.lpush(&active_key, job_id.clone()).await;
 
-        let job_key = self.job_key(queue, &job_id);
-        let job_value = self.kv_store.get_job(&job_key).await?;
+        let job_value = self.kv_store.get_job(queue, &job_id).await?;
         let job: Job = serde_json::from_value(job_value).ok()?;
 
         Some(job)
@@ -405,16 +383,14 @@ impl BuiltinQueue {
         let active_key = self.active_key(queue);
         self.kv_store.lrem(&active_key, 1, job_id).await;
 
-        let job_key = self.job_key(queue, job_id);
-        self.kv_store.delete_job(&job_key).await;
+        self.kv_store.delete_job(queue, job_id).await;
 
         tracing::debug!(queue = %queue, job_id = %job_id, "Job acknowledged");
         Ok(())
     }
 
     async fn nack(&self, queue: &str, job_id: &str, error: &str) -> anyhow::Result<()> {
-        let job_key = self.job_key(queue, job_id);
-        let job_value = self.kv_store.get_job(&job_key).await;
+        let job_value = self.kv_store.get_job(queue, job_id).await;
 
         let Some(job_value) = job_value else {
             let active_key = self.active_key(queue);
@@ -443,7 +419,7 @@ impl BuiltinQueue {
             job.process_at = Some(process_at);
 
             let job_json = serde_json::to_value(&job)?;
-            self.kv_store.set_job(&job_key, job_json).await;
+            self.kv_store.set_job(queue, job_id, job_json).await;
             self.kv_store
                 .zadd(&delayed_key, process_at as i64, job_id.to_string())
                 .await;
@@ -471,8 +447,7 @@ impl BuiltinQueue {
         let failed_json = serde_json::to_string(&failed_data)?;
         self.kv_store.lpush(&dlq_key, failed_json).await;
 
-        let job_key = self.job_key(queue, &job.id);
-        self.kv_store.delete_job(&job_key).await;
+        self.kv_store.delete_job(queue, &job.id).await;
 
         tracing::warn!(queue = %queue, job_id = %job.id, attempts = job.attempts_made, "Job exhausted, moved to DLQ");
 
@@ -599,12 +574,11 @@ impl BuiltinQueue {
             {
                 job.attempts_made = 0;
 
-                let job_key = self.job_key(queue, &job.id);
                 // Job serialization should never fail as all fields are basic types.
                 // If it does fail, it indicates a bug in the code that should be fixed.
                 let job_json =
                     serde_json::to_value(&job).expect("Job serialization failed - this is a bug");
-                self.kv_store.set_job(&job_key, job_json).await;
+                self.kv_store.set_job(queue, &job.id, job_json).await;
 
                 let waiting_key = self.waiting_key(queue);
                 self.kv_store.lpush(&waiting_key, job.id).await;
@@ -686,9 +660,8 @@ async fn process_job_with_inline_retry(
                 }
                 tokio::time::sleep(Duration::from_millis(delay)).await;
 
-                let job_key = queue_impl.job_key(queue_name, &job.id);
                 if let Ok(job_json) = serde_json::to_value(&job) {
-                    queue_impl.kv_store.set_job(&job_key, job_json).await;
+                    queue_impl.kv_store.set_job(queue_name, &job.id, job_json).await;
                 }
             }
         }
@@ -1009,8 +982,7 @@ mod tests {
         let job = queue.pop("test_queue").await.unwrap();
         queue.ack("test_queue", &job.id).await.unwrap();
 
-        let job_key = queue.job_key("test_queue", &job_id);
-        let result = kv_store.get_job(&job_key).await;
+        let result = kv_store.get_job("test_queue", &job_id).await;
         assert!(result.is_none());
     }
 
@@ -1429,8 +1401,7 @@ mod tests {
             .push_fifo("test_queue", serde_json::json!({"order": 1}), "group-a")
             .await;
 
-        let job_key = queue.job_key("test_queue", &job_id);
-        let job_value = kv_store.get_job(&job_key).await.unwrap();
+        let job_value = kv_store.get_job("test_queue", &job_id).await.unwrap();
         let job: Job = serde_json::from_value(job_value).unwrap();
 
         assert_eq!(job.group_id, Some("group-a".to_string()));

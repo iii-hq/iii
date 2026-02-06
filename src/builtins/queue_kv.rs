@@ -247,20 +247,41 @@ impl QueueKvStore {
         }
     }
 
-    pub async fn set_job(&self, key: &str, value: Value) {
-        self.kv.set(key.to_string(), String::new(), value).await;
+    pub async fn set_job(&self, queue: &str, job_id: &str, value: Value) {
+        let index = format!("queue:{}:jobs", queue);
+        self.kv.set(index, job_id.to_string(), value).await;
     }
 
-    pub async fn get_job(&self, key: &str) -> Option<Value> {
-        self.kv.get(key.to_string(), String::new()).await
+    pub async fn get_job(&self, queue: &str, job_id: &str) -> Option<Value> {
+        let index = format!("queue:{}:jobs", queue);
+        self.kv.get(index, job_id.to_string()).await
     }
 
-    pub async fn delete_job(&self, key: &str) {
-        self.kv.delete(key.to_string(), String::new()).await;
+    pub async fn delete_job(&self, queue: &str, job_id: &str) {
+        let index = format!("queue:{}:jobs", queue);
+        self.kv.delete(index, job_id.to_string()).await;
     }
 
-    pub async fn list_job_keys(&self, prefix: &str) -> Vec<String> {
-        self.kv.list_keys_with_prefix(prefix.to_string()).await
+    pub async fn list_all_jobs(&self, queue: &str) -> Vec<(String, Value)> {
+        let index = format!("queue:{}:jobs", queue);
+        self.kv.list_entries(index).await
+    }
+
+    pub async fn list_queue_names(&self) -> Vec<String> {
+        self.kv
+            .list_keys_with_prefix("queue:".to_string())
+            .await
+            .into_iter()
+            .filter(|k| k.ends_with(":jobs"))
+            .filter_map(|k| {
+                let parts: Vec<&str> = k.split(':').collect();
+                if parts.len() >= 2 {
+                    Some(parts[1].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub async fn lpush(&self, key: &str, value: String) {
