@@ -363,6 +363,10 @@ impl EngineBuilder {
     pub async fn build(mut self) -> anyhow::Result<Self> {
         let config = self.config.take().expect("No module configs founded");
 
+        // Ensure metrics are always available, even if OtelModule is not configured.
+        // This prevents panics in workers/invocation code that unconditionally calls get_engine_metrics().
+        crate::modules::observability::metrics::ensure_default_meter();
+
         tracing::info!("Building engine with {} modules", config.modules.len());
 
         let mut modules = config.modules;
