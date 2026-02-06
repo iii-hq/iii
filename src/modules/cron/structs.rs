@@ -121,10 +121,7 @@ impl CronAdapter {
                             "Checking trigger conditions"
                         );
 
-                        match engine
-                            .call(condition_function_id, event_data.clone())
-                            .await
-                        {
+                        match engine.call(condition_function_id, event_data.clone()).await {
                             Ok(Some(result)) => {
                                 if let Some(passed) = result.as_bool()
                                     && !passed

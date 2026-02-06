@@ -160,8 +160,7 @@ impl Module for BridgeClientModule {
                         }
                     };
 
-                    if let Err(err) = bridge.call_void(&invoke.function_id, invoke.data)
-                    {
+                    if let Err(err) = bridge.call_void(&invoke.function_id, invoke.data) {
                         dbg!(&err);
                         return FunctionResult::Failure(ErrorBody {
                             code: "bridge_error".into(),

@@ -200,10 +200,7 @@ impl QueueAdapter for RedisAdapter {
                         "Checking trigger conditions"
                     );
 
-                    match engine
-                        .call(condition_function_id, data.clone())
-                        .await
-                    {
+                    match engine.call(condition_function_id, data.clone()).await {
                         Ok(Some(result)) => {
                             if let Some(passed) = result.as_bool()
                                 && !passed

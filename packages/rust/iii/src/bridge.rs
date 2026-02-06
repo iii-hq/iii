@@ -448,11 +448,7 @@ impl Bridge {
         }
     }
 
-    pub fn call_void<TInput>(
-        &self,
-        function_id: &str,
-        data: TInput,
-    ) -> Result<(), BridgeError>
+    pub fn call_void<TInput>(&self, function_id: &str, data: TInput) -> Result<(), BridgeError>
     where
         TInput: Serialize,
     {
@@ -821,12 +817,7 @@ impl Bridge {
         }
     }
 
-    fn handle_call(
-        &self,
-        invocation_id: Option<Uuid>,
-        function_id: String,
-        data: Value,
-    ) {
+    fn handle_call(&self, invocation_id: Option<Uuid>, function_id: String, data: Value) {
         tracing::debug!(function_id = %function_id, "Invoking function");
 
         let handler = self

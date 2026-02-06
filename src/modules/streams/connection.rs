@@ -21,8 +21,8 @@ use crate::{
         Subscription,
         adapters::StreamConnection,
         structs::{
-            StreamAuthContext, StreamListInput, StreamGetInput, StreamIncomingMessageData,
-            StreamJoinLeaveEvent, StreamJoinResult, StreamOutbound,
+            StreamAuthContext, StreamGetInput, StreamIncomingMessageData, StreamJoinLeaveEvent,
+            StreamJoinResult, StreamListInput, StreamOutbound,
         },
         trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
     },

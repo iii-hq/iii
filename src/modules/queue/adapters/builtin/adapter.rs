@@ -41,11 +41,7 @@ struct FunctionHandler {
 #[async_trait]
 impl JobHandler for FunctionHandler {
     async fn handle(&self, job: &crate::builtins::queue::Job) -> Result<(), String> {
-        match self
-            .engine
-            .call(&self.function_id, job.data.clone())
-            .await
-        {
+        match self.engine.call(&self.function_id, job.data.clone()).await {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }

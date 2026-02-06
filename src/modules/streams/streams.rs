@@ -38,8 +38,8 @@ use crate::{
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
-                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamListInput,
-                StreamGetInput, StreamListAllInput, StreamListGroupsInput, StreamSetInput,
+                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
+                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSetInput,
                 StreamUpdateInput,
             },
             trigger::{
@@ -338,9 +338,7 @@ impl StreamCoreModule {
                         "Invoking trigger"
                     );
 
-                    let call_result = engine
-                        .call(&trigger.function_id, event_data.clone())
-                        .await;
+                    let call_result = engine.call(&trigger.function_id, event_data.clone()).await;
 
                     match call_result {
                         Ok(_) => {
@@ -572,10 +570,7 @@ impl StreamCoreModule {
     }
 
     #[function(id = "streams.list", description = "List all items in a stream group")]
-    pub async fn list(
-        &self,
-        input: StreamListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn list(&self, input: StreamListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
