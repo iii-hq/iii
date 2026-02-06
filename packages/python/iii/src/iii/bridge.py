@@ -289,7 +289,7 @@ class Bridge:
         return Trigger(unregister)
 
     def register_function(self, path: str, handler: RemoteFunctionHandler, description: str | None = None) -> None:
-        msg = RegisterFunctionMessage(function_id=path, description=description)
+        msg = RegisterFunctionMessage(id=path, description=description)
         self._enqueue(msg)
 
         async def wrapped(input_data: Any) -> Any:

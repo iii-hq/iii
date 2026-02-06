@@ -94,7 +94,7 @@ class RegisterFunctionMessage(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    function_id: str = Field()
+    id: str = Field()
     description: str | None = None
     request_format: RegisterFunctionFormat | None = Field(default=None)
     response_format: RegisterFunctionFormat | None = Field(default=None)
