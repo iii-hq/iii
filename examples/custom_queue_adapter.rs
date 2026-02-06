@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait CustomQueueAdapter: Send + Sync + 'static {
-    async fn emit(&self, topic: &str, event_data: Value);
+    async fn enqueue(&self, topic: &str, event_data: Value);
     async fn subscribe(&self, topic: &str, id: &str, function_id: &str);
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
@@ -78,7 +78,7 @@ impl InMemoryQueueAdapter {
 
 #[async_trait]
 impl CustomQueueAdapter for InMemoryQueueAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
+    async fn enqueue(&self, topic: &str, event_data: Value) {
         let subscribers = self.subscribers.read().await;
         if let Some(subs) = subscribers.get(topic) {
             let mut invokes = vec![];
@@ -142,13 +142,13 @@ impl LoggingQueueAdapter {
 
 #[async_trait]
 impl CustomQueueAdapter for LoggingQueueAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
+    async fn enqueue(&self, topic: &str, event_data: Value) {
         tracing::info!(
             topic = %topic,
             event_data = %event_data,
-            "LoggingQueueAdapter: Emitting to queue"
+            "LoggingQueueAdapter: Enqueuing message"
         );
-        self.inner.emit(topic, event_data).await;
+        self.inner.enqueue(topic, event_data).await;
     }
 
     async fn subscribe(&self, topic: &str, id: &str, function_id: &str) {
@@ -297,7 +297,7 @@ impl FunctionHandler for CustomQueueModule {
             }
 
             tracing::debug!(topic = %topic, data = %data, "Emitting to custom queue");
-            adapter.emit(topic, data).await;
+            adapter.enqueue(topic, data).await;
 
             FunctionResult::Success(None)
         })

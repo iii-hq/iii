@@ -18,7 +18,7 @@ pub use self::subscriber_config::SubscriberQueueConfig;
 
 #[async_trait::async_trait]
 pub trait QueueAdapter: Send + Sync + 'static {
-    async fn emit(&self, topic: &str, data: Value);
+    async fn enqueue(&self, topic: &str, data: Value);
     async fn subscribe(
         &self,
         topic: &str,

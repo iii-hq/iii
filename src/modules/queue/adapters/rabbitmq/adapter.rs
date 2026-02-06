@@ -113,7 +113,7 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
 
 #[async_trait]
 impl QueueAdapter for RabbitMQAdapter {
-    async fn emit(&self, topic: &str, data: Value) {
+    async fn enqueue(&self, topic: &str, data: Value) {
         let job = Job::new(topic, data, self.config.max_attempts);
 
         if let Err(e) = self.topology.setup_topic(topic).await {

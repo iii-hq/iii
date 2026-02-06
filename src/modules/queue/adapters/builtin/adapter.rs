@@ -103,7 +103,7 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
 
 #[async_trait]
 impl QueueAdapter for BuiltinQueueAdapter {
-    async fn emit(&self, topic: &str, data: Value) {
+    async fn enqueue(&self, topic: &str, data: Value) {
         self.queue.push(topic, data).await;
     }
 

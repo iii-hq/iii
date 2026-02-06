@@ -87,7 +87,7 @@ crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RedisAdapte
 
 #[async_trait]
 impl QueueAdapter for RedisAdapter {
-    async fn emit(&self, topic: &str, data: Value) {
+    async fn enqueue(&self, topic: &str, data: Value) {
         let topic = topic.to_string();
         let data = data.clone();
         let publisher = Arc::clone(&self.publisher);

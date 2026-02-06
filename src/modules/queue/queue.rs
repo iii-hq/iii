@@ -42,8 +42,8 @@ pub struct QueueInput {
 
 #[service(name = "queue")]
 impl QueueCoreModule {
-    #[function(id = "emit", description = "Emit to queue")]
-    pub async fn emit(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    #[function(id = "enqueue", description = "Enqueue a message")]
+    pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let data = input.data;
         let topic = input.topic;
@@ -55,8 +55,8 @@ impl QueueCoreModule {
             });
         }
 
-        tracing::debug!(topic = %topic, data = %data, "Emitting to queue");
-        let _ = adapter.emit(&topic, data).await;
+        tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
+        let _ = adapter.enqueue(&topic, data).await;
 
         FunctionResult::Success(None)
     }
