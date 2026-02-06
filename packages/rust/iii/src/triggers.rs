@@ -8,7 +8,7 @@ use crate::error::BridgeError;
 #[derive(Debug, Clone)]
 pub struct TriggerConfig {
     pub id: String,
-    pub function_path: String,
+    pub function_id: String,
     pub config: Value,
 }
 

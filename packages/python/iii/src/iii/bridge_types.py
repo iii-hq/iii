@@ -49,7 +49,7 @@ class TriggerRegistrationResultMessage(BaseModel):
 
     id: str
     trigger_type: str = Field()
-    function_path: str = Field()
+    function_id: str = Field()
     result: Any = None
     error: Any = None
     type: MessageType = MessageType.TRIGGER_REGISTRATION_RESULT
@@ -62,7 +62,7 @@ class RegisterTriggerMessage(BaseModel):
 
     id: str
     trigger_type: str = Field()
-    function_path: str = Field()
+    function_id: str = Field()
     config: Any
     type: MessageType = MessageType.REGISTER_TRIGGER
 
@@ -94,7 +94,7 @@ class RegisterFunctionMessage(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    function_path: str = Field()
+    function_id: str = Field()
     description: str | None = None
     request_format: RegisterFunctionFormat | None = Field(default=None)
     response_format: RegisterFunctionFormat | None = Field(default=None)
@@ -107,7 +107,7 @@ class InvokeFunctionMessage(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    function_path: str = Field()
+    function_id: str = Field()
     data: Any
     invocation_id: str | None = Field(default=None)
     type: MessageType = MessageType.INVOKE_FUNCTION
@@ -119,7 +119,7 @@ class InvocationResultMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     invocation_id: str = Field()
-    function_path: str = Field()
+    function_id: str = Field()
     result: Any = None
     error: Any = None
     type: MessageType = MessageType.INVOCATION_RESULT
@@ -128,7 +128,7 @@ class InvocationResultMessage(BaseModel):
 class FunctionInfo(BaseModel):
     """Information about a registered function."""
 
-    function_path: str
+    function_id: str
     description: str | None = None
     request_format: RegisterFunctionFormat | None = None
     response_format: RegisterFunctionFormat | None = None

@@ -33,7 +33,7 @@ pub struct WorkersListInput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionInfo {
-    pub function_path: String,
+    pub function_id: String,
     pub description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
@@ -44,7 +44,7 @@ pub struct FunctionInfo {
 pub struct TriggerInfo {
     pub id: String,
     pub trigger_type: String,
-    pub function_path: String,
+    pub function_id: String,
     pub config: Value,
 }
 
@@ -99,10 +99,10 @@ impl WorkerModule {
 
         for trigger in triggers_to_fire {
             let engine = self.engine.clone();
-            let function_path = trigger.function_path.clone();
+            let function_id = trigger.function_id.clone();
             let data = data.clone();
             tokio::spawn(async move {
-                let _ = engine.invoke_function(&function_path, data).await;
+                let _ = engine.invoke_function(&function_id, data).await;
             });
         }
     }
@@ -114,7 +114,7 @@ impl WorkerModule {
             .map(|entry| {
                 let f = entry.value();
                 FunctionInfo {
-                    function_path: f._function_path.clone(),
+                    function_id: f._function_id.clone(),
                     description: f._description.clone(),
                     request_format: f.request_format.clone(),
                     response_format: f.response_format.clone(),
@@ -134,7 +134,7 @@ impl WorkerModule {
                 TriggerInfo {
                     id: t.id.clone(),
                     trigger_type: t.trigger_type.clone(),
-                    function_path: t.function_path.clone(),
+                    function_id: t.function_id.clone(),
                     config: t.config.clone(),
                 }
             })
@@ -157,7 +157,7 @@ impl WorkerModule {
                 continue;
             }
 
-            let functions = w.get_function_paths().await;
+            let functions = w.get_function_ids().await;
             let function_count = functions.len();
             let active_invocations = w.invocation_count().await;
             // Query latest metrics from OTEL storage
@@ -212,7 +212,7 @@ impl TriggerRegistrator for WorkerModule {
             tracing::debug!(
                 trigger_id = %trigger.id,
                 trigger_type = %trigger.trigger_type,
-                function_path = %trigger.function_path,
+                function_id = %trigger.function_id,
                 "Registering engine trigger"
             );
             triggers.insert(trigger.id.clone(), trigger);
@@ -308,10 +308,10 @@ impl Module for WorkerModule {
 
                             for trigger in triggers_to_fire {
                                 let engine = engine.clone();
-                                let function_path = trigger.function_path.clone();
+                                let function_id = trigger.function_id.clone();
                                 let data = functions_data.clone();
                                 tokio::spawn(async move {
-                                    let _ = engine.invoke_function(&function_path, data).await;
+                                    let _ = engine.invoke_function(&function_id, data).await;
                                 });
                             }
                         }
@@ -336,7 +336,7 @@ impl Module for WorkerModule {
 
 #[service(name = "engine")]
 impl WorkerModule {
-    #[function(name = "engine.functions.list", description = "List all functions")]
+    #[function(id = "engine.functions.list", description = "List all functions")]
     pub async fn get_functions(
         &self,
         _input: EmptyInput,
@@ -346,7 +346,7 @@ impl WorkerModule {
     }
 
     #[function(
-        name = "engine.workers.list",
+        id = "engine.workers.list",
         description = "List all workers with metrics"
     )]
     pub async fn get_workers(
@@ -360,7 +360,7 @@ impl WorkerModule {
         })))
     }
 
-    #[function(name = "engine.triggers.list", description = "List all triggers")]
+    #[function(id = "engine.triggers.list", description = "List all triggers")]
     pub async fn get_triggers(
         &self,
         _input: EmptyInput,
@@ -370,7 +370,7 @@ impl WorkerModule {
     }
 
     #[function(
-        name = "engine.workers.register",
+        id = "engine.workers.register",
         description = "Register worker metadata"
     )]
     pub async fn register_worker(

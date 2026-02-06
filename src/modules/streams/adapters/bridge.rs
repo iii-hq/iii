@@ -45,7 +45,7 @@ pub const STREAMS_EVENTS_TOPIC: &str = "streams.events";
 
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
-    handler_function_path: String,
+    handler_function_id: String,
     bridge: Arc<Bridge>,
 }
 
@@ -54,7 +54,7 @@ impl BridgeAdapter {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
         let bridge = Arc::new(Bridge::new(&bridge_url));
-        let handler_function_path = format!("streams::bridge::on_pub::{}", uuid::Uuid::new_v4());
+        let handler_function_id = format!("streams::bridge::on_pub::{}", uuid::Uuid::new_v4());
         let res = bridge.connect().await;
 
         if let Err(error) = res {
@@ -64,7 +64,7 @@ impl BridgeAdapter {
         Ok(Self {
             bridge,
             pub_sub: Arc::new(BuiltInPubSubLite::new(None)),
-            handler_function_path,
+            handler_function_id,
         })
     }
 
@@ -236,10 +236,10 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn watch_events(&self) -> anyhow::Result<()> {
-        let handler_function_path = self.handler_function_path.clone();
+        let handler_function_id = self.handler_function_id.clone();
         let pub_sub = self.pub_sub.clone();
         self.bridge
-            .register_function(handler_function_path.clone(), move |data| {
+            .register_function(handler_function_id.clone(), move |data| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
@@ -262,7 +262,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let _ = self.bridge.register_trigger(
             "subscribe",
-            handler_function_path,
+            handler_function_id,
             SubscribeTrigger {
                 topic: STREAMS_EVENTS_TOPIC.to_string(),
             },

@@ -347,8 +347,8 @@ impl Default for MetricsAccumulator {
 impl MetricsAccumulator {
     /// Get invocations for a specific function.
     /// More efficient than get_by_function() when only one function's count is needed.
-    pub fn get_function_count(&self, function_path: &str) -> Option<u64> {
-        self.invocations_by_function.get(function_path).map(|v| *v)
+    pub fn get_function_count(&self, function_id: &str) -> Option<u64> {
+        self.invocations_by_function.get(function_id).map(|v| *v)
     }
 
     /// Get invocations grouped by function as a HashMap.
@@ -369,9 +369,9 @@ impl MetricsAccumulator {
     }
 
     /// Increment invocation count for a specific function
-    pub fn increment_function(&self, function_path: &str) {
+    pub fn increment_function(&self, function_id: &str) {
         self.invocations_by_function
-            .entry(function_path.to_string())
+            .entry(function_id.to_string())
             .and_modify(|count| *count += 1)
             .or_insert(1);
     }
@@ -1607,7 +1607,7 @@ impl AlertManager {
             AlertAction::Function { path } => {
                 if let Some(engine) = &self.engine {
                     let engine = engine.clone();
-                    let function_path = path.clone();
+                    let function_id = path.clone();
                     let payload = serde_json::json!({
                         "alert": event.name,
                         "metric": event.metric,
@@ -1619,16 +1619,16 @@ impl AlertManager {
                     });
 
                     tokio::spawn(async move {
-                        match engine.invoke_function(&function_path, payload).await {
+                        match engine.invoke_function(&function_id, payload).await {
                             Ok(_) => {
                                 tracing::debug!(
-                                    function_path = %function_path,
+                                    function_id = %function_id,
                                     "Alert function invoked successfully"
                                 );
                             }
                             Err(e) => {
                                 tracing::error!(
-                                    function_path = %function_path,
+                                    function_id = %function_id,
                                     error = ?e,
                                     "Failed to invoke alert function"
                                 );
@@ -1638,7 +1638,7 @@ impl AlertManager {
                 } else {
                     tracing::warn!(
                         alert_name = %event.name,
-                        function_path = %path,
+                        function_id = %path,
                         "Alert function action configured but no engine reference available"
                     );
                 }

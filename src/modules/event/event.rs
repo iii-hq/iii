@@ -42,7 +42,7 @@ pub struct EventInput {
 
 #[service(name = "event")]
 impl EventCoreModule {
-    #[function(name = "emit", description = "Emit an event")]
+    #[function(id = "emit", description = "Emit an event")]
     pub async fn emit(&self, input: EventInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let event_data = input.data;
@@ -80,7 +80,7 @@ impl TriggerRegistrator for EventCoreModule {
             "{} Subscription {} → {}",
             "[REGISTERED]".green(),
             topic.purple(),
-            trigger.function_path.cyan()
+            trigger.function_id.cyan()
         );
 
         // Get adapter reference before async block
@@ -88,7 +88,7 @@ impl TriggerRegistrator for EventCoreModule {
 
         Box::pin(async move {
             if !topic.is_empty() {
-                let condition_function_path = trigger
+                let condition_function_id = trigger
                     .config
                     .get("_condition_path")
                     .and_then(|v| v.as_str())
@@ -105,14 +105,14 @@ impl TriggerRegistrator for EventCoreModule {
                     .subscribe(
                         &topic,
                         &trigger.id,
-                        &trigger.function_path,
-                        condition_function_path,
+                        &trigger.function_id,
+                        condition_function_id,
                         queue_config,
                     )
                     .await;
             } else {
                 tracing::warn!(
-                    function_path = %trigger.function_path.purple(),
+                    function_id = %trigger.function_id.purple(),
                     "Topic is not set for trigger"
                 );
             }

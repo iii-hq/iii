@@ -12,13 +12,13 @@ pub enum Message {
     RegisterTrigger {
         id: String,
         trigger_type: String,
-        function_path: String,
+        function_id: String,
         config: Value,
     },
     TriggerRegistrationResult {
         id: String,
         trigger_type: String,
-        function_path: String,
+        function_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
@@ -27,7 +27,7 @@ pub enum Message {
         trigger_type: String,
     },
     RegisterFunction {
-        function_path: String,
+        id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,12 +39,12 @@ pub enum Message {
     },
     InvokeFunction {
         invocation_id: Option<Uuid>,
-        function_path: String,
+        function_id: String,
         data: Value,
     },
     InvocationResult {
         invocation_id: Uuid,
-        function_path: String,
+        function_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +79,7 @@ impl RegisterTriggerTypeMessage {
 pub struct RegisterTriggerMessage {
     pub id: String,
     pub trigger_type: String,
-    pub function_path: String,
+    pub function_id: String,
     pub config: Value,
 }
 
@@ -88,7 +88,7 @@ impl RegisterTriggerMessage {
         Message::RegisterTrigger {
             id: self.id.clone(),
             trigger_type: self.trigger_type.clone(),
-            function_path: self.function_path.clone(),
+            function_id: self.function_id.clone(),
             config: self.config.clone(),
         }
     }
@@ -111,7 +111,7 @@ impl UnregisterTriggerMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterFunctionMessage {
-    pub function_path: String,
+    pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,7 +125,7 @@ pub struct RegisterFunctionMessage {
 impl RegisterFunctionMessage {
     pub fn to_message(&self) -> Message {
         Message::RegisterFunction {
-            function_path: self.function_path.clone(),
+            id: self.id.clone(),
             description: self.description.clone(),
             request_format: self.request_format.clone(),
             response_format: self.response_format.clone(),
@@ -154,7 +154,7 @@ impl RegisterServiceMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionMessage {
-    pub function_path: String,
+    pub function_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn register_function_to_message_and_serializes_type() {
         let msg = RegisterFunctionMessage {
-            function_path: "functions.echo".to_string(),
+            id: "functions.echo".to_string(),
             description: Some("Echo function".to_string()),
             request_format: None,
             response_format: None,
@@ -188,11 +188,9 @@ mod tests {
         let message = msg.to_message();
         match &message {
             Message::RegisterFunction {
-                function_path,
-                description,
-                ..
+                id, description, ..
             } => {
-                assert_eq!(function_path, "functions.echo");
+                assert_eq!(id, "functions.echo");
                 assert_eq!(description.as_deref(), Some("Echo function"));
             }
             _ => panic!("unexpected message variant"),
@@ -200,7 +198,7 @@ mod tests {
 
         let serialized = serde_json::to_value(&message).unwrap();
         assert_eq!(serialized["type"], "registerfunction");
-        assert_eq!(serialized["function_path"], "functions.echo");
+        assert_eq!(serialized["id"], "functions.echo");
         assert_eq!(serialized["description"], "Echo function");
     }
 }

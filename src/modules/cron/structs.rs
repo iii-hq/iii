@@ -28,9 +28,9 @@ pub(crate) struct CronJobInfo {
     pub id: String,
     #[allow(dead_code)]
     pub schedule: Schedule,
-    pub function_path: String,
+    pub function_id: String,
     #[allow(dead_code)]
-    pub condition_function_path: Option<String>,
+    pub condition_function_id: Option<String>,
     pub task_handle: JoinHandle<()>,
 }
 
@@ -61,16 +61,16 @@ impl CronAdapter {
         &self,
         id: String,
         schedule: Schedule,
-        function_path: String,
-        condition_function_path: Option<String>,
+        function_id: String,
+        condition_function_id: Option<String>,
     ) -> JoinHandle<()> {
         let scheduler = Arc::clone(&self.adapter);
         let engine = Arc::clone(&self.engine);
         let job_id = id.clone();
-        let func_path = function_path.clone();
+        let func_path = function_id.clone();
 
         tokio::spawn(async move {
-            tracing::debug!(job_id = %job_id, function_path = %func_path, "Starting cron job loop");
+            tracing::debug!(job_id = %job_id, function_id = %func_path, "Starting cron job loop");
 
             loop {
                 // Calculate time until next execution
@@ -115,14 +115,14 @@ impl CronAdapter {
                         "actual_time": chrono::Utc::now().to_rfc3339(),
                     });
 
-                    if let Some(condition_function_path) = condition_function_path.as_ref() {
+                    if let Some(condition_function_id) = condition_function_id.as_ref() {
                         tracing::debug!(
-                            condition_function_path = %condition_function_path,
+                            condition_function_id = %condition_function_id,
                             "Checking trigger conditions"
                         );
 
                         match engine
-                            .invoke_function(condition_function_path, event_data.clone())
+                            .invoke_function(condition_function_id, event_data.clone())
                             .await
                         {
                             Ok(Some(result)) => {
@@ -130,7 +130,7 @@ impl CronAdapter {
                                     && !passed
                                 {
                                     tracing::debug!(
-                                        function_path = %func_path,
+                                        function_id = %func_path,
                                         "Condition check failed, skipping handler"
                                     );
                                     scheduler.release_lock(&job_id).await;
@@ -139,13 +139,13 @@ impl CronAdapter {
                             }
                             Ok(None) => {
                                 tracing::warn!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     "Condition function returned no result"
                                 );
                             }
                             Err(err) => {
                                 tracing::error!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     error = ?err,
                                     "Error invoking condition function"
                                 );
@@ -177,8 +177,8 @@ impl CronAdapter {
         &self,
         id: &str,
         cron_expression: &str,
-        function_path: &str,
-        condition_function_path: Option<String>,
+        function_id: &str,
+        condition_function_id: Option<String>,
     ) -> anyhow::Result<()> {
         // Check if already registered
         {
@@ -196,7 +196,7 @@ impl CronAdapter {
             "[REGISTERED]".green(),
             id.purple(),
             cron_expression.yellow(),
-            function_path.cyan()
+            function_id.cyan()
         );
 
         // Start the cron job
@@ -204,8 +204,8 @@ impl CronAdapter {
             .start_cron_job(
                 id.to_string(),
                 schedule.clone(),
-                function_path.to_string(),
-                condition_function_path.clone(),
+                function_id.to_string(),
+                condition_function_id.clone(),
             )
             .await;
 
@@ -216,8 +216,8 @@ impl CronAdapter {
             CronJobInfo {
                 id: id.to_string(),
                 schedule,
-                function_path: function_path.to_string(),
-                condition_function_path,
+                function_id: function_id.to_string(),
+                condition_function_id,
                 task_handle,
             },
         );
@@ -234,7 +234,7 @@ impl CronAdapter {
                 "{} Cron job {} → {}",
                 "[UNREGISTERED]".yellow(),
                 id.purple(),
-                job_info.function_path.cyan()
+                job_info.function_id.cyan()
             );
 
             // Abort the task

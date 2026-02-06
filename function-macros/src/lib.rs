@@ -141,7 +141,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             match metas {
                 Ok(metas) => {
-                    let name = extract(&metas, "name");
+                    let id = extract(&metas, "id");
                     let description = extract_optional(&metas, "description");
                     let method_ident = method.sig.ident.clone();
 
@@ -183,12 +183,12 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         Err(err) => {
                                             eprintln!(
                                                 "[warning] Failed to serialize result for {}: {}",
-                                                #name,
+                                                #id,
                                                 err
                                             );
                                             FunctionResult::Failure(ErrorBody {
                                                 code: "serialization_error".into(),
-                                                message: format!("Failed to serialize result for {}: {}", #name, err.to_string()),
+                                                message: format!("Failed to serialize result for {}: {}", #id, err.to_string()),
                                             })
                                         }
                                     }
@@ -217,12 +217,12 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                         Err(err) => {
                                             eprintln!(
                                                 "[warning] Failed to deserialize input for {}: {}",
-                                                #name,
+                                                #id,
                                                 err
                                             );
                                             return FunctionResult::Failure(ErrorBody {
                                                 code: "deserialization_error".into(),
-                                                message: format!("Failed to deserialize input for {}: {}", #name, err.to_string()),
+                                                message: format!("Failed to deserialize input for {}: {}", #id, err.to_string()),
                                             });
                                         }
                                     };
@@ -233,7 +233,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                             engine.register_function_handler(
                                 RegisterFunctionRequest {
-                                    function_path: #name.into(),
+                                    function_id: #id.into(),
                                     description: #description,
                                     request_format: None,
                                     response_format: None,

@@ -49,7 +49,7 @@ pub struct ForwardFunctionConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct InvokeInput {
-    pub function_path: String,
+    pub function_id: String,
     #[serde(default)]
     pub data: Value,
     #[serde(default)]
@@ -95,7 +95,7 @@ impl Module for BridgeClientModule {
 
         engine.register_function_handler(
             RegisterFunctionRequest {
-                function_path: "bridge.invoke".to_string(),
+                function_id: "bridge.invoke".to_string(),
                 description: Some("Invoke a function on the remote III instance".to_string()),
                 request_format: None,
                 response_format: None,
@@ -121,7 +121,7 @@ impl Module for BridgeClientModule {
                         .unwrap_or_else(|| Duration::from_secs(30));
 
                     match bridge
-                        .invoke_function_with_timeout(&invoke.function_path, invoke.data, timeout)
+                        .invoke_function_with_timeout(&invoke.function_id, invoke.data, timeout)
                         .await
                     {
                         Ok(result) => FunctionResult::Success(Some(result)),
@@ -140,7 +140,7 @@ impl Module for BridgeClientModule {
         let bridge = self.bridge.clone();
         engine.register_function_handler(
             RegisterFunctionRequest {
-                function_path: "bridge.invoke_async".to_string(),
+                function_id: "bridge.invoke_async".to_string(),
                 description: Some("Fire-and-forget invoke on the remote III instance".to_string()),
                 request_format: None,
                 response_format: None,
@@ -160,8 +160,7 @@ impl Module for BridgeClientModule {
                         }
                     };
 
-                    if let Err(err) =
-                        bridge.invoke_function_async(&invoke.function_path, invoke.data)
+                    if let Err(err) = bridge.invoke_function_async(&invoke.function_id, invoke.data)
                     {
                         dbg!(&err);
                         return FunctionResult::Failure(ErrorBody {
@@ -183,7 +182,7 @@ impl Module for BridgeClientModule {
 
             engine.register_function_handler(
                 RegisterFunctionRequest {
-                    function_path: local_function.clone(),
+                    function_id: local_function.clone(),
                     description: Some(format!("Forward to remote function {}", remote_function)),
                     request_format: None,
                     response_format: None,

@@ -1,8 +1,0 @@
-{
-  "name": "@iii/repository",
-  "version": "0.0.1",
-  "packageManager": "pnpm@10.19.0",
-  "scripts": {
-    "build": "pnpm --filter @iii-dev/* build"
-  }
-}

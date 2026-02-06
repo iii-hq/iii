@@ -121,11 +121,11 @@ impl SocketStreamConnection {
 
         for trigger in triggers {
             if trigger.trigger_type == event_type {
-                tracing::debug!(function_path = %trigger.function_path, event_type = ?event_type, "Invoking trigger");
+                tracing::debug!(function_id = %trigger.function_id, event_type = ?event_type, "Invoking trigger");
 
                 let call_result = self
                     .engine
-                    .invoke_function(&trigger.function_path, event_value.clone())
+                    .invoke_function(&trigger.function_id, event_value.clone())
                     .await;
 
                 tracing::debug!(call_result = ?call_result, "Call result");

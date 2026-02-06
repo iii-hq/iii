@@ -23,8 +23,8 @@ pub trait EventAdapter: Send + Sync + 'static {
         &self,
         topic: &str,
         id: &str,
-        function_path: &str,
-        condition_function_path: Option<String>,
+        function_id: &str,
+        condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     );
     async fn unsubscribe(&self, topic: &str, id: &str);
