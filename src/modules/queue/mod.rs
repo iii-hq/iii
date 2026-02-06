@@ -7,13 +7,13 @@
 pub mod adapters;
 mod config;
 #[allow(clippy::module_inception)]
-mod event;
+mod queue;
 pub mod registry;
 mod subscriber_config;
 
 use serde_json::Value;
 
-pub use self::event::EventCoreModule;
+pub use self::queue::QueueCoreModule;
 pub use self::subscriber_config::SubscriberQueueConfig;
 
 #[async_trait::async_trait]
