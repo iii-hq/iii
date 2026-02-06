@@ -359,7 +359,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(name = "state.list_groups", description = "List all state groups")]
+    #[function(id = "state.list_groups", description = "List all state groups")]
     pub async fn list_groups(
         &self,
         _input: StateListGroupsInput,
