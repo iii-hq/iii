@@ -124,25 +124,25 @@ impl StateCoreModule {
                     let trigger = trigger.clone();
 
                     // Check condition if specified
-                    let condition_function_path = trigger
+                    let condition_function_id = trigger
                         .config
-                        .get("condition_function_path")
+                        .get("condition_function_id")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
 
-                    if let Some(condition_function_path) = condition_function_path {
+                    if let Some(condition_function_id) = condition_function_id {
                         tracing::debug!(
-                            condition_function_path = %condition_function_path,
+                            condition_function_id = %condition_function_id,
                             "Checking trigger conditions"
                         );
 
                         match engine
-                            .invoke_function(&condition_function_path, event_data.clone())
+                            .invoke_function(&condition_function_id, event_data.clone())
                             .await
                         {
                             Ok(Some(result)) => {
                                 tracing::debug!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     result = ?result,
                                     "Condition function result"
                                 );
@@ -151,7 +151,7 @@ impl StateCoreModule {
                                     && !passed
                                 {
                                     tracing::debug!(
-                                        function_path = %trigger.function_path,
+                                        function_id = %trigger.function_id,
                                         "Condition check failed, skipping handler"
                                     );
                                     continue;
@@ -159,14 +159,14 @@ impl StateCoreModule {
                             }
                             Ok(None) => {
                                 tracing::warn!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     "Condition function returned no result"
                                 );
                                 continue;
                             }
                             Err(err) => {
                                 tracing::error!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     error = ?err,
                                     "Error invoking condition function"
                                 );
@@ -177,24 +177,24 @@ impl StateCoreModule {
 
                     // Invoke the handler function
                     tracing::debug!(
-                        function_path = %trigger.function_path,
+                        function_id = %trigger.function_id,
                         "Invoking trigger"
                     );
 
                     let call_result = engine
-                        .invoke_function(&trigger.function_path, event_data.clone())
+                        .invoke_function(&trigger.function_id, event_data.clone())
                         .await;
 
                     match call_result {
                         Ok(_) => {
                             tracing::debug!(
-                                function_path = %trigger.function_path,
+                                function_id = %trigger.function_id,
                                 "Trigger handler invoked successfully"
                             );
                         }
                         Err(err) => {
                             tracing::error!(
-                                function_path = %trigger.function_path,
+                                function_id = %trigger.function_id,
                                 error = ?err,
                                 "Error invoking trigger handler"
                             );
@@ -210,7 +210,7 @@ impl StateCoreModule {
 
 #[service(name = "state")]
 impl StateCoreModule {
-    #[function(name = "state.set", description = "Set a value in state")]
+    #[function(id = "state.set", description = "Set a value in state")]
     pub async fn set(&self, input: StateSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         match self
             .adapter
@@ -252,7 +252,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(name = "state.get", description = "Get a value from state")]
+    #[function(id = "state.get", description = "Get a value from state")]
     pub async fn get(&self, input: StateGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         match self.adapter.get(&input.group_id, &input.item_id).await {
             Ok(value) => FunctionResult::Success(value),
@@ -263,7 +263,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(name = "state.delete", description = "Delete a value from state")]
+    #[function(id = "state.delete", description = "Delete a value from state")]
     pub async fn delete(
         &self,
         input: StateDeleteInput,
@@ -301,7 +301,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(name = "state.update", description = "Update a value in state")]
+    #[function(id = "state.update", description = "Update a value in state")]
     pub async fn update(
         &self,
         input: StateUpdateInput,
@@ -345,7 +345,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(name = "state.list", description = "Get a group from state")]
+    #[function(id = "state.list", description = "Get a group from state")]
     pub async fn list(
         &self,
         input: StateGetGroupInput,

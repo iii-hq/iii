@@ -18,13 +18,13 @@ pub enum Message {
     RegisterTrigger {
         id: String,
         trigger_type: String,
-        function_path: String,
+        function_id: String,
         config: Value,
     },
     TriggerRegistrationResult {
         id: String,
         trigger_type: String,
-        function_path: String,
+        function_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
@@ -33,7 +33,7 @@ pub enum Message {
         trigger_type: String,
     },
     RegisterFunction {
-        function_path: String,
+        id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         request_format: Option<Value>,
@@ -43,7 +43,7 @@ pub enum Message {
     },
     InvokeFunction {
         invocation_id: Option<Uuid>,
-        function_path: String,
+        function_id: String,
         data: Value,
         /// W3C trace-context traceparent header for distributed tracing
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +54,7 @@ pub enum Message {
     },
     InvocationResult {
         invocation_id: Uuid,
-        function_path: String,
+        function_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]

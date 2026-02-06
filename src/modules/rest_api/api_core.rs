@@ -38,22 +38,22 @@ use crate::{
 pub struct PathRouter {
     pub http_path: String,
     pub http_method: String,
-    pub function_path: String,
-    pub condition_function_path: Option<String>,
+    pub function_id: String,
+    pub condition_function_id: Option<String>,
 }
 
 impl PathRouter {
     pub fn new(
         http_path: String,
         http_method: String,
-        function_path: String,
-        condition_function_path: Option<String>,
+        function_id: String,
+        condition_function_id: Option<String>,
     ) -> Self {
         Self {
             http_path,
             http_method,
-            function_path,
-            condition_function_path,
+            function_id,
+            condition_function_id,
         }
     }
 }
@@ -306,11 +306,11 @@ impl RestApiCoreModule {
         tracing::debug!("Looking up router for key: {}", key);
         self.routers_registry
             .get(&key)
-            .map(|r| (r.function_path.clone(), r.condition_function_path.clone()))
+            .map(|r| (r.function_id.clone(), r.condition_function_id.clone()))
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
-        let function_path = router.function_path.clone();
+        let function_id = router.function_id.clone();
         let http_path = router.http_path.clone();
         let method = router.http_method.to_uppercase();
         let key = format!("{}:{}", method, router.http_path);
@@ -321,7 +321,7 @@ impl RestApiCoreModule {
             "{} Endpoint {} → {}",
             "[REGISTERED]".green(),
             format!("{} /{}", method, http_path).bright_yellow().bold(),
-            function_path.purple()
+            function_id.purple()
         );
 
         // Update routes after registering
@@ -368,7 +368,7 @@ impl TriggerRegistrator for RestApiCoreModule {
                 .and_then(|v| v.as_str())
                 .unwrap_or("GET");
 
-            let condition_function_path = trigger
+            let condition_function_id = trigger
                 .config
                 .get("_condition_path")
                 .and_then(|v| v.as_str())
@@ -377,8 +377,8 @@ impl TriggerRegistrator for RestApiCoreModule {
             let router = PathRouter::new(
                 api_path.to_string(),
                 http_method.to_string(),
-                trigger.function_path.clone(),
-                condition_function_path,
+                trigger.function_id.clone(),
+                condition_function_id,
             );
 
             adapter.register_router(router).await?;

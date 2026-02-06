@@ -142,7 +142,7 @@ modules:
       #     cooldown_seconds: 300  # Min time between alert triggers
       #     action: log  # Options: log, webhook, function
       #     # webhook_url: https://hooks.example.com/alert
-      #     # function_path: alerts.handle_error
+      #     # function_id: alerts.handle_error
       #   - name: low_workers
       #     metric: iii.workers.active
       #     threshold: 1

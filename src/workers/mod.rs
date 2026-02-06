@@ -147,7 +147,7 @@ impl FromStr for WorkerStatus {
 pub struct Worker {
     pub id: Uuid,
     pub channel: mpsc::Sender<Outbound>,
-    pub function_paths: Arc<RwLock<HashSet<String>>>,
+    pub function_ids: Arc<RwLock<HashSet<String>>>,
     pub invocations: Arc<RwLock<HashSet<Uuid>>>,
     pub runtime: Option<String>,
     pub version: Option<String>,
@@ -165,7 +165,7 @@ impl Worker {
             id,
             channel,
             invocations: Arc::new(RwLock::new(HashSet::new())),
-            function_paths: Arc::new(RwLock::new(HashSet::new())),
+            function_ids: Arc::new(RwLock::new(HashSet::new())),
             runtime: None,
             version: None,
             connected_at: Utc::now(),
@@ -182,7 +182,7 @@ impl Worker {
             id,
             channel,
             invocations: Arc::new(RwLock::new(HashSet::new())),
-            function_paths: Arc::new(RwLock::new(HashSet::new())),
+            function_ids: Arc::new(RwLock::new(HashSet::new())),
             runtime: None,
             version: None,
             connected_at: Utc::now(),
@@ -194,21 +194,21 @@ impl Worker {
     }
 
     pub async fn function_count(&self) -> usize {
-        self.function_paths.read().await.len()
+        self.function_ids.read().await.len()
     }
 
     pub async fn invocation_count(&self) -> usize {
         self.invocations.read().await.len()
     }
 
-    pub async fn get_function_paths(&self) -> Vec<String> {
-        self.function_paths.read().await.iter().cloned().collect()
+    pub async fn get_function_ids(&self) -> Vec<String> {
+        self.function_ids.read().await.iter().cloned().collect()
     }
-    pub async fn include_function_path(&self, function_path: &str) {
-        self.function_paths
+    pub async fn include_function_id(&self, function_id: &str) {
+        self.function_ids
             .write()
             .await
-            .insert(function_path.to_owned());
+            .insert(function_id.to_owned());
     }
 
     pub async fn add_invocation(&self, invocation_id: Uuid) {

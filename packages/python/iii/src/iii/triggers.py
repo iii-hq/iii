@@ -14,7 +14,7 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str
-    function_path: str
+    function_id: str
     config: Any  # TConfig
 
 

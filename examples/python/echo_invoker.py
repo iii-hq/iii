@@ -22,19 +22,19 @@ def parse_args() -> argparse.Namespace:
 
     bridge.register_trigger(
         trigger_type="api",
-        function_path="python.list_greetings",
+        function_id="python.list_greetings",
         config={"api_path": "greetings", "http_method": "GET"},
     )
 
     bridge.register_trigger(
         trigger_type="api",
-        function_path="python.get_greeting",
+        function_id="python.get_greeting",
         config={"api_path": "greetings/:name", "http_method": "GET"},
     )
 
     bridge.register_trigger(
         trigger_type="api",
-        function_path="python.delete_greeting",
+        function_id="python.delete_greeting",
         config={"api_path": "greetings/:name", "http_method": "DELETE"},
     )
 

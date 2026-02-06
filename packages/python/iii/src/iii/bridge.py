@@ -62,7 +62,7 @@ class Bridge:
         self._receiver_task: asyncio.Task[None] | None = None
         self._functions_available_callbacks: set[Callable[[list[FunctionInfo]], None]] = set()
         self._functions_available_trigger: Trigger | None = None
-        self._functions_available_function_path: str | None = None
+        self._functions_available_function_id: str | None = None
 
     # Connection management
 
@@ -177,7 +177,7 @@ class Bridge:
             asyncio.create_task(
                 self._handle_invoke(
                     data.get("invocation_id"),
-                    data.get("function_path", ""),
+                    data.get("function_id", ""),
                     data.get("data"),
                 )
             )
@@ -204,7 +204,7 @@ class Bridge:
                 await self._send(
                     InvocationResultMessage(
                         invocation_id=invocation_id,
-                        function_path=path,
+                        function_id=path,
                         error={"code": "function_not_found", "message": f"Function '{path}' not found"},
                     )
                 )
@@ -219,7 +219,7 @@ class Bridge:
             await self._send(
                 InvocationResultMessage(
                     invocation_id=invocation_id,
-                    function_path=path,
+                    function_id=path,
                     result=result,
                 )
             )
@@ -228,7 +228,7 @@ class Bridge:
             await self._send(
                 InvocationResultMessage(
                     invocation_id=invocation_id,
-                    function_path=path,
+                    function_id=path,
                     error={"code": "invocation_failed", "message": str(e)},
                 )
             )
@@ -238,14 +238,14 @@ class Bridge:
         handler_data = self._trigger_types.get(trigger_type_id) if trigger_type_id else None
 
         trigger_id = data.get("id", "")
-        function_path = data.get("function_path", "")
+        function_id = data.get("function_id", "")
         config = data.get("config")
 
         result_base = {
             "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
             "id": trigger_id,
             "trigger_type": trigger_type_id,
-            "function_path": function_path,
+            "function_id": function_id,
         }
 
         if not handler_data:
@@ -253,7 +253,7 @@ class Bridge:
 
         try:
             await handler_data.handler.register_trigger(
-                TriggerConfig(id=trigger_id, function_path=function_path, config=config)
+                TriggerConfig(id=trigger_id, function_id=function_id, config=config)
             )
             await self._send(result_base)
         except Exception as e:
@@ -271,12 +271,12 @@ class Bridge:
         self._enqueue(UnregisterTriggerTypeMessage(id=id))
         self._trigger_types.pop(id, None)
 
-    def register_trigger(self, trigger_type: str, function_path: str, config: Any) -> Trigger:
+    def register_trigger(self, trigger_type: str, function_id: str, config: Any) -> Trigger:
         trigger_id = str(uuid.uuid4())
         msg = RegisterTriggerMessage(
             id=trigger_id,
             trigger_type=trigger_type,
-            function_path=function_path,
+            function_id=function_id,
             config=config,
         )
         self._enqueue(msg)
@@ -289,7 +289,7 @@ class Bridge:
         return Trigger(unregister)
 
     def register_function(self, path: str, handler: RemoteFunctionHandler, description: str | None = None) -> None:
-        msg = RegisterFunctionMessage(function_path=path, description=description)
+        msg = RegisterFunctionMessage(function_id=path, description=description)
         self._enqueue(msg)
 
         async def wrapped(input_data: Any) -> Any:
@@ -327,7 +327,7 @@ class Bridge:
 
         await self._send(
             InvokeFunctionMessage(
-                function_path=path,
+                function_id=path,
                 data=data,
                 invocation_id=invocation_id,
             )
@@ -341,7 +341,7 @@ class Bridge:
 
     def invoke_function_async(self, path: str, data: Any) -> None:
         """Fire-and-forget invocation (no response expected)."""
-        msg = InvokeFunctionMessage(function_path=path, data=data)
+        msg = InvokeFunctionMessage(function_id=path, data=data)
         try:
             asyncio.get_running_loop().create_task(self._send(msg))
         except RuntimeError:
@@ -391,22 +391,22 @@ class Bridge:
         self._functions_available_callbacks.add(callback)
 
         if not self._functions_available_trigger:
-            if not self._functions_available_function_path:
-                self._functions_available_function_path = f"bridge.on_functions_available.{uuid.uuid4()}"
+            if not self._functions_available_function_id:
+                self._functions_available_function_id = f"bridge.on_functions_available.{uuid.uuid4()}"
 
-            function_path = self._functions_available_function_path
-            if function_path not in self._functions:
+            function_id = self._functions_available_function_id
+            if function_id not in self._functions:
                 async def handler(data: dict[str, Any]) -> None:
                     functions_data = data.get("functions", [])
                     functions = [FunctionInfo(**f) for f in functions_data]
                     for cb in self._functions_available_callbacks:
                         cb(functions)
 
-                self.register_function(function_path, handler)
+                self.register_function(function_id, handler)
 
             self._functions_available_trigger = self.register_trigger(
                 "engine::functions-available",
-                function_path,
+                function_id,
                 {}
             )
 

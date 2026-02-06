@@ -85,7 +85,7 @@ impl TriggerRegistrator for CronCoreModule {
                 return Err(anyhow::anyhow!("Cron expression is required"));
             }
 
-            let condition_function_path = trigger
+            let condition_function_id = trigger
                 .config
                 .get("_condition_path")
                 .and_then(|v| v.as_str())
@@ -95,8 +95,8 @@ impl TriggerRegistrator for CronCoreModule {
                 .register(
                     &trigger.id,
                     &cron_expression,
-                    &trigger.function_path,
-                    condition_function_path,
+                    &trigger.function_id,
+                    condition_function_id,
                 )
                 .await
         })

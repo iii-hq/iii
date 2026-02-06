@@ -47,7 +47,7 @@ impl TriggerRegistrator for StateCoreModule {
             let trigger_id = trigger.id.clone();
             tracing::info!(
                 "Registering trigger for function path {}",
-                trigger.function_path.purple()
+                trigger.function_id.purple()
             );
             let _ = triggers.write().await.insert(trigger_id, trigger);
 

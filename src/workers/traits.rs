@@ -33,7 +33,7 @@ impl TriggerRegistrator for Worker {
                 .send(Outbound::Protocol(Message::RegisterTrigger {
                     id: trigger.id,
                     trigger_type: trigger.trigger_type,
-                    function_path: trigger.function_path,
+                    function_id: trigger.function_id,
                     config: trigger.config,
                 }))
                 .await
@@ -77,7 +77,7 @@ impl FunctionHandler for Worker {
     fn handle_function<'a>(
         &'a self,
         invocation_id: Option<Uuid>,
-        function_path: String,
+        function_id: String,
         input: Value,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
@@ -99,7 +99,7 @@ impl FunctionHandler for Worker {
                 .channel
                 .send(Outbound::Protocol(Message::InvokeFunction {
                     invocation_id,
-                    function_path,
+                    function_id,
                     data: input,
                     traceparent,
                     baggage,

@@ -33,7 +33,7 @@ use uuid::Uuid;
 #[async_trait]
 pub trait CustomEventAdapter: Send + Sync + 'static {
     async fn emit(&self, topic: &str, event_data: Value);
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str);
+    async fn subscribe(&self, topic: &str, id: &str, function_id: &str);
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
 
@@ -82,23 +82,21 @@ impl CustomEventAdapter for InMemoryEventAdapter {
         let subscribers = self.subscribers.read().await;
         if let Some(subs) = subscribers.get(topic) {
             let mut invokes = vec![];
-            for (_id, function_path) in subs {
-                let invoke = self
-                    .engine
-                    .invoke_function(function_path, event_data.clone());
+            for (_id, function_id) in subs {
+                let invoke = self.engine.invoke_function(function_id, event_data.clone());
                 invokes.push(invoke);
             }
             futures::future::join_all(invokes).await;
         }
     }
 
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
+    async fn subscribe(&self, topic: &str, id: &str, function_id: &str) {
         self.subscribers
             .write()
             .await
             .entry(topic.to_string())
             .or_default()
-            .push((id.to_string(), function_path.to_string()));
+            .push((id.to_string(), function_id.to_string()));
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -153,14 +151,14 @@ impl CustomEventAdapter for LoggingEventAdapter {
         self.inner.emit(topic, event_data).await;
     }
 
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
+    async fn subscribe(&self, topic: &str, id: &str, function_id: &str) {
         tracing::info!(
             topic = %topic,
             id = %id,
-            function_path = %function_path,
+            function_id = %function_id,
             "LoggingEventAdapter: Subscribing"
         );
-        self.inner.subscribe(topic, id, function_path).await;
+        self.inner.subscribe(topic, id, function_id).await;
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -229,7 +227,7 @@ impl Module for CustomEventModule {
         // Register a function to emit events
         self.engine.register_function(
             RegisterFunctionRequest {
-                function_path: "custom_emit".to_string(),
+                function_id: "custom_emit".to_string(),
                 description: Some("Emit a custom event".to_string()),
                 request_format: Some(serde_json::json!({
                     "topic": { "type": "string" },
@@ -279,7 +277,7 @@ impl FunctionHandler for CustomEventModule {
     fn handle_function(
         &self,
         _invocation_id: Option<Uuid>,
-        _function_path: String,
+        _function_id: String,
         input: Value,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static>>
     {

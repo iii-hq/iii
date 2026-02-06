@@ -81,14 +81,14 @@ class BridgeClient(Protocol):
 
     def register_function(
         self,
-        function_path: str,
+        function_id: str,
         handler: RemoteFunctionHandler,
         description: str | None = None,
     ) -> None: ...
 
-    async def invoke_function(self, function_path: str, data: Any) -> Any: ...
+    async def invoke_function(self, function_id: str, data: Any) -> Any: ...
 
-    def invoke_function_async(self, function_path: str, data: Any) -> None: ...
+    def invoke_function_async(self, function_id: str, data: Any) -> None: ...
 
     def register_trigger_type(
         self,

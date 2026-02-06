@@ -35,7 +35,7 @@ pub struct BuiltinQueueAdapter {
 
 struct FunctionHandler {
     engine: Arc<Engine>,
-    function_path: String,
+    function_id: String,
 }
 
 #[async_trait]
@@ -43,7 +43,7 @@ impl JobHandler for FunctionHandler {
     async fn handle(&self, job: &crate::builtins::queue::Job) -> Result<(), String> {
         match self
             .engine
-            .invoke_function(&self.function_path, job.data.clone())
+            .invoke_function(&self.function_id, job.data.clone())
             .await
         {
             Ok(_) => Ok(()),
@@ -111,13 +111,13 @@ impl EventAdapter for BuiltinQueueAdapter {
         &self,
         topic: &str,
         id: &str,
-        function_path: &str,
-        _condition_function_path: Option<String>,
+        function_id: &str,
+        _condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         let handler = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
-            function_path: function_path.to_string(),
+            function_id: function_id.to_string(),
         });
 
         let subscription_config = queue_config.map(|c| SubscriptionConfig {
@@ -138,7 +138,7 @@ impl EventAdapter for BuiltinQueueAdapter {
         let mut subs = self.subscriptions.write().await;
         subs.insert(format!("{}:{}", topic, id), handle);
 
-        tracing::debug!(topic = %topic, id = %id, function_path = %function_path, "Subscribed to queue via BuiltinQueueAdapter");
+        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, "Subscribed to queue via BuiltinQueueAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {

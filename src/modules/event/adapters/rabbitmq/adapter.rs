@@ -144,13 +144,13 @@ impl EventAdapter for RabbitMQAdapter {
         &self,
         topic: &str,
         id: &str,
-        function_path: &str,
-        condition_function_path: Option<String>,
+        function_id: &str,
+        condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_path = function_path.to_string();
+        let function_id = function_id.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
         let already_subscribed = {
@@ -195,15 +195,15 @@ impl EventAdapter for RabbitMQAdapter {
         ));
 
         let topic_clone = topic.clone();
-        let function_path_clone = function_path.clone();
+        let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
 
         let task_handle = tokio::spawn(async move {
             worker
                 .run(
                     topic_clone,
-                    function_path_clone,
-                    condition_function_path,
+                    function_id_clone,
+                    condition_function_id,
                     consumer_tag_clone,
                 )
                 .await;
@@ -221,7 +221,7 @@ impl EventAdapter for RabbitMQAdapter {
 
         tracing::debug!(
             topic = %topic,
-            function_path = %function_path,
+            function_id = %function_id,
             "Subscribed to RabbitMQ queue"
         );
     }
