@@ -51,7 +51,7 @@ impl PathRouter {
     ) -> Self {
         Self {
             http_path,
-            http_method,
+            http_method: http_method.to_uppercase(),
             function_id,
             condition_function_id,
         }
@@ -472,6 +472,32 @@ mod tests {
         assert!(
             module.routers_registry.get("GET:users").is_none(),
             "route must be removed from registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_trigger_normalizes_lowercase_method() {
+        let engine = Arc::new(Engine::default());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config: RestApiConfig::default(),
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "api".to_string(),
+            function_id: "func1".to_string(),
+            config: serde_json::json!({"api_path": "users", "http_method": "get"}),
+            worker_id: None,
+        };
+        module.register_trigger(trigger).await.unwrap();
+
+        let entry = module.routers_registry.get("GET:users").unwrap();
+        assert_eq!(
+            entry.http_method, "GET",
+            "http_method must be normalized to uppercase"
         );
     }
 }
