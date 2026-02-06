@@ -1,6 +1,6 @@
 //! Example: Creating a custom Module with its own custom Adapter
 //!
-//! Run with: `cargo run --example custom_event_adapter`
+//! Run with: `cargo run --example custom_queue_adapter`
 
 use std::{
     collections::HashMap,
@@ -31,43 +31,43 @@ use uuid::Uuid;
 // =============================================================================
 
 #[async_trait]
-pub trait CustomEventAdapter: Send + Sync + 'static {
+pub trait CustomQueueAdapter: Send + Sync + 'static {
     async fn emit(&self, topic: &str, event_data: Value);
     async fn subscribe(&self, topic: &str, id: &str, function_id: &str);
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
 
-type CustomEventAdapterFuture = AdapterFuture<dyn CustomEventAdapter>;
+type CustomQueueAdapterFuture = AdapterFuture<dyn CustomQueueAdapter>;
 
-pub struct CustomEventAdapterRegistration {
+pub struct CustomQueueAdapterRegistration {
     pub class: &'static str,
-    pub factory: fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture,
+    pub factory: fn(Arc<Engine>, Option<Value>) -> CustomQueueAdapterFuture,
 }
 
-impl AdapterRegistrationEntry<dyn CustomEventAdapter> for CustomEventAdapterRegistration {
+impl AdapterRegistrationEntry<dyn CustomQueueAdapter> for CustomQueueAdapterRegistration {
     fn class(&self) -> &'static str {
         self.class
     }
 
-    fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture {
+    fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomQueueAdapterFuture {
         self.factory
     }
 }
 
-inventory::collect!(CustomEventAdapterRegistration);
+inventory::collect!(CustomQueueAdapterRegistration);
 
 // =============================================================================
 // 2. Implement your custom Adapters
 // =============================================================================
 
 type SubscriberMap = HashMap<String, Vec<(String, String)>>;
-// Adapter 1: InMemoryEventAdapter - stores subscribers in memory
-pub struct InMemoryEventAdapter {
+// Adapter 1: InMemoryQueueAdapter - stores subscribers in memory
+pub struct InMemoryQueueAdapter {
     subscribers: Arc<TokioRwLock<SubscriberMap>>,
     engine: Arc<Engine>,
 }
 
-impl InMemoryEventAdapter {
+impl InMemoryQueueAdapter {
     pub async fn new(_config: Option<Value>, engine: Arc<Engine>) -> anyhow::Result<Self> {
         Ok(Self {
             subscribers: Arc::new(TokioRwLock::new(HashMap::new())),
@@ -77,7 +77,7 @@ impl InMemoryEventAdapter {
 }
 
 #[async_trait]
-impl CustomEventAdapter for InMemoryEventAdapter {
+impl CustomQueueAdapter for InMemoryQueueAdapter {
     async fn emit(&self, topic: &str, event_data: Value) {
         let subscribers = self.subscribers.read().await;
         if let Some(subs) = subscribers.get(topic) {
@@ -106,25 +106,25 @@ impl CustomEventAdapter for InMemoryEventAdapter {
     }
 }
 
-// Adapter 2: LoggingEventAdapter - logs all events and forwards to another adapter
-pub struct LoggingEventAdapter {
-    inner: Arc<dyn CustomEventAdapter>,
+// Adapter 2: LoggingQueueAdapter - logs all events and forwards to another adapter
+pub struct LoggingQueueAdapter {
+    inner: Arc<dyn CustomQueueAdapter>,
 }
 
-impl LoggingEventAdapter {
+impl LoggingQueueAdapter {
     pub async fn new(config: Option<Value>, engine: Arc<Engine>) -> anyhow::Result<Self> {
-        // Get the inner adapter class from config, default to InMemoryEventAdapter
+        // Get the inner adapter class from config, default to InMemoryQueueAdapter
         let inner_adapter_class = config
             .as_ref()
             .and_then(|v| v.get("inner_adapter"))
             .and_then(|v| v.as_str())
-            .unwrap_or("my::InMemoryEventAdapter");
+            .unwrap_or("my::InMemoryQueueAdapter");
 
         // Create the inner adapter
         let inner_adapter = match inner_adapter_class {
-            "my::InMemoryEventAdapter" => {
-                Arc::new(InMemoryEventAdapter::new(None, engine.clone()).await?)
-                    as Arc<dyn CustomEventAdapter>
+            "my::InMemoryQueueAdapter" => {
+                Arc::new(InMemoryQueueAdapter::new(None, engine.clone()).await?)
+                    as Arc<dyn CustomQueueAdapter>
             }
             _ => {
                 return Err(anyhow::anyhow!(
@@ -141,12 +141,12 @@ impl LoggingEventAdapter {
 }
 
 #[async_trait]
-impl CustomEventAdapter for LoggingEventAdapter {
+impl CustomQueueAdapter for LoggingQueueAdapter {
     async fn emit(&self, topic: &str, event_data: Value) {
         tracing::info!(
             topic = %topic,
             event_data = %event_data,
-            "LoggingEventAdapter: Emitting event"
+            "LoggingQueueAdapter: Emitting to queue"
         );
         self.inner.emit(topic, event_data).await;
     }
@@ -156,7 +156,7 @@ impl CustomEventAdapter for LoggingEventAdapter {
             topic = %topic,
             id = %id,
             function_id = %function_id,
-            "LoggingEventAdapter: Subscribing"
+            "LoggingQueueAdapter: Subscribing"
         );
         self.inner.subscribe(topic, id, function_id).await;
     }
@@ -165,28 +165,28 @@ impl CustomEventAdapter for LoggingEventAdapter {
         tracing::info!(
             topic = %topic,
             id = %id,
-            "LoggingEventAdapter: Unsubscribing"
+            "LoggingQueueAdapter: Unsubscribing"
         );
         self.inner.unsubscribe(topic, id).await;
     }
 }
 
-fn make_inmemory_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomEventAdapterFuture {
+fn make_inmemory_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomQueueAdapterFuture {
     Box::pin(async move {
-        Ok(Arc::new(InMemoryEventAdapter::new(config, engine).await?)
-            as Arc<dyn CustomEventAdapter>)
+        Ok(Arc::new(InMemoryQueueAdapter::new(config, engine).await?)
+            as Arc<dyn CustomQueueAdapter>)
     })
 }
 
-fn make_logging_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomEventAdapterFuture {
+fn make_logging_adapter(engine: Arc<Engine>, config: Option<Value>) -> CustomQueueAdapterFuture {
     Box::pin(async move {
-        Ok(Arc::new(LoggingEventAdapter::new(config, engine).await?)
-            as Arc<dyn CustomEventAdapter>)
+        Ok(Arc::new(LoggingQueueAdapter::new(config, engine).await?)
+            as Arc<dyn CustomQueueAdapter>)
     })
 }
 
-iii::register_adapter!(<CustomEventAdapterRegistration> "my::InMemoryEventAdapter", make_inmemory_adapter);
-iii::register_adapter!(<CustomEventAdapterRegistration> "my::LoggingEventAdapter", make_logging_adapter);
+iii::register_adapter!(<CustomQueueAdapterRegistration> "my::InMemoryQueueAdapter", make_inmemory_adapter);
+iii::register_adapter!(<CustomQueueAdapterRegistration> "my::LoggingQueueAdapter", make_logging_adapter);
 
 // =============================================================================
 // 3. Define your Module Config
@@ -194,7 +194,7 @@ iii::register_adapter!(<CustomEventAdapterRegistration> "my::LoggingEventAdapter
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CustomEventModuleConfig {
+pub struct CustomQueueModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -204,16 +204,16 @@ pub struct CustomEventModuleConfig {
 // =============================================================================
 
 #[derive(Clone)]
-pub struct CustomEventModule {
-    adapter: Arc<dyn CustomEventAdapter>,
+pub struct CustomQueueModule {
+    adapter: Arc<dyn CustomQueueAdapter>,
     engine: Arc<Engine>,
-    _config: CustomEventModuleConfig,
+    _config: CustomQueueModuleConfig,
 }
 
 #[async_trait]
-impl Module for CustomEventModule {
+impl Module for CustomQueueModule {
     fn name(&self) -> &'static str {
-        "CustomEventModule"
+        "CustomQueueModule"
     }
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
@@ -222,13 +222,13 @@ impl Module for CustomEventModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing CustomEventModule");
+        tracing::info!("Initializing CustomQueueModule");
 
-        // Register a function to emit events
+        // Register a function to emit to queues
         self.engine.register_function(
             RegisterFunctionRequest {
                 function_id: "custom_emit".to_string(),
-                description: Some("Emit a custom event".to_string()),
+                description: Some("Emit to custom queue".to_string()),
                 request_format: Some(serde_json::json!({
                     "topic": { "type": "string" },
                     "data": { "type": "object" }
@@ -244,15 +244,15 @@ impl Module for CustomEventModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for CustomEventModule {
-    type Config = CustomEventModuleConfig;
-    type Adapter = dyn CustomEventAdapter;
-    type AdapterRegistration = CustomEventAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "my::InMemoryEventAdapter";
+impl ConfigurableModule for CustomQueueModule {
+    type Config = CustomQueueModuleConfig;
+    type Adapter = dyn CustomQueueAdapter;
+    type AdapterRegistration = CustomQueueAdapterRegistration;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "my::InMemoryQueueAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
-        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomEventAdapter>>>> =
-            Lazy::new(|| RwLock::new(CustomEventModule::build_registry()));
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomQueueAdapter>>>> =
+            Lazy::new(|| RwLock::new(CustomQueueModule::build_registry()));
         &REGISTRY
     }
 
@@ -273,7 +273,7 @@ impl ConfigurableModule for CustomEventModule {
     }
 }
 
-impl FunctionHandler for CustomEventModule {
+impl FunctionHandler for CustomQueueModule {
     fn handle_function(
         &self,
         _invocation_id: Option<Uuid>,
@@ -287,7 +287,7 @@ impl FunctionHandler for CustomEventModule {
                 .get("topic")
                 .and_then(|value| value.as_str())
                 .unwrap_or("");
-            let event_data = input.get("data").cloned().unwrap_or(Value::Null);
+            let data = input.get("data").cloned().unwrap_or(Value::Null);
 
             if topic.is_empty() {
                 return FunctionResult::Failure(ErrorBody {
@@ -296,8 +296,8 @@ impl FunctionHandler for CustomEventModule {
                 });
             }
 
-            tracing::debug!(topic = %topic, event_data = %event_data, "Emitting custom event");
-            adapter.emit(topic, event_data).await;
+            tracing::debug!(topic = %topic, data = %data, "Emitting to custom queue");
+            adapter.emit(topic, data).await;
 
             FunctionResult::Success(None)
         })
@@ -314,15 +314,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Register the custom module and add it to the engine using EngineBuilder
     EngineBuilder::new()
-        .register_module::<CustomEventModule>("my::CustomEventModule")
+        .register_module::<CustomQueueModule>("my::CustomQueueModule")
         .add_module(
             // instead load from config file
-            "my::CustomEventModule",
+            "my::CustomQueueModule",
             Some(serde_json::json!({
                 "adapter": {
-                    "class": "my::LoggingEventAdapter",
+                    "class": "my::LoggingQueueAdapter",
                     "config": {
-                        "inner_adapter": "my::InMemoryEventAdapter"
+                        "inner_adapter": "my::InMemoryQueueAdapter"
                     }
                 }
             })),
@@ -331,8 +331,8 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    tracing::info!("CustomEventModule initialized successfully!");
-    tracing::info!("You can now use the 'custom_emit' function to emit events");
+    tracing::info!("CustomQueueModule initialized successfully!");
+    tracing::info!("You can now use the 'custom_emit' function to emit to queues");
 
     // Keep the process running (in a real application, you'd start a server here)
     // For this example, we'll just wait a bit
@@ -345,9 +345,9 @@ async fn main() -> anyhow::Result<()> {
 // =============================================================================
 //
 // modules:
-//   - class: my::CustomEventModule
+//   - class: my::CustomQueueModule
 //     config:
 //       adapter:
-//         class: my::LoggingEventAdapter  # or my::InMemoryEventAdapter
+//         class: my::LoggingQueueAdapter  # or my::InMemoryQueueAdapter
 //         config:
-//           inner_adapter: my::InMemoryEventAdapter
+//           inner_adapter: my::InMemoryQueueAdapter

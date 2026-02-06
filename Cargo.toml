@@ -13,8 +13,8 @@ name = "iii"
 path = "src/main.rs"
 
 [[example]]
-name = "custom_event_adapter"
-path = "examples/custom_event_adapter.rs"
+name = "custom_queue_adapter"
+path = "examples/custom_queue_adapter.rs"
 
 [features]
 default = []
