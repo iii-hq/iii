@@ -397,7 +397,7 @@ impl TriggerRegistrator for RestApiCoreModule {
                 .config
                 .get("api_path")
                 .and_then(|v| v.as_str())
-                .unwrap_or_default();
+                .ok_or_else(|| anyhow!("api_path is required to unregister api triggers"))?;
 
             let http_method = trigger
                 .config
@@ -416,3 +416,62 @@ crate::register_module!(
     RestApiCoreModule,
     enabled_by_default = true
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trigger::TriggerRegistrator;
+
+    #[tokio::test]
+    async fn unregister_trigger_errors_on_missing_api_path() {
+        let engine = Arc::new(Engine::default());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config: RestApiConfig::default(),
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "api".to_string(),
+            function_id: "func1".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+        };
+
+        let result = module.unregister_trigger(trigger).await;
+        assert!(
+            result.is_err(),
+            "must error when api_path is missing from config"
+        );
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_removes_registered_route() {
+        let engine = Arc::new(Engine::default());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config: RestApiConfig::default(),
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "api".to_string(),
+            function_id: "func1".to_string(),
+            config: serde_json::json!({"api_path": "users", "http_method": "GET"}),
+            worker_id: None,
+        };
+        module.register_trigger(trigger.clone()).await.unwrap();
+        assert!(module.routers_registry.get("GET:users").is_some());
+
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_ok());
+        assert!(
+            module.routers_registry.get("GET:users").is_none(),
+            "route must be removed from registry"
+        );
+    }
+}
