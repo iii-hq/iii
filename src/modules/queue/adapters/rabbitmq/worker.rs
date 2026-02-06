@@ -196,11 +196,11 @@ impl Worker {
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let engine = Arc::clone(&self.engine);
-        let event_data = job.data.clone();
+        let data = job.data.clone();
 
         if let Some(condition_path) = condition_function_id {
             match engine
-                .invoke_function(condition_path, event_data.clone())
+                .invoke_function(condition_path, data.clone())
                 .await
             {
                 Ok(Some(result)) => {
@@ -231,7 +231,7 @@ impl Worker {
             }
         }
 
-        match engine.invoke_function(function_id, event_data).await {
+        match engine.invoke_function(function_id, data).await {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())
