@@ -199,7 +199,7 @@ impl Worker {
         let data = job.data.clone();
 
         if let Some(condition_path) = condition_function_id {
-            match engine.invoke_function(condition_path, data.clone()).await {
+            match engine.call(condition_path, data.clone()).await {
                 Ok(Some(result)) => {
                     if let Some(passed) = result.as_bool()
                         && !passed
@@ -228,7 +228,7 @@ impl Worker {
             }
         }
 
-        match engine.invoke_function(function_id, data).await {
+        match engine.call(function_id, data).await {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())

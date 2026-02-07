@@ -225,7 +225,7 @@ pub async fn dynamic_handler(
             );
 
             match engine
-                .invoke_function(condition_function_id, api_request_value.clone())
+                .call(condition_function_id, api_request_value.clone())
                 .await
             {
                 Ok(Some(result)) => {
@@ -267,7 +267,7 @@ pub async fn dynamic_handler(
         }
 
         let func_result = engine
-            .invoke_function(&function_id, api_request_value)
+            .call(&function_id, api_request_value)
             .await;
 
             return match func_result {

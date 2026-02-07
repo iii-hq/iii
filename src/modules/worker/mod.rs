@@ -102,7 +102,7 @@ impl WorkerModule {
             let function_id = trigger.function_id.clone();
             let data = data.clone();
             tokio::spawn(async move {
-                let _ = engine.invoke_function(&function_id, data).await;
+                let _ = engine.call(&function_id, data).await;
             });
         }
     }
@@ -311,7 +311,7 @@ impl Module for WorkerModule {
                                 let function_id = trigger.function_id.clone();
                                 let data = functions_data.clone();
                                 tokio::spawn(async move {
-                                    let _ = engine.invoke_function(&function_id, data).await;
+                                    let _ = engine.call(&function_id, data).await;
                                 });
                             }
                         }

@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let result = bridge
-        .invoke_function("example.echo", json!({ "message": "hello" }))
+        .call("example.echo", json!({ "message": "hello" }))
         .await?;
     println!("Echo result: {result}");
 

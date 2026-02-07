@@ -282,7 +282,7 @@ impl Bridge {
 
             Box::pin(async move {
                 let invoker: LoggerInvoker = Arc::new(move |path, params| {
-                    let _ = bridge.invoke_function_async(path, params);
+                    let _ = bridge.call_void(path, params);
                 });
 
                 let logger = Logger::new(
@@ -411,17 +411,17 @@ impl Bridge {
         Ok(Trigger::new(unregister_fn))
     }
 
-    pub async fn invoke_function(
+    pub async fn call(
         &self,
         function_id: &str,
         data: impl serde::Serialize,
     ) -> Result<Value, BridgeError> {
         let value = serde_json::to_value(data)?;
-        self.invoke_function_with_timeout(function_id, value, DEFAULT_TIMEOUT)
+        self.call_with_timeout(function_id, value, DEFAULT_TIMEOUT)
             .await
     }
 
-    pub async fn invoke_function_with_timeout(
+    pub async fn call_with_timeout(
         &self,
         function_id: &str,
         data: Value,
@@ -448,11 +448,7 @@ impl Bridge {
         }
     }
 
-    pub fn invoke_function_async<TInput>(
-        &self,
-        function_id: &str,
-        data: TInput,
-    ) -> Result<(), BridgeError>
+    pub fn call_void<TInput>(&self, function_id: &str, data: TInput) -> Result<(), BridgeError>
     where
         TInput: Serialize,
     {
@@ -467,7 +463,7 @@ impl Bridge {
     /// List all registered functions from the engine
     pub async fn list_functions(&self) -> Result<Vec<FunctionInfo>, BridgeError> {
         let result = self
-            .invoke_function("engine.functions.list", serde_json::json!({}))
+            .call("engine.functions.list", serde_json::json!({}))
             .await?;
 
         let functions = result
@@ -564,7 +560,7 @@ impl Bridge {
     /// List all connected workers from the engine
     pub async fn list_workers(&self) -> Result<Vec<WorkerInfo>, BridgeError> {
         let result = self
-            .invoke_function("engine.workers.list", serde_json::json!({}))
+            .call("engine.workers.list", serde_json::json!({}))
             .await?;
 
         let workers = result
@@ -578,7 +574,7 @@ impl Bridge {
     /// List all registered triggers from the engine
     pub async fn list_triggers(&self) -> Result<Vec<TriggerInfo>, BridgeError> {
         let result = self
-            .invoke_function("engine.triggers.list", serde_json::json!({}))
+            .call("engine.triggers.list", serde_json::json!({}))
             .await?;
 
         let triggers = result
@@ -592,7 +588,7 @@ impl Bridge {
     /// Register this worker's metadata with the engine (called automatically on connect)
     fn register_worker_metadata(&self) {
         if let Some(metadata) = self.inner.worker_metadata.lock().unwrap().clone() {
-            let _ = self.invoke_function_async("engine.workers.register", metadata);
+            let _ = self.call_void("engine.workers.register", metadata);
         }
     }
 
@@ -783,7 +779,7 @@ impl Bridge {
                 function_id,
                 data,
             } => {
-                self.handle_invoke_function(invocation_id, function_id, data);
+                self.handle_call(invocation_id, function_id, data);
             }
             Message::RegisterTrigger {
                 id,
@@ -821,12 +817,7 @@ impl Bridge {
         }
     }
 
-    fn handle_invoke_function(
-        &self,
-        invocation_id: Option<Uuid>,
-        function_id: String,
-        data: Value,
-    ) {
+    fn handle_call(&self, invocation_id: Option<Uuid>, function_id: String, data: Value) {
         tracing::debug!(function_id = %function_id, "Invoking function");
 
         let handler = self
@@ -968,10 +959,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invoke_function_times_out_and_clears_pending() {
+    async fn call_times_out_and_clears_pending() {
         let bridge = Bridge::new("ws://localhost:1234");
         let result = bridge
-            .invoke_function_with_timeout(
+            .call_with_timeout(
                 "functions.echo",
                 json!({ "a": 1 }),
                 Duration::from_millis(10),

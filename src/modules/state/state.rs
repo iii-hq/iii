@@ -137,7 +137,7 @@ impl StateCoreModule {
                         );
 
                         match engine
-                            .invoke_function(&condition_function_id, event_data.clone())
+                            .call(&condition_function_id, event_data.clone())
                             .await
                         {
                             Ok(Some(result)) => {
@@ -181,9 +181,7 @@ impl StateCoreModule {
                         "Invoking trigger"
                     );
 
-                    let call_result = engine
-                        .invoke_function(&trigger.function_id, event_data.clone())
-                        .await;
+                    let call_result = engine.call(&trigger.function_id, event_data.clone()).await;
 
                     match call_result {
                         Ok(_) => {

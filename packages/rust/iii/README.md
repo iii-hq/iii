@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let result: serde_json::Value = bridge
-        .invoke_function("my.function", json!({ "param": "value" }))
+        .call("my.function", json!({ "param": "value" }))
         .await?;
 
     println!("result: {result}");

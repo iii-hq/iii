@@ -121,7 +121,7 @@ impl Module for BridgeClientModule {
                         .unwrap_or_else(|| Duration::from_secs(30));
 
                     match bridge
-                        .invoke_function_with_timeout(&invoke.function_id, invoke.data, timeout)
+                        .call_with_timeout(&invoke.function_id, invoke.data, timeout)
                         .await
                     {
                         Ok(result) => FunctionResult::Success(Some(result)),
@@ -160,8 +160,7 @@ impl Module for BridgeClientModule {
                         }
                     };
 
-                    if let Err(err) = bridge.invoke_function_async(&invoke.function_id, invoke.data)
-                    {
+                    if let Err(err) = bridge.call_void(&invoke.function_id, invoke.data) {
                         dbg!(&err);
                         return FunctionResult::Failure(ErrorBody {
                             code: "bridge_error".into(),
@@ -197,7 +196,7 @@ impl Module for BridgeClientModule {
                             .unwrap_or_else(|| Duration::from_secs(30));
 
                         match bridge
-                            .invoke_function_with_timeout(&remote_function, input, timeout)
+                            .call_with_timeout(&remote_function, input, timeout)
                             .await
                         {
                             Ok(result) => FunctionResult::Success(Some(result)),
@@ -244,7 +243,7 @@ impl Module for BridgeClientModule {
                 let engine = engine.clone();
                 let local_function = local_function.clone();
                 async move {
-                    match engine.invoke_function(&local_function, input).await {
+                    match engine.call(&local_function, input).await {
                         Ok(result) => Ok(result.unwrap_or(Value::Null)),
                         Err(err) => Err(BridgeError::Remote {
                             code: err.code,

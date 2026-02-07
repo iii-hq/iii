@@ -97,7 +97,7 @@ pub struct StreamDeleteInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamGetGroupInput {
+pub struct StreamListInput {
     pub stream_name: String,
     pub group_id: String,
 }

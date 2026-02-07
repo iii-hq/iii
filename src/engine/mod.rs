@@ -116,11 +116,7 @@ where
 
 #[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
-    async fn invoke_function(
-        &self,
-        function_id: &str,
-        input: Value,
-    ) -> Result<Option<Value>, ErrorBody>;
+    async fn call(&self, function_id: &str, input: Value) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
         &self,
@@ -527,7 +523,7 @@ impl Engine {
             let function_id = trigger.function_id.clone();
             let data = data.clone();
             tokio::spawn(async move {
-                let _ = engine.invoke_function(&function_id, data).await;
+                let _ = engine.call(&function_id, data).await;
             });
         }
     }
@@ -658,11 +654,7 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
-    async fn invoke_function(
-        &self,
-        function_id: &str,
-        input: Value,
-    ) -> Result<Option<Value>, ErrorBody> {
+    async fn call(&self, function_id: &str, input: Value) -> Result<Option<Value>, ErrorBody> {
         let function_opt = self.functions.get(function_id);
 
         if let Some(function) = function_opt {

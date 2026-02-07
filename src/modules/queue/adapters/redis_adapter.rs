@@ -200,10 +200,7 @@ impl QueueAdapter for RedisAdapter {
                         "Checking trigger conditions"
                     );
 
-                    match engine
-                        .invoke_function(condition_function_id, data.clone())
-                        .await
-                    {
+                    match engine.call(condition_function_id, data.clone()).await {
                         Ok(Some(result)) => {
                             if let Some(passed) = result.as_bool()
                                 && !passed
@@ -234,7 +231,7 @@ impl QueueAdapter for RedisAdapter {
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_id, data).await;
+                    let _ = engine.call(&function_id, data).await;
                 });
             }
 

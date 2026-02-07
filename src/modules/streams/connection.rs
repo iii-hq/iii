@@ -21,8 +21,8 @@ use crate::{
         Subscription,
         adapters::StreamConnection,
         structs::{
-            StreamAuthContext, StreamGetGroupInput, StreamGetInput, StreamIncomingMessageData,
-            StreamJoinLeaveEvent, StreamJoinResult, StreamOutbound,
+            StreamAuthContext, StreamGetInput, StreamIncomingMessageData, StreamJoinLeaveEvent,
+            StreamJoinResult, StreamListInput, StreamOutbound,
         },
         trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
     },
@@ -125,7 +125,7 @@ impl SocketStreamConnection {
 
                 let call_result = self
                     .engine
-                    .invoke_function(&trigger.function_id, event_value.clone())
+                    .call(&trigger.function_id, event_value.clone())
                     .await;
 
                 tracing::debug!(call_result = ?call_result, "Call result");
@@ -241,7 +241,7 @@ impl SocketStreamConnection {
                 } else {
                     let data = self
                         .stream_module
-                        .get_group(StreamGetGroupInput {
+                        .list(StreamListInput {
                             stream_name: stream_name.clone(),
                             group_id: group_id.clone(),
                         })
