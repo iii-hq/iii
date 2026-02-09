@@ -174,3 +174,6 @@ case ":$PATH:" in
     printf 'add %s to your PATH if needed\n' "$bin_dir"
     ;;
  esac
+
+echo ""
+echo "If you're new to iii, get started quickly here: https://iii.dev/docs/tutorials/quickstart"
