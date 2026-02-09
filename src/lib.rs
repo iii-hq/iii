@@ -19,6 +19,7 @@ pub mod modules {
     pub mod bridge_client;
     pub mod config;
     pub mod cron;
+    pub mod heartbeat;
     pub mod kv_server;
     pub mod module;
     pub mod observability;
