@@ -20,7 +20,6 @@ use std::{
 
 use async_trait::async_trait;
 use colored::Colorize;
-pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
 use futures::Future;
 use serde::{Deserialize, Serialize};

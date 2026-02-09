@@ -26,7 +26,8 @@ modules:
           - DELETE
           - OPTIONS
 
-  - class: modules::observability::LoggingModule
+  - class: modules::observability::OtelModule
     config:
+      enabled: false
       level: debug
       format: default
