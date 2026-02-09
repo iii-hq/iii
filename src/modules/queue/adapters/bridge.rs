@@ -230,6 +230,22 @@ mod tests {
     use super::*;
     use crate::engine::Engine;
 
+    #[test]
+    fn test_emit_uses_enqueue_function_id() {
+        assert_eq!(BridgeAdapter::event_enqueue_function_id(), "enqueue");
+    }
+
+    #[test]
+    fn test_emit_builds_enqueue_payload() {
+        let payload = BridgeAdapter::build_enqueue_payload(
+            "topic.orders.created",
+            serde_json::json!({ "order_id": "o-1" }),
+        );
+
+        assert_eq!(payload["topic"], "topic.orders.created");
+        assert_eq!(payload["data"]["order_id"], "o-1");
+    }
+
     #[tokio::test]
     async fn test_subscribe_handles_bridge_error_gracefully() {
         // This test verifies subscribe doesn't panic on bridge errors
