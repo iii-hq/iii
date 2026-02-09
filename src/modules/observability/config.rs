@@ -280,4 +280,3 @@ fn default_logs_sampling_ratio() -> f64 {
 fn default_logs_console_output() -> bool {
     true
 }
-
