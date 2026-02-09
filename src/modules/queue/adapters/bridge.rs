@@ -79,6 +79,14 @@ impl BridgeAdapter {
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
         })
     }
+
+    fn queue_enqueue_function_id() -> &'static str {
+        "enqueue"
+    }
+
+    fn build_enqueue_payload(topic: &str, data: Value) -> Value {
+        serde_json::json!({ "topic": topic, "data": data })
+    }
 }
 
 #[async_trait]
@@ -86,8 +94,11 @@ impl QueueAdapter for BridgeAdapter {
     /// Enqueues a message to the bridge for distribution to other engines.
     /// Failures are logged but do not block the caller.
     async fn enqueue(&self, topic: &str, data: Value) {
-        let input = serde_json::json!({ "topic": topic, "data": data });
-        if let Err(e) = self.bridge.call_void("enqueue", input) {
+        let input = Self::build_enqueue_payload(topic, data);
+        if let Err(e) = self
+            .bridge
+            .call_void(Self::queue_enqueue_function_id(), input)
+        {
             tracing::error!(error = %e, topic = %topic, "Failed to enqueue message via bridge");
         }
     }
@@ -231,12 +242,12 @@ mod tests {
     use crate::engine::Engine;
 
     #[test]
-    fn test_emit_uses_enqueue_function_id() {
-        assert_eq!(BridgeAdapter::event_enqueue_function_id(), "enqueue");
+    fn test_enqueue_uses_enqueue_function_id() {
+        assert_eq!(BridgeAdapter::queue_enqueue_function_id(), "enqueue");
     }
 
     #[test]
-    fn test_emit_builds_enqueue_payload() {
+    fn test_enqueue_builds_enqueue_payload() {
         let payload = BridgeAdapter::build_enqueue_payload(
             "topic.orders.created",
             serde_json::json!({ "order_id": "o-1" }),
