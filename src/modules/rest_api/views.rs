@@ -187,7 +187,7 @@ pub async fn dynamic_handler(
         let path_parameters: HashMap<String, String> =
             extract_path_params(&registered_path, &actual_path);
 
-        if let Some((function_path, condition_function_path)) =
+        if let Some((function_id, condition_function_id)) =
             api_handler.get_router(method.as_str(), &registered_path)
 
         {
@@ -218,14 +218,14 @@ pub async fn dynamic_handler(
 
             let api_request_value = serde_json::to_value(api_request).unwrap_or(serde_json::json!({}));
 
-            if let Some(condition_function_path) = condition_function_path.as_ref() {
+            if let Some(condition_function_id) = condition_function_id.as_ref() {
             tracing::debug!(
-                condition_function_path = %condition_function_path,
+                condition_function_id = %condition_function_id,
                 "Checking trigger conditions"
             );
 
             match engine
-                .invoke_function(condition_function_path, api_request_value.clone())
+                .call(condition_function_id, api_request_value.clone())
                 .await
             {
                 Ok(Some(result)) => {
@@ -233,7 +233,7 @@ pub async fn dynamic_handler(
                         && !passed
                     {
                         tracing::debug!(
-                            function_path = %function_path,
+                            function_id = %function_id,
                             "Condition check failed, skipping handler"
                         );
                         return (
@@ -245,14 +245,14 @@ pub async fn dynamic_handler(
                 }
                 Ok(None) => {
                     tracing::warn!(
-                        condition_function_path = %condition_function_path,
+                        condition_function_id = %condition_function_id,
                         "Condition function returned no result"
                     );
                 }
                 Err(err) => {
                     let error_id = generate_error_id();
                     tracing::error!(
-                        condition_function_path = %condition_function_path,
+                        condition_function_id = %condition_function_id,
                         error = ?err,
                         error_id = %error_id,
                         "Error invoking condition function"
@@ -267,7 +267,7 @@ pub async fn dynamic_handler(
         }
 
         let func_result = engine
-            .invoke_function(&function_path, api_request_value)
+            .call(&function_id, api_request_value)
             .await;
 
             return match func_result {

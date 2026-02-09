@@ -76,6 +76,10 @@ impl StateAdapter for BuiltinKvStoreAdapter {
     async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
         Ok(self.storage.list(group_id.to_string()).await)
     }
+
+    async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
+        Ok(self.storage.list_groups().await)
+    }
 }
 
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFuture {
@@ -184,5 +188,34 @@ mod tests {
             .expect("Get should succeed")
             .expect("Data should exist");
         assert_eq!(saved_data, data2);
+    }
+
+    #[tokio::test]
+    async fn test_list_groups_empty() {
+        let adapter = BuiltinKvStoreAdapter::new(None);
+        let groups = adapter.list_groups().await.unwrap();
+        assert_eq!(groups.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_groups_multiple() {
+        let adapter = BuiltinKvStoreAdapter::new(None);
+
+        adapter
+            .set("group1", "item1", serde_json::json!({"test": 1}))
+            .await
+            .unwrap();
+        adapter
+            .set("group2", "item1", serde_json::json!({"test": 2}))
+            .await
+            .unwrap();
+        adapter
+            .set("group3", "item1", serde_json::json!({"test": 3}))
+            .await
+            .unwrap();
+
+        let mut groups = adapter.list_groups().await.unwrap();
+        groups.sort();
+        assert_eq!(groups, vec!["group1", "group2", "group3"]);
     }
 }

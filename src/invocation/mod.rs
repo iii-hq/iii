@@ -22,7 +22,7 @@ use crate::{
 
 pub struct Invocation {
     pub id: Uuid,
-    pub function_path: String,
+    pub function_id: String,
     pub worker_id: Option<Uuid>,
     pub sender: oneshot::Sender<Result<Option<Value>, ErrorBody>>,
     /// W3C traceparent for distributed tracing context
@@ -66,24 +66,24 @@ impl InvocationHandler {
         &self,
         invocation_id: Option<Uuid>,
         worker_id: Option<Uuid>,
-        function_path: String,
+        function_id: String,
         body: Value,
         function_handler: Function,
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
-        // Create span with dynamic name using the function_path
+        // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
         let span = tracing::info_span!(
             "invoke",
-            otel.name = %format!("invoke {}", function_path),
+            otel.name = %format!("invoke {}", function_id),
             otel.kind = "server",
             otel.status_code = tracing::field::Empty,
             // FAAS semantic conventions (https://opentelemetry.io/docs/specs/semconv/faas/)
-            "faas.invoked_name" = %function_path,
+            "faas.invoked_name" = %function_id,
             "faas.trigger" = "other",  // III Engine uses its own invocation mechanism
-            // Keep function_path for backward compatibility
-            function_path = %function_path,
+            // Keep function_id for backward compatibility
+            function_id = %function_id,
         )
         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
@@ -92,7 +92,7 @@ impl InvocationHandler {
             let invocation_id = invocation_id.unwrap_or(Uuid::new_v4());
             let invocation = Invocation {
                 id: invocation_id,
-                function_path: function_path.clone(),
+                function_id: function_id.clone(),
                 worker_id,
                 sender,
                 traceparent,
@@ -112,21 +112,21 @@ impl InvocationHandler {
 
             match result {
                 FunctionResult::Success(result) => {
-                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function completed successfully");
+                    tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, "Function completed successfully");
                     tracing::Span::current().record("otel.status_code", "OK");
 
                     // Record metrics
                     metrics.invocations_total.add(
                         1,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "ok"),
                         ],
                     );
                     metrics.invocation_duration.record(
                         duration,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "ok"),
                         ],
                     );
@@ -135,33 +135,33 @@ impl InvocationHandler {
                     let acc = crate::modules::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_path);
+                    acc.increment_function(&function_id);
 
                     let _ = invocation.sender.send(Ok(result));
                 }
                 FunctionResult::Failure(error) => {
-                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, error_code = %error.code, "Function failed: {}", error.message);
+                    tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, error_code = %error.code, "Function failed: {}", error.message);
                     tracing::Span::current().record("otel.status_code", "ERROR");
 
                     // Record metrics
                     metrics.invocations_total.add(
                         1,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "error"),
                         ],
                     );
                     metrics.invocation_duration.record(
                         duration,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "error"),
                         ],
                     );
                     metrics.invocation_errors_total.add(
                         1,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("error_code", error.code.clone()),
                         ],
                     );
@@ -170,26 +170,26 @@ impl InvocationHandler {
                     let acc = crate::modules::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_path);
+                    acc.increment_function(&function_id);
 
                     let _ = invocation.sender.send(Err(error));
                 }
                 FunctionResult::NoResult => {
-                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function no result");
+                    tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, "Function no result");
                     tracing::Span::current().record("otel.status_code", "OK");
 
                     // Record metrics
                     metrics.invocations_total.add(
                         1,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "ok"),
                         ],
                     );
                     metrics.invocation_duration.record(
                         duration,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "ok"),
                         ],
                     );
@@ -198,25 +198,25 @@ impl InvocationHandler {
                     let acc = crate::modules::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_path);
+                    acc.increment_function(&function_id);
 
                     let _ = invocation.sender.send(Ok(None));
                 }
                 FunctionResult::Deferred => {
-                    tracing::debug!(invocation_id = %invocation_id, function_path = %function_path, "Function deferred");
+                    tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, "Function deferred");
 
                     // Record metrics for deferred invocations
                     metrics.invocations_total.add(
                         1,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "deferred"),
                         ],
                     );
                     metrics.invocation_duration.record(
                         duration,
                         &[
-                            KeyValue::new("function_path", function_path.clone()),
+                            KeyValue::new("function_id", function_id.clone()),
                             KeyValue::new("status", "deferred"),
                         ],
                     );
@@ -225,7 +225,7 @@ impl InvocationHandler {
                     let acc = crate::modules::observability::metrics::get_metrics_accumulator();
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_deferred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_path);
+                    acc.increment_function(&function_id);
 
                     // Deferred invocations will have their status set when the result comes back
                     // we need to store the invocation because it's a worker invocation

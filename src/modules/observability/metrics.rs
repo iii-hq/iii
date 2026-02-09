@@ -119,6 +119,26 @@ impl Default for MetricsConfig {
     }
 }
 
+/// Ensure GLOBAL_METER is initialized with at least a noop meter.
+/// This is safe to call multiple times — subsequent calls are no-ops.
+/// If OtelModule later calls `init_metrics()`, it will find the meter already set
+/// and log "Global meter already initialized".
+pub fn ensure_default_meter() {
+    if GLOBAL_METER.get().is_some() {
+        return;
+    }
+
+    // Initialize metric storage with defaults (needed for SDK metrics ingestion)
+    init_metric_storage(None, None);
+
+    let provider = SdkMeterProvider::builder().build();
+    let meter = provider.meter("iii-engine");
+    global::set_meter_provider(provider);
+    if GLOBAL_METER.set(meter).is_err() {
+        tracing::debug!("Global meter already initialized by another thread");
+    }
+}
+
 /// Initialize OpenTelemetry metrics with the given configuration.
 ///
 /// Returns true if metrics were successfully initialized, false otherwise.
@@ -353,8 +373,8 @@ impl Default for MetricsAccumulator {
 impl MetricsAccumulator {
     /// Get invocations for a specific function.
     /// More efficient than get_by_function() when only one function's count is needed.
-    pub fn get_function_count(&self, function_path: &str) -> Option<u64> {
-        self.invocations_by_function.get(function_path).map(|v| *v)
+    pub fn get_function_count(&self, function_id: &str) -> Option<u64> {
+        self.invocations_by_function.get(function_id).map(|v| *v)
     }
 
     /// Get invocations grouped by function as a HashMap.
@@ -375,9 +395,9 @@ impl MetricsAccumulator {
     }
 
     /// Increment invocation count for a specific function
-    pub fn increment_function(&self, function_path: &str) {
+    pub fn increment_function(&self, function_id: &str) {
         self.invocations_by_function
-            .entry(function_path.to_string())
+            .entry(function_id.to_string())
             .and_modify(|count| *count += 1)
             .or_insert(1);
     }
@@ -1613,7 +1633,7 @@ impl AlertManager {
             AlertAction::Function { path } => {
                 if let Some(engine) = &self.engine {
                     let engine = engine.clone();
-                    let function_path = path.clone();
+                    let function_id = path.clone();
                     let payload = serde_json::json!({
                         "alert": event.name,
                         "metric": event.metric,
@@ -1625,16 +1645,16 @@ impl AlertManager {
                     });
 
                     tokio::spawn(async move {
-                        match engine.invoke_function(&function_path, payload).await {
+                        match engine.call(&function_id, payload).await {
                             Ok(_) => {
                                 tracing::debug!(
-                                    function_path = %function_path,
+                                    function_id = %function_id,
                                     "Alert function invoked successfully"
                                 );
                             }
                             Err(e) => {
                                 tracing::error!(
-                                    function_path = %function_path,
+                                    function_id = %function_id,
                                     error = ?e,
                                     "Failed to invoke alert function"
                                 );
@@ -1644,7 +1664,7 @@ impl AlertManager {
                 } else {
                     tracing::warn!(
                         alert_name = %event.name,
-                        function_path = %path,
+                        function_id = %path,
                         "Alert function action configured but no engine reference available"
                     );
                 }
@@ -1746,5 +1766,29 @@ pub fn get_rollup_storage() -> Option<Arc<RollupStorage>> {
 pub fn process_metrics_for_rollups(metrics: &[StoredMetric]) {
     if let Some(storage) = get_rollup_storage() {
         storage.process_metrics(metrics);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_default_meter_makes_get_meter_available() {
+        // After calling ensure_default_meter, get_meter() should return Some
+        ensure_default_meter();
+        assert!(
+            get_meter().is_some(),
+            "get_meter() should return Some after ensure_default_meter()"
+        );
+    }
+
+    #[test]
+    fn test_get_engine_metrics_does_not_panic_after_ensure_default_meter() {
+        ensure_default_meter();
+        // This should NOT panic
+        let metrics = get_engine_metrics();
+        // Verify we can use the metrics (they should be functional noop counters)
+        metrics.invocations_total.add(1, &[]);
     }
 }

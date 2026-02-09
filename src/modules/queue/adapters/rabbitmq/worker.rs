@@ -52,8 +52,8 @@ impl Worker {
     pub async fn run(
         self: Arc<Self>,
         topic: String,
-        function_path: String,
-        condition_function_path: Option<String>,
+        function_id: String,
+        condition_function_id: Option<String>,
         consumer_tag: String,
     ) {
         let names = RabbitNames::new(&topic);
@@ -84,8 +84,8 @@ impl Worker {
                 Ok(delivery) => {
                     let worker = Arc::clone(&self);
                     let topic_clone = topic.clone();
-                    let function_path_clone = function_path.clone();
-                    let condition_function_path_clone = condition_function_path.clone();
+                    let function_id_clone = function_id.clone();
+                    let condition_function_id_clone = condition_function_id.clone();
 
                     match self.queue_mode {
                         QueueMode::Fifo => {
@@ -93,8 +93,8 @@ impl Worker {
                                 .process_delivery(
                                     delivery,
                                     &topic_clone,
-                                    &function_path_clone,
-                                    condition_function_path_clone.as_deref(),
+                                    &function_id_clone,
+                                    condition_function_id_clone.as_deref(),
                                 )
                                 .await
                             {
@@ -118,8 +118,8 @@ impl Worker {
                                     .process_delivery(
                                         delivery,
                                         &topic_clone,
-                                        &function_path_clone,
-                                        condition_function_path_clone.as_deref(),
+                                        &function_id_clone,
+                                        condition_function_id_clone.as_deref(),
                                     )
                                     .await
                                 {
@@ -150,13 +150,13 @@ impl Worker {
         &self,
         delivery: Delivery,
         topic: &str,
-        function_path: &str,
-        condition_function_path: Option<&str>,
+        function_id: &str,
+        condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
         match self
-            .process_job(&job, function_path, condition_function_path)
+            .process_job(&job, function_id, condition_function_id)
             .await
         {
             Ok(_) => {
@@ -192,23 +192,20 @@ impl Worker {
     async fn process_job(
         &self,
         job: &Job,
-        function_path: &str,
-        condition_function_path: Option<&str>,
+        function_id: &str,
+        condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let engine = Arc::clone(&self.engine);
-        let event_data = job.data.clone();
+        let data = job.data.clone();
 
-        if let Some(condition_path) = condition_function_path {
-            match engine
-                .invoke_function(condition_path, event_data.clone())
-                .await
-            {
+        if let Some(condition_path) = condition_function_id {
+            match engine.call(condition_path, data.clone()).await {
                 Ok(Some(result)) => {
                     if let Some(passed) = result.as_bool()
                         && !passed
                     {
                         tracing::debug!(
-                            function_path = %function_path,
+                            function_id = %function_id,
                             "Condition check failed, skipping handler"
                         );
                         return Ok(());
@@ -216,13 +213,13 @@ impl Worker {
                 }
                 Ok(None) => {
                     tracing::warn!(
-                        condition_function_path = %condition_path,
+                        condition_function_id = %condition_path,
                         "Condition function returned no result"
                     );
                 }
                 Err(err) => {
                     tracing::error!(
-                        condition_function_path = %condition_path,
+                        condition_function_id = %condition_path,
                         error = ?err,
                         "Error invoking condition function"
                     );
@@ -231,7 +228,7 @@ impl Worker {
             }
         }
 
-        match engine.invoke_function(function_path, event_data).await {
+        match engine.call(function_id, data).await {
             Ok(_) => {
                 tracing::debug!(job_id = %job.id, "Job processed successfully");
                 Ok(())

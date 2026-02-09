@@ -20,7 +20,7 @@ pub use self::pubsub::PubSubInput;
 #[async_trait::async_trait]
 pub trait PubSubAdapter: Send + Sync + 'static {
     async fn publish(&self, topic: &str, pubsub_data: Value);
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str);
+    async fn subscribe(&self, topic: &str, id: &str, function_id: &str);
     async fn unsubscribe(&self, topic: &str, id: &str);
 }
 

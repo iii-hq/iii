@@ -111,7 +111,7 @@ import { Bridge } from '@iii-dev/sdk'
 
 const bridge = new Bridge('ws://127.0.0.1:49134')
 
-bridge.registerFunction({ function_path: 'math.add' }, async (input) => {
+bridge.registerFunction({ function_id: 'math.add' }, async (input) => {
   return { sum: input.a + input.b }
 })
 ```
@@ -143,13 +143,13 @@ The REST API module maps HTTP routes to functions via the `api` trigger type. Fu
 return `{ "status_code": <int>, "body": <json> }`.
 
 ```javascript
-bridge.registerFunction({ function_path: 'api.echo' }, async (req) => {
+bridge.registerFunction({ function_id: 'api.echo' }, async (req) => {
   return { status_code: 200, body: { ok: true, input: req.body } }
 })
 
 bridge.registerTrigger({
   trigger_type: 'api',
-  function_path: 'api.echo',
+  function_id: 'api.echo',
   config: { api_path: 'echo', http_method: 'POST' },
 })
 ```
@@ -162,7 +162,7 @@ With the default API config, the endpoint will be available at:
 Available core modules (registered in `src/modules/config.rs`):
 
 - `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
-- `modules::event::EventModule` – Redis-backed event bus (`event` trigger, `emit` function).
+- `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `emit` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
 - `modules::streams::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
   `streams.set/get/delete/getGroup` functions (Redis-backed by default).
@@ -170,7 +170,7 @@ Available core modules (registered in `src/modules/config.rs`):
 - `modules::shell::ExecModule` – File watcher that runs commands (only when configured).
 
 If `config.yaml` is missing, the engine loads the default module list:
-RestApi, Event, Logging, Cron, Streams. Event/Streams expect Redis; Cron uses built-in KV by default.
+RestApi, Queue, Logging, Cron, Streams. Queue/Streams expect Redis; Cron uses built-in KV by default.
 
 ## Protocol Summary
 
@@ -189,7 +189,7 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 - `src/modules/` – Core modules (API, event, cron, streams, logging, shell).
 - `config.yaml` – Example module configuration.
 - `packages/node/*`, `packages/python/*`, and `packages/rust/*` – SDKs and higher-level frameworks.
-- `examples/custom_event_adapter.rs` – Example of a custom module + adapter.
+- `examples/custom_queue_adapter.rs` – Example of a custom module + adapter.
 
 ## Development
 

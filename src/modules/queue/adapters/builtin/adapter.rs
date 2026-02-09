@@ -21,9 +21,9 @@ use crate::{
         queue_kv::QueueKvStore,
     },
     engine::{Engine, EngineTrait},
-    modules::event::{
-        EventAdapter, SubscriberQueueConfig,
-        registry::{EventAdapterFuture, EventAdapterRegistration},
+    modules::queue::{
+        QueueAdapter, SubscriberQueueConfig,
+        registry::{QueueAdapterFuture, QueueAdapterRegistration},
     },
 };
 
@@ -35,17 +35,13 @@ pub struct BuiltinQueueAdapter {
 
 struct FunctionHandler {
     engine: Arc<Engine>,
-    function_path: String,
+    function_id: String,
 }
 
 #[async_trait]
 impl JobHandler for FunctionHandler {
     async fn handle(&self, job: &crate::builtins::queue::Job) -> Result<(), String> {
-        match self
-            .engine
-            .invoke_function(&self.function_path, job.data.clone())
-            .await
-        {
+        match self.engine.call(&self.function_id, job.data.clone()).await {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("{:?}", e)),
         }
@@ -78,7 +74,7 @@ impl Clone for BuiltinQueueAdapter {
     }
 }
 
-pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFuture {
     Box::pin(async move {
         let queue_config = QueueConfig::from_value(config.as_ref());
 
@@ -97,27 +93,27 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterF
             tracing::error!(error = ?e, "Failed to rebuild queue state from storage");
         }
 
-        Ok(adapter as Arc<dyn EventAdapter>)
+        Ok(adapter as Arc<dyn QueueAdapter>)
     })
 }
 
 #[async_trait]
-impl EventAdapter for BuiltinQueueAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
-        self.queue.push(topic, event_data).await;
+impl QueueAdapter for BuiltinQueueAdapter {
+    async fn enqueue(&self, topic: &str, data: Value) {
+        self.queue.push(topic, data).await;
     }
 
     async fn subscribe(
         &self,
         topic: &str,
         id: &str,
-        function_path: &str,
-        _condition_function_path: Option<String>,
+        function_id: &str,
+        _condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         let handler = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
-            function_path: function_path.to_string(),
+            function_id: function_id.to_string(),
         });
 
         let subscription_config = queue_config.map(|c| SubscriptionConfig {
@@ -138,7 +134,7 @@ impl EventAdapter for BuiltinQueueAdapter {
         let mut subs = self.subscriptions.write().await;
         subs.insert(format!("{}:{}", topic, id), handle);
 
-        tracing::debug!(topic = %topic, id = %id, function_path = %function_path, "Subscribed to queue via BuiltinQueueAdapter");
+        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, "Subscribed to queue via BuiltinQueueAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
@@ -163,8 +159,8 @@ impl EventAdapter for BuiltinQueueAdapter {
 }
 
 crate::register_adapter!(
-    <EventAdapterRegistration>
-    "modules::event::BuiltinQueueAdapter",
+    <QueueAdapterRegistration>
+    "modules::queue::BuiltinQueueAdapter",
     make_adapter
 );
 
@@ -172,7 +168,7 @@ crate::register_adapter!(
 mod tests {
     use super::*;
     use crate::builtins::queue::QueueMode;
-    use crate::modules::event::SubscriberQueueConfig;
+    use crate::modules::queue::SubscriberQueueConfig;
 
     #[test]
     fn test_subscriber_queue_config_mode_mapping_fifo() {

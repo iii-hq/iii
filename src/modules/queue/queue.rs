@@ -18,7 +18,7 @@ use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{EventAdapter, SubscriberQueueConfig, config::EventModuleConfig};
+use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
@@ -28,24 +28,24 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct EventCoreModule {
-    adapter: Arc<dyn EventAdapter>,
+pub struct QueueCoreModule {
+    adapter: Arc<dyn QueueAdapter>,
     engine: Arc<Engine>,
-    _config: EventModuleConfig,
+    _config: QueueModuleConfig,
 }
 
 #[derive(Deserialize)]
-pub struct EventInput {
+pub struct QueueInput {
     topic: String,
     data: Value,
 }
 
-#[service(name = "event")]
-impl EventCoreModule {
-    #[function(name = "emit", description = "Emit an event")]
-    pub async fn emit(&self, input: EventInput) -> FunctionResult<Option<Value>, ErrorBody> {
+#[service(name = "queue")]
+impl QueueCoreModule {
+    #[function(id = "enqueue", description = "Enqueue a message")]
+    pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
-        let event_data = input.data;
+        let data = input.data;
         let topic = input.topic;
 
         if topic.is_empty() {
@@ -55,14 +55,14 @@ impl EventCoreModule {
             });
         }
 
-        tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event");
-        let _ = adapter.emit(&topic, event_data).await;
+        tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
+        let _ = adapter.enqueue(&topic, data).await;
 
         FunctionResult::Success(None)
     }
 }
 
-impl TriggerRegistrator for EventCoreModule {
+impl TriggerRegistrator for QueueCoreModule {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -80,7 +80,7 @@ impl TriggerRegistrator for EventCoreModule {
             "{} Subscription {} → {}",
             "[REGISTERED]".green(),
             topic.purple(),
-            trigger.function_path.cyan()
+            trigger.function_id.cyan()
         );
 
         // Get adapter reference before async block
@@ -88,7 +88,7 @@ impl TriggerRegistrator for EventCoreModule {
 
         Box::pin(async move {
             if !topic.is_empty() {
-                let condition_function_path = trigger
+                let condition_function_id = trigger
                     .config
                     .get("_condition_path")
                     .and_then(|v| v.as_str())
@@ -105,14 +105,14 @@ impl TriggerRegistrator for EventCoreModule {
                     .subscribe(
                         &topic,
                         &trigger.id,
-                        &trigger.function_path,
-                        condition_function_path,
+                        &trigger.function_id,
+                        condition_function_id,
                         queue_config,
                     )
                     .await;
             } else {
                 tracing::warn!(
-                    function_path = %trigger.function_path.purple(),
+                    function_id = %trigger.function_id.purple(),
                     "Topic is not set for trigger"
                 );
             }
@@ -147,9 +147,9 @@ impl TriggerRegistrator for EventCoreModule {
 }
 
 #[async_trait]
-impl Module for EventCoreModule {
+impl Module for QueueCoreModule {
     fn name(&self) -> &'static str {
-        "EventModule"
+        "QueueModule"
     }
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
         Self::create_with_adapters(engine, config).await
@@ -160,11 +160,11 @@ impl Module for EventCoreModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing EventModule");
+        tracing::info!("Initializing QueueModule");
 
         let trigger_type = TriggerType {
-            id: "event".to_string(),
-            _description: "Event core module".to_string(),
+            id: "queue".to_string(),
+            _description: "Queue core module".to_string(),
             registrator: Box::new(self.clone()),
             worker_id: None,
         };
@@ -176,15 +176,15 @@ impl Module for EventCoreModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for EventCoreModule {
-    type Config = EventModuleConfig;
-    type Adapter = dyn EventAdapter;
-    type AdapterRegistration = super::registry::EventAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::event::RedisAdapter";
+impl ConfigurableModule for QueueCoreModule {
+    type Config = QueueModuleConfig;
+    type Adapter = dyn QueueAdapter;
+    type AdapterRegistration = super::registry::QueueAdapterRegistration;
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::queue::BuiltinQueueAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
-        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn EventAdapter>>>> =
-            Lazy::new(|| RwLock::new(EventCoreModule::build_registry()));
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn QueueAdapter>>>> =
+            Lazy::new(|| RwLock::new(QueueCoreModule::build_registry()));
         &REGISTRY
     }
 
@@ -206,7 +206,7 @@ impl ConfigurableModule for EventCoreModule {
 }
 
 crate::register_module!(
-    "modules::event::EventModule",
-    EventCoreModule,
+    "modules::queue::QueueModule",
+    QueueCoreModule,
     enabled_by_default = true
 );

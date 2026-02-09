@@ -16,9 +16,9 @@ use uuid::Uuid;
 
 use crate::{
     engine::Engine,
-    modules::event::{
-        EventAdapter, SubscriberQueueConfig,
-        registry::{EventAdapterFuture, EventAdapterRegistration},
+    modules::queue::{
+        QueueAdapter, SubscriberQueueConfig,
+        registry::{QueueAdapterFuture, QueueAdapterRegistration},
     },
 };
 
@@ -104,17 +104,17 @@ impl Clone for RabbitMQAdapter {
     }
 }
 
-pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFuture {
     Box::pin(async move {
         let config = RabbitMQConfig::from_value(config.as_ref());
-        Ok(Arc::new(RabbitMQAdapter::new(config, engine).await?) as Arc<dyn EventAdapter>)
+        Ok(Arc::new(RabbitMQAdapter::new(config, engine).await?) as Arc<dyn QueueAdapter>)
     })
 }
 
 #[async_trait]
-impl EventAdapter for RabbitMQAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
-        let job = Job::new(topic, event_data, self.config.max_attempts);
+impl QueueAdapter for RabbitMQAdapter {
+    async fn enqueue(&self, topic: &str, data: Value) {
+        let job = Job::new(topic, data, self.config.max_attempts);
 
         if let Err(e) = self.topology.setup_topic(topic).await {
             tracing::error!(
@@ -135,7 +135,7 @@ impl EventAdapter for RabbitMQAdapter {
             tracing::debug!(
                 topic = %topic,
                 job_id = %job.id,
-                "Event emitted to RabbitMQ"
+                "Published to RabbitMQ queue"
             );
         }
     }
@@ -144,13 +144,13 @@ impl EventAdapter for RabbitMQAdapter {
         &self,
         topic: &str,
         id: &str,
-        function_path: &str,
-        condition_function_path: Option<String>,
+        function_id: &str,
+        condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_path = function_path.to_string();
+        let function_id = function_id.to_string();
         let subscriptions = Arc::clone(&self.subscriptions);
 
         let already_subscribed = {
@@ -195,15 +195,15 @@ impl EventAdapter for RabbitMQAdapter {
         ));
 
         let topic_clone = topic.clone();
-        let function_path_clone = function_path.clone();
+        let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
 
         let task_handle = tokio::spawn(async move {
             worker
                 .run(
                     topic_clone,
-                    function_path_clone,
-                    condition_function_path,
+                    function_id_clone,
+                    condition_function_id,
                     consumer_tag_clone,
                 )
                 .await;
@@ -221,7 +221,7 @@ impl EventAdapter for RabbitMQAdapter {
 
         tracing::debug!(
             topic = %topic,
-            function_path = %function_path,
+            function_id = %function_id,
             "Subscribed to RabbitMQ queue"
         );
     }
@@ -359,4 +359,4 @@ impl EventAdapter for RabbitMQAdapter {
     }
 }
 
-crate::register_adapter!(<EventAdapterRegistration> "modules::event::RabbitMQAdapter", make_adapter);
+crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RabbitMQAdapter", make_adapter);

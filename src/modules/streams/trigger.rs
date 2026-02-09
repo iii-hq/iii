@@ -31,7 +31,7 @@ pub struct StreamTriggerConfig {
     pub stream_name: Option<String>,
     pub group_id: Option<String>,
     pub item_id: Option<String>,
-    pub condition_function_path: Option<String>,
+    pub condition_function_id: Option<String>,
 }
 
 pub struct StreamTriggers {
@@ -79,13 +79,13 @@ impl TriggerRegistrator for StreamCoreModule {
             if trigger.trigger_type == JOIN_TRIGGER_TYPE {
                 tracing::info!(
                     "Registering join trigger for function path {}",
-                    trigger.function_path.purple()
+                    trigger.function_id.purple()
                 );
                 let _ = join_triggers.write().await.insert(trigger);
             } else if trigger.trigger_type == LEAVE_TRIGGER_TYPE {
                 tracing::info!(
                     "Registering leave trigger for function path {}",
-                    trigger.function_path.purple()
+                    trigger.function_id.purple()
                 );
                 let _ = leave_triggers.write().await.insert(trigger);
             } else if trigger.trigger_type == STREAM_TRIGGER_TYPE {
@@ -97,7 +97,7 @@ impl TriggerRegistrator for StreamCoreModule {
                         tracing::info!(stream_name = %stream_trigger.stream_name.clone().unwrap_or_default(),
                             group_id = %stream_trigger.group_id.clone().unwrap_or_default(),
                             item_id = %stream_trigger.item_id.clone().unwrap_or_default(),
-                            condition_function_path = %stream_trigger.condition_function_path.clone().unwrap_or_default(),
+                            condition_function_id = %stream_trigger.condition_function_id.clone().unwrap_or_default(),
                             "{} Stream trigger", "[REGISTERED]".green());
 
                         stream_triggers_by_name

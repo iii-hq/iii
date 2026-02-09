@@ -19,9 +19,9 @@ use tokio::{
 use crate::{
     engine::{Engine, EngineTrait},
     modules::{
-        event::{
-            EventAdapter, SubscriberQueueConfig,
-            registry::{EventAdapterFuture, EventAdapterRegistration},
+        queue::{
+            QueueAdapter, SubscriberQueueConfig,
+            registry::{QueueAdapterFuture, QueueAdapterRegistration},
         },
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
     },
@@ -37,7 +37,7 @@ pub struct RedisAdapter {
 struct SubscriptionInfo {
     id: String,
     #[allow(dead_code)]
-    condition_function_path: Option<String>,
+    condition_function_id: Option<String>,
     task_handle: JoinHandle<()>,
 }
 
@@ -71,7 +71,7 @@ impl RedisAdapter {
     }
 }
 
-fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFuture {
+fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFuture {
     Box::pin(async move {
         let redis_url = config
             .as_ref()
@@ -79,36 +79,36 @@ fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> EventAdapterFutur
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "redis://localhost:6379".to_string());
-        Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?) as Arc<dyn EventAdapter>)
+        Ok(Arc::new(RedisAdapter::new(redis_url, engine).await?) as Arc<dyn QueueAdapter>)
     })
 }
 
-crate::register_adapter!(<EventAdapterRegistration> "modules::event::RedisAdapter", make_adapter);
+crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RedisAdapter", make_adapter);
 
 #[async_trait]
-impl EventAdapter for RedisAdapter {
-    async fn emit(&self, topic: &str, event_data: Value) {
+impl QueueAdapter for RedisAdapter {
+    async fn enqueue(&self, topic: &str, data: Value) {
         let topic = topic.to_string();
-        let event_data = event_data.clone();
+        let data = data.clone();
         let publisher = Arc::clone(&self.publisher);
 
-        tracing::debug!(topic = %topic, event_data = %event_data, "Emitting event to Redis");
+        tracing::debug!(topic = %topic, data = %data, "Publishing to Redis queue");
 
-        let event_json = match serde_json::to_string(&event_data) {
+        let json = match serde_json::to_string(&data) {
             Ok(json) => json,
             Err(e) => {
-                tracing::error!(error = %e, topic = %topic, "Failed to serialize event data");
+                tracing::error!(error = %e, topic = %topic, "Failed to serialize queue data");
                 return;
             }
         };
 
         let mut conn = publisher.lock().await;
 
-        if let Err(e) = conn.publish::<_, _, ()>(&topic, &event_json).await {
-            tracing::error!(error = %e, topic = %topic, "Failed to publish event to Redis");
+        if let Err(e) = conn.publish::<_, _, ()>(&topic, &json).await {
+            tracing::error!(error = %e, topic = %topic, "Failed to publish to Redis queue");
             return;
         } else {
-            tracing::debug!(topic = %topic, "Event published to Redis");
+            tracing::debug!(topic = %topic, "Published to Redis queue");
         }
     }
 
@@ -116,13 +116,13 @@ impl EventAdapter for RedisAdapter {
         &self,
         topic: &str,
         id: &str,
-        function_path: &str,
-        condition_function_path: Option<String>,
+        function_id: &str,
+        condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_path = function_path.to_string();
+        let function_id = function_id.to_string();
         let subscriber = Arc::clone(&self.subscriber);
         let engine = Arc::clone(&self.engine);
         let subscriptions = Arc::clone(&self.subscriptions);
@@ -140,10 +140,10 @@ impl EventAdapter for RedisAdapter {
 
         let topic_for_task = topic.clone();
         let id_for_task = id.clone();
-        let function_path_for_task = function_path.clone();
-        let condition_function_path_for_task = condition_function_path.clone();
+        let function_id_for_task = function_id.clone();
+        let condition_function_id_for_task = condition_function_id.clone();
 
-        tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribing to Redis channel");
+        tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribing to Redis channel");
 
         let task_handle = tokio::spawn(async move {
             // let mut conn = subscriber.get_connection();
@@ -163,8 +163,8 @@ impl EventAdapter for RedisAdapter {
             tracing::debug!(
                 topic = %topic_for_task,
                 id = %id_for_task,
-                function_path = %function_path_for_task,
-                condition_function_path = ?condition_function_path_for_task,
+                function_id = %function_id_for_task,
+                condition_function_id = ?condition_function_id_for_task,
                 "Subscribed to Redis channel"
             );
 
@@ -181,7 +181,7 @@ impl EventAdapter for RedisAdapter {
 
                 tracing::debug!(payload = %payload, "Received message from Redis");
 
-                let event_data: Value = match serde_json::from_str(&payload) {
+                let data: Value = match serde_json::from_str(&payload) {
                     Ok(data) => data,
                     Err(e) => {
                         tracing::error!(error = %e, topic = %topic_for_task, "Failed to parse message as JSON");
@@ -189,27 +189,24 @@ impl EventAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::debug!(topic = %topic_for_task, function_path = %function_path_for_task, "Received event from Redis, invoking function");
+                tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, "Received message from Redis queue, invoking function");
 
                 let engine = Arc::clone(&engine);
-                let function_path = function_path_for_task.clone();
+                let function_id = function_id_for_task.clone();
 
-                if let Some(condition_function_path) = condition_function_path_for_task.as_ref() {
+                if let Some(condition_function_id) = condition_function_id_for_task.as_ref() {
                     tracing::debug!(
-                        condition_function_path = %condition_function_path,
+                        condition_function_id = %condition_function_id,
                         "Checking trigger conditions"
                     );
 
-                    match engine
-                        .invoke_function(condition_function_path, event_data.clone())
-                        .await
-                    {
+                    match engine.call(condition_function_id, data.clone()).await {
                         Ok(Some(result)) => {
                             if let Some(passed) = result.as_bool()
                                 && !passed
                             {
                                 tracing::debug!(
-                                    function_path = %function_path,
+                                    function_id = %function_id,
                                     "Condition check failed, skipping handler"
                                 );
                                 continue;
@@ -217,13 +214,13 @@ impl EventAdapter for RedisAdapter {
                         }
                         Ok(None) => {
                             tracing::warn!(
-                                condition_function_path = %condition_function_path,
+                                condition_function_id = %condition_function_id,
                                 "Condition function returned no result"
                             );
                         }
                         Err(err) => {
                             tracing::error!(
-                                condition_function_path = %condition_function_path,
+                                condition_function_id = %condition_function_id,
                                 error = ?err,
                                 "Error invoking condition function"
                             );
@@ -234,7 +231,7 @@ impl EventAdapter for RedisAdapter {
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_path, event_data).await;
+                    let _ = engine.call(&function_id, data).await;
                 });
             }
 
@@ -249,7 +246,7 @@ impl EventAdapter for RedisAdapter {
             topic,
             SubscriptionInfo {
                 id,
-                condition_function_path,
+                condition_function_id,
                 task_handle,
             },
         );

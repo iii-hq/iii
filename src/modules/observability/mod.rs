@@ -216,17 +216,14 @@ impl OtelModule {
     // OTEL-native Log Functions (recommended over legacy logger.*)
     // =========================================================================
 
-    #[function(
-        name = "engine.log.info",
-        description = "Log an info message using OTEL"
-    )]
+    #[function(id = "engine.log.info", description = "Log an info message using OTEL")]
     pub async fn log_info(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "INFO", 9).await;
         FunctionResult::NoResult
     }
 
     #[function(
-        name = "engine.log.warn",
+        id = "engine.log.warn",
         description = "Log a warning message using OTEL"
     )]
     pub async fn log_warn(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
@@ -235,7 +232,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.log.error",
+        id = "engine.log.error",
         description = "Log an error message using OTEL"
     )]
     pub async fn log_error(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
@@ -244,7 +241,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.log.debug",
+        id = "engine.log.debug",
         description = "Log a debug message using OTEL"
     )]
     pub async fn log_debug(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
@@ -253,7 +250,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.log.trace",
+        id = "engine.log.trace",
         description = "Log a trace-level message using OTEL"
     )]
     pub async fn log_trace(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
@@ -266,7 +263,7 @@ impl OtelModule {
     // =========================================================================
 
     #[function(
-        name = "engine.baggage.get",
+        id = "engine.baggage.get",
         description = "Get a baggage item value from the current context"
     )]
     pub async fn baggage_get(
@@ -282,7 +279,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.baggage.set",
+        id = "engine.baggage.set",
         description = "Set a baggage item value (returns new context, does not modify global)"
     )]
     pub async fn baggage_set(
@@ -306,7 +303,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.baggage.getAll",
+        id = "engine.baggage.getAll",
         description = "Get all baggage items from the current context"
     )]
     pub async fn baggage_get_all(
@@ -465,10 +462,10 @@ impl OtelModule {
                 });
 
                 let engine = engine.clone();
-                let function_path = trigger.function_path.clone();
+                let function_id = trigger.function_id.clone();
 
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_path, log_data).await;
+                    let _ = engine.call(&function_id, log_data).await;
                 });
             }
         }
@@ -479,7 +476,7 @@ impl OtelModule {
     // =========================================================================
 
     #[function(
-        name = "engine.traces.list",
+        id = "engine.traces.list",
         description = "List stored traces (only available when exporter is 'memory' or 'both')"
     )]
     pub async fn list_traces(
@@ -521,7 +518,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.traces.clear",
+        id = "engine.traces.clear",
         description = "Clear all stored traces (only available when exporter is 'memory' or 'both')"
     )]
     pub async fn clear_traces(
@@ -547,7 +544,7 @@ impl OtelModule {
     // =========================================================================
 
     #[function(
-        name = "engine.metrics.list",
+        id = "engine.metrics.list",
         description = "List current metrics values"
     )]
     pub async fn list_metrics(
@@ -724,7 +721,7 @@ impl OtelModule {
     // Logs Functions
     // =========================================================================
 
-    #[function(name = "engine.logs.list", description = "List stored OTEL logs")]
+    #[function(id = "engine.logs.list", description = "List stored OTEL logs")]
     pub async fn list_logs(
         &self,
         input: LogsListInput,
@@ -771,7 +768,7 @@ impl OtelModule {
         }
     }
 
-    #[function(name = "engine.logs.clear", description = "Clear all stored OTEL logs")]
+    #[function(id = "engine.logs.clear", description = "Clear all stored OTEL logs")]
     pub async fn clear_logs(
         &self,
         _input: LogsClearInput,
@@ -792,7 +789,7 @@ impl OtelModule {
     // =========================================================================
 
     #[function(
-        name = "engine.sampling.rules",
+        id = "engine.sampling.rules",
         description = "Get active sampling rules configuration"
     )]
     pub async fn get_sampling_rules(
@@ -857,10 +854,7 @@ impl OtelModule {
     // Health Check Functions
     // =========================================================================
 
-    #[function(
-        name = "engine.health.check",
-        description = "Check system health status"
-    )]
+    #[function(id = "engine.health.check", description = "Check system health status")]
     pub async fn health_check(
         &self,
         _input: HealthCheckInput,
@@ -954,7 +948,7 @@ impl OtelModule {
     // Alerts Functions
     // =========================================================================
 
-    #[function(name = "engine.alerts.list", description = "List current alert states")]
+    #[function(id = "engine.alerts.list", description = "List current alert states")]
     pub async fn list_alerts(
         &self,
         _input: AlertsListInput,
@@ -982,7 +976,7 @@ impl OtelModule {
     }
 
     #[function(
-        name = "engine.alerts.evaluate",
+        id = "engine.alerts.evaluate",
         description = "Manually trigger alert evaluation"
     )]
     pub async fn evaluate_alerts(
@@ -1014,7 +1008,7 @@ impl OtelModule {
     // =========================================================================
 
     #[function(
-        name = "engine.rollups.list",
+        id = "engine.rollups.list",
         description = "Get pre-aggregated metrics rollups"
     )]
     pub async fn list_rollups(
@@ -1141,7 +1135,7 @@ impl TriggerRegistrator for OtelModule {
             "[REGISTERED]".green(),
             trigger.id.purple(),
             level.cyan(),
-            trigger.function_path.cyan()
+            trigger.function_id.cyan()
         );
 
         Box::pin(async move {

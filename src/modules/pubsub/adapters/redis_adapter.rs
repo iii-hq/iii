@@ -110,10 +110,10 @@ impl PubSubAdapter for RedisAdapter {
         }
     }
 
-    async fn subscribe(&self, topic: &str, id: &str, function_path: &str) {
+    async fn subscribe(&self, topic: &str, id: &str, function_id: &str) {
         let topic = topic.to_string();
         let id = id.to_string();
-        let function_path = function_path.to_string();
+        let function_id = function_id.to_string();
         let subscriber = Arc::clone(&self.subscriber);
         let engine = Arc::clone(&self.engine);
         let subscriptions = Arc::clone(&self.subscriptions);
@@ -131,9 +131,9 @@ impl PubSubAdapter for RedisAdapter {
 
         let topic_for_task = topic.clone();
         let id_for_task = id.clone();
-        let function_path_for_task = function_path.clone();
+        let function_id_for_task = function_id.clone();
 
-        tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribing to Redis channel");
+        tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribing to Redis channel");
 
         let task_handle = tokio::spawn(async move {
             // let mut conn = subscriber.get_connection();
@@ -150,7 +150,7 @@ impl PubSubAdapter for RedisAdapter {
                 return;
             }
 
-            tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_path = %function_path_for_task, "Subscribed to Redis channel");
+            tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribed to Redis channel");
 
             let mut msg = pubsub.into_on_message();
 
@@ -173,14 +173,14 @@ impl PubSubAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::debug!(topic = %topic_for_task, function_path = %function_path, "Received event from Redis, invoking function");
+                tracing::debug!(topic = %topic_for_task, function_id = %function_id, "Received event from Redis, invoking function");
 
                 let engine = Arc::clone(&engine);
-                let function_path = function_path_for_task.clone();
+                let function_id = function_id_for_task.clone();
 
                 // We may want to limit concurrency at some point
                 tokio::spawn(async move {
-                    let _ = engine.invoke_function(&function_path, event_data).await;
+                    let _ = engine.call(&function_id, event_data).await;
                 });
             }
 

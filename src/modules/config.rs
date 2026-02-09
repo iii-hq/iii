@@ -34,7 +34,7 @@ use crate::engine::Engine;
 
 /// Default address for the engine server
 pub const DEFAULT_PORT: u16 = 49134;
-const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_HOST: &str = "0.0.0.0";
 
 // =============================================================================
 // EngineConfig (YAML structure)
@@ -362,6 +362,10 @@ impl EngineBuilder {
     /// Builds and initializes all modules
     pub async fn build(mut self) -> anyhow::Result<Self> {
         let config = self.config.take().expect("No module configs founded");
+
+        // Ensure metrics are always available, even if OtelModule is not configured.
+        // This prevents panics in workers/invocation code that unconditionally calls get_engine_metrics().
+        crate::modules::observability::metrics::ensure_default_meter();
 
         tracing::info!("Building engine with {} modules", config.modules.len());
 

@@ -97,7 +97,7 @@ pub struct StreamDeleteInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamGetGroupInput {
+pub struct StreamListInput {
     pub stream_name: String,
     pub group_id: String,
 }
@@ -141,4 +141,15 @@ pub struct StreamUpdateInput {
     pub group_id: String,
     pub item_id: String,
     pub ops: Vec<UpdateOp>,
+}
+
+/// Input for streams.listAll (empty struct)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamListAllInput {}
+
+/// Metadata for a stream (used by streams.listAll)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamMetadata {
+    pub id: String,
+    pub groups: Vec<String>,
 }

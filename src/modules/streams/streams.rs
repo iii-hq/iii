@@ -38,8 +38,9 @@ use crate::{
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
-                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetGroupInput,
-                StreamGetInput, StreamListGroupsInput, StreamSetInput, StreamUpdateInput,
+                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
+                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSetInput,
+                StreamUpdateInput,
             },
             trigger::{
                 JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
@@ -82,7 +83,7 @@ async fn ws_handler(
         let input = serde_json::to_value(input);
 
         match input {
-            Ok(input) => match engine.invoke_function(&auth_function, input).await {
+            Ok(input) => match engine.call(&auth_function, input).await {
                 Ok(Some(result)) => {
                     let context = serde_json::from_value::<StreamAuthContext>(result);
 
@@ -217,7 +218,7 @@ impl ConfigurableModule for StreamCoreModule {
     type Config = StreamModuleConfig;
     type Adapter = dyn StreamAdapter;
     type AdapterRegistration = super::registry::StreamAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::streams::adapters::RedisAdapter";
+    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::streams::adapters::KvStore";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
@@ -284,22 +285,21 @@ impl StreamCoreModule {
                     let trigger = &stream_trigger.trigger;
 
                     // Check condition if specified (using pre-parsed value)
-                    let condition_function_path =
-                        stream_trigger.config.condition_function_path.clone();
+                    let condition_function_id = stream_trigger.config.condition_function_id.clone();
 
-                    if let Some(condition_function_path) = condition_function_path {
+                    if let Some(condition_function_id) = condition_function_id {
                         tracing::debug!(
-                            condition_function_path = %condition_function_path,
+                            condition_function_id = %condition_function_id,
                             "Checking trigger conditions"
                         );
 
                         match engine
-                            .invoke_function(&condition_function_path, event_data.clone())
+                            .call(&condition_function_id, event_data.clone())
                             .await
                         {
                             Ok(Some(result)) => {
                                 tracing::debug!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     result = ?result,
                                     "Condition function result"
                                 );
@@ -308,7 +308,7 @@ impl StreamCoreModule {
                                     && !passed
                                 {
                                     tracing::debug!(
-                                        function_path = %trigger.function_path,
+                                        function_id = %trigger.function_id,
                                         "Condition check failed, skipping handler"
                                     );
                                     continue;
@@ -316,14 +316,14 @@ impl StreamCoreModule {
                             }
                             Ok(None) => {
                                 tracing::warn!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     "Condition function returned no result"
                                 );
                                 continue;
                             }
                             Err(err) => {
                                 tracing::error!(
-                                    condition_function_path = %condition_function_path,
+                                    condition_function_id = %condition_function_id,
                                     error = ?err,
                                     "Error invoking condition function"
                                 );
@@ -334,24 +334,22 @@ impl StreamCoreModule {
 
                     // Invoke the handler function
                     tracing::debug!(
-                        function_path = %trigger.function_path,
+                        function_id = %trigger.function_id,
                         "Invoking trigger"
                     );
 
-                    let call_result = engine
-                        .invoke_function(&trigger.function_path, event_data.clone())
-                        .await;
+                    let call_result = engine.call(&trigger.function_id, event_data.clone()).await;
 
                     match call_result {
                         Ok(_) => {
                             tracing::debug!(
-                                function_path = %trigger.function_path,
+                                function_id = %trigger.function_id,
                                 "Trigger handler invoked successfully"
                             );
                         }
                         Err(err) => {
                             tracing::error!(
-                                function_path = %trigger.function_path,
+                                function_id = %trigger.function_id,
                                 error = ?err,
                                 "Error invoking trigger handler"
                             );
@@ -367,7 +365,7 @@ impl StreamCoreModule {
 
 #[service(name = "streams")]
 impl StreamCoreModule {
-    #[function(name = "streams.set", description = "Set a value in a stream")]
+    #[function(id = "streams.set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
@@ -375,13 +373,13 @@ impl StreamCoreModule {
         let item_id = input.item_id;
         let data = input.data;
 
-        let function_path = format!("streams.set({})", stream_name);
-        let function = self.engine.functions.get(&function_path);
+        let function_id = format!("streams.set({})", stream_name);
+        let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         let result: anyhow::Result<SetResult> = match function {
             Some(_) => {
-                tracing::debug!(function_path = %function_path, "Calling custom streams.set function");
+                tracing::debug!(function_id = %function_id, "Calling custom streams.set function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
@@ -392,7 +390,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_path, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(Some(result)) => match serde_json::from_value::<SetResult>(result) {
@@ -451,20 +449,20 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(name = "streams.get", description = "Get a value from a stream")]
+    #[function(id = "streams.get", description = "Get a value from a stream")]
     pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
 
-        let function_path = format!("streams.get({})", stream_name);
-        let function = self.engine.functions.get(&function_path);
+        let function_id = format!("streams.get({})", stream_name);
+        let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         match function {
             Some(_) => {
-                tracing::debug!(function_path = %function_path, "Calling custom streams.get function");
+                tracing::debug!(function_id = %function_id, "Calling custom streams.get function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
@@ -476,7 +474,7 @@ impl StreamCoreModule {
                     }
                 };
 
-                let result = self.engine.invoke_function(&function_path, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -496,7 +494,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(name = "streams.delete", description = "Delete a value from a stream")]
+    #[function(id = "streams.delete", description = "Delete a value from a stream")]
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
@@ -505,13 +503,13 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        let function_path = format!("streams.delete({})", stream_name);
-        let function = self.engine.functions.get(&function_path);
+        let function_id = format!("streams.delete({})", stream_name);
+        let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         let result: anyhow::Result<DeleteResult> = match function {
             Some(_) => {
-                tracing::debug!(function_path = %function_path, "Calling custom streams.delete function");
+                tracing::debug!(function_id = %function_id, "Calling custom streams.delete function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
@@ -522,7 +520,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_path, input).await;
+                let result = self.engine.call(&function_id, input).await;
                 match result {
                     Ok(Some(result)) => {
                         let result = match serde_json::from_value::<DeleteResult>(result) {
@@ -571,33 +569,19 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(
-        name = "streams.list",
-        description = "List all items in a stream group"
-    )]
-    pub async fn list(
-        &self,
-        input: StreamGetGroupInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
-        self.get_group(input).await
-    }
-
-    #[function(name = "streams.getGroup", description = "Get a group from a stream")]
-    pub async fn get_group(
-        &self,
-        input: StreamGetGroupInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    #[function(id = "streams.list", description = "List all items in a stream group")]
+    pub async fn list(&self, input: StreamListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
-        let function_path = format!("streams.getGroup({})", stream_name);
-        let function = self.engine.functions.get(&function_path);
+        let function_id = format!("streams.list({})", stream_name);
+        let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         match function {
             Some(_) => {
-                tracing::debug!(function_path = %function_path, "Calling custom streams.getGroup function");
+                tracing::debug!(function_id = %function_id, "Calling custom streams.getGroup function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
@@ -609,7 +593,7 @@ impl StreamCoreModule {
                     }
                 };
 
-                let result = self.engine.invoke_function(&function_path, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -629,10 +613,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(
-        name = "streams.listGroups",
-        description = "List all groups in a stream"
-    )]
+    #[function(id = "streams.listGroups", description = "List all groups in a stream")]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,
@@ -640,13 +621,13 @@ impl StreamCoreModule {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
 
-        let function_path = format!("streams.listGroups({})", stream_name);
-        let function = self.engine.functions.get(&function_path);
+        let function_id = format!("streams.listGroups({})", stream_name);
+        let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         match function {
             Some(_) => {
-                tracing::debug!(function_path = %function_path, "Calling custom streams.listGroups function");
+                tracing::debug!(function_id = %function_id, "Calling custom streams.listGroups function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
@@ -657,7 +638,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_path, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(result) => FunctionResult::Success(result),
@@ -678,7 +659,44 @@ impl StreamCoreModule {
     }
 
     #[function(
-        name = "streams.update",
+        id = "streams.listAll",
+        description = "List all available streams with metadata"
+    )]
+    pub async fn list_all(
+        &self,
+        _input: StreamListAllInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let adapter = self.adapter.clone();
+
+        match adapter.list_all_streams().await {
+            Ok(streams) => {
+                let streams_json: Vec<Value> = streams
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.id,
+                            "groups": s.groups,
+                        })
+                    })
+                    .collect();
+
+                FunctionResult::Success(Some(serde_json::json!({
+                    "streams": streams_json,
+                    "count": streams_json.len()
+                })))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to list all streams");
+                FunctionResult::Failure(ErrorBody {
+                    message: format!("Failed to list streams: {}", e),
+                    code: "STREAM_LIST_ALL_ERROR".to_string(),
+                })
+            }
+        }
+    }
+
+    #[function(
+        id = "streams.update",
         description = "Atomically update a stream value with multiple operations"
     )]
     pub async fn update(
@@ -693,13 +711,13 @@ impl StreamCoreModule {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let function_path = format!("streams.update({})", stream_name);
-        let function = self.engine.functions.get(&function_path);
+        let function_id = format!("streams.update({})", stream_name);
+        let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         let result: anyhow::Result<UpdateResult> = match function {
             Some(_) => {
-                tracing::debug!(function_path = %function_path, "Calling custom streams.set function");
+                tracing::debug!(function_id = %function_id, "Calling custom streams.set function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
@@ -710,7 +728,7 @@ impl StreamCoreModule {
                         });
                     }
                 };
-                let result = self.engine.invoke_function(&function_path, input).await;
+                let result = self.engine.call(&function_id, input).await;
 
                 match result {
                     Ok(Some(result)) => match serde_json::from_value::<UpdateResult>(result) {

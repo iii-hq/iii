@@ -25,7 +25,7 @@ use crate::{
         },
         pubsub::{PubSubInput, SubscribeTrigger},
         streams::{
-            StreamWrapperMessage,
+            StreamMetadata, StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
         },
@@ -45,7 +45,7 @@ pub const STREAMS_EVENTS_TOPIC: &str = "streams.events";
 
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
-    handler_function_path: String,
+    handler_function_id: String,
     bridge: Arc<Bridge>,
 }
 
@@ -54,7 +54,7 @@ impl BridgeAdapter {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
         let bridge = Arc::new(Bridge::new(&bridge_url));
-        let handler_function_path = format!("streams::bridge::on_pub::{}", uuid::Uuid::new_v4());
+        let handler_function_id = format!("streams::bridge::on_pub::{}", uuid::Uuid::new_v4());
         let res = bridge.connect().await;
 
         if let Err(error) = res {
@@ -64,7 +64,7 @@ impl BridgeAdapter {
         Ok(Self {
             bridge,
             pub_sub: Arc::new(BuiltInPubSubLite::new(None)),
-            handler_function_path,
+            handler_function_id,
         })
     }
 
@@ -91,7 +91,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let update_result = self
             .bridge
-            .invoke_function("kv_server.update", update_data)
+            .call("kv_server.update", update_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value in kv_server: {}", e))?;
 
@@ -114,7 +114,7 @@ impl StreamAdapter for BridgeAdapter {
         tracing::debug!(data = ?data.clone(), "Emitting event");
 
         self.bridge
-            .invoke_function("publish", data)
+            .call("publish", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to publish event: {}", e))?;
         Ok(())
@@ -134,7 +134,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let set_result = self
             .bridge
-            .invoke_function("kv_server.set", set_data)
+            .call("kv_server.set", set_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
@@ -158,7 +158,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .invoke_function("kv_server.get", data)
+            .call("kv_server.get", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
 
@@ -178,7 +178,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let delete_result = self
             .bridge
-            .invoke_function("kv_server.delete", delete_data)
+            .call("kv_server.delete", delete_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
 
@@ -193,7 +193,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let value = self
             .bridge
-            .invoke_function("kv_server.list", data)
+            .call("kv_server.list", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get group from kv_server: {}", e))?;
 
@@ -207,13 +207,19 @@ impl StreamAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .invoke_function("kv_server.list_keys_with_prefix", data)
+            .call("kv_server.list_keys_with_prefix", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
 
         serde_json::from_value::<Vec<String>>(value).map_err(|e| {
             anyhow::anyhow!("Failed to deserialize list keys with prefix result: {}", e)
         })
+    }
+
+    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+        // Bridge adapter cannot discover streams on its own
+        // Would need to implement a bridge function on the remote side to support this
+        Ok(vec![])
     }
 
     async fn subscribe(
@@ -230,10 +236,10 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn watch_events(&self) -> anyhow::Result<()> {
-        let handler_function_path = self.handler_function_path.clone();
+        let handler_function_id = self.handler_function_id.clone();
         let pub_sub = self.pub_sub.clone();
         self.bridge
-            .register_function(handler_function_path.clone(), move |data| {
+            .register_function(handler_function_id.clone(), move |data| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
@@ -256,7 +262,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let _ = self.bridge.register_trigger(
             "subscribe",
-            handler_function_path,
+            handler_function_id,
             SubscribeTrigger {
                 topic: STREAMS_EVENTS_TOPIC.to_string(),
             },

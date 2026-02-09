@@ -26,7 +26,7 @@ pub type HandlerFn = dyn Fn(Option<Uuid>, Value) -> HandlerFuture + Send + Sync;
 #[derive(Clone)]
 pub struct Function {
     pub handler: Arc<HandlerFn>,
-    pub _function_path: String,
+    pub _function_id: String,
     pub _description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
@@ -47,7 +47,7 @@ pub trait FunctionHandler {
     fn handle_function<'a>(
         &'a self,
         invocation_id: Option<Uuid>,
-        function_path: String,
+        function_id: String,
         input: Value,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>>;
 }
@@ -76,24 +76,24 @@ impl FunctionsRegistry {
         format!("{:?}", function_hash)
     }
 
-    pub fn register_function(&self, function_path: String, function: Function) {
+    pub fn register_function(&self, function_id: String, function: Function) {
         tracing::info!(
             "{} Function {}",
             "[REGISTERED]".green(),
-            function_path.purple()
+            function_id.purple()
         );
-        self.functions.insert(function_path, function);
+        self.functions.insert(function_id, function);
     }
 
-    pub fn remove(&self, function_path: &str) {
-        self.functions.remove(function_path);
-        tracing::info!("{} Function {}", "[REMOVED]".red(), function_path.purple());
+    pub fn remove(&self, function_id: &str) {
+        self.functions.remove(function_id);
+        tracing::info!("{} Function {}", "[REMOVED]".red(), function_id.purple());
     }
 
-    pub fn get(&self, function_path: &str) -> Option<Function> {
-        tracing::debug!("Searching for function path: {}", function_path);
+    pub fn get(&self, function_id: &str) -> Option<Function> {
+        tracing::debug!("Searching for function path: {}", function_id);
         self.functions
-            .get(function_path)
+            .get(function_id)
             .map(|entry| entry.value().clone())
     }
 

@@ -36,7 +36,7 @@ pub trait TriggerRegistrator: Send + Sync {
 pub struct Trigger {
     pub id: String,
     pub trigger_type: String,
-    pub function_path: String,
+    pub function_id: String,
     pub config: Value,
     pub worker_id: Option<Uuid>,
 }

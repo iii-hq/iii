@@ -89,7 +89,7 @@ pub enum Outbound {
 }
 
 pub struct RegisterFunctionRequest {
-    pub function_path: String,
+    pub function_id: String,
     pub description: Option<String>,
     pub request_format: Option<Value>,
     pub response_format: Option<Value>,
@@ -116,11 +116,7 @@ where
 
 #[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
-    async fn invoke_function(
-        &self,
-        function_path: &str,
-        input: Value,
-    ) -> Result<Option<Value>, ErrorBody>;
+    async fn call(&self, function_id: &str, input: Value) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
         &self,
@@ -160,15 +156,15 @@ impl Engine {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
-    fn remove_function(&self, function_path: &str) {
-        self.functions.remove(function_path);
+    fn remove_function(&self, function_id: &str) {
+        self.functions.remove(function_id);
     }
 
     async fn remember_invocation(
         &self,
         worker: &Worker,
         invocation_id: Option<Uuid>,
-        function_path: &str,
+        function_id: &str,
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
@@ -176,13 +172,13 @@ impl Engine {
         tracing::debug!(
             worker_id = %worker.id,
             ?invocation_id,
-            function_path = function_path,
+            function_id = function_id,
             traceparent = ?traceparent,
             baggage = ?baggage,
             "Remembering invocation for worker"
         );
 
-        if let Some(function) = self.functions.get(function_path) {
+        if let Some(function) = self.functions.get(function_id) {
             if let Some(invocation_id) = invocation_id {
                 worker.add_invocation(invocation_id).await;
             }
@@ -191,7 +187,7 @@ impl Engine {
                 .handle_invocation(
                     invocation_id,
                     Some(worker.id),
-                    function_path.to_string(),
+                    function_id.to_string(),
                     body,
                     function,
                     traceparent,
@@ -199,11 +195,11 @@ impl Engine {
                 )
                 .await
         } else {
-            tracing::error!(function_path = %function_path, "Function not found");
+            tracing::error!(function_id = %function_id, "Function not found");
 
             Ok(Err(ErrorBody {
                 code: "function_not_found".into(),
-                message: "Function not found".into(),
+                message: format!("Function {} not found", function_id),
             }))
         }
     }
@@ -213,10 +209,10 @@ impl Engine {
             Message::TriggerRegistrationResult {
                 id,
                 trigger_type,
-                function_path,
+                function_id,
                 error,
             } => {
-                tracing::debug!(id = %id, trigger_type = %trigger_type, function_path = %function_path, error = ?error, "TriggerRegistrationResult");
+                tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
                 Ok(())
             }
             Message::RegisterTriggerType { id, description } => {
@@ -243,13 +239,13 @@ impl Engine {
             Message::RegisterTrigger {
                 id,
                 trigger_type,
-                function_path,
+                function_id,
                 config,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
                     trigger_type = %trigger_type,
-                    function_path = %function_path,
+                    function_id = %function_id,
                     config = ?config,
                     "RegisterTrigger"
                 );
@@ -259,7 +255,7 @@ impl Engine {
                     .register_trigger(Trigger {
                         id: id.clone(),
                         trigger_type: trigger_type.clone(),
-                        function_path: function_path.clone(),
+                        function_id: function_id.clone(),
                         config: config.clone(),
                         worker_id: Some(worker.id),
                     })
@@ -284,7 +280,7 @@ impl Engine {
 
             Message::InvokeFunction {
                 invocation_id,
-                function_path,
+                function_id,
                 data,
                 traceparent,
                 baggage,
@@ -292,7 +288,7 @@ impl Engine {
                 tracing::debug!(
                     worker_id = %worker.id,
                     invocation_id = ?invocation_id,
-                    function_path = %function_path,
+                    function_id = %function_id,
                     traceparent = ?traceparent,
                     baggage = ?baggage,
                     payload = ?data,
@@ -303,7 +299,7 @@ impl Engine {
                 let span = tracing::info_span!(
                     "handle_invocation",
                     worker_id = %worker.id,
-                    function_path = %function_path,
+                    function_id = %function_id,
                     invocation_id = ?invocation_id,
                     otel.kind = "server"
                 )
@@ -312,7 +308,7 @@ impl Engine {
                 let engine = self.clone();
                 let worker = worker.clone();
                 let invocation_id = *invocation_id;
-                let function_path = function_path.to_string();
+                let function_id = function_id.to_string();
 
                 // Add caller's worker_id to invocation data as standard metadata
                 let data = {
@@ -334,7 +330,7 @@ impl Engine {
                             .remember_invocation(
                                 &worker,
                                 invocation_id,
-                                &function_path,
+                                &function_id,
                                 data,
                                 incoming_traceparent.clone(),
                                 incoming_baggage.clone(),
@@ -359,7 +355,7 @@ impl Engine {
                                                 &worker,
                                                 Message::InvocationResult {
                                                     invocation_id,
-                                                    function_path: function_path.clone(),
+                                                    function_id: function_id.clone(),
                                                     result: result.clone(),
                                                     error: None,
                                                     traceparent: response_traceparent.clone(),
@@ -374,7 +370,7 @@ impl Engine {
                                                 &worker,
                                                 Message::InvocationResult {
                                                     invocation_id,
-                                                    function_path: function_path.clone(),
+                                                    function_id: function_id.clone(),
                                                     result: None,
                                                     error: Some(err.clone()),
                                                     traceparent: response_traceparent.clone(),
@@ -391,7 +387,7 @@ impl Engine {
                                             &worker,
                                             Message::InvocationResult {
                                                 invocation_id,
-                                                function_path: function_path.clone(),
+                                                function_id: function_id.clone(),
                                                 result: None,
                                                 error: Some(ErrorBody {
                                                     code: "invocation_error".into(),
@@ -415,14 +411,14 @@ impl Engine {
             }
             Message::InvocationResult {
                 invocation_id,
-                function_path,
+                function_id,
                 result,
                 error,
                 traceparent: _,
                 baggage: _,
             } => {
                 tracing::debug!(
-                    function_path = %function_path,
+                    function_id = %function_id,
                     invocation_id = %invocation_id,
                     result = ?result,
                     error = ?error,
@@ -447,7 +443,7 @@ impl Engine {
                 Ok(())
             }
             Message::RegisterFunction {
-                function_path,
+                id,
                 description,
                 request_format: req,
                 response_format: res,
@@ -455,17 +451,16 @@ impl Engine {
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
-                    function_path = %function_path,
+                    function_id = %id,
                     description = ?description,
                     "RegisterFunction"
                 );
 
-                self.service_registry
-                    .register_service_from_func_path(function_path);
+                self.service_registry.register_service_from_func_path(id);
 
                 self.register_function(
                     RegisterFunctionRequest {
-                        function_path: function_path.clone(),
+                        function_id: id.clone(),
                         description: description.clone(),
                         request_format: req.clone(),
                         response_format: res.clone(),
@@ -474,7 +469,7 @@ impl Engine {
                     Box::new(worker.clone()),
                 );
 
-                worker.include_function_path(function_path).await;
+                worker.include_function_id(id).await;
                 Ok(())
             }
             Message::RegisterService {
@@ -525,10 +520,10 @@ impl Engine {
 
         for trigger in triggers {
             let engine = self.clone();
-            let function_path = trigger.function_path.clone();
+            let function_id = trigger.function_id.clone();
             let data = data.clone();
             tokio::spawn(async move {
-                let _ = engine.invoke_function(&function_path, data).await;
+                let _ = engine.call(&function_id, data).await;
             });
         }
     }
@@ -623,7 +618,7 @@ impl Engine {
 
     async fn cleanup_worker(&self, worker: &Worker) {
         let worker_functions = worker
-            .function_paths
+            .function_ids
             .read()
             .await
             .iter()
@@ -631,10 +626,10 @@ impl Engine {
             .collect::<Vec<String>>();
 
         tracing::debug!(worker_id = %worker.id, functions = ?worker_functions, "Worker registered functions");
-        for function_path in worker_functions.iter() {
-            self.remove_function(function_path);
+        for function_id in worker_functions.iter() {
+            self.remove_function(function_id);
             self.service_registry
-                .remove_function_from_services(function_path);
+                .remove_function_from_services(function_id);
         }
 
         let worker_invocations = worker.invocations.read().await;
@@ -659,12 +654,8 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
-    async fn invoke_function(
-        &self,
-        function_path: &str,
-        input: Value,
-    ) -> Result<Option<Value>, ErrorBody> {
-        let function_opt = self.functions.get(function_path);
+    async fn call(&self, function_id: &str, input: Value) -> Result<Option<Value>, ErrorBody> {
+        let function_opt = self.functions.get(function_id);
 
         if let Some(function) = function_opt {
             // Inject current trace context and baggage to link spans as parent-child
@@ -678,7 +669,7 @@ impl EngineTrait for Engine {
                 .handle_invocation(
                     None,
                     None,
-                    function_path.to_string(),
+                    function_id.to_string(),
                     input,
                     function,
                     traceparent,
@@ -696,7 +687,7 @@ impl EngineTrait for Engine {
         } else {
             Err(ErrorBody {
                 code: "function_not_found".into(),
-                message: "Function not found".into(),
+                message: format!("Function {} not found", function_id),
             })
         }
     }
@@ -724,7 +715,7 @@ impl EngineTrait for Engine {
         handler: Box<dyn FunctionHandler + Send + Sync>,
     ) {
         let RegisterFunctionRequest {
-            function_path,
+            function_id,
             description,
             request_format,
             response_format,
@@ -732,22 +723,22 @@ impl EngineTrait for Engine {
         } = request;
 
         let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
-        let handler_function_path = function_path.clone();
+        let handler_function_id = function_id.clone();
 
         let function = Function {
             handler: Arc::new(move |invocation_id, input| {
                 let handler = handler_arc.clone();
-                let path = handler_function_path.clone();
+                let path = handler_function_id.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
             }),
-            _function_path: function_path.clone(),
+            _function_id: function_id.clone(),
             _description: description,
             request_format,
             response_format,
             metadata,
         };
 
-        self.functions.register_function(function_path, function);
+        self.functions.register_function(function_id, function);
     }
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
@@ -762,7 +753,7 @@ impl EngineTrait for Engine {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
             }),
-            _function_path: request.function_path.clone(),
+            _function_id: request.function_id.clone(),
             _description: request.description,
             request_format: request.request_format,
             response_format: request.response_format,
@@ -770,6 +761,6 @@ impl EngineTrait for Engine {
         };
 
         self.functions
-            .register_function(request.function_path, function);
+            .register_function(request.function_id, function);
     }
 }

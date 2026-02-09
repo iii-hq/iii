@@ -148,8 +148,8 @@ pub trait ConfigurableModule: Module + Sized + 'static {
     ///
     /// # Example
     /// ```ignore
-    /// EventCoreModule::add_adapter("my_adapter", |engine, config| async move {
-    ///     Ok(Arc::new(MyAdapter::new(engine).await?) as Arc<dyn EventAdapter>)
+    /// QueueCoreModule::add_adapter("my_adapter", |engine, config| async move {
+    ///     Ok(Arc::new(MyAdapter::new(engine).await?) as Arc<dyn QueueAdapter>)
     /// }).await;
     /// ```
     async fn add_adapter<F, Fut>(name: impl Into<String> + Send, create_fn: F) -> anyhow::Result<()>

@@ -42,7 +42,7 @@ pub struct PubSubInput {
 
 #[service(name = "pubsub")]
 impl PubSubCoreModule {
-    #[function(name = "publish", description = "Publishes an event")]
+    #[function(id = "publish", description = "Publishes an event")]
     pub async fn publish(&self, input: PubSubInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
         let event_data = input.data;
@@ -80,7 +80,7 @@ impl TriggerRegistrator for PubSubCoreModule {
             "{} PubSub subscription {} → {}",
             "[REGISTERED]".green(),
             topic.purple(),
-            trigger.function_path.cyan()
+            trigger.function_id.cyan()
         );
 
         // Get adapter reference before async block
@@ -89,11 +89,11 @@ impl TriggerRegistrator for PubSubCoreModule {
         Box::pin(async move {
             if !topic.is_empty() {
                 adapter
-                    .subscribe(&topic, &trigger.id, &trigger.function_path)
+                    .subscribe(&topic, &trigger.id, &trigger.function_id)
                     .await;
             } else {
                 tracing::warn!(
-                    function_path = %trigger.function_path.purple(),
+                    function_id = %trigger.function_id.purple(),
                     "Topic is not set for trigger"
                 );
             }
