@@ -74,6 +74,12 @@ impl InvocationHandler {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // Create span with dynamic name using the function_id
         // Using OTEL semantic conventions for FaaS (Function as a Service)
+        let function_kind = if function_id.starts_with("engine.") {
+            "internal"
+        } else {
+            "user"
+        };
+
         let span = tracing::info_span!(
             "invoke",
             otel.name = %format!("invoke {}", function_id),
@@ -84,6 +90,8 @@ impl InvocationHandler {
             "faas.trigger" = "other",  // III Engine uses its own invocation mechanism
             // Keep function_id for backward compatibility
             function_id = %function_id,
+            // Tag internal vs user functions for filtering
+            "iii.function.kind" = %function_kind,
         )
         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
