@@ -143,11 +143,11 @@ pub struct StreamUpdateInput {
     pub ops: Vec<UpdateOp>,
 }
 
-/// Input for streams.listAll (empty struct)
+/// Input for stream.listAll (empty struct)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamListAllInput {}
 
-/// Metadata for a stream (used by streams.listAll)
+/// Metadata for a stream (used by stream.listAll)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamMetadata {
     pub id: String,

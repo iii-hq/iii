@@ -1,0 +1,17 @@
+your-domain.com {
+	handle /api/* {
+		reverse_proxy iii:3111
+	}
+
+	handle /streams/* {
+		reverse_proxy iii:3112
+	}
+
+	handle /ws {
+		reverse_proxy iii:49134
+	}
+
+	handle {
+		reverse_proxy iii:3111
+	}
+}

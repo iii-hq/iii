@@ -5,15 +5,15 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use iii::{Bridge, Streams, UpdateOp};
+//! use iii::{Bridge, Stream, UpdateOp};
 //!
 //! let bridge = Bridge::new("ws://localhost:49134");
 //! bridge.connect().await?;
 //!
-//! let streams = Streams::new(bridge.clone());
+//! let stream = Stream::new(bridge.clone());
 //!
 //! // Atomic update with multiple operations
-//! let result = streams.update(
+//! let result = stream.update(
 //!     "my-stream::group-1::item-1",
 //!     vec![
 //!         UpdateOp::increment("counter", 1),
@@ -33,12 +33,12 @@ use crate::{
 
 /// Provides atomic stream update operations
 #[derive(Clone)]
-pub struct Streams {
+pub struct Stream {
     bridge: Bridge,
 }
 
-impl Streams {
-    /// Create a new Streams instance with the given bridge
+impl Stream {
+    /// Create a new Stream instance with the given bridge
     pub fn new(bridge: Bridge) -> Self {
         Self { bridge }
     }
@@ -59,7 +59,7 @@ impl Streams {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let result = streams.update(
+    /// let result = stream.update(
     ///     "orders::user-123::order-456",
     ///     vec![
     ///         UpdateOp::increment("total", 100),
@@ -77,7 +77,7 @@ impl Streams {
             ops,
         };
 
-        let result = self.bridge.call("streams.update", input).await?;
+        let result = self.bridge.call("stream.update", input).await?;
 
         serde_json::from_value(result).map_err(|e| BridgeError::Serde(e.to_string()))
     }
@@ -89,7 +89,7 @@ impl Streams {
     /// # Example
     ///
     /// ```rust,ignore
-    /// streams.increment("counters::daily::page-views", "count", 1).await?;
+    /// stream.increment("counters::daily::page-views", "count", 1).await?;
     /// ```
     pub async fn increment(
         &self,
@@ -121,7 +121,7 @@ impl Streams {
     /// # Example
     ///
     /// ```rust,ignore
-    /// streams.set_field("users::active::user-1", "status", "online".into()).await?;
+    /// stream.set_field("users::active::user-1", "status", "online".into()).await?;
     /// ```
     pub async fn set_field(
         &self,
@@ -151,7 +151,7 @@ impl Streams {
     /// # Example
     ///
     /// ```rust,ignore
-    /// streams.merge(
+    /// stream.merge(
     ///     "settings::user-1::preferences",
     ///     serde_json::json!({"theme": "dark", "language": "en"}),
     /// ).await?;

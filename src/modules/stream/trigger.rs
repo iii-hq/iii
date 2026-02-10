@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    modules::streams::StreamCoreModule,
+    modules::stream::StreamCoreModule,
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -60,8 +60,8 @@ impl StreamTriggers {
     }
 }
 
-pub const JOIN_TRIGGER_TYPE: &str = "streams:join";
-pub const LEAVE_TRIGGER_TYPE: &str = "streams:leave";
+pub const JOIN_TRIGGER_TYPE: &str = "stream:join";
+pub const LEAVE_TRIGGER_TYPE: &str = "stream:leave";
 pub const STREAM_TRIGGER_TYPE: &str = "stream";
 
 #[async_trait::async_trait]

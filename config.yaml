@@ -1,14 +1,14 @@
 modules:
-  - class: modules::streams::StreamModule
+  - class: modules::stream::StreamModule
     config:
-      port: ${STREAMS_PORT:3112}
+      port: ${STREAM_PORT:3112}
       host: 127.0.0.1
       adapter:
-        # class: modules::streams::adapters::KvStore
+        # class: modules::stream::adapters::KvStore
         # config:
         #   store_method: file_based # Options: in_memory, file_based
-        #   file_path: ./data/streams_store
-        class: modules::streams::adapters::RedisAdapter
+        #   file_path: ./data/stream_store
+        class: modules::stream::adapters::RedisAdapter
         config:
           redis_url: redis://localhost:6379
 
@@ -37,6 +37,7 @@ modules:
           - http://localhost:3000
           - http://localhost:5173
           - http://localhost:3113
+          - http://localhost:3114
         allowed_methods:
           - GET
           - POST
@@ -48,7 +49,7 @@ modules:
     config:
       # === Core Configuration (Required) ===
       enabled: ${OTEL_ENABLED:true}
-      service_name: ${OTEL_SERVICE_NAME:iii-engine}
+      service_name: ${OTEL_SERVICE_NAME:iii}
       service_version: ${SERVICE_VERSION:0.2.0}
 
       # === Service Identity (Optional) ===
@@ -103,7 +104,7 @@ modules:
       #       rate: 0.05  # 5% sampling for background jobs
       #
       #     # Pattern matching examples:
-      #     # Service is matched against the configured service_name (e.g., "iii-engine")
+      #     # Service is matched against the configured service_name (e.g., "iii")
       #     # "api.users.create" matches "api.*"
       #     # "health.check" matches "health.*"
       #     # "other.operation" falls back to default (0.1)

@@ -20,7 +20,6 @@ use std::{
 
 use async_trait::async_trait;
 use colored::Colorize;
-pub use config::LoggerModuleConfig;
 use function_macros::{function, service};
 use futures::Future;
 use serde::{Deserialize, Serialize};
@@ -63,6 +62,9 @@ pub struct TracesListInput {
     sort_order: Option<String>,
     /// Filter by span attributes (array of [key, value] pairs, AND logic, exact match)
     attributes: Option<Vec<Vec<String>>>,
+    /// Include internal engine traces (engine.* functions). Defaults to false.
+    #[serde(default)]
+    include_internal: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -445,7 +447,7 @@ impl OtelModule {
             span_id: input.span_id.clone(),
             resource: get_resource_attributes(),
             service_name: service_name.clone(),
-            instrumentation_scope_name: Some("iii-engine".to_string()),
+            instrumentation_scope_name: Some("iii".to_string()),
             instrumentation_scope_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         };
 
@@ -560,9 +562,24 @@ impl OtelModule {
                 };
 
 
+                let include_internal = input.include_internal.unwrap_or(false);
+
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
                     .filter(|s| s.parent_span_id.is_none())
+                    .filter(|s| {
+                        // Exclude internal engine traces unless explicitly requested
+                        if !include_internal {
+                            let is_internal = s.attributes.iter().any(|(k, v)| {
+                                (k == "iii.function.kind" && v == "internal")
+                                    || (k == "function_id" && v.starts_with("engine."))
+                            });
+                            if is_internal {
+                                return false;
+                            }
+                        }
+                        true
+                    })
                     .filter(|s| {
                         if let Some(ref sn) = input.service_name
                             && !s.service_name.to_lowercase().contains(&sn.to_lowercase())
@@ -1542,7 +1559,7 @@ impl Module for OtelModule {
                 ._config
                 .service_name
                 .clone()
-                .unwrap_or_else(|| "iii-engine".to_string());
+                .unwrap_or_else(|| "iii".to_string());
             let service_version = self
                 ._config
                 .service_version

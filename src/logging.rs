@@ -331,47 +331,30 @@ pub fn init_log(path: &str) {
     // Extract OTEL config from OtelModule (must be done before modules are loaded)
     let otel_cfg = extract_otel_config(&cfg);
 
-    let log_module_name = "modules::observability::LoggingModule";
-    let log_module_cfg = cfg.modules.iter().find(|m| m.class == log_module_name);
-    match log_module_cfg {
-        Some(module_entry) => {
-            let log_level = module_entry
-                .config
-                .as_ref()
-                .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
-                .map(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.to_string())
-                })
-                .unwrap_or_else(|| "info".to_string());
+    let otel_module_name = "modules::observability::OtelModule";
+    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
 
-            let log_format = module_entry
-                .config
-                .as_ref()
-                .and_then(|c| c.get("format"))
-                .map(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.to_string())
-                })
-                .unwrap_or_else(|| "default".to_string());
+    let log_level = otel_module_cfg
+        .and_then(|m| m.config.as_ref())
+        .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "info".to_string());
 
-            println!(
-                "Log level from config: {}, Log format: {}, OTel enabled: {}",
-                log_level, log_format, otel_cfg.enabled
-            );
+    let log_format = otel_module_cfg
+        .and_then(|m| m.config.as_ref())
+        .and_then(|c| c.get("format"))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "default".to_string());
 
-            if log_format.to_lowercase() == "json" {
-                init_prod_log(log_level.as_str(), &otel_cfg);
-            } else {
-                init_local_log(log_level.as_str(), &otel_cfg);
-            }
-        }
-        None => {
-            println!("LoggingModule not found in config, using default local logging");
-            init_local_log("info", &otel_cfg);
-        }
+    println!(
+        "Log level from config: {}, Log format: {}, OTel enabled: {}",
+        log_level, log_format, otel_cfg.enabled
+    );
+
+    if log_format.to_lowercase() == "json" {
+        init_prod_log(log_level.as_str(), &otel_cfg);
+    } else {
+        init_local_log(log_level.as_str(), &otel_cfg);
     }
 }
 

@@ -1,0 +1,31 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      iii:
+        condition: service_healthy
+    restart: unless-stopped
+
+  iii:
+    image: iiidev/iii:latest
+    volumes:
+      - ./config.prod.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3111 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

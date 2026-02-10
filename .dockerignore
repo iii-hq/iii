@@ -36,9 +36,8 @@ tests/
 config-*.yaml
 !config.yaml
 
-# Node/Python packages (separate SDK builds)
+# Node SDK package (separate SDK build)
 packages/node/
-packages/python/
 
 # Docker nested folders
 packages/docker/
