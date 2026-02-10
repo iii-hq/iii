@@ -62,6 +62,9 @@ pub struct TracesListInput {
     sort_order: Option<String>,
     /// Filter by span attributes (array of [key, value] pairs, AND logic, exact match)
     attributes: Option<Vec<Vec<String>>>,
+    /// Include internal engine traces (engine.* functions). Defaults to false.
+    #[serde(default)]
+    include_internal: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -559,9 +562,24 @@ impl OtelModule {
                 };
 
 
+                let include_internal = input.include_internal.unwrap_or(false);
+
                 let mut filtered: Vec<_> = all_spans
                     .into_iter()
                     .filter(|s| s.parent_span_id.is_none())
+                    .filter(|s| {
+                        // Exclude internal engine traces unless explicitly requested
+                        if !include_internal {
+                            let is_internal = s.attributes.iter().any(|(k, v)| {
+                                (k == "iii.function.kind" && v == "internal")
+                                    || (k == "function_id" && v.starts_with("engine."))
+                            });
+                            if is_internal {
+                                return false;
+                            }
+                        }
+                        true
+                    })
                     .filter(|s| {
                         if let Some(ref sn) = input.service_name
                             && !s.service_name.to_lowercase().contains(&sn.to_lowercase())
