@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     engine::Engine,
-    modules::streams::{
+    modules::stream::{
         StreamCoreModule, StreamIncomingMessage,
         adapters::{StreamAdapter, StreamConnection},
         connection::SocketStreamConnection,

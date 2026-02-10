@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example demonstrating the III SDK for Python with API trigger and Streams."""
+"""Example demonstrating the III SDK for Python with API trigger and Stream."""
 
 import asyncio
 import logging

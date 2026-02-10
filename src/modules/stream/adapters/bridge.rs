@@ -24,7 +24,7 @@ use crate::{
             structs::{KvGetInput, KvListInput, KvListKeysWithPrefixInput, KvUpdateInput},
         },
         pubsub::{PubSubInput, SubscribeTrigger},
-        streams::{
+        stream::{
             StreamMetadata, StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
@@ -41,7 +41,7 @@ type StoreKey = (TopicName, GroupId);
 #[derive(Clone, Debug, Archive, RkyvSerialize, RkyvDeserialize, Serialize, Deserialize)]
 pub struct Storage(HashMap<StoreKey, ItemsDataAsString>);
 
-pub const STREAMS_EVENTS_TOPIC: &str = "streams.events";
+pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
@@ -54,7 +54,7 @@ impl BridgeAdapter {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
         let bridge = Arc::new(Bridge::new(&bridge_url));
-        let handler_function_id = format!("streams::bridge::on_pub::{}", uuid::Uuid::new_v4());
+        let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
         let res = bridge.connect().await;
 
         if let Err(error) = res {
@@ -106,7 +106,7 @@ impl StreamAdapter for BridgeAdapter {
 
     async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()> {
         let data = PubSubInput {
-            topic: STREAMS_EVENTS_TOPIC.to_string(),
+            topic: STREAM_EVENTS_TOPIC.to_string(),
             data: serde_json::to_value(&message)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize message: {}", e))?,
         };
@@ -216,8 +216,8 @@ impl StreamAdapter for BridgeAdapter {
         })
     }
 
-    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
-        // Bridge adapter cannot discover streams on its own
+    async fn list_all_stream(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+        // Bridge adapter cannot discover stream on its own
         // Would need to implement a bridge function on the remote side to support this
         Ok(vec![])
     }
@@ -264,7 +264,7 @@ impl StreamAdapter for BridgeAdapter {
             "subscribe",
             handler_function_id,
             SubscribeTrigger {
-                topic: STREAMS_EVENTS_TOPIC.to_string(),
+                topic: STREAM_EVENTS_TOPIC.to_string(),
             },
         );
 
@@ -285,4 +285,4 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
     })
 }
 
-crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::Bridge", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::Bridge", make_adapter);

@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::{
     builtins::{kv::BuiltinKvStore, pubsub_lite::BuiltInPubSubLite},
     engine::Engine,
-    modules::streams::{
+    modules::stream::{
         StreamMetadata, StreamWrapperMessage,
         adapters::{StreamAdapter, StreamConnection},
         registry::{StreamAdapterFuture, StreamAdapterRegistration},
@@ -134,7 +134,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
             .collect())
     }
 
-    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+    async fn list_all_stream(&self) -> anyhow::Result<Vec<StreamMetadata>> {
         use std::collections::{HashMap, HashSet};
 
         let all_keys = self
@@ -156,7 +156,7 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
         }
 
         // Convert to StreamMetadata
-        let mut streams: Vec<StreamMetadata> = stream_map
+        let mut stream: Vec<StreamMetadata> = stream_map
             .into_iter()
             .map(|(id, groups)| {
                 let mut groups_vec: Vec<String> = groups.into_iter().collect();
@@ -168,8 +168,8 @@ impl StreamAdapter for BuiltinKvStoreAdapter {
             })
             .collect();
 
-        streams.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(streams)
+        stream.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(stream)
     }
 
     async fn subscribe(
@@ -198,4 +198,4 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
     )
 }
 
-crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::KvStore", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::KvStore", make_adapter);

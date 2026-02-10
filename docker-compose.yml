@@ -6,7 +6,7 @@ services:
     ports:
       - "49134:49134"  # WebSocket (worker connections)
       - "3111:3111"    # REST API
-      - "3112:3112"    # Streams API
+      - "3112:3112"    # Stream API
       - "9464:9464"    # Prometheus metrics
     volumes:
       - ./config.yaml:/app/config.yaml:ro
