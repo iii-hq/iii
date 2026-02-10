@@ -4,6 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod bridge;
 pub mod builtin;
 #[cfg(feature = "rabbitmq")]
 pub mod rabbitmq;
