@@ -1,0 +1,242 @@
+name: Publish to AUR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_DIR: packaging/aur
+  AUR_REPO: ssh://aur@aur.archlinux.org/iii-bin.git
+
+jobs:
+  publish-aur:
+    name: Update AUR Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed in AUR"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux binaries
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Download both Linux binaries
+          curl -L --fail -o iii-x86_64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
+
+          curl -L --fail -o iii-aarch64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-gnu.tar.gz"
+
+          # Verify downloads are valid tarballs
+          for file in iii-x86_64.tar.gz iii-aarch64.tar.gz; do
+            if [ ! -s "$file" ] || [ $(stat -f%z "$file" 2>/dev/null || stat -c%s "$file") -lt 1048576 ]; then
+              echo "Error: $file is missing, empty, or too small"
+              exit 1
+            fi
+          done
+          ls -lh *.tar.gz
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        run: |
+          X86_SHA=$(sha256sum iii-x86_64.tar.gz | awk '{print $1}')
+          ARM_SHA=$(sha256sum iii-aarch64.tar.gz | awk '{print $1}')
+
+          echo "x86_64_sha256=${X86_SHA}" >> $GITHUB_OUTPUT
+          echo "aarch64_sha256=${ARM_SHA}" >> $GITHUB_OUTPUT
+
+          echo "Checksums calculated:"
+          echo "  x86_64: ${X86_SHA}"
+          echo "  aarch64: ${ARM_SHA}"
+
+      - name: Setup SSH for AUR
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          cat >> ~/.ssh/config << 'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          EOF
+          chmod 600 ~/.ssh/config
+          # Add AUR to known hosts
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Clone AUR repository
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          git clone ${{ env.AUR_REPO }} aur-repo
+          cd aur-repo
+          git config user.name "III CI"
+          git config user.email "ci@iii.dev"
+
+      - name: Update PKGBUILD
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"  # Remove 'v' prefix
+          X86_SHA="${{ steps.checksums.outputs.x86_64_sha256 }}"
+          ARM_SHA="${{ steps.checksums.outputs.aarch64_sha256 }}"
+
+          # Process PKGBUILD template
+          sed "s/{{VERSION}}/${VERSION_NUMBER}/g" ${{ env.PACKAGE_DIR }}/PKGBUILD.template | \
+          sed "s/{{CHECKSUM_X86_64}}/${X86_SHA}/g" | \
+          sed "s/{{CHECKSUM_AARCH64}}/${ARM_SHA}/g" > PKGBUILD
+
+          echo "PKGBUILD generated:"
+          cat PKGBUILD
+
+      - name: Update .SRCINFO
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+          X86_SHA="${{ steps.checksums.outputs.x86_64_sha256 }}"
+          ARM_SHA="${{ steps.checksums.outputs.aarch64_sha256 }}"
+
+          # Process .SRCINFO template
+          sed "s/{{VERSION}}/${VERSION_NUMBER}/g" ${{ env.PACKAGE_DIR }}/.SRCINFO.template | \
+          sed "s/{{CHECKSUM_X86_64}}/${X86_SHA}/g" | \
+          sed "s/{{CHECKSUM_AARCH64}}/${ARM_SHA}/g" > .SRCINFO
+
+          echo ".SRCINFO generated:"
+          cat .SRCINFO
+
+      - name: Validate PKGBUILD
+        run: |
+          # Install namcap for PKGBUILD validation
+          sudo pacman -Sy --noconfirm namcap
+
+          # Validate PKGBUILD
+          namcap PKGBUILD
+
+          echo "PKGBUILD validation passed"
+
+      - name: Test build (optional)
+        continue-on-error: true
+        run: |
+          # Install dependencies for makepkg
+          sudo pacman -Sy --noconfirm base-devel
+
+          # Create non-root user for makepkg (required)
+          sudo useradd -m builder
+          sudo passwd -d builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+
+          # Copy files and build
+          sudo cp PKGBUILD /home/builder/
+          sudo chown -R builder:builder /home/builder
+
+          sudo -u builder bash -c 'cd /home/builder && makepkg --noconfirm --skippgpcheck'
+
+          echo "Test build completed"
+
+      - name: Commit and push to AUR
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          cd aur-repo
+
+          # Copy updated files
+          cp ../PKGBUILD .
+          cp ../.SRCINFO .
+
+          # Commit changes
+          git add PKGBUILD .SRCINFO
+          git commit -m "$(cat <<EOF
+          Update to ${{ github.event.inputs.version }}
+
+          Automated update from release workflow.
+
+          Changes:
+          - Version: ${{ github.event.inputs.version }}
+          - x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
+          - aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
+          EOF
+          )"
+
+          # Push to AUR
+          git push origin master
+
+          echo "Package published to AUR!"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "🏃 DRY RUN MODE - No changes pushed to AUR"
+          echo ""
+          echo "Package validated successfully:"
+          echo "- Version: ${{ github.event.inputs.version }}"
+          echo "- x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}"
+          echo "- aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}"
+          echo "- PKGBUILD passes namcap validation"
+          echo ""
+          echo "Set dry_run=false to publish for real."
+
+      - name: Notify Slack on success
+        continue-on-error: true
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ AUR package updated",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*AUR Package Updated* 📦\n\nVersion: `${{ github.event.inputs.version }}`\n\nUsers can now install with:\n```yay -S iii-bin```\n\nor any other AUR helper."
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        continue-on-error: true
+        if: ${{ failure() }}
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ AUR publish failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*AUR Publish Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }
