@@ -1,0 +1,37 @@
+your-domain.com {
+	# REST API
+	handle /api/* {
+		reverse_proxy iii:3111
+	}
+
+	# Streams API (WebSocket)
+	handle /streams/* {
+		reverse_proxy iii:3112
+	}
+
+	# Worker WebSocket connections
+	handle /ws {
+		reverse_proxy iii:49134
+	}
+
+	# Default route to REST API
+	handle {
+		reverse_proxy iii:3111
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+# Prometheus metrics - internal only
+:9180 {
+	handle /metrics {
+		reverse_proxy iii:9464
+	}
+	respond 404
+}
