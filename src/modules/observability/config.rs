@@ -287,3 +287,226 @@ pub struct LoggerModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_alert_operator_greater_than() {
+        let op = AlertOperator::GreaterThan;
+        assert!(op.evaluate(10.0, 5.0));
+        assert!(!op.evaluate(5.0, 10.0));
+        assert!(!op.evaluate(5.0, 5.0));
+    }
+
+    #[test]
+    fn test_alert_operator_greater_than_or_equal() {
+        let op = AlertOperator::GreaterThanOrEqual;
+        assert!(op.evaluate(10.0, 5.0));
+        assert!(op.evaluate(5.0, 5.0));
+        assert!(!op.evaluate(5.0, 10.0));
+    }
+
+    #[test]
+    fn test_alert_operator_less_than() {
+        let op = AlertOperator::LessThan;
+        assert!(op.evaluate(5.0, 10.0));
+        assert!(!op.evaluate(10.0, 5.0));
+        assert!(!op.evaluate(5.0, 5.0));
+    }
+
+    #[test]
+    fn test_alert_operator_less_than_or_equal() {
+        let op = AlertOperator::LessThanOrEqual;
+        assert!(op.evaluate(5.0, 10.0));
+        assert!(op.evaluate(5.0, 5.0));
+        assert!(!op.evaluate(10.0, 5.0));
+    }
+
+    #[test]
+    fn test_alert_operator_equal() {
+        let op = AlertOperator::Equal;
+        assert!(op.evaluate(5.0, 5.0));
+        assert!(op.evaluate(5.0, 5.0 + f64::EPSILON / 2.0));
+        assert!(!op.evaluate(5.0, 5.1));
+        assert!(!op.evaluate(5.0, 4.9));
+    }
+
+    #[test]
+    fn test_alert_operator_not_equal() {
+        let op = AlertOperator::NotEqual;
+        assert!(op.evaluate(5.0, 5.1));
+        assert!(op.evaluate(5.0, 4.9));
+        assert!(!op.evaluate(5.0, 5.0));
+        assert!(!op.evaluate(5.0, 5.0 + f64::EPSILON / 2.0));
+    }
+
+    #[test]
+    fn test_otel_exporter_type_deserialize() {
+        let otlp: OtelExporterType = serde_json::from_str("\"otlp\"").unwrap();
+        assert_eq!(otlp, OtelExporterType::Otlp);
+
+        let memory: OtelExporterType = serde_json::from_str("\"memory\"").unwrap();
+        assert_eq!(memory, OtelExporterType::Memory);
+
+        let both: OtelExporterType = serde_json::from_str("\"both\"").unwrap();
+        assert_eq!(both, OtelExporterType::Both);
+    }
+
+    #[test]
+    fn test_otel_exporter_type_default() {
+        let default = OtelExporterType::default();
+        assert_eq!(default, OtelExporterType::Otlp);
+    }
+
+    #[test]
+    fn test_metrics_exporter_type_deserialize() {
+        let memory: MetricsExporterType = serde_json::from_str("\"memory\"").unwrap();
+        assert_eq!(memory, MetricsExporterType::Memory);
+
+        let otlp: MetricsExporterType = serde_json::from_str("\"otlp\"").unwrap();
+        assert_eq!(otlp, MetricsExporterType::Otlp);
+    }
+
+    #[test]
+    fn test_metrics_exporter_type_default() {
+        let default = MetricsExporterType::default();
+        assert_eq!(default, MetricsExporterType::Memory);
+    }
+
+    #[test]
+    fn test_logs_exporter_type_deserialize() {
+        let memory: LogsExporterType = serde_json::from_str("\"memory\"").unwrap();
+        assert_eq!(memory, LogsExporterType::Memory);
+
+        let otlp: LogsExporterType = serde_json::from_str("\"otlp\"").unwrap();
+        assert_eq!(otlp, LogsExporterType::Otlp);
+
+        let both: LogsExporterType = serde_json::from_str("\"both\"").unwrap();
+        assert_eq!(both, LogsExporterType::Both);
+    }
+
+    #[test]
+    fn test_logs_exporter_type_default() {
+        let default = LogsExporterType::default();
+        assert_eq!(default, LogsExporterType::Memory);
+    }
+
+    #[test]
+    fn test_alert_operator_deserialize() {
+        let gt: AlertOperator = serde_json::from_str("\"greaterthan\"").unwrap();
+        assert_eq!(gt, AlertOperator::GreaterThan);
+
+        let gte: AlertOperator = serde_json::from_str("\"greaterthanorequal\"").unwrap();
+        assert_eq!(gte, AlertOperator::GreaterThanOrEqual);
+
+        let lt: AlertOperator = serde_json::from_str("\"lessthan\"").unwrap();
+        assert_eq!(lt, AlertOperator::LessThan);
+
+        let lte: AlertOperator = serde_json::from_str("\"lessthanorequal\"").unwrap();
+        assert_eq!(lte, AlertOperator::LessThanOrEqual);
+
+        let eq: AlertOperator = serde_json::from_str("\"equal\"").unwrap();
+        assert_eq!(eq, AlertOperator::Equal);
+
+        let ne: AlertOperator = serde_json::from_str("\"notequal\"").unwrap();
+        assert_eq!(ne, AlertOperator::NotEqual);
+    }
+
+    #[test]
+    fn test_alert_operator_deserialize_symbols() {
+        let gt: AlertOperator = serde_json::from_str("\">\"").unwrap();
+        assert_eq!(gt, AlertOperator::GreaterThan);
+
+        let gte: AlertOperator = serde_json::from_str("\">=\"").unwrap();
+        assert_eq!(gte, AlertOperator::GreaterThanOrEqual);
+
+        let lt: AlertOperator = serde_json::from_str("\"<\"").unwrap();
+        assert_eq!(lt, AlertOperator::LessThan);
+
+        let lte: AlertOperator = serde_json::from_str("\"<=\"").unwrap();
+        assert_eq!(lte, AlertOperator::LessThanOrEqual);
+
+        let eq: AlertOperator = serde_json::from_str("\"==\"").unwrap();
+        assert_eq!(eq, AlertOperator::Equal);
+
+        let ne: AlertOperator = serde_json::from_str("\"!=\"").unwrap();
+        assert_eq!(ne, AlertOperator::NotEqual);
+    }
+
+    #[test]
+    fn test_alert_operator_default() {
+        let default = AlertOperator::default();
+        assert_eq!(default, AlertOperator::GreaterThan);
+    }
+
+    #[test]
+    fn test_alert_action_log() {
+        let action: AlertAction = serde_json::from_str("{\"type\": \"log\"}").unwrap();
+        assert_eq!(action, AlertAction::Log);
+    }
+
+    #[test]
+    fn test_alert_action_webhook() {
+        let action: AlertAction = serde_json::from_str("{\"type\": \"webhook\", \"url\": \"https://example.com/webhook\"}").unwrap();
+        match action {
+            AlertAction::Webhook { url } => {
+                assert_eq!(url, "https://example.com/webhook");
+            }
+            _ => panic!("Expected Webhook"),
+        }
+    }
+
+    #[test]
+    fn test_alert_action_function() {
+        let action: AlertAction = serde_json::from_str("{\"type\": \"function\", \"path\": \"alert.handler\"}").unwrap();
+        match action {
+            AlertAction::Function { path } => {
+                assert_eq!(path, "alert.handler");
+            }
+            _ => panic!("Expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_alert_action_default() {
+        let default = AlertAction::default();
+        assert_eq!(default, AlertAction::Log);
+    }
+
+    #[test]
+    fn test_otel_module_config_default() {
+        let config = OtelModuleConfig::default();
+        assert_eq!(config.enabled, None);
+        assert_eq!(config.service_name, None);
+        assert_eq!(config.service_version, None);
+        assert_eq!(config.service_namespace, None);
+        assert_eq!(config.exporter, None);
+        assert_eq!(config.endpoint, None);
+        assert_eq!(config.sampling_ratio, None);
+        assert!(config.sampling.is_none());
+        assert_eq!(config.memory_max_spans, None);
+        assert_eq!(config.metrics_enabled, None);
+        assert_eq!(config.metrics_exporter, None);
+        assert_eq!(config.metrics_retention_seconds, None);
+        assert_eq!(config.metrics_max_count, None);
+        assert_eq!(config.logs_enabled, None);
+        assert_eq!(config.logs_exporter, None);
+        assert_eq!(config.logs_max_count, None);
+        assert_eq!(config.logs_retention_seconds, None);
+        assert_eq!(config.logs_sampling_ratio, 0.0);
+        assert_eq!(config.logs_console_output, false);
+        assert_eq!(config.alerts.len(), 0);
+    }
+
+    #[test]
+    fn test_sampling_config_default() {
+        let config = SamplingConfig::default();
+        assert_eq!(config.default, None);
+        assert_eq!(config.rules.len(), 0);
+        assert_eq!(config.parent_based, None);
+        assert!(config.rate_limit.is_none());
+    }
+}

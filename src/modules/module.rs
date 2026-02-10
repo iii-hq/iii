@@ -210,3 +210,101 @@ pub trait ConfigurableModule: Module + Sized + 'static {
         Ok(Box::new(Self::build(engine, parsed_config, adapter)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_adapter_entry_serde_round_trip() {
+        let entry = AdapterEntry {
+            class: "test::Adapter".to_string(),
+            config: Some(json!({"key": "value"})),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        let deserialized: AdapterEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.class, "test::Adapter");
+        assert_eq!(deserialized.config, Some(json!({"key": "value"})));
+    }
+
+    #[test]
+    fn test_adapter_entry_serde_without_config() {
+        let entry = AdapterEntry {
+            class: "test::Adapter".to_string(),
+            config: None,
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        let deserialized: AdapterEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.class, "test::Adapter");
+        assert_eq!(deserialized.config, None);
+    }
+
+    #[test]
+    fn test_adapter_entry_serde_from_json() {
+        let json = json!({
+            "class": "test::Adapter",
+            "config": {"key": "value"}
+        });
+        let entry: AdapterEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(entry.class, "test::Adapter");
+        assert_eq!(entry.config, Some(json!({"key": "value"})));
+    }
+
+    #[test]
+    fn test_adapter_entry_serde_from_json_without_config() {
+        let json = json!({
+            "class": "test::Adapter"
+        });
+        let entry: AdapterEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(entry.class, "test::Adapter");
+        assert_eq!(entry.config, None);
+    }
+
+    #[tokio::test]
+    async fn test_module_trait_start_background_tasks_default() {
+        use async_trait::async_trait;
+
+        struct TestModule;
+        #[async_trait]
+        impl Module for TestModule {
+            fn name(&self) -> &'static str {
+                "TestModule"
+            }
+            async fn create(_engine: Arc<Engine>, _config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(TestModule))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let module = TestModule;
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let result = module.start_background_tasks(rx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_module_trait_destroy_default() {
+        use async_trait::async_trait;
+
+        struct TestModule;
+        #[async_trait]
+        impl Module for TestModule {
+            fn name(&self) -> &'static str {
+                "TestModule"
+            }
+            async fn create(_engine: Arc<Engine>, _config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(TestModule))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let module = TestModule;
+        let result = module.destroy().await;
+        assert!(result.is_ok());
+    }
+}

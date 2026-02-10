@@ -249,3 +249,94 @@ impl CronAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockSchedulerAdapter;
+    #[async_trait]
+    impl CronSchedulerAdapter for MockSchedulerAdapter {
+        async fn try_acquire_lock(&self, _job_id: &str) -> bool {
+            true
+        }
+        async fn release_lock(&self, _job_id: &str) {}
+    }
+
+    #[test]
+    fn test_cron_adapter_new() {
+        let engine = Arc::new(Engine::new());
+        let scheduler = Arc::new(MockSchedulerAdapter);
+        let adapter = CronAdapter::new(scheduler, engine);
+        assert_eq!(adapter.jobs.blocking_read().len(), 0);
+    }
+
+    #[test]
+    fn test_parse_cron_expression_valid() {
+        let result = CronAdapter::parse_cron_expression("0 0 * * * *");
+        assert!(result.is_ok());
+        let schedule = result.unwrap();
+        assert!(schedule.upcoming(chrono::Utc).next().is_some());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_valid_every_minute() {
+        let result = CronAdapter::parse_cron_expression("* * * * * *");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_valid_specific_time() {
+        let result = CronAdapter::parse_cron_expression("0 30 14 * * *");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_valid_weekday() {
+        let result = CronAdapter::parse_cron_expression("0 0 9 * * 1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_valid_range() {
+        let result = CronAdapter::parse_cron_expression("0 0 9-17 * * *");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_valid_step() {
+        let result = CronAdapter::parse_cron_expression("*/5 * * * * *");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_invalid_empty() {
+        let result = CronAdapter::parse_cron_expression("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid cron expression"));
+    }
+
+    #[test]
+    fn test_parse_cron_expression_invalid_too_few_fields() {
+        let result = CronAdapter::parse_cron_expression("0 0 * *");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_invalid_too_many_fields() {
+        let result = CronAdapter::parse_cron_expression("0 0 * * * * * * *");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_invalid_out_of_range() {
+        let result = CronAdapter::parse_cron_expression("60 * * * * *");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_cron_expression_invalid_invalid_char() {
+        let result = CronAdapter::parse_cron_expression("a * * * * *");
+        assert!(result.is_err());
+    }
+}

@@ -105,4 +105,100 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn test_query_to_multi_map_none() {
+        let map = query_to_multi_map(None);
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn test_query_to_multi_map_empty_string() {
+        let map = query_to_multi_map(Some(""));
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn test_query_to_multi_map_key_without_value() {
+        let map = query_to_multi_map(Some("key"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("key"), Some(&vec!["".to_string()]));
+    }
+
+    #[test]
+    fn test_query_to_multi_map_multiple_keys_without_value() {
+        let map = query_to_multi_map(Some("a&b&c"));
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get("a"), Some(&vec!["".to_string()]));
+        assert_eq!(map.get("b"), Some(&vec!["".to_string()]));
+        assert_eq!(map.get("c"), Some(&vec!["".to_string()]));
+    }
+
+    #[test]
+    fn test_query_to_multi_map_trailing_ampersand() {
+        let map = query_to_multi_map(Some("a=1&b=2&"));
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a"), Some(&vec!["1".to_string()]));
+        assert_eq!(map.get("b"), Some(&vec!["2".to_string()]));
+    }
+
+    #[test]
+    fn test_query_to_multi_map_leading_ampersand() {
+        let map = query_to_multi_map(Some("&a=1"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("a"), Some(&vec!["1".to_string()]));
+    }
+
+    #[test]
+    fn test_query_to_multi_map_consecutive_ampersands() {
+        let map = query_to_multi_map(Some("a=1&&b=2"));
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a"), Some(&vec!["1".to_string()]));
+        assert_eq!(map.get("b"), Some(&vec!["2".to_string()]));
+    }
+
+    #[test]
+    fn test_query_to_multi_map_duplicate_keys() {
+        let map = query_to_multi_map(Some("a=1&a=2&a=3"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get("a"),
+            Some(&vec!["1".to_string(), "2".to_string(), "3".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_query_to_multi_map_url_encoded() {
+        let map = query_to_multi_map(Some("key=hello%20world&name=test%2Fvalue"));
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("key"), Some(&vec!["hello%20world".to_string()]));
+        assert_eq!(map.get("name"), Some(&vec!["test%2Fvalue".to_string()]));
+    }
+
+    #[test]
+    fn test_query_to_multi_map_empty_key_skipped() {
+        let map = query_to_multi_map(Some("=value&key=test"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("key"), Some(&vec!["test".to_string()]));
+    }
+
+    #[test]
+    fn test_headers_to_map_non_utf8() {
+        let mut headers = HeaderMap::new();
+        let non_utf8 = HeaderValue::from_bytes(b"\xFF\xFE").unwrap();
+        headers.insert("custom-header", non_utf8);
+        headers.insert("valid-header", HeaderValue::from_static("valid-value"));
+
+        let map = headers_to_map(&headers);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("valid-header"), Some(&"valid-value".to_string()));
+        assert_eq!(map.get("custom-header"), None);
+    }
+
+    #[test]
+    fn test_headers_to_map_empty() {
+        let headers = HeaderMap::new();
+        let map = headers_to_map(&headers);
+        assert_eq!(map.len(), 0);
+    }
 }

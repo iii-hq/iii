@@ -204,3 +204,348 @@ impl TriggerRegistry {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    struct MockTriggerRegistrator {
+        register_calls: Arc<Mutex<Vec<Trigger>>>,
+        unregister_calls: Arc<Mutex<Vec<Trigger>>>,
+        should_fail_register: bool,
+        should_fail_unregister: bool,
+    }
+
+    impl MockTriggerRegistrator {
+        fn new() -> Self {
+            Self {
+                register_calls: Arc::new(Mutex::new(Vec::new())),
+                unregister_calls: Arc::new(Mutex::new(Vec::new())),
+                should_fail_register: false,
+                should_fail_unregister: false,
+            }
+        }
+
+        fn with_register_failure() -> Self {
+            Self {
+                register_calls: Arc::new(Mutex::new(Vec::new())),
+                unregister_calls: Arc::new(Mutex::new(Vec::new())),
+                should_fail_register: true,
+                should_fail_unregister: false,
+            }
+        }
+    }
+
+    impl TriggerRegistrator for MockTriggerRegistrator {
+        fn register_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            let calls = self.register_calls.clone();
+            let should_fail = self.should_fail_register;
+            Box::pin(async move {
+                calls.lock().unwrap().push(trigger);
+                if should_fail {
+                    Err(anyhow::anyhow!("Mock register failure"))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn unregister_trigger(
+            &self,
+            trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            let calls = self.unregister_calls.clone();
+            let should_fail = self.should_fail_unregister;
+            Box::pin(async move {
+                calls.lock().unwrap().push(trigger);
+                if should_fail {
+                    Err(anyhow::anyhow!("Mock unregister failure"))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn test_trigger_equality() {
+        let trigger1 = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+        let trigger2 = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "different".to_string(),
+            function_id: "different.function".to_string(),
+            config: json!({"different": true}),
+            worker_id: Some(Uuid::new_v4()),
+        };
+        assert!(trigger1 == trigger2);
+    }
+
+    #[test]
+    fn test_trigger_inequality() {
+        let trigger1 = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+        let trigger2 = Trigger {
+            id: "trigger-2".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+        assert!(trigger1 != trigger2);
+    }
+
+    #[test]
+    fn test_trigger_registry_new() {
+        let registry = TriggerRegistry::new();
+        assert_eq!(registry.trigger_types.len(), 0);
+        assert_eq!(registry.triggers.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_type() {
+        let registry = TriggerRegistry::new();
+        let mock_registrator = MockTriggerRegistrator::new();
+        let trigger_type = TriggerType {
+            id: "cron".to_string(),
+            _description: "Cron trigger".to_string(),
+            registrator: Box::new(mock_registrator),
+            worker_id: None,
+        };
+
+        let result = registry.register_trigger_type(trigger_type).await;
+        assert!(result.is_ok());
+        assert_eq!(registry.trigger_types.len(), 1);
+        assert!(registry.trigger_types.contains_key("cron"));
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_type_auto_registers_pending_triggers() {
+        let registry = TriggerRegistry::new();
+        let mock_registrator = MockTriggerRegistrator::new();
+        let register_calls = mock_registrator.register_calls.clone();
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({"schedule": "0 0 * * *"}),
+            worker_id: None,
+        };
+        registry.triggers.insert("trigger-1".to_string(), trigger.clone());
+
+        let trigger_type = TriggerType {
+            id: "cron".to_string(),
+            _description: "Cron trigger".to_string(),
+            registrator: Box::new(mock_registrator),
+            worker_id: None,
+        };
+
+        registry.register_trigger_type(trigger_type).await.unwrap();
+
+        let calls = register_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "trigger-1");
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_success() {
+        let registry = TriggerRegistry::new();
+        let mock_registrator = MockTriggerRegistrator::new();
+        let register_calls = mock_registrator.register_calls.clone();
+
+        let trigger_type = TriggerType {
+            id: "cron".to_string(),
+            _description: "Cron trigger".to_string(),
+            registrator: Box::new(mock_registrator),
+            worker_id: None,
+        };
+        registry.register_trigger_type(trigger_type).await.unwrap();
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({"schedule": "0 0 * * *"}),
+            worker_id: None,
+        };
+
+        let result = registry.register_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+        assert_eq!(registry.triggers.len(), 1);
+        assert!(registry.triggers.contains_key("trigger-1"));
+
+        let calls = register_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "trigger-1");
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_type_not_found() {
+        let registry = TriggerRegistry::new();
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "nonexistent".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+
+        let result = registry.register_trigger(trigger).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Trigger type not found"));
+    }
+
+    #[tokio::test]
+    async fn test_register_trigger_registrator_failure() {
+        let registry = TriggerRegistry::new();
+        let mock_registrator = MockTriggerRegistrator::with_register_failure();
+
+        let trigger_type = TriggerType {
+            id: "cron".to_string(),
+            _description: "Cron trigger".to_string(),
+            registrator: Box::new(mock_registrator),
+            worker_id: None,
+        };
+        registry.register_trigger_type(trigger_type).await.unwrap();
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+
+        let result = registry.register_trigger(trigger).await;
+        assert!(result.is_err());
+        assert_eq!(registry.triggers.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_trigger_success() {
+        let registry = TriggerRegistry::new();
+        let mock_registrator = MockTriggerRegistrator::new();
+        let unregister_calls = mock_registrator.unregister_calls.clone();
+
+        let trigger_type = TriggerType {
+            id: "cron".to_string(),
+            _description: "Cron trigger".to_string(),
+            registrator: Box::new(mock_registrator),
+            worker_id: None,
+        };
+        registry.register_trigger_type(trigger_type).await.unwrap();
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+        registry.register_trigger(trigger.clone()).await.unwrap();
+
+        let result = registry
+            .unregister_trigger("trigger-1".to_string(), "cron".to_string())
+            .await;
+        assert!(result.is_ok());
+        assert_eq!(registry.triggers.len(), 0);
+
+        let calls = unregister_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "trigger-1");
+    }
+
+    #[tokio::test]
+    async fn test_unregister_trigger_not_found() {
+        let registry = TriggerRegistry::new();
+        let result = registry
+            .unregister_trigger("nonexistent".to_string(), "cron".to_string())
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Trigger not found"));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_worker() {
+        let registry = TriggerRegistry::new();
+        let worker_id = Uuid::new_v4();
+        let other_worker_id = Uuid::new_v4();
+
+        let mock_registrator1 = MockTriggerRegistrator::new();
+        let unregister_calls1 = mock_registrator1.unregister_calls.clone();
+        let trigger_type1 = TriggerType {
+            id: "cron".to_string(),
+            _description: "Cron trigger".to_string(),
+            registrator: Box::new(mock_registrator1),
+            worker_id: Some(worker_id),
+        };
+        registry.register_trigger_type(trigger_type1).await.unwrap();
+
+        let mock_registrator2 = MockTriggerRegistrator::new();
+        let trigger_type2 = TriggerType {
+            id: "http".to_string(),
+            _description: "HTTP trigger".to_string(),
+            registrator: Box::new(mock_registrator2),
+            worker_id: Some(other_worker_id),
+        };
+        registry.register_trigger_type(trigger_type2).await.unwrap();
+
+        let trigger1 = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: Some(worker_id),
+        };
+        registry.register_trigger(trigger1).await.unwrap();
+
+        let trigger2 = Trigger {
+            id: "trigger-2".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "test.function2".to_string(),
+            config: json!({}),
+            worker_id: Some(other_worker_id),
+        };
+        registry.register_trigger(trigger2).await.unwrap();
+
+        registry.unregister_worker(&worker_id).await;
+
+        assert_eq!(registry.triggers.len(), 1);
+        assert!(!registry.triggers.contains_key("trigger-1"));
+        assert!(registry.triggers.contains_key("trigger-2"));
+        assert_eq!(registry.trigger_types.len(), 1);
+        assert!(!registry.trigger_types.contains_key("cron"));
+        assert!(registry.trigger_types.contains_key("http"));
+
+        let calls = unregister_calls1.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "trigger-1");
+    }
+
+    #[tokio::test]
+    async fn test_unregister_worker_no_triggers() {
+        let registry = TriggerRegistry::new();
+        let worker_id = Uuid::new_v4();
+
+        registry.unregister_worker(&worker_id).await;
+
+        assert_eq!(registry.triggers.len(), 0);
+        assert_eq!(registry.trigger_types.len(), 0);
+    }
+}

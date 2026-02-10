@@ -416,3 +416,219 @@ crate::register_module!(
     RestApiCoreModule,
     enabled_by_default = true
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_router_new() {
+        let router = PathRouter::new(
+            "/api/users".to_string(),
+            "GET".to_string(),
+            "users.list".to_string(),
+            Some("auth.check".to_string()),
+        );
+        assert_eq!(router.http_path, "/api/users");
+        assert_eq!(router.http_method, "GET");
+        assert_eq!(router.function_id, "users.list");
+        assert_eq!(router.condition_function_id, Some("auth.check".to_string()));
+    }
+
+    #[test]
+    fn test_path_router_new_without_condition() {
+        let router = PathRouter::new(
+            "/api/posts".to_string(),
+            "POST".to_string(),
+            "posts.create".to_string(),
+            None,
+        );
+        assert_eq!(router.http_path, "/api/posts");
+        assert_eq!(router.http_method, "POST");
+        assert_eq!(router.function_id, "posts.create");
+        assert_eq!(router.condition_function_id, None);
+    }
+
+    #[test]
+    fn test_build_router_for_axum_with_param() {
+        let path = "/api/users/:id".to_string();
+        let result = RestApiCoreModule::build_router_for_axum(&path);
+        assert_eq!(result, "/api/users/{id}");
+    }
+
+    #[test]
+    fn test_build_router_for_axum_multiple_params() {
+        let path = "/api/users/:userId/posts/:postId".to_string();
+        let result = RestApiCoreModule::build_router_for_axum(&path);
+        assert_eq!(result, "/api/users/{userId}/posts/{postId}");
+    }
+
+    #[test]
+    fn test_build_router_for_axum_no_params() {
+        let path = "/api/users".to_string();
+        let result = RestApiCoreModule::build_router_for_axum(&path);
+        assert_eq!(result, "/api/users");
+    }
+
+    #[test]
+    fn test_build_router_for_axum_without_leading_slash() {
+        let path = "api/users".to_string();
+        let result = RestApiCoreModule::build_router_for_axum(&path);
+        assert_eq!(result, "/api/users");
+    }
+
+    #[test]
+    fn test_build_router_for_axum_root_path() {
+        let path = "/".to_string();
+        let result = RestApiCoreModule::build_router_for_axum(&path);
+        assert_eq!(result, "/");
+    }
+
+    #[test]
+    fn test_build_router_for_axum_empty_path() {
+        let path = "".to_string();
+        let result = RestApiCoreModule::build_router_for_axum(&path);
+        assert_eq!(result, "/");
+    }
+
+    #[test]
+    fn test_get_router_with_leading_slash() {
+        let config = RestApiConfig::default();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let router = PathRouter::new(
+            "users".to_string(),
+            "GET".to_string(),
+            "users.list".to_string(),
+            None,
+        );
+        module.routers_registry.insert("GET:users".to_string(), router);
+
+        let result = module.get_router("GET", "/users");
+        assert_eq!(result, Some(("users.list".to_string(), None)));
+    }
+
+    #[test]
+    fn test_get_router_without_leading_slash() {
+        let config = RestApiConfig::default();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let router = PathRouter::new(
+            "posts".to_string(),
+            "POST".to_string(),
+            "posts.create".to_string(),
+            Some("auth.check".to_string()),
+        );
+        module.routers_registry.insert("POST:posts".to_string(), router);
+
+        let result = module.get_router("POST", "posts");
+        assert_eq!(result, Some(("posts.create".to_string(), Some("auth.check".to_string()))));
+    }
+
+    #[test]
+    fn test_get_router_not_found() {
+        let config = RestApiConfig::default();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let result = module.get_router("GET", "/nonexistent");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_get_router_case_insensitive_method() {
+        let config = RestApiConfig::default();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let router = PathRouter::new(
+            "items".to_string(),
+            "GET".to_string(),
+            "items.list".to_string(),
+            None,
+        );
+        module.routers_registry.insert("GET:items".to_string(), router);
+
+        let result = module.get_router("get", "items");
+        assert_eq!(result, Some(("items.list".to_string(), None)));
+    }
+
+    #[test]
+    fn test_build_cors_layer_no_config() {
+        let config = RestApiConfig {
+            cors: None,
+            ..Default::default()
+        };
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let _cors_layer = module.build_cors_layer();
+    }
+
+    #[test]
+    fn test_build_cors_layer_with_origins() {
+        let config = RestApiConfig {
+            cors: Some(crate::modules::rest_api::config::CorsConfig {
+                allowed_origins: vec!["http://localhost:3000".to_string()],
+                allowed_methods: vec![],
+            }),
+            ..Default::default()
+        };
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let _cors_layer = module.build_cors_layer();
+    }
+
+    #[test]
+    fn test_build_cors_layer_with_methods() {
+        let config = RestApiConfig {
+            cors: Some(crate::modules::rest_api::config::CorsConfig {
+                allowed_origins: vec![],
+                allowed_methods: vec!["GET".to_string(), "POST".to_string()],
+            }),
+            ..Default::default()
+        };
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = RestApiCoreModule {
+            engine: engine.clone(),
+            config,
+            routers_registry: Arc::new(DashMap::new()),
+            shared_routers: Arc::new(RwLock::new(Router::new())),
+        };
+
+        let _cors_layer = module.build_cors_layer();
+    }
+}

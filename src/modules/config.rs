@@ -608,4 +608,93 @@ mod tests {
         let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
+
+    #[test]
+    fn test_engine_config_default_modules() {
+        let config = EngineConfig {
+            port: DEFAULT_PORT,
+            modules: vec![],
+        };
+        let result = config.default_modules();
+        assert_eq!(result.port, DEFAULT_PORT);
+    }
+
+    #[test]
+    fn test_module_registry_new() {
+        let registry = ModuleRegistry::new();
+        let factories = registry.module_factories.read().unwrap();
+        assert_eq!(factories.len(), 0);
+    }
+
+    #[test]
+    fn test_module_registry_register() {
+        use crate::modules::module::Module;
+        use async_trait::async_trait;
+
+        struct TestModule;
+        #[async_trait]
+        impl Module for TestModule {
+            fn name(&self) -> &'static str {
+                "TestModule"
+            }
+            async fn create(_engine: Arc<Engine>, _config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(TestModule))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let registry = ModuleRegistry::new();
+        registry.register::<TestModule>("test::Module");
+        let factories = registry.module_factories.read().unwrap();
+        assert!(factories.contains_key("test::Module"));
+    }
+
+    #[test]
+    fn test_engine_builder_new() {
+        let builder = EngineBuilder::new();
+        assert_eq!(builder.address, format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT));
+        assert!(builder.config.is_none());
+        assert_eq!(builder.modules.len(), 0);
+    }
+
+    #[test]
+    fn test_engine_builder_address() {
+        let builder = EngineBuilder::new().address("127.0.0.1:8080");
+        assert_eq!(builder.address, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_engine_builder_add_module() {
+        let builder = EngineBuilder::new()
+            .add_module("test::Module", Some(serde_json::json!({"key": "value"})));
+        assert!(builder.config.is_some());
+        let config = builder.config.unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].class, "test::Module");
+        assert_eq!(config.modules[0].config, Some(serde_json::json!({"key": "value"})));
+    }
+
+    #[test]
+    fn test_engine_builder_add_module_multiple() {
+        let builder = EngineBuilder::new()
+            .add_module("test::Module1", None)
+            .add_module("test::Module2", Some(serde_json::json!({"key": "value"})));
+        assert!(builder.config.is_some());
+        let config = builder.config.unwrap();
+        assert_eq!(config.modules.len(), 2);
+        assert_eq!(config.modules[0].class, "test::Module1");
+        assert_eq!(config.modules[1].class, "test::Module2");
+    }
+
+    #[test]
+    fn test_engine_builder_add_module_without_config() {
+        let builder = EngineBuilder::new().add_module("test::Module", None);
+        assert!(builder.config.is_some());
+        let config = builder.config.unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].class, "test::Module");
+        assert_eq!(config.modules[0].config, None);
+    }
 }

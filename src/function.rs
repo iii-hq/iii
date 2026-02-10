@@ -101,3 +101,338 @@ impl FunctionsRegistry {
         self.functions.iter()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use serde_json::json;
+
+    #[test]
+    fn test_functions_registry_new() {
+        let registry = FunctionsRegistry::new();
+        assert_eq!(registry.functions.len(), 0);
+    }
+
+    #[test]
+    fn test_register_function() {
+        let registry = FunctionsRegistry::new();
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("test.function".to_string(), function);
+        assert_eq!(registry.functions.len(), 1);
+        assert!(registry.functions.contains_key("test.function"));
+    }
+
+    #[test]
+    fn test_get_function() {
+        let registry = FunctionsRegistry::new();
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler: handler.clone(),
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("test.function".to_string(), function);
+        let retrieved = registry.get("test.function");
+        assert!(retrieved.is_some());
+    }
+
+    #[test]
+    fn test_get_function_nonexistent() {
+        let registry = FunctionsRegistry::new();
+        let retrieved = registry.get("nonexistent.function");
+        assert!(retrieved.is_none());
+    }
+
+    #[test]
+    fn test_remove_function() {
+        let registry = FunctionsRegistry::new();
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("test.function".to_string(), function);
+        assert_eq!(registry.functions.len(), 1);
+
+        registry.remove("test.function");
+        assert_eq!(registry.functions.len(), 0);
+        assert!(registry.get("test.function").is_none());
+    }
+
+    #[test]
+    fn test_remove_function_nonexistent() {
+        let registry = FunctionsRegistry::new();
+        registry.remove("nonexistent.function");
+        assert_eq!(registry.functions.len(), 0);
+    }
+
+    #[test]
+    fn test_functions_hash_empty() {
+        let registry = FunctionsRegistry::new();
+        let hash = registry.functions_hash();
+        assert_eq!(hash, "[]");
+    }
+
+    #[test]
+    fn test_functions_hash_single() {
+        let registry = FunctionsRegistry::new();
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("test.function".to_string(), function);
+        let hash = registry.functions_hash();
+        assert!(hash.contains("test.function"));
+    }
+
+    #[test]
+    fn test_functions_hash_stable_and_sorted() {
+        let registry = FunctionsRegistry::new();
+        let handler1: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let handler2: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function1 = Function {
+            handler: handler1,
+            _function_id: "z.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        let function2 = Function {
+            handler: handler2,
+            _function_id: "a.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("z.function".to_string(), function1);
+        registry.register_function("a.function".to_string(), function2);
+
+        let hash1 = registry.functions_hash();
+        let hash2 = registry.functions_hash();
+        assert_eq!(hash1, hash2);
+        assert!(hash1.contains("a.function"));
+        assert!(hash1.contains("z.function"));
+        let a_pos = hash1.find("a.function").unwrap();
+        let z_pos = hash1.find("z.function").unwrap();
+        assert!(a_pos < z_pos);
+    }
+
+    #[test]
+    fn test_functions_hash_changes_on_add() {
+        let registry = FunctionsRegistry::new();
+        let hash1 = registry.functions_hash();
+
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("test.function".to_string(), function);
+        let hash2 = registry.functions_hash();
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_functions_hash_changes_on_remove() {
+        let registry = FunctionsRegistry::new();
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        registry.register_function("test.function".to_string(), function);
+        let hash1 = registry.functions_hash();
+
+        registry.remove("test.function");
+        let hash2 = registry.functions_hash();
+        assert_ne!(hash1, hash2);
+        assert_eq!(hash2, "[]");
+    }
+
+    #[tokio::test]
+    async fn test_function_call_handler_success() {
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Success(Some(json!({"result": "ok"}))) }
+                .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let result = function.call_handler(None, json!({"input": "data"})).await;
+        match result {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value["result"], "ok");
+            }
+            _ => panic!("Expected Success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_function_call_handler_failure() {
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move {
+                FunctionResult::Failure(ErrorBody {
+                    code: "TEST_ERROR".to_string(),
+                    message: "Test error".to_string(),
+                })
+            }
+            .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let result = function.call_handler(None, json!({"input": "data"})).await;
+        match result {
+            FunctionResult::Failure(error) => {
+                assert_eq!(error.code, "TEST_ERROR");
+                assert_eq!(error.message, "Test error");
+            }
+            _ => panic!("Expected Failure"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_function_call_handler_deferred() {
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::Deferred }.boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let result = function.call_handler(None, json!({"input": "data"})).await;
+        match result {
+            FunctionResult::Deferred => {}
+            _ => panic!("Expected Deferred"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_function_call_handler_no_result() {
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _data| {
+            async move { FunctionResult::NoResult }.boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let result = function.call_handler(None, json!({"input": "data"})).await;
+        match result {
+            FunctionResult::NoResult => {}
+            _ => panic!("Expected NoResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_function_call_handler_with_invocation_id() {
+        let invocation_id = Uuid::new_v4();
+        let handler: Arc<HandlerFn> = Arc::new(move |id, _data| {
+            let expected_id = invocation_id;
+            async move {
+                assert_eq!(id, Some(expected_id));
+                FunctionResult::Success(Some(json!({"result": "ok"})))
+            }
+            .boxed()
+        });
+        let function = Function {
+            handler,
+            _function_id: "test.function".to_string(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+
+        let result = function
+            .call_handler(Some(invocation_id), json!({"input": "data"}))
+            .await;
+        match result {
+            FunctionResult::Success(_) => {}
+            _ => panic!("Expected Success"),
+        }
+    }
+}

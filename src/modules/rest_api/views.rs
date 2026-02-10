@@ -346,3 +346,157 @@ pub async fn dynamic_handler(
     .instrument(span)
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn test_extract_path_params_simple() {
+        let params = extract_path_params("/users/:id", "/users/123");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params.get("id"), Some(&"123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_params_multiple() {
+        let params = extract_path_params("/users/:id/posts/:post_id", "/users/123/posts/456");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params.get("id"), Some(&"123".to_string()));
+        assert_eq!(params.get("post_id"), Some(&"456".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_params_nested() {
+        let params = extract_path_params("/api/v1/users/:id/profile/:section", "/api/v1/users/123/profile/settings");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params.get("id"), Some(&"123".to_string()));
+        assert_eq!(params.get("section"), Some(&"settings".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_params_no_params() {
+        let params = extract_path_params("/users/list", "/users/list");
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_path_params_mismatched_segments() {
+        let params = extract_path_params("/users/:id", "/users/123/posts");
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_path_params_trailing_slash() {
+        let params = extract_path_params("/users/:id/", "/users/123/");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params.get("id"), Some(&"123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_path_params_empty_paths() {
+        let params = extract_path_params("", "");
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_path_params_root() {
+        let params = extract_path_params("/", "/");
+        assert_eq!(params.len(), 0);
+    }
+
+    #[test]
+    fn test_sanitize_headers_for_logging_sensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer token123"));
+        headers.insert("cookie", HeaderValue::from_static("session=abc123"));
+        headers.insert("x-api-key", HeaderValue::from_static("secret-key"));
+
+        let sanitized = sanitize_headers_for_logging(&headers);
+        assert_eq!(sanitized.get("authorization"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(sanitized.get("cookie"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(sanitized.get("x-api-key"), Some(&"[REDACTED]".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_headers_for_logging_case_insensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", HeaderValue::from_static("Bearer token123"));
+        headers.insert("COOKIE", HeaderValue::from_static("session=abc123"));
+        headers.insert("X-Api-Key", HeaderValue::from_static("secret-key"));
+
+        let sanitized = sanitize_headers_for_logging(&headers);
+        assert_eq!(sanitized.get("authorization"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(sanitized.get("cookie"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(sanitized.get("x-api-key"), Some(&"[REDACTED]".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_headers_for_logging_non_sensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert("user-agent", HeaderValue::from_static("Mozilla/5.0"));
+        headers.insert("accept", HeaderValue::from_static("text/html"));
+
+        let sanitized = sanitize_headers_for_logging(&headers);
+        assert_eq!(sanitized.get("content-type"), Some(&"application/json".to_string()));
+        assert_eq!(sanitized.get("user-agent"), Some(&"Mozilla/5.0".to_string()));
+        assert_eq!(sanitized.get("accept"), Some(&"text/html".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_headers_for_logging_mixed() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", HeaderValue::from_static("Bearer token"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        headers.insert("x-csrf-token", HeaderValue::from_static("csrf123"));
+
+        let sanitized = sanitize_headers_for_logging(&headers);
+        assert_eq!(sanitized.get("authorization"), Some(&"[REDACTED]".to_string()));
+        assert_eq!(sanitized.get("content-type"), Some(&"application/json".to_string()));
+        assert_eq!(sanitized.get("x-csrf-token"), Some(&"[REDACTED]".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_headers_for_logging_non_utf8() {
+        let mut headers = HeaderMap::new();
+        let non_utf8 = HeaderValue::from_bytes(b"\xFF\xFE").unwrap();
+        headers.insert("custom-header", non_utf8);
+
+        let sanitized = sanitize_headers_for_logging(&headers);
+        assert_eq!(sanitized.get("custom-header"), Some(&"[non-utf8]".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_query_params_for_logging() {
+        let mut params = HashMap::new();
+        params.insert("key1".to_string(), "value1".to_string());
+        params.insert("key2".to_string(), "value2".to_string());
+        params.insert("key3".to_string(), "value3".to_string());
+
+        let sanitized = sanitize_query_params_for_logging(&params);
+        assert_eq!(sanitized.len(), 3);
+        assert!(sanitized.contains(&"key1".to_string()));
+        assert!(sanitized.contains(&"key2".to_string()));
+        assert!(sanitized.contains(&"key3".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_query_params_for_logging_empty() {
+        let params = HashMap::new();
+        let sanitized = sanitize_query_params_for_logging(&params);
+        assert_eq!(sanitized.len(), 0);
+    }
+
+    #[test]
+    fn test_generate_error_id() {
+        let id1 = generate_error_id();
+        assert!(!id1.is_empty());
+        assert!(id1.len() <= 12);
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let id2 = generate_error_id();
+        assert!(!id2.is_empty());
+    }
+}

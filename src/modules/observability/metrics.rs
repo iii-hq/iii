@@ -1785,4 +1785,188 @@ mod tests {
         // Verify we can use the metrics (they should be functional noop counters)
         metrics.invocations_total.add(1, &[]);
     }
+
+    #[test]
+    fn test_metrics_accumulator_default() {
+        let acc = MetricsAccumulator::default();
+        assert_eq!(acc.invocations_total.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(acc.invocations_success.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(acc.invocations_error.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(acc.invocations_deferred.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(acc.workers_spawns.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(acc.workers_deaths.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(acc.invocations_by_function.len(), 0);
+    }
+
+    #[test]
+    fn test_metrics_accumulator_increment_function() {
+        let acc = MetricsAccumulator::default();
+        acc.increment_function("test.function");
+        assert_eq!(acc.get_function_count("test.function"), Some(1));
+
+        acc.increment_function("test.function");
+        assert_eq!(acc.get_function_count("test.function"), Some(2));
+
+        acc.increment_function("another.function");
+        assert_eq!(acc.get_function_count("another.function"), Some(1));
+    }
+
+    #[test]
+    fn test_metrics_accumulator_get_function_count() {
+        let acc = MetricsAccumulator::default();
+        assert_eq!(acc.get_function_count("nonexistent"), None);
+
+        acc.increment_function("test.function");
+        assert_eq!(acc.get_function_count("test.function"), Some(1));
+    }
+
+    #[test]
+    fn test_metrics_accumulator_get_by_function() {
+        let acc = MetricsAccumulator::default();
+        acc.increment_function("func1");
+        acc.increment_function("func1");
+        acc.increment_function("func2");
+
+        let by_function = acc.get_by_function();
+        assert_eq!(by_function.len(), 2);
+        assert_eq!(by_function.get("func1"), Some(&2u64));
+        assert_eq!(by_function.get("func2"), Some(&1u64));
+    }
+
+    #[test]
+    fn test_metrics_accumulator_iter_function_counts() {
+        let acc = MetricsAccumulator::default();
+        acc.increment_function("func1");
+        acc.increment_function("func2");
+
+        let counts: std::collections::HashMap<String, u64> = acc.iter_function_counts().collect();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts.get("func1"), Some(&1u64));
+        assert_eq!(counts.get("func2"), Some(&1u64));
+    }
+
+    #[test]
+    fn test_percentile_values_empty() {
+        let values: Vec<f64> = vec![];
+        let percentiles = PercentileValues::from_sorted_values(&values);
+        assert_eq!(percentiles.p50, 0.0);
+        assert_eq!(percentiles.p75, 0.0);
+        assert_eq!(percentiles.p90, 0.0);
+        assert_eq!(percentiles.p95, 0.0);
+        assert_eq!(percentiles.p99, 0.0);
+    }
+
+    #[test]
+    fn test_percentile_values_single_value() {
+        let values = vec![42.0];
+        let percentiles = PercentileValues::from_sorted_values(&values);
+        assert_eq!(percentiles.p50, 42.0);
+        assert_eq!(percentiles.p75, 42.0);
+        assert_eq!(percentiles.p90, 42.0);
+        assert_eq!(percentiles.p95, 42.0);
+        assert_eq!(percentiles.p99, 42.0);
+    }
+
+    #[test]
+    fn test_percentile_values_typical_distribution() {
+        let values: Vec<f64> = (1..=100).map(|i| i as f64).collect();
+        let percentiles = PercentileValues::from_sorted_values(&values);
+        assert_eq!(percentiles.p50, 51.0);
+        assert_eq!(percentiles.p75, 76.0);
+        assert_eq!(percentiles.p90, 91.0);
+        assert_eq!(percentiles.p95, 96.0);
+        assert_eq!(percentiles.p99, 100.0);
+    }
+
+    #[test]
+    fn test_percentile_values_all_same() {
+        let values = vec![10.0; 100];
+        let percentiles = PercentileValues::from_sorted_values(&values);
+        assert_eq!(percentiles.p50, 10.0);
+        assert_eq!(percentiles.p75, 10.0);
+        assert_eq!(percentiles.p90, 10.0);
+        assert_eq!(percentiles.p95, 10.0);
+        assert_eq!(percentiles.p99, 10.0);
+    }
+
+    #[test]
+    fn test_percentile_values_unsorted() {
+        let values = vec![100.0, 10.0, 50.0, 30.0, 20.0];
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let percentiles = PercentileValues::from_sorted_values(&sorted);
+        assert_eq!(percentiles.p50, 30.0);
+    }
+
+    #[test]
+    fn test_rollup_storage_new() {
+        let levels = vec![
+            RollupLevel {
+                interval_ns: 1_000_000_000,
+                retention_ns: 3_600_000_000_000,
+            },
+            RollupLevel {
+                interval_ns: 60_000_000_000,
+                retention_ns: 86_400_000_000_000,
+            },
+        ];
+        let storage = RollupStorage::new(levels.clone());
+        assert_eq!(storage.levels.len(), 2);
+    }
+
+    #[test]
+    fn test_rollup_storage_get_rollups_empty() {
+        let levels = vec![RollupLevel {
+            interval_ns: 1_000_000_000,
+            retention_ns: 3_600_000_000_000,
+        }];
+        let storage = RollupStorage::new(levels);
+        let rollups = storage.get_rollups(0, 0, 1_000_000_000, None);
+        assert_eq!(rollups.len(), 0);
+    }
+
+    #[test]
+    fn test_rollup_storage_get_rollups_invalid_level() {
+        let levels = vec![RollupLevel {
+            interval_ns: 1_000_000_000,
+            retention_ns: 3_600_000_000_000,
+        }];
+        let storage = RollupStorage::new(levels);
+        let rollups = storage.get_rollups(999, 0, 1_000_000_000, None);
+        assert_eq!(rollups.len(), 0);
+    }
+
+    #[test]
+    fn test_rollup_storage_get_histogram_rollups_empty() {
+        let levels = vec![RollupLevel {
+            interval_ns: 1_000_000_000,
+            retention_ns: 3_600_000_000_000,
+        }];
+        let storage = RollupStorage::new(levels);
+        let rollups = storage.get_histogram_rollups(0, 0, 1_000_000_000, None);
+        assert_eq!(rollups.len(), 0);
+    }
+
+    #[test]
+    fn test_rollup_storage_get_histogram_rollups_invalid_level() {
+        let levels = vec![RollupLevel {
+            interval_ns: 1_000_000_000,
+            retention_ns: 3_600_000_000_000,
+        }];
+        let storage = RollupStorage::new(levels);
+        let rollups = storage.get_histogram_rollups(999, 0, 1_000_000_000, None);
+        assert_eq!(rollups.len(), 0);
+    }
+
+    #[test]
+    fn test_rollup_storage_apply_retention() {
+        let levels = vec![RollupLevel {
+            interval_ns: 1_000_000_000,
+            retention_ns: 3_600_000_000_000,
+        }];
+        let storage = RollupStorage::new(levels);
+        storage.apply_retention();
+        let rollups = storage.get_rollups(0, 0, u64::MAX, None);
+        assert_eq!(rollups.len(), 0);
+    }
 }

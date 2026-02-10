@@ -114,3 +114,209 @@ impl FunctionHandler for Worker {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workers::Worker;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_worker_register_trigger() {
+        let (tx, mut rx) = mpsc::channel::<Outbound>(10);
+        let worker = Worker::new(tx);
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({"schedule": "0 0 * * *"}),
+            worker_id: None,
+        };
+
+        let result = worker.register_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        let message = rx.recv().await.unwrap();
+        match message {
+            Outbound::Protocol(Message::RegisterTrigger {
+                id,
+                trigger_type,
+                function_id,
+                config: _,
+            }) => {
+                assert_eq!(id, "trigger-1");
+                assert_eq!(trigger_type, "cron");
+                assert_eq!(function_id, "test.function");
+            }
+            _ => panic!("Expected RegisterTrigger message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worker_unregister_trigger() {
+        let (tx, mut rx) = mpsc::channel::<Outbound>(10);
+        let worker = Worker::new(tx);
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+
+        let result = worker.unregister_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        let message = rx.recv().await.unwrap();
+        match message {
+            Outbound::Protocol(Message::UnregisterTrigger { id, trigger_type }) => {
+                assert_eq!(id, "trigger-1");
+                assert_eq!(trigger_type, "cron");
+            }
+            _ => panic!("Expected UnregisterTrigger message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worker_register_trigger_channel_error() {
+        let (tx, _rx) = mpsc::channel::<Outbound>(1);
+        drop(_rx);
+        let worker = Worker::new(tx);
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+
+        let result = worker.register_trigger(trigger).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("failed to send register trigger message"));
+    }
+
+    #[tokio::test]
+    async fn test_worker_unregister_trigger_channel_error() {
+        let (tx, _rx) = mpsc::channel::<Outbound>(1);
+        drop(_rx);
+        let worker = Worker::new(tx);
+
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test.function".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+
+        let result = worker.unregister_trigger(trigger).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("failed to send unregister trigger message"));
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_function() {
+        let (tx, mut rx) = mpsc::channel::<Outbound>(10);
+        let worker = Worker::new(tx);
+
+        let invocation_id = Uuid::new_v4();
+        let function_id = "test.function".to_string();
+        let input = json!({"key": "value"});
+
+        let result = worker
+            .handle_function(Some(invocation_id), function_id.clone(), input.clone())
+            .await;
+
+        match result {
+            FunctionResult::Deferred => {}
+            _ => panic!("Expected Deferred result"),
+        }
+
+        assert_eq!(worker.invocation_count().await, 1);
+        assert!(worker
+            .invocations
+            .read()
+            .await
+            .contains(&invocation_id));
+
+        let message = rx.recv().await.unwrap();
+        match message {
+            Outbound::Protocol(Message::InvokeFunction {
+                invocation_id: id,
+                function_id: fid,
+                data,
+                traceparent: _,
+                baggage: _,
+            }) => {
+                assert_eq!(id, Some(invocation_id));
+                assert_eq!(fid, function_id);
+                assert_eq!(data, input);
+            }
+            _ => panic!("Expected InvokeFunction message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_function_without_invocation_id() {
+        let (tx, mut rx) = mpsc::channel::<Outbound>(10);
+        let worker = Worker::new(tx);
+
+        let function_id = "test.function".to_string();
+        let input = json!({"key": "value"});
+        let generated_id = Uuid::new_v4();
+
+        let result = worker
+            .handle_function(Some(generated_id), function_id.clone(), input.clone())
+            .await;
+
+        match result {
+            FunctionResult::Deferred => {}
+            _ => panic!("Expected Deferred result"),
+        }
+
+        let message = rx.recv().await.unwrap();
+        match message {
+            Outbound::Protocol(Message::InvokeFunction {
+                invocation_id: id,
+                function_id: fid,
+                data: _,
+                traceparent: _,
+                baggage: _,
+            }) => {
+                assert_eq!(id, Some(generated_id));
+                assert_eq!(fid, function_id);
+            }
+            _ => panic!("Expected InvokeFunction message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_worker_handle_function_channel_error() {
+        let (tx, _rx) = mpsc::channel::<Outbound>(1);
+        drop(_rx);
+        let worker = Worker::new(tx);
+
+        let invocation_id = Uuid::new_v4();
+        let function_id = "test.function".to_string();
+        let input = json!({"key": "value"});
+
+        let result = worker
+            .handle_function(Some(invocation_id), function_id, input)
+            .await;
+
+        match result {
+            FunctionResult::Deferred => {}
+            _ => panic!("Expected Deferred result even on channel error"),
+        }
+    }
+}

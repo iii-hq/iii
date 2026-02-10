@@ -239,3 +239,80 @@ impl InvocationHandler {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_invocation_handler_new() {
+        let handler = InvocationHandler::new();
+        assert_eq!(handler.invocations.len(), 0);
+    }
+
+    #[test]
+    fn test_invocation_handler_remove_not_found() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let result = handler.remove(&id);
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_invocation_handler_remove() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let (sender, _receiver) = oneshot::channel();
+        let invocation = Invocation {
+            id,
+            function_id: "test.function".to_string(),
+            worker_id: None,
+            sender,
+            traceparent: None,
+            baggage: None,
+        };
+        handler.invocations.insert(id, invocation);
+        assert_eq!(handler.invocations.len(), 1);
+
+        let removed = handler.remove(&id);
+        assert!(removed.is_some());
+        assert_eq!(handler.invocations.len(), 0);
+        let removed_invocation = removed.unwrap();
+        assert_eq!(removed_invocation.id, id);
+        assert_eq!(removed_invocation.function_id, "test.function");
+    }
+
+    #[tokio::test]
+    async fn test_invocation_handler_halt_invocation() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let (sender, receiver) = oneshot::channel();
+        let invocation = Invocation {
+            id,
+            function_id: "test.function".to_string(),
+            worker_id: None,
+            sender,
+            traceparent: None,
+            baggage: None,
+        };
+        handler.invocations.insert(id, invocation);
+        assert_eq!(handler.invocations.len(), 1);
+
+        handler.halt_invocation(&id);
+        assert_eq!(handler.invocations.len(), 0);
+
+        let result = receiver.await.unwrap();
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "invocation_stopped");
+        assert_eq!(error.message, "Invocation stopped");
+    }
+
+    #[tokio::test]
+    async fn test_invocation_handler_halt_invocation_not_found() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        handler.halt_invocation(&id);
+        assert_eq!(handler.invocations.len(), 0);
+    }
+}
