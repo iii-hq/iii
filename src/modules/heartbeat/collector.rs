@@ -67,7 +67,7 @@ pub struct CloudSafeHeartbeatEntry {
 }
 
 fn hash_hostname(hostname: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     const SALT: &[u8] = b"iii-heartbeat-v1";
     let mut hasher = Sha256::new();
     hasher.update(SALT);

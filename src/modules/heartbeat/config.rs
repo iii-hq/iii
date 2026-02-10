@@ -12,10 +12,7 @@ pub struct HeartbeatConfig {
     pub enabled: Option<bool>,
     #[serde(default = "default_interval")]
     pub interval_seconds: Option<u64>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_non_empty_string"
-    )]
+    #[serde(default, deserialize_with = "deserialize_non_empty_string")]
     pub cloud_endpoint: Option<String>,
     #[serde(default)]
     pub cloud_telemetry_enabled: Option<bool>,
@@ -89,7 +86,10 @@ impl HeartbeatConfig {
 
         let id = uuid::Uuid::new_v4().to_string();
         if let Err(e) = std::fs::create_dir_all(".iii") {
-            tracing::warn!("Failed to create .iii directory for instance_id persistence: {}", e);
+            tracing::warn!(
+                "Failed to create .iii directory for instance_id persistence: {}",
+                e
+            );
         } else if let Err(e) = std::fs::write(path, &id) {
             tracing::warn!("Failed to persist instance_id to {}: {}", path.display(), e);
         }

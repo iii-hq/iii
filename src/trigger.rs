@@ -172,7 +172,9 @@ impl TriggerRegistry {
 
         crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_registration(
             crate::modules::heartbeat::lifecycle::EventKind::RegisterTrigger,
-            Some(serde_json::json!({"trigger_id": trigger.id, "trigger_type": trigger.trigger_type})),
+            Some(
+                serde_json::json!({"trigger_id": trigger.id, "trigger_type": trigger.trigger_type}),
+            ),
         );
 
         self.triggers.insert(trigger.id.clone(), trigger);
