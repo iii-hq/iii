@@ -188,7 +188,7 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 - `src/protocol.rs` – WebSocket message schema.
 - `src/modules/` – Core modules (API, event, cron, streams, logging, shell).
 - `config.yaml` – Example module configuration.
-- `packages/node/*`, `packages/python/*`, and `packages/rust/*` – SDKs and higher-level frameworks.
+- `packages/node/*` and `packages/rust/*` – SDKs and higher-level frameworks.
 - `examples/custom_queue_adapter.rs` – Example of a custom module + adapter.
 
 ## Development
