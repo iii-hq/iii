@@ -63,7 +63,7 @@ impl Default for MetricsConfig {
         let service_name = global_cfg
             .and_then(|c| c.service_name.clone())
             .or_else(|| env::var("OTEL_SERVICE_NAME").ok())
-            .unwrap_or_else(|| "iii-engine".to_string());
+            .unwrap_or_else(|| "iii".to_string());
 
         let exporter = global_cfg
             .and_then(|c| c.metrics_exporter.clone())
@@ -132,7 +132,7 @@ pub fn ensure_default_meter() {
     init_metric_storage(None, None);
 
     let provider = SdkMeterProvider::builder().build();
-    let meter = provider.meter("iii-engine");
+    let meter = provider.meter("iii");
     global::set_meter_provider(provider);
     if GLOBAL_METER.set(meter).is_err() {
         tracing::debug!("Global meter already initialized by another thread");
@@ -188,7 +188,7 @@ pub fn init_metrics(config: &MetricsConfig) -> bool {
                 .with_resource(resource)
                 .build();
 
-            let meter = provider.meter("iii-engine");
+            let meter = provider.meter("iii");
             global::set_meter_provider(provider.clone());
             if OTLP_METER_PROVIDER.set(provider).is_err() {
                 tracing::debug!("OTLP meter provider already initialized");
@@ -210,7 +210,7 @@ pub fn init_metrics(config: &MetricsConfig) -> bool {
 
             // Still need to initialize a meter for EngineMetrics to use
             let provider = SdkMeterProvider::builder().with_resource(resource).build();
-            let meter = provider.meter("iii-engine");
+            let meter = provider.meter("iii");
             global::set_meter_provider(provider);
             if GLOBAL_METER.set(meter).is_err() {
                 tracing::debug!("Global meter already initialized");

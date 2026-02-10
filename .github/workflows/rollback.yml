@@ -33,8 +33,8 @@ jobs:
         id: generate_token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.MOTIA_CI_APP_ID }}
-          private-key: ${{ secrets.MOTIA_CI_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
           permission-contents: write
 
       - name: Checkout code

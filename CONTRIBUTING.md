@@ -34,12 +34,12 @@ We are committed to providing a welcoming and inclusive experience for everyone.
 1. Fork the repository on GitHub
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/iii-engine.git
-   cd iii-engine
+   git clone https://github.com/YOUR_USERNAME/iii.git
+   cd iii
    ```
 3. Add upstream remote:
    ```bash
-   git remote add upstream https://github.com/MotiaDev/iii-engine.git
+   git remote add upstream https://github.com/iii-hq/iii.git
    ```
 
 ## Development Setup
@@ -251,7 +251,7 @@ docker run -it --rm -v $(pwd):/github/workspace ghcr.io/korandoru/hawkeye format
 ## Project Structure
 
 ```
-iii-engine/
+iii/
 ├── src/                    # Core engine source (ELv2)
 │   ├── main.rs            # CLI entry point
 │   ├── lib.rs             # Library exports
@@ -313,7 +313,7 @@ Include:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/MotiaDev/iii-engine/discussions)
+- Open a [GitHub Discussion](https://github.com/iii-hq/iii/discussions)
 - Reach out at support@motia.dev
 
 Thank you for contributing to iii Engine!
