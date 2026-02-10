@@ -170,6 +170,8 @@ pub async fn dynamic_handler(
         "http.request.header.content_type" = %content_type,
         "http.request.body.size" = %request_body_size,
         "http.response.status_code" = tracing::field::Empty,
+        // Tag internal vs user functions for filtering (set after function_id is resolved)
+        "iii.function.kind" = tracing::field::Empty,
     );
 
     async move {
@@ -191,6 +193,14 @@ pub async fn dynamic_handler(
             api_handler.get_router(method.as_str(), &registered_path)
 
         {
+            // Tag the HTTP span as internal if the function is an engine.* function
+            let function_kind = if function_id.starts_with("engine.") {
+                "internal"
+            } else {
+                "user"
+            };
+            tracing::Span::current().record("iii.function.kind", function_kind);
+
             let parsed_body = if body.is_empty() {
             None
         } else {

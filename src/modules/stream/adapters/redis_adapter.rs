@@ -19,7 +19,7 @@ use crate::{
     engine::Engine,
     modules::{
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
-        streams::{
+        stream::{
             StreamMetadata, StreamWrapperMessage,
             adapters::{StreamAdapter, StreamConnection},
             registry::{StreamAdapterFuture, StreamAdapterRegistration},
@@ -417,7 +417,7 @@ impl StreamAdapter for RedisAdapter {
         }
     }
 
-    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+    async fn list_all_stream(&self) -> anyhow::Result<Vec<StreamMetadata>> {
         use std::collections::{HashMap, HashSet};
 
         let mut conn = self.publisher.lock().await;
@@ -433,7 +433,7 @@ impl StreamAdapter for RedisAdapter {
                 .arg(pattern)
                 .query_async(&mut *conn)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to scan streams from Redis: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Failed to scan stream from Redis: {}", e))?;
 
             let (next_cursor, keys) = result;
 
@@ -455,7 +455,7 @@ impl StreamAdapter for RedisAdapter {
         }
 
         // Convert to StreamMetadata
-        let mut streams: Vec<StreamMetadata> = stream_map
+        let mut stream: Vec<StreamMetadata> = stream_map
             .into_iter()
             .map(|(id, groups)| {
                 let mut groups_vec: Vec<String> = groups.into_iter().collect();
@@ -467,8 +467,8 @@ impl StreamAdapter for RedisAdapter {
             })
             .collect();
 
-        streams.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(streams)
+        stream.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(stream)
     }
 
     async fn subscribe(
@@ -675,4 +675,4 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
     })
 }
 
-crate::register_adapter!(<StreamAdapterRegistration> "modules::streams::adapters::RedisAdapter", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::RedisAdapter", make_adapter);

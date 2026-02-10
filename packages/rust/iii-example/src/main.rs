@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use iii_sdk::{Bridge, Streams, UpdateBuilder, UpdateOp};
+use iii_sdk::{Bridge, Stream, UpdateBuilder, UpdateOp};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -16,8 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bridge = Bridge::new(&iii_bridge_url);
     bridge.connect().await?;
 
-    // Create a Streams instance for atomic updates
-    let streams = Streams::new(bridge.clone());
+    // Create a Stream instance for atomic updates
+    let stream = Stream::new(bridge.clone());
 
     bridge.register_function("example.echo", |input| async move {
         Ok(json!({ "echo": input }))
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 1: Using UpdateOp directly
     println!("\n--- Example 1: Direct UpdateOp ---");
-    let result = streams
+    let result = stream
         .update(
             stream_key,
             vec![
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 2: Atomic increment
     println!("\n--- Example 2: Atomic Increment ---");
-    let result = streams.increment(stream_key, "counter", 5).await?;
+    let result = stream.increment(stream_key, "counter", 5).await?;
     println!(
         "After increment by 5: counter = {}",
         result.new_value["counter"]
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 3: Multiple atomic operations in one call
     println!("\n--- Example 3: Multiple Operations ---");
-    let result = streams
+    let result = stream
         .update(
             stream_key,
             vec![
@@ -78,12 +78,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("metadata", json!({"source": "rust-sdk", "version": "1.0"}))
         .build();
 
-    let result = streams.update(stream_key, ops).await?;
+    let result = stream.update(stream_key, ops).await?;
     println!("After builder ops: {:?}", result.new_value);
 
     // Example 5: Merge operation
     println!("\n--- Example 5: Merge Operation ---");
-    let result = streams
+    let result = stream
         .merge(
             stream_key,
             json!({
@@ -96,12 +96,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 6: Remove a field
     println!("\n--- Example 6: Remove Field ---");
-    let result = streams.remove_field(stream_key, "extra_field").await?;
+    let result = stream.remove_field(stream_key, "extra_field").await?;
     println!("After removing extra_field: {:?}", result.new_value);
 
     // Example 7: Decrement
     println!("\n--- Example 7: Decrement ---");
-    let result = streams.decrement(stream_key, "counter", 3).await?;
+    let result = stream.decrement(stream_key, "counter", 3).await?;
     println!(
         "After decrement by 3: counter = {}",
         result.new_value["counter"]
@@ -112,18 +112,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let concurrent_key = "example::demo::concurrent-test";
 
     // Initialize
-    streams
+    stream
         .update(concurrent_key, vec![UpdateOp::set("counter", json!(0))])
         .await?;
 
     // Spawn 10 concurrent increment tasks
     let mut handles = vec![];
     for i in 0..10 {
-        let streams_clone = streams.clone();
+        let stream_clone = stream.clone();
         let key = concurrent_key.to_string();
         let handle = tokio::spawn(async move {
             for _ in 0..10 {
-                let _ = streams_clone.increment(&key, "counter", 1).await;
+                let _ = stream_clone.increment(&key, "counter", 1).await;
             }
             println!("Task {} completed 10 increments", i);
         });
@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Check final value (should be 100 with atomic updates)
-    let final_result = streams
+    let final_result = stream
         .update(concurrent_key, vec![UpdateOp::increment("counter", 0)])
         .await?;
     println!(

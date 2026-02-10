@@ -21,3 +21,4 @@ packages/docker/bun/iii
 docs/
 .omc/
 AGENTS.md
+conductor

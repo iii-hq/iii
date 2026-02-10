@@ -11,7 +11,8 @@ modules:
       adapter:
         class: modules::pubsub::LocalAdapter
 
-  - class: modules::observability::LoggingModule
+  - class: modules::observability::OtelModule
     config:
+      enabled: false
       level: debug
       format: default

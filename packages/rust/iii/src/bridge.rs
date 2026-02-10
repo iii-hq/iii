@@ -666,7 +666,8 @@ impl Bridge {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!(error = %err, "failed to connect; retrying");
+                    let url = &self.inner.address;
+                    tracing::warn!(error = %err, "failed to connect to bridge to url {url}");
                 }
             }
 

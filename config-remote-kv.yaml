@@ -1,11 +1,11 @@
 port: ${III_PORT:49134}
 modules:
-  - class: modules::streams::StreamModule
+  - class: modules::stream::StreamModule
     config:
-      port: ${STREAMS_PORT:31112}
+      port: ${STREAM_PORT:31112}
       host: 127.0.0.1
       adapter:
-        class: modules::streams::adapters::Bridge
+        class: modules::stream::adapters::Bridge
         config:
           bridge_url: ws://localhost:49133
 
@@ -26,7 +26,8 @@ modules:
           - DELETE
           - OPTIONS
 
-  - class: modules::observability::LoggingModule
+  - class: modules::observability::OtelModule
     config:
+      enabled: false
       level: debug
       format: default

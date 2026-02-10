@@ -1,0 +1,12 @@
+modules:
+  - class: modules::api::RestApiModule
+    config:
+      host: 0.0.0.0
+      port: 3111
+
+  - class: modules::cron::CronModule
+
+  - class: modules::observability::LoggingModule
+    config:
+      level: info
+      format: json
