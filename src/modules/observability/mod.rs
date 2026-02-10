@@ -447,7 +447,7 @@ impl OtelModule {
             span_id: input.span_id.clone(),
             resource: get_resource_attributes(),
             service_name: service_name.clone(),
-            instrumentation_scope_name: Some("iii-engine".to_string()),
+            instrumentation_scope_name: Some("iii".to_string()),
             instrumentation_scope_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         };
 
@@ -1559,7 +1559,7 @@ impl Module for OtelModule {
                 ._config
                 .service_name
                 .clone()
-                .unwrap_or_else(|| "iii-engine".to_string());
+                .unwrap_or_else(|| "iii".to_string());
             let service_version = self
                 ._config
                 .service_version

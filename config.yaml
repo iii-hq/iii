@@ -49,7 +49,7 @@ modules:
     config:
       # === Core Configuration (Required) ===
       enabled: ${OTEL_ENABLED:true}
-      service_name: ${OTEL_SERVICE_NAME:iii-engine}
+      service_name: ${OTEL_SERVICE_NAME:iii}
       service_version: ${SERVICE_VERSION:0.2.0}
 
       # === Service Identity (Optional) ===
@@ -104,7 +104,7 @@ modules:
       #       rate: 0.05  # 5% sampling for background jobs
       #
       #     # Pattern matching examples:
-      #     # Service is matched against the configured service_name (e.g., "iii-engine")
+      #     # Service is matched against the configured service_name (e.g., "iii")
       #     # "api.users.create" matches "api.*"
       #     # "health.check" matches "health.*"
       #     # "other.operation" falls back to default (0.1)
