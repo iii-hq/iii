@@ -613,7 +613,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.listGroups", description = "List all groups in a stream")]
+    #[function(id = "stream.list_groups", description = "List all groups in a stream")]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,
@@ -621,13 +621,13 @@ impl StreamCoreModule {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
 
-        let function_id = format!("stream.listGroups({})", stream_name);
+        let function_id = format!("stream.list_groups({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
         match function {
             Some(_) => {
-                tracing::debug!(function_id = %function_id, "Calling custom stream.listGroups function");
+                tracing::debug!(function_id = %function_id, "Calling custom stream.list_groups function");
 
                 let input = match serde_json::to_value(cloned_input) {
                     Ok(input) => input,
