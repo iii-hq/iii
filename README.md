@@ -69,6 +69,18 @@ docker run --read-only --tmpfs /tmp \
 docker compose up -d
 ```
 
+**Docker Compose with Caddy** (example):
+
+The included `docker-compose.prod.yml` runs iii behind a [Caddy](https://caddyserver.com/docs/) reverse proxy for TLS:
+
+```bash
+# 1. Replace your-domain.com in Caddyfile with your actual domain
+# 2. Start the stack
+docker compose -f docker-compose.prod.yml up -d
+```
+
+See the [Caddy documentation](https://caddyserver.com/docs/) for TLS and reverse proxy configuration.
+
 | Port | Service |
 |------|---------|
 | 49134 | WebSocket (worker connections) |
