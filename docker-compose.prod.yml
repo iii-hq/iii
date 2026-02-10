@@ -18,57 +18,14 @@ services:
     image: iiidev/iii:latest
     volumes:
       - ./config.prod.yaml:/app/config.yaml:ro
-    environment:
-      - RUST_LOG=${RUST_LOG:-info}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-iii}:${RABBITMQ_PASS:-changeme}@rabbitmq:5672
-      - FRONTEND_URL=${FRONTEND_URL:-https://your-domain.com}
-    depends_on:
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 3111 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --appendonly yes
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    environment:
-      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-iii}
-      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-changeme}
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     restart: unless-stopped
 
 volumes:
   caddy_data:
   caddy_config:
-  redis_data:
-  rabbitmq_data:

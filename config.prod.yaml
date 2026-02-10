@@ -2,57 +2,11 @@ modules:
   - class: modules::api::RestApiModule
     config:
       host: 0.0.0.0
-      port: ${API_PORT:3111}
-      cors:
-        allowed_origins:
-          - ${FRONTEND_URL:https://your-domain.com}
-        allowed_methods:
-          - GET
-          - POST
-          - PUT
-          - DELETE
-          - OPTIONS
-
-  - class: modules::streams::StreamModule
-    config:
-      host: 0.0.0.0
-      port: ${STREAMS_PORT:3112}
-      adapter:
-        class: modules::streams::adapters::RedisAdapter
-        config:
-          redis_url: ${REDIS_URL:redis://localhost:6379}
-
-  - class: modules::event::EventModule
-    config:
-      adapter:
-        class: modules::event::adapters::RedisAdapter
-        config:
-          redis_url: ${REDIS_URL:redis://localhost:6379}
-
-  - class: modules::queue::QueueModule
-    config:
-      adapter:
-        class: modules::queue::adapters::RabbitMqAdapter
-        config:
-          url: ${RABBITMQ_URL:amqp://guest:guest@localhost:5672}
+      port: 3111
 
   - class: modules::cron::CronModule
-    config:
-      adapter:
-        class: modules::cron::adapters::RedisAdapter
-        config:
-          redis_url: ${REDIS_URL:redis://localhost:6379}
 
   - class: modules::observability::LoggingModule
     config:
-      level: ${LOG_LEVEL:info}
+      level: info
       format: json
-      adapter:
-        class: modules::observability::adapters::RedisLogger
-        config:
-          redis_url: ${REDIS_URL:redis://localhost:6379}
-
-  - class: modules::observability::MetricsModule
-    config:
-      host: 0.0.0.0
-      port: 9464

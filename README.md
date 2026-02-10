@@ -71,12 +71,11 @@ docker compose up -d
 
 **Docker Compose with Caddy** (example):
 
-The included `docker-compose.prod.yml` adds a [Caddy](https://caddyserver.com/docs/) reverse proxy for TLS, password-protected Redis, and resource limits:
+The included `docker-compose.prod.yml` runs iii behind a [Caddy](https://caddyserver.com/docs/) reverse proxy for TLS:
 
 ```bash
-# 1. Create .env with your secrets (REDIS_PASSWORD, RABBITMQ_PASS, etc.)
-# 2. Replace your-domain.com in Caddyfile with your actual domain
-# 3. Start the stack
+# 1. Replace your-domain.com in Caddyfile with your actual domain
+# 2. Start the stack
 docker compose -f docker-compose.prod.yml up -d
 ```
 
