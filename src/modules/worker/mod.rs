@@ -27,6 +27,20 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 pub struct EmptyInput {}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct FunctionsListInput {
+    /// Include internal engine functions (engine.* prefix). Defaults to false.
+    #[serde(default)]
+    pub include_internal: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct TriggersListInput {
+    /// Include internal engine triggers (linked to engine.* functions). Defaults to false.
+    #[serde(default)]
+    pub include_internal: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WorkersListInput {
     pub worker_id: Option<String>,
 }
@@ -339,9 +353,14 @@ impl WorkerModule {
     #[function(id = "engine.functions.list", description = "List all functions")]
     pub async fn get_functions(
         &self,
-        _input: EmptyInput,
+        input: FunctionsListInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let functions = self.list_functions();
+        let mut functions = self.list_functions();
+
+        if !input.include_internal.unwrap_or(false) {
+            functions.retain(|f| !f.function_id.starts_with("engine."));
+        }
+
         FunctionResult::Success(Some(serde_json::json!({ "functions": functions })))
     }
 
@@ -363,9 +382,14 @@ impl WorkerModule {
     #[function(id = "engine.triggers.list", description = "List all triggers")]
     pub async fn get_triggers(
         &self,
-        _input: EmptyInput,
+        input: TriggersListInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let triggers = self.list_trigger_infos().await;
+        let mut triggers = self.list_trigger_infos().await;
+
+        if !input.include_internal.unwrap_or(false) {
+            triggers.retain(|t| !t.function_id.starts_with("engine."));
+        }
+
         FunctionResult::Success(Some(serde_json::json!({ "triggers": triggers })))
     }
 

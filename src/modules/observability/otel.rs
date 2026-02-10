@@ -115,7 +115,7 @@ impl Default for OtelConfig {
         let service_name = global_cfg
             .and_then(|c| c.service_name.clone())
             .or_else(|| env::var("OTEL_SERVICE_NAME").ok())
-            .unwrap_or_else(|| "iii-engine".to_string());
+            .unwrap_or_else(|| "iii".to_string());
 
         let service_version = global_cfg
             .and_then(|c| c.service_version.clone())
@@ -791,7 +791,7 @@ where
     }
 
     // Get a tracer from the provider
-    let tracer = provider.tracer("iii-engine");
+    let tracer = provider.tracer("iii");
 
     // Set as global provider
     global::set_tracer_provider(provider);
@@ -2302,7 +2302,7 @@ impl OtlpLogsExporter {
                 },
                 "scopeLogs": [{
                     "scope": {
-                        "name": "iii-engine",
+                        "name": "iii",
                         "version": env!("CARGO_PKG_VERSION")
                     },
                     "logRecords": log_records

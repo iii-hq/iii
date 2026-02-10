@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::{
     builtins::pubsub_lite::Subscriber,
-    modules::streams::{StreamMetadata, StreamWrapperMessage},
+    modules::stream::{StreamMetadata, StreamWrapperMessage},
 };
 
 #[async_trait]
@@ -50,8 +50,8 @@ pub trait StreamAdapter: Send + Sync {
 
     async fn list_groups(&self, stream_name: &str) -> anyhow::Result<Vec<String>>;
 
-    /// List all available streams with their metadata
-    async fn list_all_streams(&self) -> anyhow::Result<Vec<StreamMetadata>>;
+    /// List all available stream with their metadata
+    async fn list_all_stream(&self) -> anyhow::Result<Vec<StreamMetadata>>;
 
     async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()>;
 

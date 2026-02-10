@@ -3,7 +3,7 @@ pub mod context;
 pub mod error;
 pub mod logger;
 pub mod protocol;
-pub mod streams;
+pub mod stream;
 pub mod triggers;
 pub mod types;
 
@@ -17,7 +17,7 @@ pub use protocol::{
     ErrorBody, FunctionMessage, Message, RegisterFunctionMessage, RegisterServiceMessage,
     RegisterTriggerMessage, RegisterTriggerTypeMessage,
 };
-pub use streams::{Streams, UpdateBuilder};
+pub use stream::{Stream, UpdateBuilder};
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{ApiRequest, ApiResponse, FieldPath, StreamUpdateInput, UpdateOp, UpdateResult};
 

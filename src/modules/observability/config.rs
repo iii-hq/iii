@@ -6,8 +6,6 @@
 
 use serde::Deserialize;
 
-use crate::modules::module::AdapterEntry;
-
 /// Exporter type for OpenTelemetry traces (for YAML deserialization)
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -265,6 +263,14 @@ pub struct OtelModuleConfig {
     /// Alert rules for metric thresholds
     #[serde(default)]
     pub alerts: Vec<AlertRule>,
+
+    /// Log level for the engine (e.g., "info", "debug", "warn", "error", "trace")
+    #[serde(default)]
+    pub level: Option<String>,
+
+    /// Log format: "default" for human-readable, "json" for structured JSON
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 fn default_logs_sampling_ratio() -> f64 {
@@ -273,17 +279,4 @@ fn default_logs_sampling_ratio() -> f64 {
 
 fn default_logs_console_output() -> bool {
     true
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct LoggerModuleConfig {
-    #[serde(default)]
-    pub level: Option<String>,
-
-    #[serde(default)]
-    pub format: Option<String>,
-
-    #[serde(default)]
-    pub adapter: Option<AdapterEntry>,
 }

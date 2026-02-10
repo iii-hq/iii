@@ -2,14 +2,14 @@
 
 III is a WebSocket-based process communication engine. Workers connect over WS, register
 functions and triggers, and the engine routes invocations between workers and core modules.
-Core modules add HTTP APIs, event streams, cron scheduling, and logging.
+Core modules add HTTP APIs, event stream, cron scheduling, and logging.
 
 ## Quick Start
 
 Prerequisites:
 
 - Rust 1.80+ (edition 2024)
-- Redis (only if you enable the event/cron/streams modules; the default config expects Redis at
+- Redis (only if you enable the event/cron/stream modules; the default config expects Redis at
   `redis://localhost:6379`). Cron uses the built-in KV adapter by default.
 
 Install (prebuilt binary)
@@ -17,21 +17,21 @@ Install (prebuilt binary)
 This installer currently supports macOS and Linux (not native Windows).
 You can install the latest release binary with:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
 ```
 
 To install a specific version, pass it as the first argument (the leading `v` is optional):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh -s -- v0.2.1
+curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh -s -- v0.2.1
 ```
 Or set `VERSION` explicitly:
 ```bash
-VERSION=0.2.1 curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+VERSION=0.2.1 curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
 ```
 
 By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` or `PREFIX`:
 ```bash
-BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
 ```
 
 To check that the binary is on your PATH and see the current version:
@@ -69,11 +69,23 @@ docker run --read-only --tmpfs /tmp \
 docker compose up -d
 ```
 
+**Docker Compose with Caddy** (example):
+
+The included `docker-compose.prod.yml` runs iii behind a [Caddy](https://caddyserver.com/docs/) reverse proxy for TLS:
+
+```bash
+# 1. Replace your-domain.com in Caddyfile with your actual domain
+# 2. Start the stack
+docker compose -f docker-compose.prod.yml up -d
+```
+
+See the [Caddy documentation](https://caddyserver.com/docs/) for TLS and reverse proxy configuration.
+
 | Port | Service |
 |------|---------|
 | 49134 | WebSocket (worker connections) |
 | 3111 | REST API |
-| 3112 | Streams API |
+| 3112 | Stream API |
 | 9464 | Prometheus metrics |
 
 Run the engine:
@@ -94,8 +106,9 @@ modules:
     config:
       host: 127.0.0.1
       port: 3111
-  - class: modules::observability::LoggingModule
+  - class: modules::observability::OtelModule
     config:
+      enabled: false
       level: info
       format: default
 ```
@@ -164,13 +177,13 @@ Available core modules (registered in `src/modules/config.rs`):
 - `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
 - `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `emit` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
-- `modules::streams::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
-  `streams.set/get/delete/getGroup` functions (Redis-backed by default).
-- `modules::observability::LoggingModule` – `logger.info/warn/error` functions.
+- `modules::stream::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
+  `stream.set/get/delete/list` functions (Redis-backed by default).
+- `modules::observability::OtelModule` – Observability: `log.info/warn/error/debug`, traces, metrics, and alerts.
 - `modules::shell::ExecModule` – File watcher that runs commands (only when configured).
 
 If `config.yaml` is missing, the engine loads the default module list:
-RestApi, Queue, Logging, Cron, Streams. Queue/Streams expect Redis; Cron uses built-in KV by default.
+RestApi, Queue, Logging, Cron, Stream. Queue/Stream expect Redis; Cron uses built-in KV by default.
 
 ## Protocol Summary
 
@@ -186,9 +199,9 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 - `src/main.rs` – CLI entrypoint (`iii` binary).
 - `src/engine/` – Worker management, routing, and invocation lifecycle.
 - `src/protocol.rs` – WebSocket message schema.
-- `src/modules/` – Core modules (API, event, cron, streams, logging, shell).
+- `src/modules/` – Core modules (API, event, cron, stream, logging, shell).
 - `config.yaml` – Example module configuration.
-- `packages/node/*`, `packages/python/*`, and `packages/rust/*` – SDKs and higher-level frameworks.
+- `packages/node/*` and `packages/rust/*` – SDKs and higher-level frameworks.
 - `examples/custom_queue_adapter.rs` – Example of a custom module + adapter.
 
 ## Development
