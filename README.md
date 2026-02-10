@@ -69,18 +69,18 @@ docker run --read-only --tmpfs /tmp \
 docker compose up -d
 ```
 
-**Recommended: Production with Caddy TLS** (automatic HTTPS):
+**Docker Compose with Caddy** (example):
 
-For production deployments, we recommend using the included `docker-compose.prod.yml` which adds a Caddy reverse proxy for automatic TLS, password-protected Redis, and resource limits:
+The included `docker-compose.prod.yml` adds a [Caddy](https://caddyserver.com/docs/) reverse proxy for TLS, password-protected Redis, and resource limits:
 
 ```bash
 # 1. Create .env with your secrets (REDIS_PASSWORD, RABBITMQ_PASS, etc.)
 # 2. Replace your-domain.com in Caddyfile with your actual domain
-# 3. Start the production stack
+# 3. Start the stack
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-See the [Production Deployment Guide](https://iii-docs.vercel.app/advanced/deployment) for the full recommended setup including TLS, security hardening, and monitoring.
+See the [Caddy documentation](https://caddyserver.com/docs/) for TLS and reverse proxy configuration.
 
 | Port | Service |
 |------|---------|
