@@ -229,7 +229,7 @@ impl QueueAdapter for BridgeAdapter {
 
     async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
         Err(anyhow::anyhow!(
-            "Bridge event adapter does not support DLQ operations"
+            "Bridge queue adapter does not support DLQ operations"
         ))
     }
 }
