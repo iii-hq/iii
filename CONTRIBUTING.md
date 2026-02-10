@@ -39,7 +39,7 @@ We are committed to providing a welcoming and inclusive experience for everyone.
    ```
 3. Add upstream remote:
    ```bash
-   git remote add upstream https://github.com/MotiaDev/iii-engine.git
+   git remote add upstream https://github.com/iii-hq/iii.git
    ```
 
 ## Development Setup
@@ -313,7 +313,7 @@ Include:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/MotiaDev/iii-engine/discussions)
+- Open a [GitHub Discussion](https://github.com/iii-hq/iii/discussions)
 - Reach out at support@motia.dev
 
 Thank you for contributing to iii Engine!
