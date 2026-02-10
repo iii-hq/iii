@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${REPO:-MotiaDev/iii-engine}"
+REPO="${REPO:-iii-hq/iii}"
 BIN_NAME="${BIN_NAME:-iii}"
 VERSION="${VERSION:-${1:-}}"
 

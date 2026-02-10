@@ -1,0 +1,10 @@
+headerPath = "header.txt"
+
+includes = [
+  "src/**/*.rs",
+  "function-macros/src/**/*.rs",
+]
+
+excludes = [
+  "target/**",
+]
