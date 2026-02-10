@@ -6,7 +6,7 @@
 
 use crate::modules::{
     registry::{AdapterFuture, AdapterRegistration},
-    streams::adapters::StreamAdapter,
+    stream::adapters::StreamAdapter,
 };
 
 pub type StreamAdapterFuture = AdapterFuture<dyn StreamAdapter>;

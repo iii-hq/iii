@@ -16,7 +16,7 @@ use crate::{
     builtins::pubsub_lite::Subscriber,
     engine::{Engine, EngineTrait},
     function::FunctionResult,
-    modules::streams::{
+    modules::stream::{
         StreamCoreModule, StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage,
         Subscription,
         adapters::StreamConnection,

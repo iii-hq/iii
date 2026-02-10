@@ -9,7 +9,7 @@ mod config;
 mod connection;
 mod socket;
 #[allow(clippy::module_inception)]
-mod streams;
+mod stream;
 mod trigger;
 mod utils;
 
@@ -18,7 +18,7 @@ mod structs;
 
 pub use self::{
     socket::StreamSocketManager,
-    streams::StreamCoreModule,
+    stream::StreamCoreModule,
     structs::{
         StreamIncomingMessage, StreamMetadata, StreamOutboundMessage, StreamWrapperMessage,
         Subscription,

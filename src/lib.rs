@@ -29,7 +29,7 @@ pub mod modules {
     pub mod rest_api;
     pub mod shell;
     pub mod state;
-    pub mod streams;
+    pub mod stream;
     pub mod worker;
 }
 
