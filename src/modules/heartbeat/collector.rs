@@ -31,6 +31,52 @@ pub struct SystemInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudSystemInfo {
+    pub os: String,
+    pub arch: String,
+    pub hostname_hash: String,
+}
+
+impl HeartbeatEntry {
+    pub fn to_cloud_safe(&self) -> CloudSafeHeartbeatEntry {
+        CloudSafeHeartbeatEntry {
+            instance_id: self.instance_id.clone(),
+            timestamp: self.timestamp.clone(),
+            engine_version: self.engine_version.clone(),
+            uptime_seconds: self.uptime_seconds,
+            system: CloudSystemInfo {
+                os: self.system.os.clone(),
+                arch: self.system.arch.clone(),
+                hostname_hash: hash_hostname(&self.system.hostname),
+            },
+            registration: self.registration.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudSafeHeartbeatEntry {
+    pub instance_id: String,
+    pub timestamp: String,
+    pub engine_version: String,
+    pub uptime_seconds: u64,
+    pub system: CloudSystemInfo,
+    pub registration: RegistrationInfo,
+    pub runtime: RuntimeInfo,
+}
+
+fn hash_hostname(hostname: &str) -> String {
+    use sha2::{Sha256, Digest};
+    const SALT: &[u8] = b"iii-heartbeat-v1";
+    let mut hasher = Sha256::new();
+    hasher.update(SALT);
+    hasher.update(hostname.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(&result[..16])
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrationInfo {
     pub triggers: TriggerInfo,
     pub workers: Vec<WorkerInfo>,

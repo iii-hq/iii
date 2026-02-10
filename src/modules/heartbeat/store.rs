@@ -34,7 +34,7 @@ impl HeartbeatStore {
 
     pub async fn history(&self, limit: Option<usize>) -> Vec<HeartbeatEntry> {
         let entries = self.entries.read().await;
-        let limit = limit.unwrap_or(entries.len());
+        let limit = limit.unwrap_or(100).min(entries.len());
         entries.iter().rev().take(limit).cloned().collect()
     }
 

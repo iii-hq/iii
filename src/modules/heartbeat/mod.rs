@@ -6,6 +6,7 @@
 
 mod collector;
 mod config;
+pub mod lifecycle;
 mod store;
 mod telemetry;
 
@@ -16,6 +17,7 @@ use colored::Colorize;
 use function_macros::{function, service};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::Mutex;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -26,6 +28,7 @@ use crate::{
 
 use self::collector::Collector;
 use self::config::HeartbeatConfig;
+use self::lifecycle::{EventKind, get_lifecycle_tracker};
 use self::store::HeartbeatStore;
 
 #[derive(Serialize, Deserialize, Default)]
@@ -36,12 +39,23 @@ pub struct HeartbeatHistoryInput {
     pub limit: Option<usize>,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+pub struct HeartbeatEventsInput {}
+
+#[derive(Serialize, Deserialize)]
+pub struct HeartbeatReportEventInput {
+    pub kind: String,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
 #[derive(Clone)]
 pub struct HeartbeatModule {
     config: HeartbeatConfig,
     _engine: Arc<Engine>,
     collector: Arc<Collector>,
     store: Arc<HeartbeatStore>,
+    bg_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 #[service(name = "heartbeat")]
@@ -59,7 +73,7 @@ impl HeartbeatModule {
             Ok(val) => FunctionResult::Success(Some(val)),
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to serialize heartbeat: {}", e),
-                code: String::new(),
+                code: "heartbeat.serialize_error".to_string(),
             }),
         }
     }
@@ -80,9 +94,55 @@ impl HeartbeatModule {
             }))),
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to serialize history: {}", e),
-                code: String::new(),
+                code: "heartbeat.serialize_error".to_string(),
             }),
         }
+    }
+
+    #[function(
+        id = "engine.heartbeat.events",
+        description = "Get lifecycle events tracked by the engine"
+    )]
+    pub async fn events(
+        &self,
+        _input: HeartbeatEventsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let tracker = get_lifecycle_tracker();
+        let events = tracker.all_events();
+        match serde_json::to_value(&events) {
+            Ok(val) => FunctionResult::Success(Some(serde_json::json!({
+                "count": events.len(),
+                "events": val,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to serialize lifecycle events: {}", e),
+                code: "heartbeat.serialize_error".to_string(),
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine.heartbeat.report_event",
+        description = "Report a lifecycle event from an SDK (install, init, etc.)"
+    )]
+    pub async fn report_event(
+        &self,
+        input: HeartbeatReportEventInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let tracker = get_lifecycle_tracker();
+        let kind = match input.kind.as_str() {
+            "install_failed" => EventKind::InstallFailed,
+            "install_success" => EventKind::InstallSuccess,
+            "project_created" => EventKind::ProjectCreated,
+            other => {
+                return FunctionResult::Failure(ErrorBody {
+                    message: format!("Unknown event kind: {}", other),
+                    code: "heartbeat.invalid_event_kind".to_string(),
+                });
+            }
+        };
+        tracker.record_sdk_event(kind, input.metadata);
+        FunctionResult::Success(Some(serde_json::json!({"status": "recorded"})))
     }
 }
 
@@ -98,13 +158,16 @@ impl Module for HeartbeatModule {
             None => HeartbeatConfig::default(),
         };
 
-        let instance_id = hb_config.get_instance_id();
+        let instance_id = hb_config.get_or_create_instance_id();
         let store = Arc::new(HeartbeatStore::new(hb_config.max_history_size()));
         let collector = Arc::new(Collector::new(
             engine.clone(),
             instance_id.clone(),
             Vec::new(),
         ));
+
+        let tracker = get_lifecycle_tracker();
+        tracker.set_instance_id(instance_id.clone());
 
         tracing::info!(
             "{} HeartbeatModule created (instance_id={}, interval={}s)",
@@ -118,6 +181,7 @@ impl Module for HeartbeatModule {
             _engine: engine,
             collector,
             store,
+            bg_handle: Arc::new(Mutex::new(None)),
         }))
     }
 
@@ -127,7 +191,7 @@ impl Module for HeartbeatModule {
 
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!(
-            "{} Heartbeat module initialized (functions: engine.heartbeat.{{status,history}})",
+            "{} Heartbeat module initialized (functions: engine.heartbeat.{{status,history,events,report_event}})",
             "[READY]".green()
         );
         Ok(())
@@ -149,9 +213,15 @@ impl Module for HeartbeatModule {
         let collector = self.collector.clone();
         let store = self.store.clone();
         let cloud_endpoint = self.config.cloud_endpoint.clone();
-        let config = self.config.clone();
+        let telemetry_enabled = telemetry::check_telemetry_enabled(&self.config);
 
-        tokio::spawn(async move {
+        let http_client = if telemetry_enabled && cloud_endpoint.is_some() {
+            telemetry::build_http_client().map(Arc::new)
+        } else {
+            None
+        };
+
+        let handle = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
 
@@ -182,13 +252,20 @@ impl Module for HeartbeatModule {
                         );
 
                         if let Some(ref endpoint) = cloud_endpoint
-                            && telemetry::is_telemetry_enabled(&config)
+                            && let Some(ref client) = http_client
                         {
+                            let tracker = get_lifecycle_tracker();
+                            let lifecycle_events = tracker.take_pending();
+                            let cloud_entry = entry.to_cloud_safe();
+
                             tokio::spawn({
+                                let client = client.clone();
                                 let endpoint = endpoint.clone();
-                                let entry = entry.clone();
                                 async move {
-                                    telemetry::report_to_cloud(&endpoint, &entry).await;
+                                    let ok = telemetry::report_to_cloud(&client, &endpoint, &cloud_entry, lifecycle_events.clone()).await;
+                                    if !ok && !lifecycle_events.is_empty() {
+                                        get_lifecycle_tracker().requeue_pending(lifecycle_events);
+                                    }
                                 }
                             });
                         }
@@ -199,10 +276,17 @@ impl Module for HeartbeatModule {
             tracing::debug!("[HEARTBEAT] Heartbeat task stopped");
         });
 
+        *self.bg_handle.lock().await = Some(handle);
+
         Ok(())
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
+        if let Some(handle) = self.bg_handle.lock().await.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
         tracing::info!(
             "{} HeartbeatModule shutting down (history_entries={})",
             "[HEARTBEAT]".cyan(),

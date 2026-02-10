@@ -4,10 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use super::collector::HeartbeatEntry;
+use super::collector::CloudSafeHeartbeatEntry;
 use super::config::HeartbeatConfig;
+use super::lifecycle::LifecycleEvent;
 
-pub fn is_telemetry_enabled(config: &HeartbeatConfig) -> bool {
+pub fn check_telemetry_enabled(config: &HeartbeatConfig) -> bool {
+    if !config.is_cloud_telemetry_enabled() {
+        return false;
+    }
     if std::env::var("III_DISABLE_TELEMETRY").is_ok() {
         return false;
     }
@@ -17,7 +21,7 @@ pub fn is_telemetry_enabled(config: &HeartbeatConfig) -> bool {
     if is_ci() {
         return false;
     }
-    config.is_enabled()
+    true
 }
 
 fn is_ci() -> bool {
@@ -30,15 +34,33 @@ fn is_ci() -> bool {
         || std::env::var("BUILDKITE").is_ok()
 }
 
-pub async fn report_to_cloud(endpoint: &str, entry: &HeartbeatEntry) {
-    let client = reqwest::Client::builder()
+pub fn build_http_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
-        .build();
+        .build()
+        .ok()
+}
 
-    let client = match client {
-        Ok(c) => c,
-        Err(_) => return,
+#[derive(serde::Serialize)]
+struct CloudPayload<'a> {
+    heartbeat: &'a CloudSafeHeartbeatEntry,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    lifecycle_events: Vec<LifecycleEvent>,
+}
+
+pub async fn report_to_cloud(
+    client: &reqwest::Client,
+    endpoint: &str,
+    entry: &CloudSafeHeartbeatEntry,
+    lifecycle_events: Vec<LifecycleEvent>,
+) -> bool {
+    let payload = CloudPayload {
+        heartbeat: entry,
+        lifecycle_events,
     };
 
-    let _ = client.post(endpoint).json(entry).send().await;
+    match client.post(endpoint).json(&payload).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
 }

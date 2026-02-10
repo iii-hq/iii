@@ -12,10 +12,24 @@ pub struct HeartbeatConfig {
     pub enabled: Option<bool>,
     #[serde(default = "default_interval")]
     pub interval_seconds: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_non_empty_string"
+    )]
     pub cloud_endpoint: Option<String>,
+    #[serde(default)]
+    pub cloud_telemetry_enabled: Option<bool>,
     #[serde(default = "default_max_history")]
     pub max_history: Option<usize>,
     pub instance_id: Option<String>,
+}
+
+fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    Ok(opt.filter(|s| !s.is_empty()))
 }
 
 fn default_enabled() -> Option<bool> {
@@ -36,6 +50,7 @@ impl Default for HeartbeatConfig {
             enabled: Some(true),
             interval_seconds: Some(60),
             cloud_endpoint: None,
+            cloud_telemetry_enabled: None,
             max_history: Some(1000),
             instance_id: None,
         }
@@ -47,6 +62,10 @@ impl HeartbeatConfig {
         self.enabled.unwrap_or(true)
     }
 
+    pub fn is_cloud_telemetry_enabled(&self) -> bool {
+        self.cloud_telemetry_enabled.unwrap_or(false)
+    }
+
     pub fn interval(&self) -> u64 {
         self.interval_seconds.unwrap_or(60)
     }
@@ -55,9 +74,25 @@ impl HeartbeatConfig {
         self.max_history.unwrap_or(1000)
     }
 
-    pub fn get_instance_id(&self) -> String {
-        self.instance_id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    pub fn get_or_create_instance_id(&self) -> String {
+        if let Some(ref id) = self.instance_id {
+            return id.clone();
+        }
+
+        let path = std::path::Path::new(".iii/instance_id");
+        if let Ok(id) = std::fs::read_to_string(path) {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Err(e) = std::fs::create_dir_all(".iii") {
+            tracing::warn!("Failed to create .iii directory for instance_id persistence: {}", e);
+        } else if let Err(e) = std::fs::write(path, &id) {
+            tracing::warn!("Failed to persist instance_id to {}: {}", path.display(), e);
+        }
+        id
     }
 }
