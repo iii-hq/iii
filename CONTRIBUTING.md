@@ -263,8 +263,7 @@ iii-engine/
 ├── function-macros/       # Proc macro library (ELv2)
 ├── packages/              # Multi-language SDKs (Apache 2.0)
 │   ├── node/             # Node.js/TypeScript SDK
-│   ├── rust/             # Rust SDK
-│   └── python/           # Python SDK
+│   └── rust/             # Rust SDK
 ├── examples/              # Example implementations
 ├── .github/workflows/     # CI/CD pipelines
 ├── config.yaml           # Example configuration
@@ -282,14 +281,6 @@ cd packages/node
 pnpm install
 pnpm build
 pnpm test
-```
-
-### Python SDK
-
-```bash
-cd packages/python/iii
-uv sync
-uv run pytest
 ```
 
 ### Rust SDK
