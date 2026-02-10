@@ -17,21 +17,21 @@ Install (prebuilt binary)
 This installer currently supports macOS and Linux (not native Windows).
 You can install the latest release binary with:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
 ```
 
 To install a specific version, pass it as the first argument (the leading `v` is optional):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh -s -- v0.2.1
+curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh -s -- v0.2.1
 ```
 Or set `VERSION` explicitly:
 ```bash
-VERSION=0.2.1 curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+VERSION=0.2.1 curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
 ```
 
 By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` or `PREFIX`:
 ```bash
-BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/MotiaDev/iii-engine/main/install.sh | sh
+BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
 ```
 
 To check that the binary is on your PATH and see the current version:

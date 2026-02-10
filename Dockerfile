@@ -20,4 +20,4 @@ CMD ["--config", "/app/config.yaml"]
 
 LABEL org.opencontainers.image.title="III Engine" \
       org.opencontainers.image.vendor="iiidev" \
-      org.opencontainers.image.source="https://github.com/MotiaDev/iii-engine"
+      org.opencontainers.image.source="https://github.com/iii-hq/iii"
