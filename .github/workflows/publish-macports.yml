@@ -132,66 +132,74 @@ jobs:
 
           mkdir -p macports
 
-          cat > macports/Portfile << EOF
-# -*- coding: utf-8; mode: tcl; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- vim:fenc=utf-8:ft=tcl:et:sw=4:ts=4:sts=4
+          cat > macports/Portfile <<'PORTEOF'
+          # -*- coding: utf-8; mode: tcl; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- vim:fenc=utf-8:ft=tcl:et:sw=4:ts=4:sts=4
 
-PortSystem          1.0
-PortGroup           github 1.0
+          PortSystem          1.0
+          PortGroup           github 1.0
 
-github.setup        iii-hq iii ${VERSION_NUMBER} v
-revision            0
+          github.setup        iii-hq iii VERSION_PLACEHOLDER v
+          revision            0
 
-categories          devel net
-license             MIT
-maintainers         {@motia motia.dev:support} openmaintainer
+          categories          devel net
+          license             MIT
+          maintainers         {@motia motia.dev:support} openmaintainer
 
-description         WebSocket-based process communication engine
-long_description    III Engine is a WebSocket-based process communication engine. \\
-                    Workers connect over WebSocket, register functions and triggers, \\
-                    and the engine routes invocations between workers and core modules.
+          description         WebSocket-based process communication engine
+          long_description    III Engine is a WebSocket-based process communication engine. \\
+                              Workers connect over WebSocket, register functions and triggers, \\
+                              and the engine routes invocations between workers and core modules.
 
-homepage            https://github.com/iii-hq/iii
+          homepage            https://github.com/iii-hq/iii
 
-supported_archs     x86_64 arm64
+          supported_archs     x86_64 arm64
 
-platform darwin x86_64 {
-    distfiles       iii-x86_64-apple-darwin.tar.gz:main
-    checksums       iii-x86_64-apple-darwin.tar.gz \\
-                    rmd160  ${X86_RMD160} \\
-                    sha256  ${X86_SHA256} \\
-                    size    ${X86_SIZE}
-}
+          platform darwin x86_64 {
+              distfiles       iii-x86_64-apple-darwin.tar.gz:main
+              checksums       iii-x86_64-apple-darwin.tar.gz \\
+                              rmd160  X86_RMD160_PLACEHOLDER \\
+                              sha256  X86_SHA256_PLACEHOLDER \\
+                              size    X86_SIZE_PLACEHOLDER
+          }
 
-platform darwin arm64 {
-    distfiles       iii-aarch64-apple-darwin.tar.gz:main
-    checksums       iii-aarch64-apple-darwin.tar.gz \\
-                    rmd160  ${ARM_RMD160} \\
-                    sha256  ${ARM_SHA256} \\
-                    size    ${ARM_SIZE}
-}
+          platform darwin arm64 {
+              distfiles       iii-aarch64-apple-darwin.tar.gz:main
+              checksums       iii-aarch64-apple-darwin.tar.gz \\
+                              rmd160  ARM_RMD160_PLACEHOLDER \\
+                              sha256  ARM_SHA256_PLACEHOLDER \\
+                              size    ARM_SIZE_PLACEHOLDER
+          }
 
-master_sites        https://github.com/iii-hq/iii/releases/download/v${VERSION_NUMBER}/:main
+          master_sites        https://github.com/iii-hq/iii/releases/download/vVERSION_PLACEHOLDER/:main
 
-use_configure       no
-build               {}
+          use_configure       no
+          build               {}
 
-destroot {
-    # Find and install the binary
-    set iii_binary [glob -directory \${worksrcpath} -type f iii]
-    xinstall -m 755 \${iii_binary} \${destroot}\${prefix}/bin/
-}
+          destroot {
+              set iii_binary [glob -directory DOLLARSIGN{worksrcpath} -type f iii]
+              xinstall -m 755 DOLLARSIGN{iii_binary} DOLLARSIGN{destroot}DOLLARSIGN{prefix}/bin/
+          }
 
-test.run            yes
-test.cmd            \${destroot}\${prefix}/bin/iii
-test.target
-test.args           --version
+          test.run            yes
+          test.cmd            DOLLARSIGN{destroot}DOLLARSIGN{prefix}/bin/iii
+          test.target
+          test.args           --version
 
-notes "
-III Engine has been installed. Run 'iii --version' to verify installation.
+          notes "III Engine has been installed. Run 'iii --version' to verify installation. For more information, see: https://github.com/iii-hq/iii"
+          PORTEOF
 
-For more information, see: https://github.com/iii-hq/iii
-"
-EOF
+          # Replace all placeholders
+          sed -i.bak \
+            -e "s/VERSION_PLACEHOLDER/${VERSION_NUMBER}/g" \
+            -e "s/X86_RMD160_PLACEHOLDER/${X86_RMD160}/g" \
+            -e "s/X86_SHA256_PLACEHOLDER/${X86_SHA256}/g" \
+            -e "s/X86_SIZE_PLACEHOLDER/${X86_SIZE}/g" \
+            -e "s/ARM_RMD160_PLACEHOLDER/${ARM_RMD160}/g" \
+            -e "s/ARM_SHA256_PLACEHOLDER/${ARM_SHA256}/g" \
+            -e "s/ARM_SIZE_PLACEHOLDER/${ARM_SIZE}/g" \
+            -e 's/DOLLARSIGN/$/g' \
+            macports/Portfile
+          rm macports/Portfile.bak
 
           echo "Portfile created:"
           cat macports/Portfile

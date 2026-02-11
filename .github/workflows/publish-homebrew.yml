@@ -99,32 +99,32 @@ jobs:
 
           cd homebrew-tap
 
-          cat > ${{ env.FORMULA_PATH }} << EOF
-class Iii < Formula
-  desc "WebSocket-based process communication engine"
-  homepage "https://github.com/iii-hq/iii"
-  version "${VERSION_NUMBER}"
+          cat > ${{ env.FORMULA_PATH }} <<BREWEOF
+          class Iii < Formula
+            desc "WebSocket-based process communication engine"
+            homepage "https://github.com/iii-hq/iii"
+            version "${VERSION_NUMBER}"
 
-  on_macos do
-    if Hardware::CPU.arm?
-      url "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-apple-darwin.tar.gz"
-      sha256 "${ARM_SHA}"
-    else
-      url "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-apple-darwin.tar.gz"
-      sha256 "${X86_SHA}"
-    end
-  end
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM_SHA}"
+              else
+                url "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-apple-darwin.tar.gz"
+                sha256 "${X86_SHA}"
+              end
+            end
 
-  def install
-    bin.install "iii"
-  end
+            def install
+              bin.install "iii"
+            end
 
-  test do
-    system "#{bin}/iii", "--version"
-    assert_match "${VERSION_NUMBER}", shell_output("#{bin}/iii --version")
-  end
-end
-EOF
+            test do
+              system "#{bin}/iii", "--version"
+              assert_match "${VERSION_NUMBER}", shell_output("#{bin}/iii --version")
+            end
+          end
+          BREWEOF
 
           echo "Formula updated:"
           cat ${{ env.FORMULA_PATH }}
@@ -155,14 +155,13 @@ EOF
 
           git add ${{ env.FORMULA_PATH }}
           git commit -m "chore: update iii to ${{ github.event.inputs.version }}
+            Automated update from release workflow.
 
-Automated update from release workflow.
-
-Changes:
-- Version: ${{ github.event.inputs.version }}
-- x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
-- aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
-"
+            Changes:
+            - Version: ${{ github.event.inputs.version }}
+            - x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
+            - aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
+          "
 
           git push origin main
 
