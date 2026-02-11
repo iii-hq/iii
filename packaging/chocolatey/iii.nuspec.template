@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>iii</id>
+    <version>{{VERSION}}</version>
+    <packageSourceUrl>https://github.com/iii-hq/iii</packageSourceUrl>
+    <owners>iii-hq</owners>
+    <title>III Engine</title>
+    <authors>Motia LLC</authors>
+    <projectUrl>https://github.com/iii-hq/iii</projectUrl>
+    <copyright>2024 Motia LLC</copyright>
+    <licenseUrl>https://github.com/iii-hq/iii/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/iii-hq/iii</projectSourceUrl>
+    <docsUrl>https://github.com/iii-hq/iii/blob/main/README.md</docsUrl>
+    <bugTrackerUrl>https://github.com/iii-hq/iii/issues</bugTrackerUrl>
+    <tags>iii engine websocket process communication rust</tags>
+    <summary>WebSocket-based process communication engine</summary>
+    <description>
+III is a WebSocket-based process communication engine. Workers connect over WS, register
+functions and triggers, and the engine routes invocations between workers and core modules.
+Core modules add HTTP APIs, event stream, cron scheduling, and logging.
+
+## Features
+- WebSocket-based worker connections
+- HTTP API trigger support
+- Event streaming
+- Cron scheduling
+- Redis-backed queue and state
+- OpenTelemetry observability
+
+## Installation
+After installing with Chocolatey, run `iii --version` to verify installation.
+
+See the GitHub repository for full documentation and examples.
+    </description>
+    <releaseNotes>https://github.com/iii-hq/iii/releases/tag/v{{VERSION}}</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
