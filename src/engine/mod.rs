@@ -266,7 +266,7 @@ impl Engine {
             Message::UnregisterTrigger { id, trigger_type } => {
                 tracing::debug!(
                     trigger_id = %id,
-                    trigger_type = %trigger_type,
+                    trigger_type = %trigger_type.as_deref().unwrap_or("<missing>"),
                     "UnregisterTrigger"
                 );
 

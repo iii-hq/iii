@@ -30,7 +30,8 @@ pub enum Message {
     },
     UnregisterTrigger {
         id: String,
-        trigger_type: String,
+        #[serde(default)]
+        trigger_type: Option<String>,
     },
     RegisterFunction {
         id: String,
@@ -129,4 +130,37 @@ pub struct WorkerMetrics {
 pub struct ErrorBody {
     pub code: String,
     pub message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Message;
+
+    #[test]
+    fn deserialize_unregister_trigger_without_type() {
+        let raw = r#"{"type":"unregistertrigger","id":"abc"}"#;
+        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
+
+        match message {
+            Message::UnregisterTrigger { id, trigger_type } => {
+                assert_eq!(id, "abc");
+                assert_eq!(trigger_type, None);
+            }
+            _ => panic!("unexpected message variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_unregister_trigger_with_type() {
+        let raw = r#"{"type":"unregistertrigger","id":"abc","trigger_type":"api"}"#;
+        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
+
+        match message {
+            Message::UnregisterTrigger { id, trigger_type } => {
+                assert_eq!(id, "abc");
+                assert_eq!(trigger_type.as_deref(), Some("api"));
+            }
+            _ => panic!("unexpected message variant"),
+        }
+    }
 }

@@ -178,12 +178,12 @@ impl TriggerRegistry {
     pub async fn unregister_trigger(
         &self,
         id: String,
-        trigger_type: String,
+        trigger_type: Option<String>,
     ) -> Result<(), anyhow::Error> {
         tracing::info!(
             "Unregistering trigger: {} of type: {}",
             id.purple(),
-            trigger_type.purple()
+            trigger_type.as_deref().unwrap_or("<missing>").purple()
         );
 
         let Some(trigger_entry) = self.triggers.get(&id) else {
@@ -192,7 +192,18 @@ impl TriggerRegistry {
         let trigger = trigger_entry.value().clone();
         drop(trigger_entry);
 
-        if let Some(tt) = self.trigger_types.get(&trigger_type) {
+        if let Some(requested_trigger_type) = trigger_type.as_deref()
+            && requested_trigger_type != trigger.trigger_type
+        {
+            tracing::warn!(
+                requested_trigger_type = %requested_trigger_type,
+                actual_trigger_type = %trigger.trigger_type,
+                trigger_id = %trigger.id,
+                "Unregister trigger_type does not match trigger registry entry; using registry value"
+            );
+        }
+
+        if let Some(tt) = self.trigger_types.get(&trigger.trigger_type) {
             let result: Result<(), anyhow::Error> =
                 tt.registrator.unregister_trigger(trigger.clone()).await;
 
