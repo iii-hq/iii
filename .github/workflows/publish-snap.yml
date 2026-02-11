@@ -1,0 +1,281 @@
+name: Publish to Snap
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_NAME: iii
+  SNAP_NAME: iii
+
+jobs:
+  publish-snap:
+    name: Build and Publish Snap Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux binaries
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "Downloading Linux binaries..."
+          curl -L --fail -o iii-amd64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
+
+          curl -L --fail -o iii-arm64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+
+          # Verify downloads
+          for file in iii-amd64.tar.gz iii-arm64.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+
+          echo "Downloads verified:"
+          ls -lh iii-*.tar.gz
+
+      - name: Download and verify checksums
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "Downloading checksums..."
+          curl -L --fail -o checksums.txt \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/checksums.txt"
+
+          echo "Verifying checksums..."
+
+          # Extract checksums for our architectures
+          AMD64_SUM=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+          ARM64_SUM=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+
+          # Verify amd64
+          echo "$AMD64_SUM  iii-amd64.tar.gz" | sha256sum -c - || exit 1
+
+          # Verify arm64
+          echo "$ARM64_SUM  iii-arm64.tar.gz" | sha256sum -c - || exit 1
+
+          echo "✓ All checksums verified"
+
+      - name: Extract binaries
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "Extracting binaries..."
+          mkdir -p snap-amd64/bin snap-arm64/bin
+
+          tar -xzf iii-amd64.tar.gz -C snap-amd64/bin
+          tar -xzf iii-arm64.tar.gz -C snap-arm64/bin
+
+          # Find and move binaries to expected location
+          find snap-amd64/bin -name "iii" -type f -exec mv {} snap-amd64/bin/iii \;
+          find snap-arm64/bin -name "iii" -type f -exec mv {} snap-arm64/bin/iii \;
+
+          chmod +x snap-amd64/bin/iii snap-arm64/bin/iii
+
+          echo "Binaries extracted and ready"
+          ls -lh snap-*/bin/
+
+      - name: Install Snapcraft
+        run: |
+          sudo snap install snapcraft --classic
+
+      - name: Create snapcraft.yaml
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          mkdir -p snap
+
+          cat > snap/snapcraft.yaml << 'EOF'
+name: iii
+base: core22
+version: '{{ VERSION }}'
+summary: WebSocket-based process communication engine
+description: |
+  III Engine is a WebSocket-based process communication engine. Workers connect
+  over WebSocket, register functions and triggers, and the engine routes
+  invocations between workers and core modules.
+
+  Core modules add HTTP APIs, event streams, cron scheduling, and logging.
+
+grade: stable
+confinement: strict
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+apps:
+  iii:
+    command: bin/iii
+    plugs:
+      - network
+      - network-bind
+      - home
+
+parts:
+  iii:
+    plugin: dump
+    source: .
+    stage:
+      - bin/iii
+    override-build: |
+      # Copy pre-built binary
+      if [ "$CRAFT_ARCH_BUILD_FOR" = "amd64" ]; then
+        cp snap-amd64/bin/iii $CRAFT_PART_INSTALL/bin/iii
+      elif [ "$CRAFT_ARCH_BUILD_FOR" = "arm64" ]; then
+        cp snap-arm64/bin/iii $CRAFT_PART_INSTALL/bin/iii
+      fi
+      chmod +x $CRAFT_PART_INSTALL/bin/iii
+EOF
+
+          # Replace version placeholder
+          sed -i "s/{{ VERSION }}/${VERSION_NUMBER}/g" snap/snapcraft.yaml
+
+          echo "snapcraft.yaml created:"
+          cat snap/snapcraft.yaml
+
+      - name: Build Snap package
+        run: |
+          set -e
+
+          echo "Building Snap package..."
+          snapcraft --use-lxd
+
+          # Find built snap
+          SNAP_FILE=$(find . -name "iii_*.snap" -type f)
+
+          if [ -z "$SNAP_FILE" ]; then
+            echo "Error: Snap package not found"
+            exit 1
+          fi
+
+          echo "Snap package built: $SNAP_FILE"
+          ls -lh *.snap
+
+      - name: Test Snap installation
+        run: |
+          set -e
+          SNAP_FILE=$(find . -name "iii_*.snap" -type f)
+
+          echo "Installing Snap package (dangerous mode for testing)..."
+          sudo snap install --dangerous "$SNAP_FILE"
+
+          echo "Testing binary..."
+          iii --version
+
+          echo "Snap info:"
+          snap info iii
+
+          echo "Uninstalling..."
+          sudo snap remove iii
+
+          echo "✓ Snap installation test passed"
+
+      - name: Login to Snap Store
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          echo "${{ secrets.SNAPCRAFT_TOKEN }}" | snapcraft login --with -
+
+      - name: Push to Snap Store
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          set -e
+          SNAP_FILE=$(find . -name "iii_*.snap" -type f)
+
+          echo "Uploading to Snap Store..."
+          snapcraft upload "$SNAP_FILE" --release stable,candidate,beta,edge
+
+          echo "✓ Snap package published to Snap Store"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "🏃 DRY RUN MODE - No package pushed to Snap Store"
+          echo ""
+          echo "Package validated successfully:"
+          echo "- Version: $VERSION"
+          echo "- Architectures: amd64, arm64"
+          echo "- Checksums verified"
+          echo "- Snap builds correctly"
+          echo "- Installation test passed"
+          echo ""
+          echo "Set dry_run=false to publish for real."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ Snap package published",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Snap Package Published* 📦\n\nVersion: `${{ github.event.inputs.version }}`\n\nArchitectures: amd64, arm64\n\nUsers can now install with:\n```sudo snap install iii```"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ Snap publish failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Snap Publish Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }

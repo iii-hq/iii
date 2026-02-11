@@ -1,0 +1,333 @@
+name: Publish to MacPorts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_NAME: iii
+  PORT_NAME: iii
+
+jobs:
+  publish-macports:
+    name: Build and Publish MacPorts Package
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS binaries
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "Downloading macOS binaries..."
+          curl -L --fail -o iii-x86_64-darwin.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-apple-darwin.tar.gz"
+
+          curl -L --fail -o iii-aarch64-darwin.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-apple-darwin.tar.gz"
+
+          # Verify downloads
+          for file in iii-x86_64-darwin.tar.gz iii-aarch64-darwin.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+
+          echo "Downloads verified:"
+          ls -lh iii-*-darwin.tar.gz
+
+      - name: Download and verify checksums
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "Downloading checksums..."
+          curl -L --fail -o checksums.txt \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/checksums.txt"
+
+          echo "Verifying checksums..."
+
+          # Extract and verify checksums
+          X86_SUM=$(grep "iii-x86_64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SUM=$(grep "iii-aarch64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+
+          echo "$X86_SUM  iii-x86_64-darwin.tar.gz" | shasum -a 256 -c - || exit 1
+          echo "$ARM_SUM  iii-aarch64-darwin.tar.gz" | shasum -a 256 -c - || exit 1
+
+          echo "✓ All checksums verified"
+
+      - name: Install MacPorts
+        run: |
+          set -e
+
+          echo "Installing MacPorts..."
+
+          # Download MacPorts installer
+          MACOS_VERSION=$(sw_vers -productVersion | cut -d. -f1)
+
+          if [ "$MACOS_VERSION" -ge 13 ]; then
+            MACPORTS_PKG="https://github.com/macports/macports-base/releases/download/v2.9.3/MacPorts-2.9.3-13-Ventura.pkg"
+          elif [ "$MACOS_VERSION" -eq 12 ]; then
+            MACPORTS_PKG="https://github.com/macports/macports-base/releases/download/v2.9.3/MacPorts-2.9.3-12-Monterey.pkg"
+          else
+            MACPORTS_PKG="https://github.com/macports/macports-base/releases/download/v2.9.3/MacPorts-2.9.3-11-BigSur.pkg"
+          fi
+
+          curl -L -o MacPorts.pkg "$MACPORTS_PKG"
+          sudo installer -pkg MacPorts.pkg -target /
+
+          # Add MacPorts to PATH
+          export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
+
+          # Verify installation
+          port version
+
+      - name: Create Portfile
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Get checksums
+          X86_SHA256=$(grep "iii-x86_64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SHA256=$(grep "iii-aarch64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+
+          # Get RMD160 checksums (MacPorts requires both SHA256 and RMD160)
+          X86_RMD160=$(openssl dgst -rmd160 iii-x86_64-darwin.tar.gz | awk '{print $2}')
+          ARM_RMD160=$(openssl dgst -rmd160 iii-aarch64-darwin.tar.gz | awk '{print $2}')
+
+          # Get file sizes
+          X86_SIZE=$(stat -f%z iii-x86_64-darwin.tar.gz)
+          ARM_SIZE=$(stat -f%z iii-aarch64-darwin.tar.gz)
+
+          mkdir -p macports
+
+          cat > macports/Portfile << EOF
+# -*- coding: utf-8; mode: tcl; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- vim:fenc=utf-8:ft=tcl:et:sw=4:ts=4:sts=4
+
+PortSystem          1.0
+PortGroup           github 1.0
+
+github.setup        iii-hq iii ${VERSION_NUMBER} v
+revision            0
+
+categories          devel net
+license             MIT
+maintainers         {@motia motia.dev:support} openmaintainer
+
+description         WebSocket-based process communication engine
+long_description    III Engine is a WebSocket-based process communication engine. \\
+                    Workers connect over WebSocket, register functions and triggers, \\
+                    and the engine routes invocations between workers and core modules.
+
+homepage            https://github.com/iii-hq/iii
+
+supported_archs     x86_64 arm64
+
+platform darwin x86_64 {
+    distfiles       iii-x86_64-apple-darwin.tar.gz:main
+    checksums       iii-x86_64-apple-darwin.tar.gz \\
+                    rmd160  ${X86_RMD160} \\
+                    sha256  ${X86_SHA256} \\
+                    size    ${X86_SIZE}
+}
+
+platform darwin arm64 {
+    distfiles       iii-aarch64-apple-darwin.tar.gz:main
+    checksums       iii-aarch64-apple-darwin.tar.gz \\
+                    rmd160  ${ARM_RMD160} \\
+                    sha256  ${ARM_SHA256} \\
+                    size    ${ARM_SIZE}
+}
+
+master_sites        https://github.com/iii-hq/iii/releases/download/v${VERSION_NUMBER}/:main
+
+use_configure       no
+build               {}
+
+destroot {
+    # Find and install the binary
+    set iii_binary [glob -directory \${worksrcpath} -type f iii]
+    xinstall -m 755 \${iii_binary} \${destroot}\${prefix}/bin/
+}
+
+test.run            yes
+test.cmd            \${destroot}\${prefix}/bin/iii
+test.target
+test.args           --version
+
+notes "
+III Engine has been installed. Run 'iii --version' to verify installation.
+
+For more information, see: https://github.com/iii-hq/iii
+"
+EOF
+
+          echo "Portfile created:"
+          cat macports/Portfile
+
+      - name: Test Portfile
+        run: |
+          set -e
+          export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
+
+          echo "Testing Portfile..."
+          cd macports
+
+          # Lint the Portfile
+          port lint --nitpick Portfile
+
+          echo "✓ Portfile validation passed"
+
+      - name: Build and test locally
+        run: |
+          set -e
+          export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
+
+          echo "Building port locally..."
+          cd macports
+
+          # Create a local portfile repository
+          mkdir -p ~/local-ports/devel/iii
+          cp Portfile ~/local-ports/devel/iii/
+
+          # Add local repository
+          sudo sh -c "echo 'file://$(echo ~/local-ports)' >> /opt/local/etc/macports/sources.conf"
+
+          # Update portindex
+          cd ~/local-ports
+          portindex
+
+          # Install
+          sudo port install iii
+
+          # Test
+          iii --version
+
+          # Uninstall
+          sudo port uninstall iii
+
+          echo "✓ Local build and installation test passed"
+
+      - name: Prepare MacPorts submission
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "MacPorts submission process:"
+          echo ""
+          echo "1. Fork https://github.com/macports/macports-ports"
+          echo "2. Create branch for new port:"
+          echo "   git checkout -b iii-${VERSION}"
+          echo ""
+          echo "3. Add Portfile:"
+          echo "   mkdir -p devel/iii"
+          echo "   cp macports/Portfile devel/iii/"
+          echo ""
+          echo "4. Commit changes:"
+          echo "   git add devel/iii/Portfile"
+          echo "   git commit -m 'iii: new port, version ${VERSION}'"
+          echo ""
+          echo "5. Push and create PR:"
+          echo "   git push origin iii-${VERSION}"
+          echo "   # Create PR at https://github.com/macports/macports-ports"
+          echo ""
+          echo "6. Wait for MacPorts maintainer review"
+          echo ""
+          echo "Portfile ready at: macports/Portfile"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "🏃 DRY RUN MODE - No submission to MacPorts"
+          echo ""
+          echo "Package validated successfully:"
+          echo "- Version: $VERSION"
+          echo "- Architectures: x86_64 (Intel), arm64 (Apple Silicon)"
+          echo "- Checksums verified"
+          echo "- Portfile validated (port lint)"
+          echo "- Local installation test passed"
+          echo ""
+          echo "Portfile ready at: macports/Portfile"
+          echo ""
+          echo "To submit to MacPorts:"
+          echo "1. Fork macports/macports-ports repository"
+          echo "2. Add Portfile to devel/iii/"
+          echo "3. Submit pull request"
+          echo "4. Wait for maintainer review"
+          echo ""
+          echo "Set dry_run=false to see full submission instructions."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ MacPorts Portfile ready",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*MacPorts Portfile Ready* 📦\n\nVersion: `${{ github.event.inputs.version }}`\n\nArchitectures: x86_64, arm64\n\nNext: Submit to MacPorts repository via PR"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ MacPorts Portfile build failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*MacPorts Portfile Build Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }
