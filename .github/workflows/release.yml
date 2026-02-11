@@ -318,6 +318,54 @@ jobs:
               }
             });
 
+      - name: Trigger apt/deb workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-apt.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger RPM (RHEL) workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-rpm-rhel.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger RPM (Fedora) workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-rpm-fedora.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
       - name: Update Slack - Package Managers Triggered
         if: always()
         uses: slackapi/slack-github-action@v2.0.0
@@ -336,5 +384,5 @@ jobs:
               - type: "context"
                 elements:
                   - type: "mrkdwn"
-                    text: "Homebrew, Chocolatey, AUR | <${{ github.server_url }}/${{ github.repository }}/actions|View Workflows>"
+                    text: "Homebrew, Chocolatey, AUR, apt/deb, RPM (RHEL), RPM (Fedora) | <${{ github.server_url }}/${{ github.repository }}/actions|View Workflows>"
 

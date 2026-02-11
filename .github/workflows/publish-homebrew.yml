@@ -41,11 +41,20 @@ jobs:
 
           echo "Version validated: $VERSION"
 
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          permission-contents: write
+          repository: ${{ env.TAP_REPO }}
+
       - name: Checkout tap repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.TAP_REPO }}
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ steps.generate_token.outputs.token }}
           path: homebrew-tap
 
       - name: Download release assets
