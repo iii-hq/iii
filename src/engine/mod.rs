@@ -266,7 +266,7 @@ impl Engine {
             Message::UnregisterTrigger { id, trigger_type } => {
                 tracing::debug!(
                     trigger_id = %id,
-                    trigger_type = %trigger_type,
+                    trigger_type = %trigger_type.as_deref().unwrap_or("<missing>"),
                     "UnregisterTrigger"
                 );
 
@@ -440,6 +440,15 @@ impl Engine {
                         "Did not find caller for invocation"
                     );
                 }
+                Ok(())
+            }
+            Message::UnregisterFunction { id } => {
+                tracing::debug!(
+                    function_id = %id,
+                    "UnregisterFunction"
+                );
+                worker.function_ids.write().await.remove(id);
+                self.remove_function(id);
                 Ok(())
             }
             Message::RegisterFunction {
