@@ -442,6 +442,15 @@ impl Engine {
                 }
                 Ok(())
             }
+            Message::UnregisterFunction { id } => {
+                tracing::debug!(
+                    function_id = %id,
+                    "UnregisterFunction"
+                );
+                worker.function_ids.write().await.remove(id);
+                self.remove_function(id);
+                Ok(())
+            }
             Message::RegisterFunction {
                 id,
                 description,

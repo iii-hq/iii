@@ -42,6 +42,9 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
     },
+    UnregisterFunction {
+        id: String,
+    },
     InvokeFunction {
         invocation_id: Option<Uuid>,
         function_id: String,
