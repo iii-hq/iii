@@ -7,7 +7,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use iii_sdk::{Bridge, BridgeError, Trigger};
+use iii_sdk::{III, IIIError, Trigger};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -49,7 +49,7 @@ struct SubscriptionInfo {
 /// - Functions registered via bridge persist for bridge lifetime
 pub struct BridgeAdapter {
     engine: Arc<Engine>,
-    bridge: Arc<Bridge>,
+    bridge: Arc<III>,
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionInfo>>>,
 }
 
@@ -67,7 +67,7 @@ impl BridgeAdapter {
     pub async fn new(engine: Arc<Engine>, bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(Bridge::new(&bridge_url));
+        let bridge = Arc::new(III::new(&bridge_url));
         bridge
             .connect()
             .await
@@ -165,7 +165,7 @@ impl QueueAdapter for BridgeAdapter {
                                     error = ?err,
                                     "Error invoking condition function"
                                 );
-                                return Err(BridgeError::Remote {
+                                return Err(IIIError::Remote {
                                     code: err.code,
                                     message: err.message,
                                 });
@@ -176,7 +176,7 @@ impl QueueAdapter for BridgeAdapter {
                     // Invoke the actual handler
                     match engine.call(&function_id, data).await {
                         Ok(result) => Ok(result.unwrap_or(Value::Null)),
-                        Err(err) => Err(BridgeError::Remote {
+                        Err(err) => Err(IIIError::Remote {
                             code: err.code,
                             message: err.message,
                         }),

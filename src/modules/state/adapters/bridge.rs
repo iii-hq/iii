@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{Bridge, UpdateOp, UpdateResult, types::SetResult};
+use iii_sdk::{III, UpdateOp, UpdateResult, types::SetResult};
 use serde_json::Value;
 
 use crate::{
@@ -25,14 +25,14 @@ use crate::{
 };
 
 pub struct BridgeAdapter {
-    bridge: Arc<Bridge>,
+    bridge: Arc<III>,
 }
 
 impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(Bridge::new(&bridge_url));
+        let bridge = Arc::new(III::new(&bridge_url));
         let res = bridge.connect().await;
 
         if let Err(error) = res {
@@ -73,7 +73,7 @@ impl StateAdapter for BridgeAdapter {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        self.bridge.disconnect();
+        self.bridge.shutdown_async().await;
         Ok(())
     }
 

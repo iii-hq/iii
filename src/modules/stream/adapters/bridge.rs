@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use iii_sdk::{
-    Bridge, UpdateOp, UpdateResult,
+    III, UpdateOp, UpdateResult,
     types::{DeleteResult, SetResult},
 };
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -46,14 +46,14 @@ pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
     handler_function_id: String,
-    bridge: Arc<Bridge>,
+    bridge: Arc<III>,
 }
 
 impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(Bridge::new(&bridge_url));
+        let bridge = Arc::new(III::new(&bridge_url));
         let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
         let res = bridge.connect().await;
 
@@ -100,7 +100,7 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        self.bridge.disconnect();
+        self.bridge.shutdown_async().await;
         Ok(())
     }
 
@@ -251,7 +251,7 @@ impl StreamAdapter for BridgeAdapter {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to deserialize stream message");
-                            Err(iii_sdk::BridgeError::Remote {
+                            Err(iii_sdk::IIIError::Remote {
                                 code: "DESERIALIZATION_ERROR".to_string(),
                                 message: format!("Failed to deserialize stream message: {}", e),
                             })
