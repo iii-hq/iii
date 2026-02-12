@@ -98,10 +98,7 @@ impl QueueCoreModule {
     }
 
     #[function(id = "stats", description = "Get queue depth stats")]
-    pub async fn stats(
-        &self,
-        input: QueueStatsInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn stats(&self, input: QueueStatsInput) -> FunctionResult<Option<Value>, ErrorBody> {
         if input.topic.is_empty() {
             return FunctionResult::Failure(ErrorBody {
                 code: "topic_not_set".into(),
@@ -119,10 +116,7 @@ impl QueueCoreModule {
     }
 
     #[function(id = "jobs", description = "List jobs by state")]
-    pub async fn jobs(
-        &self,
-        input: QueueJobsInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn jobs(&self, input: QueueJobsInput) -> FunctionResult<Option<Value>, ErrorBody> {
         if input.topic.is_empty() {
             return FunctionResult::Failure(ErrorBody {
                 code: "topic_not_set".into(),
@@ -149,10 +143,7 @@ impl QueueCoreModule {
     }
 
     #[function(id = "job", description = "Get single job detail")]
-    pub async fn job(
-        &self,
-        input: QueueJobInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn job(&self, input: QueueJobInput) -> FunctionResult<Option<Value>, ErrorBody> {
         if input.topic.is_empty() || input.job_id.is_empty() {
             return FunctionResult::Failure(ErrorBody {
                 code: "missing_params".into(),
@@ -173,7 +164,10 @@ impl QueueCoreModule {
         }
     }
 
-    #[function(id = "redrive_dlq", description = "Redrive all DLQ jobs back to waiting")]
+    #[function(
+        id = "redrive_dlq",
+        description = "Redrive all DLQ jobs back to waiting"
+    )]
     pub async fn redrive_dlq(
         &self,
         input: QueueStatsInput,

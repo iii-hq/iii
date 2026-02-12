@@ -203,7 +203,10 @@ impl QueueAdapter for BuiltinQueueAdapter {
         offset: usize,
         limit: usize,
     ) -> anyhow::Result<Vec<Value>> {
-        Ok(self.queue.list_jobs_in_state(topic, state, offset, limit).await)
+        Ok(self
+            .queue
+            .list_jobs_in_state(topic, state, offset, limit)
+            .await)
     }
 
     async fn get_job(&self, topic: &str, job_id: &str) -> anyhow::Result<Option<Value>> {
