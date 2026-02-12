@@ -52,7 +52,6 @@ pub struct HeartbeatReportEventInput {
 #[derive(Clone)]
 pub struct HeartbeatModule {
     config: HeartbeatConfig,
-    _engine: Arc<Engine>,
     collector: Arc<Collector>,
     store: Arc<HeartbeatStore>,
     bg_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -130,17 +129,27 @@ impl HeartbeatModule {
         input: HeartbeatReportEventInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         let tracker = get_lifecycle_tracker();
-        let kind = match input.kind.as_str() {
-            "install_failed" => EventKind::InstallFailed,
-            "install_success" => EventKind::InstallSuccess,
-            "project_created" => EventKind::ProjectCreated,
-            other => {
+        let kind: EventKind =
+            match serde_json::from_value(serde_json::Value::String(input.kind.clone())) {
+                Ok(k) => k,
+                Err(_) => {
+                    return FunctionResult::Failure(ErrorBody {
+                        message: format!("Unknown event kind: {}", input.kind),
+                        code: "heartbeat.invalid_event_kind".to_string(),
+                    });
+                }
+            };
+
+        match kind {
+            EventKind::InstallFailed | EventKind::InstallSuccess | EventKind::ProjectCreated => {}
+            _ => {
                 return FunctionResult::Failure(ErrorBody {
-                    message: format!("Unknown event kind: {}", other),
+                    message: format!("Event kind '{}' cannot be reported via SDK", input.kind),
                     code: "heartbeat.invalid_event_kind".to_string(),
                 });
             }
-        };
+        }
+
         tracker.record_sdk_event(kind, input.metadata);
         FunctionResult::Success(Some(serde_json::json!({"status": "recorded"})))
     }
@@ -158,6 +167,12 @@ impl Module for HeartbeatModule {
             None => HeartbeatConfig::default(),
         };
 
+        if let Some(ref endpoint) = hb_config.cloud_endpoint {
+            if let Err(e) = telemetry::validate_cloud_endpoint(endpoint) {
+                anyhow::bail!("[HEARTBEAT] {}", e);
+            }
+        }
+
         let instance_id = hb_config.get_or_create_instance_id();
         let store = Arc::new(HeartbeatStore::new(hb_config.max_history_size()));
         let collector = Arc::new(Collector::new(
@@ -172,13 +187,12 @@ impl Module for HeartbeatModule {
         tracing::info!(
             "{} HeartbeatModule created (instance_id={}, interval={}s)",
             "[HEARTBEAT]".cyan(),
-            &instance_id[..8],
+            HeartbeatConfig::instance_id_short(&instance_id),
             hb_config.interval(),
         );
 
         Ok(Box::new(HeartbeatModule {
             config: hb_config,
-            _engine: engine,
             collector,
             store,
             bg_handle: Arc::new(Mutex::new(None)),
@@ -221,6 +235,8 @@ impl Module for HeartbeatModule {
             None
         };
 
+        let cloud_semaphore = Arc::new(tokio::sync::Semaphore::new(3));
+
         let handle = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
@@ -258,16 +274,23 @@ impl Module for HeartbeatModule {
                             let lifecycle_events = tracker.take_pending();
                             let cloud_entry = entry.to_cloud_safe();
 
-                            tokio::spawn({
-                                let client = client.clone();
-                                let endpoint = endpoint.clone();
-                                async move {
-                                    let ok = telemetry::report_to_cloud(&client, &endpoint, &cloud_entry, lifecycle_events.clone()).await;
-                                    if !ok && !lifecycle_events.is_empty() {
-                                        get_lifecycle_tracker().requeue_pending(lifecycle_events);
+                            let permit = cloud_semaphore.clone().try_acquire_owned();
+                            if let Ok(permit) = permit {
+                                tokio::spawn({
+                                    let client = client.clone();
+                                    let endpoint = endpoint.clone();
+                                    async move {
+                                        let ok = telemetry::report_to_cloud(&client, &endpoint, &cloud_entry, lifecycle_events.clone()).await;
+                                        if !ok && !lifecycle_events.is_empty() {
+                                            get_lifecycle_tracker().requeue_pending(lifecycle_events);
+                                        }
+                                        drop(permit);
                                     }
-                                }
-                            });
+                                });
+                            } else if !lifecycle_events.is_empty() {
+                                tracker.requeue_pending(lifecycle_events);
+                                tracing::debug!("[HEARTBEAT] Cloud reporting task limit reached, skipping this tick");
+                            }
                         }
                     }
                 }
@@ -283,8 +306,11 @@ impl Module for HeartbeatModule {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         if let Some(handle) = self.bg_handle.lock().await.take() {
-            handle.abort();
-            let _ = handle.await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                handle.abort();
+                let _ = handle.await;
+            })
+            .await;
         }
 
         tracing::info!(

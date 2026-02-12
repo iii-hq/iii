@@ -47,7 +47,7 @@ impl HeartbeatEntry {
             system: CloudSystemInfo {
                 os: self.system.os.clone(),
                 arch: self.system.arch.clone(),
-                hostname_hash: hash_hostname(&self.system.hostname),
+                hostname_hash: hash_hostname(&self.system.hostname, &self.instance_id),
             },
             registration: self.registration.clone(),
             runtime: self.runtime.clone(),
@@ -66,11 +66,10 @@ pub struct CloudSafeHeartbeatEntry {
     pub runtime: RuntimeInfo,
 }
 
-fn hash_hostname(hostname: &str) -> String {
+fn hash_hostname(hostname: &str, instance_id: &str) -> String {
     use sha2::{Digest, Sha256};
-    const SALT: &[u8] = b"iii-heartbeat-v1";
     let mut hasher = Sha256::new();
-    hasher.update(SALT);
+    hasher.update(instance_id.as_bytes());
     hasher.update(hostname.as_bytes());
     let result = hasher.finalize();
     hex::encode(&result[..16])
@@ -214,7 +213,8 @@ impl Collector {
 }
 
 fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "unknown".to_string())
+    gethostname::gethostname()
+        .to_str()
+        .unwrap_or("unknown")
+        .to_string()
 }

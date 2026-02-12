@@ -170,6 +170,7 @@ impl TriggerRegistry {
 
         tracing::debug!(trigger = %trigger.id, worker_id = %trigger.worker_id.unwrap_or_default(), "Registering trigger");
 
+        #[cfg(feature = "heartbeat")]
         crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_registration(
             crate::modules::heartbeat::lifecycle::EventKind::RegisterTrigger,
             Some(

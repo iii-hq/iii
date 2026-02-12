@@ -17,7 +17,8 @@ name = "custom_queue_adapter"
 path = "examples/custom_queue_adapter.rs"
 
 [features]
-default = []
+default = ["heartbeat"]
+heartbeat = []
 rabbitmq = ["lapin"]
 
 [dependencies]
@@ -57,6 +58,8 @@ once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 hex = "0.4"
+gethostname = "1.0"
+parking_lot = "0.12"
 notify = "8.2.0"
 inventory = "0.3"
 rand = "0.8"

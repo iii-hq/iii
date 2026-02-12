@@ -123,8 +123,9 @@ impl InvocationHandler {
                     tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, "Function completed successfully");
                     tracing::Span::current().record("otel.status_code", "OK");
 
+                    #[cfg(feature = "heartbeat")]
                     crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_first(
-                        crate::modules::heartbeat::lifecycle::EventKind::FirstCall,
+                        crate::modules::heartbeat::lifecycle::EventKind::FirstSuccessfulCall,
                         Some(serde_json::json!({"function_id": function_id})),
                     );
 
@@ -156,6 +157,7 @@ impl InvocationHandler {
                     tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, error_code = %error.code, "Function failed: {}", error.message);
                     tracing::Span::current().record("otel.status_code", "ERROR");
 
+                    #[cfg(feature = "heartbeat")]
                     crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_failure(
                         Some(serde_json::json!({
                             "function_id": function_id,
@@ -199,8 +201,9 @@ impl InvocationHandler {
                     tracing::debug!(invocation_id = %invocation_id, function_id = %function_id, "Function no result");
                     tracing::Span::current().record("otel.status_code", "OK");
 
+                    #[cfg(feature = "heartbeat")]
                     crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_first(
-                        crate::modules::heartbeat::lifecycle::EventKind::FirstCall,
+                        crate::modules::heartbeat::lifecycle::EventKind::FirstSuccessfulCall,
                         Some(serde_json::json!({"function_id": function_id})),
                     );
 
