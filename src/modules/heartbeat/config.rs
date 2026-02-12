@@ -30,7 +30,7 @@ where
 }
 
 fn default_enabled() -> bool {
-    true
+    false
 }
 
 fn default_interval() -> u64 {
@@ -44,7 +44,7 @@ fn default_max_history() -> usize {
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             interval_seconds: 60,
             cloud_endpoint: None,
             cloud_telemetry_enabled: false,
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn default_config_values() {
         let config = HeartbeatConfig::default();
-        assert!(config.is_enabled());
+        assert!(!config.is_enabled());
         assert!(!config.is_cloud_telemetry_enabled());
         assert_eq!(config.interval(), 60);
         assert_eq!(config.max_history_size(), 1000);

@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 const MAX_EVENTS: usize = 10_000;
+const MAX_PENDING: usize = 1_000;
 const MAX_FAILURES_PER_FUNCTION_PER_MINUTE: usize = 10;
+const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -42,8 +44,21 @@ struct FailureRateLimit {
 
 struct TrackerState {
     events: VecDeque<LifecycleEvent>,
-    pending: Vec<LifecycleEvent>,
+    pending: VecDeque<LifecycleEvent>,
     failure_rate_limits: HashMap<String, FailureRateLimit>,
+}
+
+impl TrackerState {
+    fn push_event(&mut self, event: LifecycleEvent) {
+        if self.events.len() >= MAX_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event.clone());
+        if self.pending.len() >= MAX_PENDING {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(event);
+    }
 }
 
 pub struct LifecycleTracker {
@@ -62,7 +77,7 @@ impl LifecycleTracker {
             first_successful_call: AtomicBool::new(false),
             state: parking_lot::RwLock::new(TrackerState {
                 events: VecDeque::new(),
-                pending: Vec::new(),
+                pending: VecDeque::new(),
                 failure_rate_limits: HashMap::new(),
             }),
             instance_id: OnceLock::new(),
@@ -91,11 +106,7 @@ impl LifecycleTracker {
 
     fn push_event(&self, event: LifecycleEvent) {
         let mut state = self.state.write();
-        if state.events.len() >= MAX_EVENTS {
-            state.events.pop_front();
-        }
-        state.events.push_back(event.clone());
-        state.pending.push(event);
+        state.push_event(event);
     }
 
     pub fn record_first(&self, kind: EventKind, metadata: Option<Value>) {
@@ -136,35 +147,40 @@ impl LifecycleTracker {
             .unwrap_or("unknown")
             .to_string();
 
+        let event = self.make_event(EventKind::FailureWithin24h, metadata);
         let now = Instant::now();
         let one_minute_ago = now - std::time::Duration::from_secs(60);
 
+        let mut state = self.state.write();
+
+        let rate_limit = state
+            .failure_rate_limits
+            .entry(function_id)
+            .or_insert_with(|| FailureRateLimit {
+                timestamps: VecDeque::new(),
+            });
+
+        while rate_limit
+            .timestamps
+            .front()
+            .is_some_and(|t| *t < one_minute_ago)
         {
-            let mut state = self.state.write();
-            let rate_limit = state
-                .failure_rate_limits
-                .entry(function_id)
-                .or_insert_with(|| FailureRateLimit {
-                    timestamps: VecDeque::new(),
-                });
-
-            while rate_limit
-                .timestamps
-                .front()
-                .is_some_and(|t| *t < one_minute_ago)
-            {
-                rate_limit.timestamps.pop_front();
-            }
-
-            if rate_limit.timestamps.len() >= MAX_FAILURES_PER_FUNCTION_PER_MINUTE {
-                return;
-            }
-
-            rate_limit.timestamps.push_back(now);
+            rate_limit.timestamps.pop_front();
         }
 
-        let event = self.make_event(EventKind::FailureWithin24h, metadata);
-        self.push_event(event);
+        if rate_limit.timestamps.len() >= MAX_FAILURES_PER_FUNCTION_PER_MINUTE {
+            return;
+        }
+
+        rate_limit.timestamps.push_back(now);
+
+        if state.failure_rate_limits.len() > MAX_RATE_LIMIT_ENTRIES {
+            state
+                .failure_rate_limits
+                .retain(|_, v| !v.timestamps.is_empty());
+        }
+
+        state.push_event(event);
     }
 
     pub fn record_sdk_event(&self, kind: EventKind, metadata: Option<Value>) {
@@ -178,7 +194,7 @@ impl LifecycleTracker {
 
     pub fn take_pending(&self) -> Vec<LifecycleEvent> {
         let mut state = self.state.write();
-        std::mem::take(&mut state.pending)
+        state.pending.drain(..).collect()
     }
 
     pub fn requeue_pending(&self, events: Vec<LifecycleEvent>) {
@@ -186,9 +202,12 @@ impl LifecycleTracker {
             return;
         }
         let mut state = self.state.write();
-        let mut restored = events;
-        restored.append(&mut state.pending);
-        state.pending = restored;
+        for event in events.into_iter().rev() {
+            if state.pending.len() >= MAX_PENDING {
+                break;
+            }
+            state.pending.push_front(event);
+        }
     }
 
     pub fn all_events(&self) -> Vec<LifecycleEvent> {
@@ -268,6 +287,19 @@ mod tests {
     }
 
     #[test]
+    fn pending_bounded_by_max() {
+        let t = tracker();
+        for i in 0..(MAX_PENDING + 100) {
+            t.record_registration(
+                EventKind::RegisterFunction,
+                Some(serde_json::json!({"i": i})),
+            );
+        }
+        let pending = t.take_pending();
+        assert_eq!(pending.len(), MAX_PENDING);
+    }
+
+    #[test]
     fn take_pending_and_requeue() {
         let t = tracker();
         t.record_registration(EventKind::RegisterFunction, None);
@@ -279,6 +311,23 @@ mod tests {
         t.requeue_pending(pending);
         let restored = t.take_pending();
         assert_eq!(restored.len(), 2);
+    }
+
+    #[test]
+    fn requeue_respects_max_pending() {
+        let t = tracker();
+        for _ in 0..MAX_PENDING {
+            t.record_registration(EventKind::RegisterFunction, None);
+        }
+        let pending = t.take_pending();
+        assert_eq!(pending.len(), MAX_PENDING);
+
+        for _ in 0..500 {
+            t.record_registration(EventKind::RegisterTrigger, None);
+        }
+        t.requeue_pending(pending);
+        let final_pending = t.take_pending();
+        assert!(final_pending.len() <= MAX_PENDING);
     }
 
     #[test]
