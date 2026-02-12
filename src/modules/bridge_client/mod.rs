@@ -7,7 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use iii_sdk::{Bridge, BridgeError};
+use iii_sdk::{III, IIIError};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -59,7 +59,7 @@ pub struct InvokeInput {
 #[derive(Clone)]
 pub struct BridgeClientModule {
     engine: Arc<Engine>,
-    bridge: Bridge,
+    bridge: III,
     config: BridgeClientConfig,
 }
 
@@ -81,7 +81,7 @@ impl Module for BridgeClientModule {
             .or_else(|| std::env::var("III_BRIDGE_URL").ok())
             .unwrap_or_else(|| "ws://0.0.0.0:49134".to_string());
 
-        let bridge = Bridge::new(&url);
+        let bridge = III::new(&url);
 
         Ok(Box::new(Self {
             engine,
@@ -245,7 +245,7 @@ impl Module for BridgeClientModule {
                 async move {
                     match engine.call(&local_function, input).await {
                         Ok(result) => Ok(result.unwrap_or(Value::Null)),
-                        Err(err) => Err(BridgeError::Remote {
+                        Err(err) => Err(IIIError::Remote {
                             code: err.code,
                             message: err.message,
                         }),
