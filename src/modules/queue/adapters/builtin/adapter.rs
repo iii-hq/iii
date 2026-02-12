@@ -156,6 +156,59 @@ impl QueueAdapter for BuiltinQueueAdapter {
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
         Ok(self.queue.dlq_count(topic).await)
     }
+
+    async fn list_queues(&self) -> anyhow::Result<Vec<Value>> {
+        let names = self.queue.list_queues().await;
+        let mut result = Vec::new();
+
+        for name in names {
+            let waiting = self.queue.waiting_count(&name).await;
+            let active = self.queue.active_count(&name).await;
+            let delayed = self.queue.delayed_count(&name).await;
+            let dlq = self.queue.dlq_count(&name).await;
+
+            result.push(serde_json::json!({
+                "name": name,
+                "waiting": waiting,
+                "active": active,
+                "delayed": delayed,
+                "dlq": dlq,
+                "total": waiting + active + delayed,
+            }));
+        }
+
+        Ok(result)
+    }
+
+    async fn queue_stats(&self, topic: &str) -> anyhow::Result<Value> {
+        let waiting = self.queue.waiting_count(topic).await;
+        let active = self.queue.active_count(topic).await;
+        let delayed = self.queue.delayed_count(topic).await;
+        let dlq = self.queue.dlq_count(topic).await;
+
+        Ok(serde_json::json!({
+            "queue": topic,
+            "waiting": waiting,
+            "active": active,
+            "delayed": delayed,
+            "dlq": dlq,
+            "total": waiting + active + delayed,
+        }))
+    }
+
+    async fn list_jobs(
+        &self,
+        topic: &str,
+        state: &str,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Value>> {
+        Ok(self.queue.list_jobs_in_state(topic, state, offset, limit).await)
+    }
+
+    async fn get_job(&self, topic: &str, job_id: &str) -> anyhow::Result<Option<Value>> {
+        Ok(self.queue.get_job_by_id(topic, job_id).await)
+    }
 }
 
 crate::register_adapter!(

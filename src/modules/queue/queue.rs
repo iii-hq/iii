@@ -40,6 +40,31 @@ pub struct QueueInput {
     data: Value,
 }
 
+#[derive(Deserialize)]
+pub struct QueueStatsInput {
+    topic: String,
+}
+
+#[derive(Deserialize)]
+pub struct QueueJobsInput {
+    topic: String,
+    state: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+#[derive(Deserialize)]
+pub struct QueueJobInput {
+    topic: String,
+    job_id: String,
+}
+
 #[service(name = "queue")]
 impl QueueCoreModule {
     #[function(id = "enqueue", description = "Enqueue a message")]
@@ -59,6 +84,141 @@ impl QueueCoreModule {
         let _ = adapter.enqueue(&topic, data).await;
 
         FunctionResult::Success(None)
+    }
+
+    #[function(id = "list_queues", description = "List all queues with stats")]
+    pub async fn list_queues(&self, _input: Value) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.adapter.list_queues().await {
+            Ok(queues) => FunctionResult::Success(Some(serde_json::json!({ "queues": queues }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "list_queues_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "stats", description = "Get queue depth stats")]
+    pub async fn stats(
+        &self,
+        input: QueueStatsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if input.topic.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "topic_not_set".into(),
+                message: "Topic is not set".into(),
+            });
+        }
+
+        match self.adapter.queue_stats(&input.topic).await {
+            Ok(stats) => FunctionResult::Success(Some(stats)),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "stats_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "jobs", description = "List jobs by state")]
+    pub async fn jobs(
+        &self,
+        input: QueueJobsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if input.topic.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "topic_not_set".into(),
+                message: "Topic is not set".into(),
+            });
+        }
+
+        match self
+            .adapter
+            .list_jobs(&input.topic, &input.state, input.offset, input.limit)
+            .await
+        {
+            Ok(jobs) => FunctionResult::Success(Some(serde_json::json!({
+                "jobs": jobs,
+                "count": jobs.len(),
+                "offset": input.offset,
+                "limit": input.limit,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "jobs_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "job", description = "Get single job detail")]
+    pub async fn job(
+        &self,
+        input: QueueJobInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if input.topic.is_empty() || input.job_id.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "missing_params".into(),
+                message: "Topic and job_id are required".into(),
+            });
+        }
+
+        match self.adapter.get_job(&input.topic, &input.job_id).await {
+            Ok(Some(job)) => FunctionResult::Success(Some(job)),
+            Ok(None) => FunctionResult::Failure(ErrorBody {
+                code: "not_found".into(),
+                message: format!("Job {} not found in queue {}", input.job_id, input.topic),
+            }),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "job_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "redrive_dlq", description = "Redrive all DLQ jobs back to waiting")]
+    pub async fn redrive_dlq(
+        &self,
+        input: QueueStatsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if input.topic.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "topic_not_set".into(),
+                message: "Topic is not set".into(),
+            });
+        }
+
+        match self.adapter.redrive_dlq(&input.topic).await {
+            Ok(count) => FunctionResult::Success(Some(serde_json::json!({
+                "queue": input.topic,
+                "redriven": count,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "redrive_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "dlq_count", description = "Get DLQ count for a queue")]
+    pub async fn dlq_count(
+        &self,
+        input: QueueStatsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if input.topic.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "topic_not_set".into(),
+                message: "Topic is not set".into(),
+            });
+        }
+
+        match self.adapter.dlq_count(&input.topic).await {
+            Ok(count) => FunctionResult::Success(Some(serde_json::json!({
+                "queue": input.topic,
+                "dlq_count": count,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "dlq_count_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
     }
 }
 
