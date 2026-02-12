@@ -1,0 +1,17 @@
+pkgbase = iii-bin
+	pkgdesc = WebSocket-based process communication engine
+	pkgver = {{VERSION}}
+	pkgrel = 1
+	url = https://github.com/iii-hq/iii
+	arch = x86_64
+	arch = aarch64
+	license = custom:ELv2
+	depends = gcc-libs
+	provides = iii
+	conflicts = iii
+	source_x86_64 = https://github.com/iii-hq/iii/releases/download/v{{VERSION}}/iii-x86_64-unknown-linux-musl.tar.gz
+	source_aarch64 = https://github.com/iii-hq/iii/releases/download/v{{VERSION}}/iii-aarch64-unknown-linux-gnu.tar.gz
+	sha256sums_x86_64 = {{CHECKSUM_X86_64}}
+	sha256sums_aarch64 = {{CHECKSUM_AARCH64}}
+
+pkgname = iii-bin

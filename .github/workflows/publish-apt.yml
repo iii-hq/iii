@@ -1,0 +1,315 @@
+name: Publish to apt/deb
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_NAME: iii
+
+jobs:
+  publish-apt:
+    name: Build and Publish deb Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux binaries
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Download both architectures
+          curl -L --fail -o iii-amd64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
+
+          curl -L --fail -o iii-arm64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+
+          # Verify downloads (must be non-empty)
+          for file in iii-amd64.tar.gz iii-arm64.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+          ls -lh *.tar.gz
+
+      - name: Download and verify checksums
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Download checksum file from release
+          curl -L --fail -o checksums.txt \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/checksums.txt"
+
+          # Verify checksums for both architectures
+          grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt > checksum-amd64.txt
+          grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt > checksum-arm64.txt
+
+          # Verify amd64
+          echo "Verifying amd64 checksum..."
+          sed 's/iii-x86_64-unknown-linux-musl.tar.gz/iii-amd64.tar.gz/' checksum-amd64.txt | sha256sum -c -
+
+          # Verify arm64
+          echo "Verifying arm64 checksum..."
+          sed 's/iii-aarch64-unknown-linux-musl.tar.gz/iii-arm64.tar.gz/' checksum-arm64.txt | sha256sum -c -
+
+          echo "All checksums verified successfully"
+
+      - name: Build deb packages
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Build amd64 package
+          mkdir -p deb-amd64/DEBIAN deb-amd64/usr/bin
+          tar -xzf iii-amd64.tar.gz -C deb-amd64/usr/bin
+
+          cat > deb-amd64/DEBIAN/control << EOF
+          Package: iii
+          Version: ${VERSION_NUMBER}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Motia LLC <support@motia.dev>
+          Description: WebSocket-based process communication engine
+           III is a WebSocket-based process communication engine. Workers connect
+           over WS, register functions and triggers, and the engine routes
+           invocations between workers and core modules.
+          Homepage: https://github.com/iii-hq/iii
+          EOF
+
+          dpkg-deb --build deb-amd64 iii_${VERSION_NUMBER}_amd64.deb
+
+          # Build arm64 package
+          mkdir -p deb-arm64/DEBIAN deb-arm64/usr/bin
+          tar -xzf iii-arm64.tar.gz -C deb-arm64/usr/bin
+
+          cat > deb-arm64/DEBIAN/control << EOF
+          Package: iii
+          Version: ${VERSION_NUMBER}
+          Section: utils
+          Priority: optional
+          Architecture: arm64
+          Maintainer: Motia LLC <support@motia.dev>
+          Description: WebSocket-based process communication engine
+           III is a WebSocket-based process communication engine. Workers connect
+           over WS, register functions and triggers, and the engine routes
+           invocations between workers and core modules.
+          Homepage: https://github.com/iii-hq/iii
+          EOF
+
+          dpkg-deb --build deb-arm64 iii_${VERSION_NUMBER}_arm64.deb
+
+          echo "Packages built:"
+          ls -lh *.deb
+
+      - name: Verify package metadata
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Verifying amd64 package ==="
+          dpkg-deb --info iii_${VERSION_NUMBER}_amd64.deb
+          dpkg-deb --contents iii_${VERSION_NUMBER}_amd64.deb
+
+          echo ""
+          echo "=== Verifying arm64 package ==="
+          dpkg-deb --info iii_${VERSION_NUMBER}_arm64.deb
+          dpkg-deb --contents iii_${VERSION_NUMBER}_arm64.deb
+
+          echo ""
+          echo "Package verification passed"
+
+      - name: Install lintian for package quality checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lintian
+
+      - name: Run lintian checks
+        continue-on-error: true
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Running lintian on amd64 package ==="
+          lintian --no-tag-display-limit iii_${VERSION_NUMBER}_amd64.deb || true
+
+          echo ""
+          echo "=== Running lintian on arm64 package ==="
+          lintian --no-tag-display-limit iii_${VERSION_NUMBER}_arm64.deb || true
+
+      - name: Test amd64 package installation
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Testing amd64 package ==="
+          # Install
+          sudo dpkg -i iii_${VERSION_NUMBER}_amd64.deb
+
+          # Test
+          iii --version
+          dpkg -l | grep iii
+          dpkg -L iii
+
+          # Uninstall
+          sudo dpkg -r iii
+
+          echo "amd64 package test passed"
+
+      - name: Test arm64 package installation
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Testing arm64 package ==="
+          # Install package (binary won't run on amd64 runner, but we can verify install/uninstall)
+          sudo dpkg -i iii_${VERSION_NUMBER}_arm64.deb || {
+            echo "Note: Binary installation expected to have issues on non-arm64 host"
+            echo "Verifying package structure instead..."
+            dpkg-deb --contents iii_${VERSION_NUMBER}_arm64.deb | grep "usr/bin/iii"
+          }
+
+          # Try to query package if installed
+          if dpkg -l | grep -q "^ii.*iii"; then
+            echo "Package installed, checking files..."
+            dpkg -L iii || true
+            # Uninstall
+            sudo dpkg -r iii || sudo dpkg --purge iii
+          fi
+
+          echo "arm64 package test passed"
+
+      - name: Install package_cloud CLI
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          gem install package_cloud
+
+      - name: Push to Packagecloud
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        env:
+          PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Define target distributions
+          DISTROS=(
+            "ubuntu/focal"
+            "ubuntu/jammy"
+            "debian/bookworm"
+          )
+
+          # Push both architectures to all distributions
+          for distro in "${DISTROS[@]}"; do
+            echo "Pushing to ${distro}..."
+
+            if ! package_cloud push "iii-hq/iii-apt/${distro}" "iii_${VERSION_NUMBER}_amd64.deb"; then
+              echo "Error: Failed to push amd64 package to ${distro}"
+              exit 1
+            fi
+
+            if ! package_cloud push "iii-hq/iii-apt/${distro}" "iii_${VERSION_NUMBER}_arm64.deb"; then
+              echo "Error: Failed to push arm64 package to ${distro}"
+              exit 1
+            fi
+
+            echo "Successfully pushed to ${distro}"
+          done
+
+          echo ""
+          echo "All packages published to Packagecloud successfully!"
+          echo "Published to: ${DISTROS[*]}"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "🏃 DRY RUN MODE - No packages pushed"
+          echo ""
+          echo "Packages validated successfully:"
+          echo "- Version: $VERSION"
+          echo "- Checksums verified against release"
+          echo "- amd64 package builds and installs"
+          echo "- arm64 package builds and verified"
+          echo "- Package metadata verified with dpkg-deb"
+          echo "- Lintian quality checks completed"
+          echo "- Ready to publish to: ubuntu/focal, ubuntu/jammy, debian/bookworm"
+          echo ""
+          echo "Set dry_run=false to publish for real."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ apt/deb packages published",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*apt/deb Packages Published* 📦\n\nVersion: `${{ github.event.inputs.version }}`\n\nDistributions: Ubuntu Focal, Ubuntu Jammy, Debian Bookworm\nArchitectures: amd64, arm64\n\nUsers can now install with:\n```sudo apt update\nsudo apt install iii```"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ apt/deb publish failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*apt/deb Publish Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }
