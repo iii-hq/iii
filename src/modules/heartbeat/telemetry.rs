@@ -44,13 +44,13 @@ pub fn validate_cloud_endpoint(endpoint: &str) -> Result<(), String> {
     }
 
     if let Some(host) = url.host_str() {
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if !ip_is_global(&ip) {
-                return Err(format!(
-                    "cloud endpoint must not point to private/link-local address: {}",
-                    ip
-                ));
-            }
+        if let Ok(ip) = host.parse::<IpAddr>()
+            && !ip_is_global(&ip)
+        {
+            return Err(format!(
+                "cloud endpoint must not point to private/link-local address: {}",
+                ip
+            ));
         }
 
         if host == "localhost" || host == "127.0.0.1" || host == "::1" {

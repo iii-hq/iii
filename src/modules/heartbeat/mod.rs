@@ -167,10 +167,10 @@ impl Module for HeartbeatModule {
             None => HeartbeatConfig::default(),
         };
 
-        if let Some(ref endpoint) = hb_config.cloud_endpoint {
-            if let Err(e) = telemetry::validate_cloud_endpoint(endpoint) {
-                anyhow::bail!("[HEARTBEAT] {}", e);
-            }
+        if let Some(ref endpoint) = hb_config.cloud_endpoint
+            && let Err(e) = telemetry::validate_cloud_endpoint(endpoint)
+        {
+            anyhow::bail!("[HEARTBEAT] {}", e);
         }
 
         let instance_id = hb_config.get_or_create_instance_id();
