@@ -36,8 +36,8 @@ fn is_ci() -> bool {
 }
 
 pub fn validate_cloud_endpoint(endpoint: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(endpoint)
-        .map_err(|e| format!("invalid cloud endpoint URL: {}", e))?;
+    let url =
+        reqwest::Url::parse(endpoint).map_err(|e| format!("invalid cloud endpoint URL: {}", e))?;
 
     if url.scheme() != "https" {
         return Err("cloud endpoint must use HTTPS".to_string());
