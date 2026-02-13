@@ -34,7 +34,7 @@ modules:
       concurrency_request_limit: 1024
       cors:
         allowed_origins:
-          # Use 'AllowOrigin::any()' to allow all origins:
+          # To allow all origins, use the special value AllowOrigin::any():
           # - 'AllowOrigin::any()'
           - http://localhost:3000
           - http://localhost:5173
