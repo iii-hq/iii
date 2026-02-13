@@ -131,18 +131,14 @@ jobs:
 
       - name: Test formula locally
         run: |
+          brew update
+
           cd homebrew-tap
+          brew tap iii-hq/homebrew-tap "$GITHUB_WORKSPACE/homebrew-tap"
+          brew audit --new iii
 
-          # Audit formula for common issues
-          brew audit --new --formula ${{ env.FORMULA_PATH }}
-
-          # Install formula locally to verify it works
           brew install --build-from-source ./${{ env.FORMULA_PATH }}
-
-          # Test installation
           iii --version
-
-          # Uninstall after test
           brew uninstall iii
 
       - name: Commit and push changes
