@@ -1,0 +1,39 @@
+name: iii
+base: core22
+version: 'VERSIONPLACEHOLDER'
+summary: WebSocket-based process communication engine
+description: |
+  III Engine is a WebSocket-based process communication engine. Workers connect
+  over WebSocket, register functions and triggers, and the engine routes
+  invocations between workers and core modules.
+
+  Core modules add HTTP APIs, event streams, cron scheduling, and logging.
+
+grade: stable
+confinement: strict
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+apps:
+  iii:
+    command: bin/iii
+    plugs:
+      - network
+      - network-bind
+      - home
+
+parts:
+  iii:
+    plugin: dump
+    source: .
+    stage:
+      - bin/iii
+    override-build: |
+      if [ "$CRAFT_ARCH_BUILD_FOR" = "amd64" ]; then
+        cp snap-amd64/bin/iii $CRAFT_PART_INSTALL/bin/iii
+      elif [ "$CRAFT_ARCH_BUILD_FOR" = "arm64" ]; then
+        cp snap-arm64/bin/iii $CRAFT_PART_INSTALL/bin/iii
+      fi
+      chmod +x $CRAFT_PART_INSTALL/bin/iii

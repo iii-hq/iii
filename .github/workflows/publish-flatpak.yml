@@ -100,44 +100,14 @@ jobs:
       - name: Create Flatpak manifest
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          VERSION_NUMBER="${VERSION#v}"
           X86_SHA=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
           ARM_SHA=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
 
           mkdir -p flatpak
-
-          cat > flatpak/${{ env.APP_ID }}.yml <<FLATEOF
-          app-id: ${{ env.APP_ID }}
-          runtime: org.freedesktop.Platform
-          runtime-version: '23.08'
-          sdk: org.freedesktop.Sdk
-          command: iii
-
-          finish-args:
-            - --share=network
-            - --socket=fallback-x11
-            - --socket=wayland
-            - --filesystem=home
-
-          modules:
-            - name: iii
-              buildsystem: simple
-              build-commands:
-                - install -Dm755 iii /app/bin/iii
-              sources:
-                - type: archive
-                  only-arches:
-                    - x86_64
-                  url: https://github.com/iii-hq/iii/releases/download/v${VERSION_NUMBER}/iii-x86_64-unknown-linux-musl.tar.gz
-                  sha256: ${X86_SHA}
-                  dest: .
-                - type: archive
-                  only-arches:
-                    - aarch64
-                  url: https://github.com/iii-hq/iii/releases/download/v${VERSION_NUMBER}/iii-aarch64-unknown-linux-musl.tar.gz
-                  sha256: ${ARM_SHA}
-                  dest: .
-          FLATEOF
+          sed -e "s|__VERSION__|${VERSION}|g" \
+              -e "s|__X86_SHA__|${X86_SHA}|g" \
+              -e "s|__ARM_SHA__|${ARM_SHA}|g" \
+              packaging/flatpak/com.motia.iii.yml.template > flatpak/${{ env.APP_ID }}.yml
 
           echo "Flatpak manifest created:"
           cat flatpak/${{ env.APP_ID }}.yml

@@ -1,0 +1,30 @@
+app-id: com.motia.iii
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: iii
+
+finish-args:
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --filesystem=home
+
+modules:
+  - name: iii
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 iii /app/bin/iii
+    sources:
+      - type: archive
+        only-arches:
+          - x86_64
+        url: https://github.com/iii-hq/iii/releases/download/__VERSION__/iii-x86_64-unknown-linux-musl.tar.gz
+        sha256: __X86_SHA__
+        dest: .
+      - type: archive
+        only-arches:
+          - aarch64
+        url: https://github.com/iii-hq/iii/releases/download/__VERSION__/iii-aarch64-unknown-linux-musl.tar.gz
+        sha256: __ARM_SHA__
+        dest: .

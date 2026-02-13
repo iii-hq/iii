@@ -137,14 +137,18 @@ jobs:
         run: |
           cd choco-build
           $package = Get-ChildItem -Filter "iii.*.nupkg"
+          $version = ($package.BaseName -split '\.', 2)[1]
 
-          # Install locally to test
-          choco install $package.Name --source . --force -y
+          choco install iii --version=$version --source="$PWD" --force -y
 
-          # Test binary
-          iii --version
+          $iiiExe = "$env:ProgramData\chocolatey\bin\iii.exe"
+          if (!(Test-Path $iiiExe)) {
+            $found = Get-ChildItem -Path "$env:ProgramData\chocolatey\lib\iii" -Recurse -Filter "iii.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $iiiExe = $found.FullName }
+          }
+          if (!(Test-Path $iiiExe)) { throw "iii.exe not found after install" }
+          & $iiiExe --version
 
-          # Uninstall after test
           choco uninstall iii -y
 
       - name: Push to Chocolatey
