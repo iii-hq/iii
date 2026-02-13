@@ -145,12 +145,15 @@ jobs:
           echo "✅ Cargo.toml version matches tag version"
 
       - name: Commit version bump
+        env:
+          APP_TOKEN: ${{ steps.generate_token.outputs.token }}
         run: |
           NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml
           git commit -m "chore: bump version to $NEW_TAG"
+          git remote set-url origin https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git
           git push origin main
 
       - name: Generate changelog
@@ -175,13 +178,14 @@ jobs:
           echo "$CHANGELOG"
 
       - name: Create and push tag
+        env:
+          APP_TOKEN: ${{ steps.generate_token.outputs.token }}
         run: |
           NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
+          git remote set-url origin https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git
           git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
           git push origin "$NEW_TAG"
           echo "Created and pushed tag: $NEW_TAG"
-        env:
-          GITHUB_TOKEN: ${{ steps.generate_token.outputs.token }}
 
       - name: Summary
         run: |
