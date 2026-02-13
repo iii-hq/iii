@@ -12,6 +12,8 @@ use std::{
     sync::Arc,
 };
 
+use indexmap::IndexMap;
+
 use iii_sdk::{
     UpdateOp, UpdateResult,
     types::{DeleteResult, SetResult},
@@ -84,7 +86,7 @@ fn index_from_path(path: &Path) -> Option<String> {
     decode_index(file_name)
 }
 
-fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
+fn load_store_from_dir(dir: &Path) -> HashMap<String, IndexMap<String, Value>> {
     let mut store = HashMap::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -123,7 +125,7 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
                 continue;
             }
         };
-        let value = match serde_json::from_str::<HashMap<String, Value>>(&storage.0) {
+        let value = match serde_json::from_str::<IndexMap<String, Value>>(&storage.0) {
             Ok(value) => value,
             Err(err) => {
                 tracing::warn!(error = ?err, path = %path.display(), "failed to decode index value");
@@ -139,7 +141,7 @@ fn load_store_from_dir(dir: &Path) -> HashMap<String, HashMap<String, Value>> {
 async fn persist_index_to_disk(
     dir: &Path,
     index: &str,
-    value: &HashMap<String, Value>,
+    value: &IndexMap<String, Value>,
 ) -> anyhow::Result<()> {
     if let Err(err) = tokio::fs::create_dir_all(dir).await {
         tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
@@ -168,7 +170,7 @@ async fn delete_index_from_disk(dir: &Path, index: &str) -> anyhow::Result<()> {
 }
 
 pub struct BuiltinKvStore {
-    store: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
+    store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
     file_store_dir: Option<PathBuf>,
     dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
     #[allow(
@@ -242,7 +244,7 @@ impl BuiltinKvStore {
     }
 
     async fn save_loop(
-        store: Arc<RwLock<HashMap<String, HashMap<String, Value>>>>,
+        store: Arc<RwLock<HashMap<String, IndexMap<String, Value>>>>,
         dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
         polling_interval: u64,
         dir: PathBuf,
@@ -300,7 +302,7 @@ impl BuiltinKvStore {
                     new_value: data.clone(),
                 }
             } else {
-                let mut index_map = HashMap::new();
+                let mut index_map = IndexMap::new();
                 index_map.insert(key, data.clone());
                 store.insert(index.clone(), index_map);
 
@@ -335,7 +337,7 @@ impl BuiltinKvStore {
             let index_map = store.get_mut(&index);
 
             if let Some(index_map) = index_map {
-                let removed = index_map.remove(&key);
+                let removed = index_map.shift_remove(&key);
                 let dirty_op = if removed.is_some() {
                     if index_map.is_empty() {
                         Some(DirtyOp::Delete)
@@ -372,7 +374,7 @@ impl BuiltinKvStore {
 
         let acquired = {
             let mut store = self.store.write().await;
-            let index_map = store.entry(index.to_string()).or_insert_with(HashMap::new);
+            let index_map = store.entry(index.to_string()).or_insert_with(IndexMap::new);
 
             let can_acquire = match index_map.get(key) {
                 None => true,
@@ -415,7 +417,7 @@ impl BuiltinKvStore {
                 };
 
                 if should_remove {
-                    index_map.remove(key);
+                    index_map.shift_remove(key);
                     let dirty = if index_map.is_empty() {
                         Some(DirtyOp::Delete)
                     } else {
@@ -444,7 +446,7 @@ impl BuiltinKvStore {
         let mut store = self.store.write().await;
 
         // Automatically create index_map if it doesn't exist
-        let index_map = store.entry(index.clone()).or_insert_with(HashMap::new);
+        let index_map = store.entry(index.clone()).or_insert_with(IndexMap::new);
 
         let old_value = index_map.get(&key).cloned();
         // Automatically create key entry with empty object if it doesn't exist
@@ -590,7 +592,7 @@ mod test {
         let index = "test";
         let key = "test_group::item1";
         let data = serde_json::json!({"key": "value"});
-        let index_data = HashMap::from([(key.to_string(), data.clone())]);
+        let index_data = IndexMap::from([(key.to_string(), data.clone())]);
         let file_path = dir.join(index_file_name(index));
 
         persist_index_to_disk(&dir, index, &index_data.clone())
@@ -614,7 +616,7 @@ mod test {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let bytes = std::fs::read(&file_path).unwrap();
         let storage = rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes).unwrap();
-        let on_disk_index_map: HashMap<String, Value> = serde_json::from_str(&storage.0).unwrap();
+        let on_disk_index_map: IndexMap<String, Value> = serde_json::from_str(&storage.0).unwrap();
         let on_disk_value = on_disk_index_map.get(key).unwrap();
         assert_eq!(on_disk_value, &updated);
 
@@ -1110,5 +1112,33 @@ mod test {
         );
 
         assert!(a ^ b);
+    }
+
+    #[tokio::test]
+    async fn test_list_preserves_insertion_order() {
+        let kv_store = BuiltinKvStore::new(None);
+        let index = "test_order";
+
+        // Insert items in a specific order
+        let items = vec![
+            ("key_c", serde_json::json!({"name": "Charlie"})),
+            ("key_a", serde_json::json!({"name": "Alice"})),
+            ("key_b", serde_json::json!({"name": "Bob"})),
+            ("key_d", serde_json::json!({"name": "Diana"})),
+            ("key_e", serde_json::json!({"name": "Eve"})),
+        ];
+
+        for (key, value) in &items {
+            kv_store
+                .set(index.to_string(), key.to_string(), value.clone())
+                .await;
+        }
+
+        let listed = kv_store.list(index.to_string()).await;
+        assert_eq!(listed.len(), 5);
+
+        // Values must come back in insertion order
+        let names: Vec<&str> = listed.iter().map(|v| v["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["Charlie", "Alice", "Bob", "Diana", "Eve"]);
     }
 }
