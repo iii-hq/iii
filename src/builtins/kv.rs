@@ -1141,4 +1141,45 @@ mod test {
         let names: Vec<&str> = listed.iter().map(|v| v["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["Charlie", "Alice", "Bob", "Diana", "Eve"]);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_file_based_preserves_insertion_order() {
+        let dir = temp_store_dir();
+        let config_value = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 5
+        });
+
+        // Insert items in order
+        {
+            let kv_store = BuiltinKvStore::new(Some(config_value.clone()));
+            let index = "order_test";
+
+            let items = vec![
+                ("z_key", serde_json::json!({"pos": 1})),
+                ("a_key", serde_json::json!({"pos": 2})),
+                ("m_key", serde_json::json!({"pos": 3})),
+            ];
+
+            for (key, value) in &items {
+                kv_store
+                    .set(index.to_string(), key.to_string(), value.clone())
+                    .await;
+            }
+
+            // Wait for persistence
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // Reload from disk and verify order is preserved
+        let kv_store = BuiltinKvStore::new(Some(config_value));
+        let listed = kv_store.list("order_test".to_string()).await;
+        assert_eq!(listed.len(), 3);
+
+        let positions: Vec<i64> = listed.iter().map(|v| v["pos"].as_i64().unwrap()).collect();
+        assert_eq!(positions, vec![1, 2, 3]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
