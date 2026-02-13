@@ -181,6 +181,7 @@ impl CronAdapter {
 
                     // Invoke the function
                     let _ = engine.call(&function_id, event_data).await;
+                    crate::modules::telemetry::collector::track_cron_execution();
 
                     // Release the lock
                     scheduler.release_lock(&job_id).await;

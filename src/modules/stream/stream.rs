@@ -428,6 +428,7 @@ impl StreamCoreModule {
 
         match result {
             Ok(result) => {
+                crate::modules::telemetry::collector::track_stream_set();
                 let event = if result.old_value.is_some() {
                     StreamOutboundMessage::Update {
                         data: result.new_value.clone(),
@@ -490,12 +491,18 @@ impl StreamCoreModule {
                 let result = self.engine.call(&function_id, input).await;
 
                 match result {
-                    Ok(result) => FunctionResult::Success(result),
+                    Ok(result) => {
+                        crate::modules::telemetry::collector::track_stream_get();
+                        FunctionResult::Success(result)
+                    }
                     Err(error) => FunctionResult::Failure(error),
                 }
             }
             None => match adapter.get(&stream_name, &group_id, &item_id).await {
-                Ok(value) => FunctionResult::Success(value),
+                Ok(value) => {
+                    crate::modules::telemetry::collector::track_stream_get();
+                    FunctionResult::Success(value)
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to get value from stream");
                     FunctionResult::Failure(ErrorBody {
@@ -556,6 +563,7 @@ impl StreamCoreModule {
 
         match result {
             Ok(result) => {
+                crate::modules::telemetry::collector::track_stream_delete();
                 if let Some(old_value) = result.old_value.clone() {
                     let message = StreamWrapperMessage {
                         event_type: "stream".to_string(),
@@ -609,12 +617,18 @@ impl StreamCoreModule {
                 let result = self.engine.call(&function_id, input).await;
 
                 match result {
-                    Ok(result) => FunctionResult::Success(result),
+                    Ok(result) => {
+                        crate::modules::telemetry::collector::track_stream_list();
+                        FunctionResult::Success(result)
+                    }
                     Err(error) => FunctionResult::Failure(error),
                 }
             }
             None => match adapter.get_group(&stream_name, &group_id).await {
-                Ok(values) => FunctionResult::Success(serde_json::to_value(values).ok()),
+                Ok(values) => {
+                    crate::modules::telemetry::collector::track_stream_list();
+                    FunctionResult::Success(serde_json::to_value(values).ok())
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to get group from stream");
                     FunctionResult::Failure(ErrorBody {
@@ -797,6 +811,7 @@ impl StreamCoreModule {
 
         match result {
             Ok(result) => {
+                crate::modules::telemetry::collector::track_stream_update();
                 let event = if result.old_value.is_some() {
                     StreamOutboundMessage::Update {
                         data: result.new_value.clone(),

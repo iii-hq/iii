@@ -66,6 +66,7 @@ impl KvServer {
     pub async fn get(&self, data: KvGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         tracing::debug!(index = %data.index, key = %data.key, "Getting value from KV store");
         let result = self.storage.get(data.index.clone(), data.key.clone()).await;
+        crate::modules::telemetry::collector::track_kv_get();
         FunctionResult::Success(result)
     }
 
@@ -79,6 +80,7 @@ impl KvServer {
             .storage
             .set(data.index.clone(), data.key.clone(), data.value.clone())
             .await;
+        crate::modules::telemetry::collector::track_kv_set();
 
         FunctionResult::Success(Some(result))
     }
@@ -94,6 +96,7 @@ impl KvServer {
             .storage
             .delete(data.index.clone(), data.key.clone())
             .await;
+        crate::modules::telemetry::collector::track_kv_delete();
 
         FunctionResult::Success(result)
     }

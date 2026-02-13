@@ -280,6 +280,8 @@ pub async fn dynamic_handler(
             .call(&function_id, api_request_value)
             .await;
 
+            crate::modules::telemetry::collector::track_api_request();
+
             return match func_result {
                 Ok(result) => {
                     let result = result.unwrap_or(json!({}));
