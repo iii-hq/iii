@@ -18,18 +18,18 @@ impl ServicesRegistry {
         }
     }
 
-    pub fn remove_function_from_services(&self, func_path: &str) {
-        let service_name = match Self::get_service_name_from_func_path(func_path) {
+    pub fn remove_function_from_services(&self, function_id: &str) {
+        let service_name = match Self::get_service_name_from_function_id(function_id) {
             Some(name) => name,
             None => {
-                tracing::warn!(func_path = %func_path, "Invalid function path format");
+                tracing::warn!(function_id = %function_id, "Invalid function id format");
                 return;
             }
         };
-        let function_name = match Self::get_function_name_from_func_path(func_path) {
+        let function_name = match Self::get_function_name_from_function_id(function_id) {
             Some(name) => name,
             None => {
-                tracing::warn!(func_path = %func_path, "Invalid function path format");
+                tracing::warn!(function_id = %function_id, "Invalid function id format");
                 return;
             }
         };
@@ -55,24 +55,24 @@ impl ServicesRegistry {
         }
     }
 
-    fn get_service_name_from_func_path(func_path: &str) -> Option<String> {
-        let parts: Vec<&str> = func_path.split(".").collect();
+    fn get_service_name_from_function_id(function_id: &str) -> Option<String> {
+        let parts: Vec<&str> = function_id.split(".").collect();
         if parts.len() < 2 {
             return None;
         }
         Some(parts[0].to_string())
     }
 
-    fn get_function_name_from_func_path(func_path: &str) -> Option<String> {
-        let parts: Vec<&str> = func_path.split(".").collect();
+    fn get_function_name_from_function_id(function_id: &str) -> Option<String> {
+        let parts: Vec<&str> = function_id.split(".").collect();
         if parts.len() < 2 {
             return None;
         }
         Some(parts[1..].join("."))
     }
 
-    pub fn register_service_from_func_path(&self, func_path: &str) {
-        let parts: Vec<&str> = func_path.split(".").collect();
+    pub fn register_service_from_function_id(&self, function_id: &str) {
+        let parts: Vec<&str> = function_id.split(".").collect();
         if parts.len() < 2 {
             return;
         }
