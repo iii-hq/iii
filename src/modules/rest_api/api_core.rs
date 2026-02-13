@@ -129,7 +129,7 @@ impl Module for RestApiCoreModule {
     }
 }
 
-const ALLOW_ORIGIN_ANY: &str = "AllowOrigin::any()";
+const ALLOW_ORIGIN_ANY: &str = "*";
 
 impl RestApiCoreModule {
     fn normalize_http_path_for_key(http_path: &str) -> String {
@@ -454,20 +454,20 @@ mod tests {
 
     #[test]
     fn allow_origin_any_sentinel_is_recognized() {
-        let origins = vec!["AllowOrigin::any()".to_string()];
+        let origins = ["*".to_string()];
         assert!(origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY));
     }
 
     #[test]
     fn regular_origins_are_not_sentinel() {
-        let origins = vec!["http://localhost:3000".to_string()];
+        let origins = ["http://localhost:3000".to_string()];
         assert!(!origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY));
     }
 
     #[test]
     fn mixed_sentinel_and_explicit_origins_detected() {
-        let origins = vec![
-            "AllowOrigin::any()".to_string(),
+        let origins = [
+            "*".to_string(),
             "http://localhost:3000".to_string(),
         ];
         let has_any_sentinel = origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY);
