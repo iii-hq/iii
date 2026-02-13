@@ -6,8 +6,8 @@
 
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
-use colored::Colorize;
 use futures::Future;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -15,8 +15,21 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator},
 };
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct StateTriggerConfig {
+    pub scope: Option<String>,
+    pub key: Option<String>,
+    pub condition_function_id: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StateTrigger {
+    pub config: StateTriggerConfig,
+    pub trigger: Trigger,
+}
+
 pub struct StateTriggers {
-    pub list: Arc<RwLock<HashMap<String, Trigger>>>,
+    pub list: Arc<RwLock<HashMap<String, StateTrigger>>>,
 }
 
 impl Default for StateTriggers {
@@ -45,13 +58,29 @@ impl TriggerRegistrator for StateCoreModule {
 
         Box::pin(async move {
             let trigger_id = trigger.id.clone();
-            tracing::info!(
-                "Registering trigger for function path {}",
-                trigger.function_id.purple()
-            );
-            let _ = triggers.write().await.insert(trigger_id, trigger);
+            let config = serde_json::from_value::<StateTriggerConfig>(trigger.config.clone());
 
-            Ok(())
+            match config {
+                Ok(config) => {
+                    tracing::info!(
+                        config = ?config,
+                        function_id = %trigger.function_id,
+                        "Registering trigger for function {}",
+                        trigger.function_id
+                    );
+
+                    let _ = triggers
+                        .write()
+                        .await
+                        .insert(trigger_id, StateTrigger { config, trigger });
+
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!("Failed to parse trigger config: {}", e);
+                    return Err(anyhow::anyhow!("Failed to parse trigger config: {}", e));
+                }
+            }
         })
     }
 

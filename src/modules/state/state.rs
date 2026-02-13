@@ -25,11 +25,11 @@ use crate::{
                 StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput,
                 StateGetInput, StateListGroupsInput, StateSetInput, StateUpdateInput,
             },
-            trigger::{StateTriggers, TRIGGER_TYPE},
+            trigger::{StateTrigger, StateTriggers, TRIGGER_TYPE},
         },
     },
     protocol::ErrorBody,
-    trigger::{Trigger, TriggerType},
+    trigger::TriggerType,
 };
 
 #[derive(Clone)]
@@ -109,12 +109,14 @@ impl StateCoreModule {
     /// Invoke triggers for a given event type with condition checks
     async fn invoke_triggers(&self, event_data: StateEventData) {
         // Collect triggers into Vec to release the lock before spawning
-        let triggers: Vec<Trigger> = {
+        let triggers: Vec<StateTrigger> = {
             let triggers_guard = self.triggers.list.read().await;
             triggers_guard.values().cloned().collect()
         };
         let engine = self.engine.clone();
         let event_type = event_data.event_type.clone();
+        let event_key = event_data.key.clone();
+        let event_scope = event_data.scope.clone();
 
         if let Ok(event_data) = serde_json::to_value(event_data) {
             tokio::spawn(async move {
@@ -123,14 +125,39 @@ impl StateCoreModule {
                 for trigger in triggers {
                     let trigger = trigger.clone();
 
-                    // Check condition if specified
-                    let condition_function_id = trigger
-                        .config
-                        .get("condition_function_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                    if let Some(scope) = &trigger.config.scope {
+                        tracing::info!(
+                            scope = %scope,
+                            event_scope = %event_scope,
+                            "Checking trigger scope"
+                        );
+                        if scope != &event_scope {
+                            tracing::info!(
+                                scope = %scope,
+                                event_scope = %event_scope,
+                                "Trigger scope does not match event scope, skipping trigger"
+                            );
+                            continue;
+                        }
+                    }
 
-                    if let Some(condition_function_id) = condition_function_id {
+                    if let Some(key) = &trigger.config.key {
+                        tracing::info!(
+                            key = %key,
+                            event_key = %event_key,
+                            "Checking trigger key"
+                        );
+                        if key != &event_key {
+                            tracing::info!(
+                                key = %key,
+                                event_key = %event_key,
+                                "Trigger key does not match event key, skipping trigger"
+                            );
+                            continue;
+                        }
+                    }
+
+                    if let Some(condition_function_id) = trigger.config.condition_function_id {
                         tracing::debug!(
                             condition_function_id = %condition_function_id,
                             "Checking trigger conditions"
@@ -151,7 +178,7 @@ impl StateCoreModule {
                                     && !passed
                                 {
                                     tracing::debug!(
-                                        function_id = %trigger.function_id,
+                                        function_id = %trigger.trigger.function_id,
                                         "Condition check failed, skipping handler"
                                     );
                                     continue;
@@ -176,23 +203,25 @@ impl StateCoreModule {
                     }
 
                     // Invoke the handler function
-                    tracing::debug!(
-                        function_id = %trigger.function_id,
+                    tracing::info!(
+                        function_id = %trigger.trigger.function_id,
                         "Invoking trigger"
                     );
 
-                    let call_result = engine.call(&trigger.function_id, event_data.clone()).await;
+                    let call_result = engine
+                        .call(&trigger.trigger.function_id, event_data.clone())
+                        .await;
 
                     match call_result {
                         Ok(_) => {
                             tracing::debug!(
-                                function_id = %trigger.function_id,
+                                function_id = %trigger.trigger.function_id,
                                 "Trigger handler invoked successfully"
                             );
                         }
                         Err(err) => {
                             tracing::error!(
-                                function_id = %trigger.function_id,
+                                function_id = %trigger.trigger.function_id,
                                 error = ?err,
                                 "Error invoking trigger handler"
                             );

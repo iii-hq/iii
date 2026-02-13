@@ -48,10 +48,7 @@ impl StateAdapter for BuiltinKvStoreAdapter {
     }
 
     async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
-        Ok(self
-            .storage
-            .get(scope.to_string(), key.to_string())
-            .await)
+        Ok(self.storage.get(scope.to_string(), key.to_string()).await)
     }
 
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {

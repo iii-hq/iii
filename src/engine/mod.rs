@@ -465,7 +465,7 @@ impl Engine {
                     "RegisterFunction"
                 );
 
-                self.service_registry.register_service_from_func_path(id);
+                self.service_registry.register_service_from_function_id(id);
 
                 self.register_function(
                     RegisterFunctionRequest {
