@@ -27,6 +27,83 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
+const MAX_QUEUE_NAME_LEN: usize = 128;
+const MAX_JOB_ID_LEN: usize = 256;
+const VALID_JOB_STATES: &[&str] = &["waiting", "active", "delayed", "dlq"];
+const MAX_LIMIT: usize = 500;
+
+fn validate_queue_name(name: &str) -> Result<(), ErrorBody> {
+    if name.is_empty() {
+        return Err(ErrorBody {
+            code: "topic_not_set".into(),
+            message: "Topic is not set".into(),
+        });
+    }
+    if name.len() > MAX_QUEUE_NAME_LEN {
+        return Err(ErrorBody {
+            code: "invalid_topic".into(),
+            message: format!(
+                "Topic name exceeds maximum length of {} characters",
+                MAX_QUEUE_NAME_LEN
+            ),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err(ErrorBody {
+            code: "invalid_topic".into(),
+            message: "Topic name contains invalid characters (allowed: alphanumeric, -, _, ., :)"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_job_id(job_id: &str) -> Result<(), ErrorBody> {
+    if job_id.is_empty() {
+        return Err(ErrorBody {
+            code: "missing_params".into(),
+            message: "job_id is required".into(),
+        });
+    }
+    if job_id.len() > MAX_JOB_ID_LEN {
+        return Err(ErrorBody {
+            code: "invalid_job_id".into(),
+            message: format!(
+                "job_id exceeds maximum length of {} characters",
+                MAX_JOB_ID_LEN
+            ),
+        });
+    }
+    if !job_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err(ErrorBody {
+            code: "invalid_job_id".into(),
+            message: "job_id contains invalid characters (allowed: alphanumeric, -, _, ., :)"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_job_state(state: &str) -> Result<(), ErrorBody> {
+    if !VALID_JOB_STATES.contains(&state) {
+        return Err(ErrorBody {
+            code: "invalid_state".into(),
+            message: format!(
+                "Invalid job state '{}'. Must be one of: {}",
+                state,
+                VALID_JOB_STATES.join(", ")
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct QueueCoreModule {
     adapter: Arc<dyn QueueAdapter>,
@@ -73,11 +150,8 @@ impl QueueCoreModule {
         let data = input.data;
         let topic = input.topic;
 
-        if topic.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "topic_not_set".into(),
-                message: "Topic is not set".into(),
-            });
+        if let Err(e) = validate_queue_name(&topic) {
+            return FunctionResult::Failure(e);
         }
 
         tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
@@ -99,11 +173,8 @@ impl QueueCoreModule {
 
     #[function(id = "stats", description = "Get queue depth stats")]
     pub async fn stats(&self, input: QueueStatsInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        if input.topic.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "topic_not_set".into(),
-                message: "Topic is not set".into(),
-            });
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
         }
 
         match self.adapter.queue_stats(&input.topic).await {
@@ -117,16 +188,18 @@ impl QueueCoreModule {
 
     #[function(id = "jobs", description = "List jobs by state")]
     pub async fn jobs(&self, input: QueueJobsInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        if input.topic.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "topic_not_set".into(),
-                message: "Topic is not set".into(),
-            });
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
         }
+        if let Err(e) = validate_job_state(&input.state) {
+            return FunctionResult::Failure(e);
+        }
+
+        let limit = input.limit.min(MAX_LIMIT);
 
         match self
             .adapter
-            .list_jobs(&input.topic, &input.state, input.offset, input.limit)
+            .list_jobs(&input.topic, &input.state, input.offset, limit)
             .await
         {
             Ok(jobs) => FunctionResult::Success(Some(serde_json::json!({
@@ -144,11 +217,11 @@ impl QueueCoreModule {
 
     #[function(id = "job", description = "Get single job detail")]
     pub async fn job(&self, input: QueueJobInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        if input.topic.is_empty() || input.job_id.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "missing_params".into(),
-                message: "Topic and job_id are required".into(),
-            });
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
+        }
+        if let Err(e) = validate_job_id(&input.job_id) {
+            return FunctionResult::Failure(e);
         }
 
         match self.adapter.get_job(&input.topic, &input.job_id).await {
@@ -172,12 +245,11 @@ impl QueueCoreModule {
         &self,
         input: QueueStatsInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        if input.topic.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "topic_not_set".into(),
-                message: "Topic is not set".into(),
-            });
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
         }
+
+        tracing::warn!(queue = %input.topic, "Redriving DLQ jobs back to waiting");
 
         match self.adapter.redrive_dlq(&input.topic).await {
             Ok(count) => FunctionResult::Success(Some(serde_json::json!({
@@ -196,11 +268,8 @@ impl QueueCoreModule {
         &self,
         input: QueueStatsInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        if input.topic.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "topic_not_set".into(),
-                message: "Topic is not set".into(),
-            });
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
         }
 
         match self.adapter.dlq_count(&input.topic).await {
