@@ -310,7 +310,7 @@ pub struct StoredSpan {
     pub instrumentation_scope_version: Option<String>,
     /// W3C trace flags (e.g., sampled=1)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub flags: Option<u8>,
+    pub flags: Option<u32>,
 }
 
 impl StoredSpan {
@@ -405,7 +405,7 @@ impl StoredSpan {
             // Instrumentation scope is not available from SpanData (only from OTLP JSON ingestion)
             instrumentation_scope_name: None,
             instrumentation_scope_version: None,
-            flags: Some(span.span_context.trace_flags().to_u8()),
+            flags: Some(span.span_context.trace_flags().to_u8() as u32),
         }
     }
 }
@@ -1017,7 +1017,7 @@ struct OtlpSpan {
     links: Vec<OtlpSpanLink>,
     /// W3C trace flags
     #[serde(default)]
-    flags: Option<u8>,
+    flags: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
