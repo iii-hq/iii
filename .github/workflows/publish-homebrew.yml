@@ -129,12 +129,9 @@ jobs:
       - name: Test formula locally
         run: |
           brew update
-
-          cd homebrew-tap
-          brew tap iii-hq/homebrew-tap "$GITHUB_WORKSPACE/homebrew-tap"
-          brew audit --new iii
-
-          brew install --build-from-source ./${{ env.FORMULA_PATH }}
+          brew tap iii-hq/tap "$GITHUB_WORKSPACE/homebrew-tap"
+          brew audit --new iii-hq/tap/iii
+          brew install --build-from-source iii-hq/tap/iii
           iii --version
           brew uninstall iii
 
