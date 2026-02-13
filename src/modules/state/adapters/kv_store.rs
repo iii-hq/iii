@@ -40,41 +40,38 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult> {
         Ok(self
             .storage
-            .set(group_id.to_string(), item_id.to_string(), data.clone())
+            .set(scope.to_string(), key.to_string(), data.clone())
             .await)
     }
 
-    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
-        Ok(self
-            .storage
-            .get(group_id.to_string(), item_id.to_string())
-            .await)
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
+        Ok(self.storage.get(scope.to_string(), key.to_string()).await)
     }
 
-    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()> {
+    async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
         self.storage
-            .delete(group_id.to_string(), item_id.to_string())
+            .delete(scope.to_string(), key.to_string())
             .await;
         Ok(())
     }
 
     async fn update(
         &self,
-        group_id: &str,
-        item_id: &str,
+        scope: &str,
+        key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
         Ok(self
             .storage
-            .update(group_id.to_string(), item_id.to_string(), ops)
+            .update(scope.to_string(), key.to_string(), ops)
             .await)
     }
 
-    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
-        Ok(self.storage.list(group_id.to_string()).await)
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
+        Ok(self.storage.list(scope.to_string()).await)
     }
 
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
@@ -98,19 +95,19 @@ mod tests {
     async fn test_kv_store_adapter_set_get_delete() {
         let builtin_adapter = BuiltinKvStoreAdapter::new(None);
 
-        let group_id = "test_group";
-        let item_id = "item1";
+        let scope = "test_group";
+        let key = "item1";
         let data = serde_json::json!({"key": "value"});
 
         // Test set
         builtin_adapter
-            .set(group_id, item_id, data.clone())
+            .set(scope, key, data.clone())
             .await
             .expect("Set should succeed");
 
         // Test get
         let saved_data = builtin_adapter
-            .get(group_id, item_id)
+            .get(scope, key)
             .await
             .expect("Get should succeed")
             .expect("Data should exist");
@@ -119,18 +116,18 @@ mod tests {
 
         // Test delete
         let deleted_data = builtin_adapter
-            .get(group_id, item_id)
+            .get(scope, key)
             .await
             .expect("Get should succeed");
         assert!(deleted_data.is_some());
 
         builtin_adapter
-            .delete(group_id, item_id)
+            .delete(scope, key)
             .await
             .expect("Delete should succeed");
 
         let deleted_data = builtin_adapter
-            .get(group_id, item_id)
+            .get(scope, key)
             .await
             .expect("Get should succeed");
         assert!(deleted_data.is_none());
@@ -139,23 +136,23 @@ mod tests {
     #[tokio::test]
     async fn test_kv_store_adapter_get_group() {
         let builtin_adapter = BuiltinKvStoreAdapter::new(None);
-        let group_id = "test_group";
+        let scope = "test_group";
         let item1_id = "item1";
         let item2_id = "item2";
         let data1 = serde_json::json!({"key1": "value1"});
         let data2 = serde_json::json!({"key2": "value2"});
         // Set items
         builtin_adapter
-            .set(group_id, item1_id, data1.clone())
+            .set(scope, item1_id, data1.clone())
             .await
             .expect("Set should succeed");
         builtin_adapter
-            .set(group_id, item2_id, data2.clone())
+            .set(scope, item2_id, data2.clone())
             .await
             .expect("Set should succeed");
 
         let list = builtin_adapter
-            .list(group_id)
+            .list(scope)
             .await
             .expect("List should succeed");
         assert_eq!(list.len(), 2);
@@ -166,24 +163,24 @@ mod tests {
     #[tokio::test]
     async fn test_kv_store_adapter_update_item() {
         let builtin_adapter = Arc::new(BuiltinKvStoreAdapter::new(None));
-        let group_id = "test_group";
-        let item_id = "item1";
+        let scope = "test_group";
+        let key = "item1";
         let data1 = serde_json::json!({"key": "value1"});
         let data2 = serde_json::json!({"key": "value2"});
 
         // Set initial item
         builtin_adapter
-            .set(group_id, item_id, data1.clone())
+            .set(scope, key, data1.clone())
             .await
             .expect("Set should succeed");
         // Update item
         builtin_adapter
-            .set(group_id, item_id, data2.clone())
+            .set(scope, key, data2.clone())
             .await
             .expect("Set should succeed");
 
         let saved_data = builtin_adapter
-            .get(group_id, item_id)
+            .get(scope, key)
             .await
             .expect("Get should succeed")
             .expect("Data should exist");

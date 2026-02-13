@@ -95,7 +95,7 @@ impl FunctionsRegistry {
     }
 
     pub fn get(&self, function_id: &str) -> Option<Function> {
-        tracing::debug!("Searching for function path: {}", function_id);
+        tracing::debug!("Searching for function: {}", function_id);
         self.functions
             .get(function_id)
             .map(|entry| entry.value().clone())

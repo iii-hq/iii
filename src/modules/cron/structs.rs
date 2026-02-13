@@ -67,10 +67,10 @@ impl CronAdapter {
         let scheduler = Arc::clone(&self.adapter);
         let engine = Arc::clone(&self.engine);
         let job_id = id.clone();
-        let func_path = function_id.clone();
+        let function_id = function_id.clone();
 
         tokio::spawn(async move {
-            tracing::debug!(job_id = %job_id, function_id = %func_path, "Starting cron job loop");
+            tracing::debug!(job_id = %job_id, function_id = %function_id, "Starting cron job loop");
 
             loop {
                 // Calculate time until next execution
@@ -104,7 +104,7 @@ impl CronAdapter {
                         "{} Cron job {} → {}",
                         "[TRIGGERED]".green(),
                         job_id.purple(),
-                        func_path.cyan()
+                        function_id.cyan()
                     );
 
                     // Create the cron event payload
@@ -127,7 +127,7 @@ impl CronAdapter {
                                     && !passed
                                 {
                                     tracing::debug!(
-                                        function_id = %func_path,
+                                        function_id = %function_id,
                                         "Condition check failed, skipping handler"
                                     );
                                     scheduler.release_lock(&job_id).await;
@@ -153,7 +153,7 @@ impl CronAdapter {
                     }
 
                     // Invoke the function
-                    let _ = engine.call(&func_path, event_data).await;
+                    let _ = engine.call(&function_id, event_data).await;
 
                     // Release the lock
                     scheduler.release_lock(&job_id).await;

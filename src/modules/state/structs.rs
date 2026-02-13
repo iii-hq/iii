@@ -10,33 +10,33 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateSetInput {
-    pub group_id: String,
-    pub item_id: String,
+    pub scope: String,
+    pub key: String,
     pub data: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateGetInput {
-    pub group_id: String,
-    pub item_id: String,
+    pub scope: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateDeleteInput {
-    pub group_id: String,
-    pub item_id: String,
+    pub scope: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateUpdateInput {
-    pub group_id: String,
-    pub item_id: String,
+    pub scope: String,
+    pub key: String,
     pub ops: Vec<UpdateOp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateGetGroupInput {
-    pub group_id: String,
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,8 +57,8 @@ pub struct StateEventData {
     #[serde(rename = "type")]
     pub message_type: String,
     pub event_type: StateEventType,
-    pub group_id: String,
-    pub item_id: String,
+    pub scope: String,
+    pub key: String,
     pub old_value: Option<Value>,
     pub new_value: Value,
 }
