@@ -57,6 +57,7 @@ impl PubSubCoreModule {
 
         tracing::debug!(topic = %topic, event_data = %event_data, "Publishing event");
         let _ = adapter.publish(&topic, event_data).await;
+        crate::modules::telemetry::collector::track_pubsub_publish();
 
         FunctionResult::Success(None)
     }
@@ -91,6 +92,7 @@ impl TriggerRegistrator for PubSubCoreModule {
                 adapter
                     .subscribe(&topic, &trigger.id, &trigger.function_id)
                     .await;
+                crate::modules::telemetry::collector::track_pubsub_subscribe();
             } else {
                 tracing::warn!(
                     function_id = %trigger.function_id.purple(),

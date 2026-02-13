@@ -653,6 +653,7 @@ async fn process_job_with_inline_retry(
                 if let Err(e) = queue_impl.ack(queue_name, &job.id).await {
                     tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
                 }
+                crate::modules::telemetry::collector::track_queue_consume();
                 return;
             }
             Err(error) => {
@@ -769,6 +770,7 @@ impl Worker {
                         if let Err(e) = queue_impl.ack(&queue_name, &job.id).await {
                             tracing::error!(error = ?e, job_id = %job.id, "Failed to ack job");
                         }
+                        crate::modules::telemetry::collector::track_queue_consume();
                     }
                     Err(error) => {
                         if let Err(e) = queue_impl.nack(&queue_name, &job.id, &error).await {

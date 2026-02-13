@@ -57,6 +57,7 @@ impl QueueCoreModule {
 
         tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
         let _ = adapter.enqueue(&topic, data).await;
+        crate::modules::telemetry::collector::track_queue_emit();
 
         FunctionResult::Success(None)
     }

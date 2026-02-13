@@ -216,6 +216,7 @@ impl StateCoreModule {
             .await
         {
             Ok(value) => {
+                crate::modules::telemetry::collector::track_state_set();
                 let old_value = value.old_value.clone();
                 let new_value = value.new_value.clone();
                 let is_create = old_value.is_none();
@@ -253,7 +254,10 @@ impl StateCoreModule {
     #[function(id = "state.get", description = "Get a value from state")]
     pub async fn get(&self, input: StateGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         match self.adapter.get(&input.group_id, &input.item_id).await {
-            Ok(value) => FunctionResult::Success(value),
+            Ok(value) => {
+                crate::modules::telemetry::collector::track_state_get();
+                FunctionResult::Success(value)
+            }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to get value: {}", e),
                 code: "GET_ERROR".to_string(),
@@ -278,6 +282,7 @@ impl StateCoreModule {
 
         match self.adapter.delete(&input.group_id, &input.item_id).await {
             Ok(_) => {
+                crate::modules::telemetry::collector::track_state_delete();
                 // Invoke triggers after successful delete
                 let event_data = StateEventData {
                     message_type: "state".to_string(),
@@ -310,6 +315,7 @@ impl StateCoreModule {
             .await
         {
             Ok(value) => {
+                crate::modules::telemetry::collector::track_state_update();
                 let old_value = value.old_value.clone();
                 let new_value = value.new_value.clone();
                 let is_create = old_value.is_none();
