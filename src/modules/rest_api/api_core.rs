@@ -129,6 +129,8 @@ impl Module for RestApiCoreModule {
     }
 }
 
+const ALLOW_ORIGIN_ANY: &str = "*";
+
 impl RestApiCoreModule {
     fn normalize_http_path_for_key(http_path: &str) -> String {
         if http_path == "/" {
@@ -273,7 +275,18 @@ impl RestApiCoreModule {
         let mut cors = CorsLayer::new();
 
         // Origins
-        if cors_config.allowed_origins.is_empty() {
+        let has_any_sentinel = cors_config
+            .allowed_origins
+            .iter()
+            .any(|o| o == ALLOW_ORIGIN_ANY);
+
+        if cors_config.allowed_origins.is_empty() || has_any_sentinel {
+            if has_any_sentinel && cors_config.allowed_origins.len() > 1 {
+                tracing::warn!(
+                    "CORS config contains '{}' alongside explicit origins; all origins will be allowed",
+                    ALLOW_ORIGIN_ANY
+                );
+            }
             cors = cors.allow_origin(HTTP_Any);
         } else {
             let origins: Vec<_> = cors_config
@@ -437,5 +450,25 @@ mod tests {
     fn build_router_key_keeps_root_path() {
         let key = RestApiCoreModule::build_router_key("GET", "/");
         assert_eq!(key, "GET:/");
+    }
+
+    #[test]
+    fn allow_origin_any_sentinel_is_recognized() {
+        let origins = ["*".to_string()];
+        assert!(origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY));
+    }
+
+    #[test]
+    fn regular_origins_are_not_sentinel() {
+        let origins = ["http://localhost:3000".to_string()];
+        assert!(!origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY));
+    }
+
+    #[test]
+    fn mixed_sentinel_and_explicit_origins_detected() {
+        let origins = ["*".to_string(), "http://localhost:3000".to_string()];
+        let has_any_sentinel = origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY);
+        assert!(has_any_sentinel);
+        assert!(origins.len() > 1);
     }
 }
