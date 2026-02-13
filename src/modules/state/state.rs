@@ -212,7 +212,7 @@ impl StateCoreModule {
     pub async fn set(&self, input: StateSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         match self
             .adapter
-            .set(&input.group_id, &input.item_id, input.data.clone())
+            .set(&input.scope, &input.key, input.data.clone())
             .await
         {
             Ok(value) => {
@@ -227,8 +227,8 @@ impl StateCoreModule {
                     } else {
                         StateEventType::Updated
                     },
-                    group_id: input.group_id,
-                    item_id: input.item_id,
+                    scope: input.scope,
+                    key: input.key,
                     old_value,
                     new_value: new_value.clone(),
                 };
@@ -252,7 +252,7 @@ impl StateCoreModule {
 
     #[function(id = "state.get", description = "Get a value from state")]
     pub async fn get(&self, input: StateGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
-        match self.adapter.get(&input.group_id, &input.item_id).await {
+        match self.adapter.get(&input.scope, &input.key).await {
             Ok(value) => FunctionResult::Success(value),
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to get value: {}", e),
@@ -266,7 +266,7 @@ impl StateCoreModule {
         &self,
         input: StateDeleteInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        let value = match self.adapter.get(&input.group_id, &input.item_id).await {
+        let value = match self.adapter.get(&input.scope, &input.key).await {
             Ok(v) => v,
             Err(e) => {
                 return FunctionResult::Failure(ErrorBody {
@@ -276,14 +276,14 @@ impl StateCoreModule {
             }
         };
 
-        match self.adapter.delete(&input.group_id, &input.item_id).await {
+        match self.adapter.delete(&input.scope, &input.key).await {
             Ok(_) => {
                 // Invoke triggers after successful delete
                 let event_data = StateEventData {
                     message_type: "state".to_string(),
                     event_type: StateEventType::Deleted,
-                    group_id: input.group_id,
-                    item_id: input.item_id,
+                    scope: input.scope,
+                    key: input.key,
                     old_value: value.clone(),
                     new_value: Value::Null,
                 };
@@ -306,7 +306,7 @@ impl StateCoreModule {
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         match self
             .adapter
-            .update(&input.group_id, &input.item_id, input.ops)
+            .update(&input.scope, &input.key, input.ops)
             .await
         {
             Ok(value) => {
@@ -320,8 +320,8 @@ impl StateCoreModule {
                     } else {
                         StateEventType::Updated
                     },
-                    group_id: input.group_id,
-                    item_id: input.item_id,
+                    scope: input.scope,
+                    key: input.key,
                     old_value,
                     new_value,
                 };
@@ -348,7 +348,7 @@ impl StateCoreModule {
         &self,
         input: StateGetGroupInput,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
-        match self.adapter.list(&input.group_id).await {
+        match self.adapter.list(&input.scope).await {
             Ok(values) => FunctionResult::Success(serde_json::to_value(values).ok()),
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to list values: {}", e),
