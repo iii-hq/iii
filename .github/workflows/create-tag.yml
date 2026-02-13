@@ -125,30 +125,12 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New tag will be: $NEW_TAG"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - name: Update Cargo.toml version
         run: |
           NEW_VERSION="${{ steps.calc_version.outputs.new_version }}"
           sed -i.bak "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
           rm Cargo.toml.bak
           git diff Cargo.toml
-
-      - name: Update package.json version
-        run: |
-          NEW_VERSION="${{ steps.calc_version.outputs.new_version }}"
-          cd packages/node/iii
-          sed -i.bak "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" package.json
-          rm package.json.bak
-          git diff package.json
 
       - name: Validate Cargo.toml
         run: |
@@ -162,24 +144,12 @@ jobs:
           
           echo "✅ Cargo.toml version matches tag version"
 
-      - name: Validate package.json
-        run: |
-          NEW_VERSION="${{ steps.calc_version.outputs.new_version }}"
-          PACKAGE_VERSION=$(grep '"version":' packages/node/iii/package.json | head -n1 | cut -d'"' -f4)
-          
-          if [ "$PACKAGE_VERSION" != "$NEW_VERSION" ]; then
-            echo "Error: package.json version ($PACKAGE_VERSION) does not match tag version ($NEW_VERSION)"
-            exit 1
-          fi
-          
-          echo "✅ package.json version matches tag version"
-
       - name: Commit version bump
         run: |
           NEW_TAG="${{ steps.calc_version.outputs.new_tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml packages/node/iii/package.json
+          git add Cargo.toml
           git commit -m "chore: bump version to $NEW_TAG"
           git push origin main
 

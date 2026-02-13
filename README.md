@@ -117,7 +117,7 @@ Config files support environment expansion like `${REDIS_URL:redis://localhost:6
 
 ## Connect a Worker
 
-Node.js (SDK in `packages/node/iii`):
+Node.js:
 
 ```javascript
 import { Bridge } from '@iii-dev/sdk'
@@ -129,7 +129,7 @@ bridge.registerFunction({ function_id: 'math.add' }, async (input) => {
 })
 ```
 
-Rust (SDK in `packages/rust/iii`):
+Rust:
 
 ```rust
 use iii_sdk::Bridge;
@@ -201,7 +201,6 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 - `src/protocol.rs` – WebSocket message schema.
 - `src/modules/` – Core modules (API, event, cron, stream, logging, shell).
 - `config.yaml` – Example module configuration.
-- `packages/node/*` and `packages/rust/*` – SDKs and higher-level frameworks.
 - `examples/custom_queue_adapter.rs` – Example of a custom module + adapter.
 
 ## Development
