@@ -261,9 +261,6 @@ iii/
 │   ├── workers/           # Worker trait definitions
 │   └── invocation/        # Invocation lifecycle
 ├── function-macros/       # Proc macro library (ELv2)
-├── packages/              # Multi-language SDKs (Apache 2.0)
-│   ├── node/             # Node.js/TypeScript SDK
-│   └── rust/             # Rust SDK
 ├── examples/              # Example implementations
 ├── .github/workflows/     # CI/CD pipelines
 ├── config.yaml           # Example configuration
@@ -272,24 +269,7 @@ iii/
 
 ## SDK Contributions
 
-SDKs are licensed under **Apache 2.0** and do not require ELv2 headers.
-
-### Node.js SDK
-
-```bash
-cd packages/node
-pnpm install
-pnpm build
-pnpm test
-```
-
-### Rust SDK
-
-```bash
-cd packages/rust/iii
-cargo build
-cargo test
-```
+SDKs are published in separate repositories (npm, Cargo). See the project documentation for SDK locations and contribution guidelines.
 
 ## Reporting Issues
 

@@ -36,12 +36,6 @@ tests/
 config-*.yaml
 !config.yaml
 
-# Node SDK package (separate SDK build)
-packages/node/
-
-# Docker nested folders
-packages/docker/
-
 # Misc
 *.pdf
 *.log

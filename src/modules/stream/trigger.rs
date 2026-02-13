@@ -78,13 +78,13 @@ impl TriggerRegistrator for StreamCoreModule {
         Box::pin(async move {
             if trigger.trigger_type == JOIN_TRIGGER_TYPE {
                 tracing::info!(
-                    "Registering join trigger for function path {}",
+                    "Registering join trigger for function {}",
                     trigger.function_id.purple()
                 );
                 let _ = join_triggers.write().await.insert(trigger);
             } else if trigger.trigger_type == LEAVE_TRIGGER_TYPE {
                 tracing::info!(
-                    "Registering leave trigger for function path {}",
+                    "Registering leave trigger for function {}",
                     trigger.function_id.purple()
                 );
                 let _ = leave_triggers.write().await.insert(trigger);

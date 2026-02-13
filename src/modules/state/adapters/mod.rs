@@ -14,16 +14,16 @@ use serde_json::Value;
 
 #[async_trait]
 pub trait StateAdapter: Send + Sync {
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult>;
-    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>>;
-    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()>;
+    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult>;
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>>;
+    async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()>;
     async fn update(
         &self,
-        group_id: &str,
-        item_id: &str,
+        scope: &str,
+        key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult>;
-    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>>;
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>>;
     async fn list_groups(&self) -> anyhow::Result<Vec<String>>;
     async fn destroy(&self) -> anyhow::Result<()>;
 }

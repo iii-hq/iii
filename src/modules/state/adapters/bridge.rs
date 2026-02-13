@@ -42,8 +42,8 @@ impl BridgeAdapter {
         Ok(Self { bridge })
     }
 
-    fn gen_key(&self, group_id: &str) -> String {
-        group_id.to_string()
+    fn gen_key(&self, scope: &str) -> String {
+        scope.to_string()
     }
 }
 
@@ -51,14 +51,14 @@ impl BridgeAdapter {
 impl StateAdapter for BridgeAdapter {
     async fn update(
         &self,
-        group_id: &str,
-        item_id: &str,
+        scope: &str,
+        key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
-        let index = self.gen_key(group_id);
+        let index = self.gen_key(scope);
         let update_data = KvUpdateInput {
             index: index.clone(),
-            key: item_id.to_string(),
+            key: key.to_string(),
             ops,
         };
 
@@ -77,10 +77,10 @@ impl StateAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult> {
         let set_data = KvSetInput {
-            index: self.gen_key(group_id),
-            key: item_id.to_string(),
+            index: self.gen_key(scope),
+            key: key.to_string(),
             value: data,
         };
         let set_result = self
@@ -93,10 +93,10 @@ impl StateAdapter for BridgeAdapter {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize set result: {}", e))
     }
 
-    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
         let data = KvGetInput {
-            index: self.gen_key(group_id),
-            key: item_id.to_string(),
+            index: self.gen_key(scope),
+            key: key.to_string(),
         };
         let value = self
             .bridge
@@ -108,10 +108,10 @@ impl StateAdapter for BridgeAdapter {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize get result: {}", e))
     }
 
-    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()> {
+    async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
         let delete_data = KvDeleteInput {
-            index: self.gen_key(group_id),
-            key: item_id.to_string(),
+            index: self.gen_key(scope),
+            key: key.to_string(),
         };
         self.bridge
             .call("kv_server.delete", delete_data)
@@ -120,9 +120,9 @@ impl StateAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
         let data = KvListInput {
-            index: self.gen_key(group_id),
+            index: self.gen_key(scope),
         };
 
         let value = self
