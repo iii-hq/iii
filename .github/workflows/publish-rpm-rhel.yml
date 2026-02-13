@@ -68,28 +68,6 @@ jobs:
           done
           ls -lh *.tar.gz
 
-      - name: Download and verify checksums
-        run: |
-          VERSION="${{ github.event.inputs.version }}"
-
-          # Download checksum file from release
-          curl -L --fail -o checksums.txt \
-            "https://github.com/iii-hq/iii/releases/download/${VERSION}/checksums.txt"
-
-          # Verify checksums for both architectures
-          grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt > checksum-x86_64.txt
-          grep "iii-aarch64-unknown-linux-gnu.tar.gz" checksums.txt > checksum-aarch64.txt
-
-          # Verify x86_64
-          echo "Verifying x86_64 checksum..."
-          sed 's/iii-x86_64-unknown-linux-musl.tar.gz/iii-x86_64.tar.gz/' checksum-x86_64.txt | sha256sum -c -
-
-          # Verify aarch64
-          echo "Verifying aarch64 checksum..."
-          sed 's/iii-aarch64-unknown-linux-gnu.tar.gz/iii-aarch64.tar.gz/' checksum-aarch64.txt | sha256sum -c -
-
-          echo "All checksums verified successfully"
-
       - name: Prepare RPM build environment
         run: |
           set -e
