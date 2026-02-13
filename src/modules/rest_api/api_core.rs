@@ -466,10 +466,7 @@ mod tests {
 
     #[test]
     fn mixed_sentinel_and_explicit_origins_detected() {
-        let origins = [
-            "*".to_string(),
-            "http://localhost:3000".to_string(),
-        ];
+        let origins = ["*".to_string(), "http://localhost:3000".to_string()];
         let has_any_sentinel = origins.iter().any(|o| o == super::ALLOW_ORIGIN_ANY);
         assert!(has_any_sentinel);
         assert!(origins.len() > 1);
