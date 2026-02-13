@@ -51,7 +51,7 @@ jobs:
             "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
 
           curl -L --fail -o iii-arm64.tar.gz \
-            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-gnu.tar.gz"
 
           # Verify downloads (must be non-empty)
           for file in iii-amd64.tar.gz iii-arm64.tar.gz; do
@@ -72,7 +72,7 @@ jobs:
 
           # Verify checksums for both architectures
           grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt > checksum-amd64.txt
-          grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt > checksum-arm64.txt
+          grep "iii-aarch64-unknown-linux-gnu.tar.gz" checksums.txt > checksum-arm64.txt
 
           # Verify amd64
           echo "Verifying amd64 checksum..."
@@ -80,7 +80,7 @@ jobs:
 
           # Verify arm64
           echo "Verifying arm64 checksum..."
-          sed 's/iii-aarch64-unknown-linux-musl.tar.gz/iii-arm64.tar.gz/' checksum-arm64.txt | sha256sum -c -
+          sed 's/iii-aarch64-unknown-linux-gnu.tar.gz/iii-arm64.tar.gz/' checksum-arm64.txt | sha256sum -c -
 
           echo "All checksums verified successfully"
 

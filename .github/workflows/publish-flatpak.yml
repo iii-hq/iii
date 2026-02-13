@@ -64,7 +64,7 @@ jobs:
             "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
 
           curl -L --fail -o iii-aarch64.tar.gz \
-            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-gnu.tar.gz"
 
           # Verify downloads
           for file in iii-x86_64.tar.gz iii-aarch64.tar.gz; do
@@ -90,7 +90,7 @@ jobs:
 
           # Extract and verify checksums
           X86_SUM=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
-          ARM_SUM=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SUM=$(grep "iii-aarch64-unknown-linux-gnu.tar.gz" checksums.txt | awk '{print $1}')
 
           echo "$X86_SUM  iii-x86_64.tar.gz" | sha256sum -c - || exit 1
           echo "$ARM_SUM  iii-aarch64.tar.gz" | sha256sum -c - || exit 1
@@ -101,7 +101,7 @@ jobs:
         run: |
           VERSION="${{ github.event.inputs.version }}"
           X86_SHA=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
-          ARM_SHA=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SHA=$(grep "iii-aarch64-unknown-linux-gnu.tar.gz" checksums.txt | awk '{print $1}')
 
           mkdir -p flatpak
           sed -e "s|__VERSION__|${VERSION}|g" \

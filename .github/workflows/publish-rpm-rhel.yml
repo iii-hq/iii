@@ -57,7 +57,7 @@ jobs:
             "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
 
           curl -L --fail -o iii-aarch64.tar.gz \
-            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-gnu.tar.gz"
 
           # Verify downloads (must be non-empty)
           for file in iii-x86_64.tar.gz iii-aarch64.tar.gz; do
@@ -78,7 +78,7 @@ jobs:
 
           # Verify checksums for both architectures
           grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt > checksum-x86_64.txt
-          grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt > checksum-aarch64.txt
+          grep "iii-aarch64-unknown-linux-gnu.tar.gz" checksums.txt > checksum-aarch64.txt
 
           # Verify x86_64
           echo "Verifying x86_64 checksum..."
@@ -86,7 +86,7 @@ jobs:
 
           # Verify aarch64
           echo "Verifying aarch64 checksum..."
-          sed 's/iii-aarch64-unknown-linux-musl.tar.gz/iii-aarch64.tar.gz/' checksum-aarch64.txt | sha256sum -c -
+          sed 's/iii-aarch64-unknown-linux-gnu.tar.gz/iii-aarch64.tar.gz/' checksum-aarch64.txt | sha256sum -c -
 
           echo "All checksums verified successfully"
 
@@ -111,7 +111,7 @@ jobs:
 
           # Create source tarballs for rpmbuild
           (cd ~/rpmbuild-x86_64/SOURCES && tar czf iii-x86_64-unknown-linux-musl.tar.gz iii-${VERSION_NUMBER})
-          (cd ~/rpmbuild-aarch64/SOURCES && tar czf iii-aarch64-unknown-linux-musl.tar.gz iii-${VERSION_NUMBER})
+          (cd ~/rpmbuild-aarch64/SOURCES && tar czf iii-aarch64-unknown-linux-gnu.tar.gz iii-${VERSION_NUMBER})
 
           echo "RPM build environment prepared"
 

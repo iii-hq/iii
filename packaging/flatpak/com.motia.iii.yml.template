@@ -25,6 +25,6 @@ modules:
       - type: archive
         only-arches:
           - aarch64
-        url: https://github.com/iii-hq/iii/releases/download/__VERSION__/iii-aarch64-unknown-linux-musl.tar.gz
+        url: https://github.com/iii-hq/iii/releases/download/__VERSION__/iii-aarch64-unknown-linux-gnu.tar.gz
         sha256: __ARM_SHA__
         dest: .

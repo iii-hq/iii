@@ -53,7 +53,7 @@ jobs:
             "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
 
           curl -L --fail -o iii-arm64.tar.gz \
-            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-gnu.tar.gz"
 
           # Verify downloads
           for file in iii-amd64.tar.gz iii-arm64.tar.gz; do
@@ -79,7 +79,7 @@ jobs:
 
           # Extract checksums for our architectures
           AMD64_SUM=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
-          ARM64_SUM=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+          ARM64_SUM=$(grep "iii-aarch64-unknown-linux-gnu.tar.gz" checksums.txt | awk '{print $1}')
 
           # Verify amd64
           echo "$AMD64_SUM  iii-amd64.tar.gz" | sha256sum -c - || exit 1
