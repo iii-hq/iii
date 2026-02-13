@@ -47,8 +47,9 @@ jobs:
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: homebrew-tap
           permission-contents: write
-          repository: ${{ env.TAP_REPO }}
 
       - name: Checkout tap repository
         uses: actions/checkout@v4
