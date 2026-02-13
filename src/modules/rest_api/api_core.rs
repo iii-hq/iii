@@ -275,12 +275,18 @@ impl RestApiCoreModule {
         let mut cors = CorsLayer::new();
 
         // Origins
-        if cors_config.allowed_origins.is_empty()
-            || cors_config
-                .allowed_origins
-                .iter()
-                .any(|o| o == ALLOW_ORIGIN_ANY)
-        {
+        let has_any_sentinel = cors_config
+            .allowed_origins
+            .iter()
+            .any(|o| o == ALLOW_ORIGIN_ANY);
+
+        if cors_config.allowed_origins.is_empty() || has_any_sentinel {
+            if has_any_sentinel && cors_config.allowed_origins.len() > 1 {
+                tracing::warn!(
+                    "CORS config contains '{}' alongside explicit origins; all origins will be allowed",
+                    ALLOW_ORIGIN_ANY
+                );
+            }
             cors = cors.allow_origin(HTTP_Any);
         } else {
             let origins: Vec<_> = cors_config
