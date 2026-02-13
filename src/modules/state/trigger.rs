@@ -78,7 +78,8 @@ impl TriggerRegistrator for StateCoreModule {
                 }
                 Err(e) => {
                     tracing::error!("Failed to parse trigger config: {}", e);
-                    return Err(anyhow::anyhow!("Failed to parse trigger config: {}", e));
+
+                    Err(anyhow::anyhow!("Failed to parse trigger config: {}", e))
                 }
             }
         })
