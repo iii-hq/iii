@@ -87,43 +87,36 @@ jobs:
           echo "Binaries extracted and ready"
           ls -lh snap-*/bin/
 
-      - name: Install Snapcraft
-        run: |
-          sudo snap install snapcraft --classic
-
       - name: Create snapcraft.yaml
         run: |
           VERSION="${{ github.event.inputs.version }}"
           VERSION_NUMBER="${VERSION#v}"
 
-          mkdir -p snap
-          sed "s/VERSIONPLACEHOLDER/${VERSION_NUMBER}/g" packaging/snap/snapcraft.yaml.template > snap/snapcraft.yaml
+          sed "s/VERSIONPLACEHOLDER/${VERSION_NUMBER}/g" packaging/snap/snapcraft.yaml.template > snapcraft.yaml
 
           echo "snapcraft.yaml created:"
-          cat snap/snapcraft.yaml
+          cat snapcraft.yaml
 
       - name: Build Snap package
+        id: snapcraft
+        uses: snapcore/action-build@v1
+        with:
+          snapcraft-args: --use-lxd
+
+      - name: Locate built snap
         run: |
-          set -e
-
-          echo "Building Snap package..."
-          snapcraft --use-lxd
-
-          # Find built snap
-          SNAP_FILE=$(find . -name "iii_*.snap" -type f)
-
-          if [ -z "$SNAP_FILE" ]; then
+          SNAP_FILE="${{ steps.snapcraft.outputs.snap }}"
+          if [ -z "$SNAP_FILE" ] || [ ! -f "$SNAP_FILE" ]; then
             echo "Error: Snap package not found"
             exit 1
           fi
-
           echo "Snap package built: $SNAP_FILE"
-          ls -lh *.snap
+          ls -lh "$SNAP_FILE"
 
       - name: Test Snap installation
         run: |
           set -e
-          SNAP_FILE=$(find . -name "iii_*.snap" -type f)
+          SNAP_FILE="${{ steps.snapcraft.outputs.snap }}"
 
           echo "Installing Snap package (dangerous mode for testing)..."
           sudo snap install --dangerous "$SNAP_FILE"
@@ -148,7 +141,7 @@ jobs:
         if: ${{ github.event.inputs.dry_run == 'false' }}
         run: |
           set -e
-          SNAP_FILE=$(find . -name "iii_*.snap" -type f)
+          SNAP_FILE="${{ steps.snapcraft.outputs.snap }}"
 
           echo "Uploading to Snap Store..."
           snapcraft upload "$SNAP_FILE" --release stable,candidate,beta,edge
