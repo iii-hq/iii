@@ -49,11 +49,7 @@ fi
 
 api_headers="-H Accept:application/vnd.github+json -H X-GitHub-Api-Version:2022-11-28"
 github_api() {
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl -fsSL $api_headers -H "Authorization: Bearer $GITHUB_TOKEN" "$1"
-  else
-    curl -fsSL $api_headers "$1"
-  fi
+  curl -fsSL $api_headers "$1"
 }
 
 if [ -n "$VERSION" ]; then
@@ -126,13 +122,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${asset_id:-}" ] && [ "$asset_id" != "null" ]; then
-  asset_api_url="https://api.github.com/repos/$REPO/releases/assets/$asset_id"
-  curl -fsSL -H "Accept: application/octet-stream" -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H "X-GitHub-Api-Version: 2022-11-28" -L "$asset_api_url" -o "$tmpdir/$asset_name"
-else
-  curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name"
-fi
+curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name"
 
 case "$asset_name" in
   *.tar.gz|*.tgz)
