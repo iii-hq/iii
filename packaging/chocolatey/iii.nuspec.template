@@ -8,10 +8,10 @@
     <title>III Engine</title>
     <authors>Motia LLC</authors>
     <projectUrl>https://github.com/iii-hq/iii</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/iii-hq/console/refs/heads/main/packages/console-frontend/public/favicon/favicon.ico</iconUrl>
     <copyright>2024 Motia LLC</copyright>
     <licenseUrl>https://github.com/iii-hq/iii/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <projectSourceUrl>https://github.com/iii-hq/iii</projectSourceUrl>
     <docsUrl>https://github.com/iii-hq/iii/blob/main/README.md</docsUrl>
     <bugTrackerUrl>https://github.com/iii-hq/iii/issues</bugTrackerUrl>
     <tags>iii engine websocket process communication rust</tags>
