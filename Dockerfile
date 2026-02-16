@@ -12,6 +12,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY function-macros ./function-macros
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release && strip target/release/iii
