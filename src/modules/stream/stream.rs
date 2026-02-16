@@ -365,7 +365,7 @@ impl StreamCoreModule {
 
 #[service(name = "stream")]
 impl StreamCoreModule {
-    #[function(id = "stream.set", description = "Set a value in a stream")]
+    #[function(id = "stream::set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
@@ -373,7 +373,7 @@ impl StreamCoreModule {
         let item_id = input.item_id;
         let data = input.data;
 
-        let function_id = format!("stream.set({})", stream_name);
+        let function_id = format!("stream::set({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -449,14 +449,14 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.get", description = "Get a value from a stream")]
+    #[function(id = "stream::get", description = "Get a value from a stream")]
     pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
 
-        let function_id = format!("stream.get({})", stream_name);
+        let function_id = format!("stream::get({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -494,7 +494,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.delete", description = "Delete a value from a stream")]
+    #[function(id = "stream::delete", description = "Delete a value from a stream")]
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
@@ -503,7 +503,7 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        let function_id = format!("stream.delete({})", stream_name);
+        let function_id = format!("stream::delete({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -569,13 +569,13 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.list", description = "List all items in a stream group")]
+    #[function(id = "stream::list", description = "List all items in a stream group")]
     pub async fn list(&self, input: StreamListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
-        let function_id = format!("stream.list({})", stream_name);
+        let function_id = format!("stream::list({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -613,7 +613,10 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.list_groups", description = "List all groups in a stream")]
+    #[function(
+        id = "stream::list_groups",
+        description = "List all groups in a stream"
+    )]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,
@@ -621,7 +624,7 @@ impl StreamCoreModule {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
 
-        let function_id = format!("stream.list_groups({})", stream_name);
+        let function_id = format!("stream::list_groups({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -659,7 +662,7 @@ impl StreamCoreModule {
     }
 
     #[function(
-        id = "stream.listAll",
+        id = "stream::list_all",
         description = "List all available stream with metadata"
     )]
     pub async fn list_all(
@@ -696,7 +699,7 @@ impl StreamCoreModule {
     }
 
     #[function(
-        id = "stream.update",
+        id = "stream::update",
         description = "Atomically update a stream value with multiple operations"
     )]
     pub async fn update(
@@ -711,7 +714,7 @@ impl StreamCoreModule {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let function_id = format!("stream.update({})", stream_name);
+        let function_id = format!("stream::update({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
