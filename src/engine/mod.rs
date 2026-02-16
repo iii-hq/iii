@@ -585,6 +585,11 @@ impl Engine {
                 // If we receive it here, just ignore it
                 Ok(())
             }
+            Message::FunctionRegistrationResult { .. } => {
+                // This message is sent from engine to worker, not the other way around
+                // If we receive it here, just ignore it
+                Ok(())
+            }
         }
     }
 
