@@ -358,7 +358,7 @@ impl WorkerModule {
         let mut functions = self.list_functions();
 
         if !input.include_internal.unwrap_or(false) {
-            functions.retain(|f| !f.function_id.starts_with("engine."));
+            functions.retain(|f| !f.function_id.starts_with("engine::"));
         }
 
         FunctionResult::Success(Some(serde_json::json!({ "functions": functions })))
@@ -387,7 +387,7 @@ impl WorkerModule {
         let mut triggers = self.list_trigger_infos().await;
 
         if !input.include_internal.unwrap_or(false) {
-            triggers.retain(|t| !t.function_id.starts_with("engine."));
+            triggers.retain(|t| !t.function_id.starts_with("engine::"));
         }
 
         FunctionResult::Success(Some(serde_json::json!({ "triggers": triggers })))
