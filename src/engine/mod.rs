@@ -18,8 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     engine::register_validation::{
-        format_register_function_validation_error, format_register_trigger_validation_error,
-        validate_register_function, validate_register_trigger,
+        format_validation_error, validate_register_function, validate_register_trigger,
     },
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
@@ -259,7 +258,12 @@ impl Engine {
                 if let Err(issues) =
                     validate_register_trigger(id, trigger_type, function_id, config)
                 {
-                    let err = format_register_trigger_validation_error(id, &issues);
+                    let err = format_validation_error(
+                        "registertrigger",
+                        "register_trigger_validation_failed",
+                        id,
+                        &issues,
+                    );
                     self.send_msg(
                         worker,
                         Message::TriggerRegistrationResult {
@@ -510,9 +514,13 @@ impl Engine {
                     "RegisterFunction"
                 );
 
-                if let Err(issues) = validate_register_function(id, description, req, res, metadata)
-                {
-                    let err = format_register_function_validation_error(id, &issues);
+                if let Err(issues) = validate_register_function(id, req, res, metadata) {
+                    let err = format_validation_error(
+                        "registerfunction",
+                        "register_function_validation_failed",
+                        id,
+                        &issues,
+                    );
                     self.send_msg(
                         worker,
                         Message::TriggerRegistrationResult {

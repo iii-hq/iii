@@ -11,20 +11,21 @@ use crate::protocol::ErrorBody;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ValidationIssue {
     pub field: &'static str,
-    pub message: String,
+    pub message: &'static str,
 }
 
 impl ValidationIssue {
-    fn as_message(&self) -> String {
-        format!("{} {}", self.field, self.message)
-    }
-
     pub fn join_messages(issues: &[ValidationIssue]) -> String {
-        issues
-            .iter()
-            .map(ValidationIssue::as_message)
-            .collect::<Vec<_>>()
-            .join("; ")
+        let mut result = String::new();
+        for (i, issue) in issues.iter().enumerate() {
+            if i > 0 {
+                result.push_str("; ");
+            }
+            result.push_str(issue.field);
+            result.push(' ');
+            result.push_str(issue.message);
+        }
+        result
     }
 }
 
@@ -38,25 +39,25 @@ pub(crate) fn validate_register_trigger(
     if id.trim().is_empty() {
         issues.push(ValidationIssue {
             field: "id",
-            message: "must be a non-empty string".into(),
+            message: "must be a non-empty string",
         });
     }
     if trigger_type.trim().is_empty() {
         issues.push(ValidationIssue {
             field: "trigger_type",
-            message: "must be a non-empty string".into(),
+            message: "must be a non-empty string",
         });
     }
     if function_id.trim().is_empty() {
         issues.push(ValidationIssue {
             field: "function_id",
-            message: "must be a non-empty string".into(),
+            message: "must be a non-empty string",
         });
     }
     if !config.is_object() {
         issues.push(ValidationIssue {
             field: "config",
-            message: "must be a JSON object".into(),
+            message: "must be a JSON object",
         });
     }
 
@@ -69,7 +70,6 @@ pub(crate) fn validate_register_trigger(
 
 pub(crate) fn validate_register_function(
     id: &str,
-    _description: &Option<String>,
     request_format: &Option<Value>,
     response_format: &Option<Value>,
     metadata: &Option<Value>,
@@ -79,7 +79,7 @@ pub(crate) fn validate_register_function(
     if id.trim().is_empty() {
         issues.push(ValidationIssue {
             field: "id",
-            message: "must be a non-empty string".into(),
+            message: "must be a non-empty string",
         });
     }
 
@@ -88,7 +88,7 @@ pub(crate) fn validate_register_function(
     {
         issues.push(ValidationIssue {
             field: "metadata",
-            message: "must be a JSON object when provided".into(),
+            message: "must be a JSON object when provided",
         });
     }
 
@@ -97,7 +97,7 @@ pub(crate) fn validate_register_function(
     {
         issues.push(ValidationIssue {
             field: "request_format",
-            message: "must be a JSON object when provided".into(),
+            message: "must be a JSON object when provided",
         });
     }
 
@@ -106,7 +106,7 @@ pub(crate) fn validate_register_function(
     {
         issues.push(ValidationIssue {
             field: "response_format",
-            message: "must be a JSON object when provided".into(),
+            message: "must be a JSON object when provided",
         });
     }
 
@@ -117,29 +117,32 @@ pub(crate) fn validate_register_function(
     }
 }
 
-pub(crate) fn format_register_trigger_validation_error(
-    id: &str,
-    issues: &[ValidationIssue],
-) -> ErrorBody {
-    ErrorBody {
-        code: "register_trigger_validation_failed".into(),
-        message: format!(
-            "registertrigger validation failed for id '{}': {}",
-            id,
-            ValidationIssue::join_messages(issues)
-        ),
+fn sanitize_id_for_error(id: &str) -> String {
+    const MAX_DISPLAY_LEN: usize = 64;
+    let sanitized: String = id
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_DISPLAY_LEN)
+        .collect();
+    if id.len() > MAX_DISPLAY_LEN {
+        format!("{}...", sanitized)
+    } else {
+        sanitized
     }
 }
 
-pub(crate) fn format_register_function_validation_error(
+pub(crate) fn format_validation_error(
+    operation: &str,
+    code: &str,
     id: &str,
     issues: &[ValidationIssue],
 ) -> ErrorBody {
     ErrorBody {
-        code: "register_function_validation_failed".into(),
+        code: code.into(),
         message: format!(
-            "registerfunction validation failed for id '{}': {}",
-            id,
+            "{} validation failed for id '{}': {}",
+            operation,
+            sanitize_id_for_error(id),
             ValidationIssue::join_messages(issues)
         ),
     }
@@ -150,7 +153,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        format_register_function_validation_error, validate_register_function,
+        ValidationIssue, format_validation_error, validate_register_function,
         validate_register_trigger,
     };
 
@@ -171,18 +174,75 @@ mod tests {
 
     #[test]
     fn validate_register_function_rejects_empty_id_and_bad_metadata() {
-        let err =
-            validate_register_function("  ", &None, &None, &None, &Some(json!("bad"))).unwrap_err();
+        let err = validate_register_function("  ", &None, &None, &Some(json!("bad"))).unwrap_err();
         assert!(err.iter().any(|i| i.field == "id"));
         assert!(err.iter().any(|i| i.field == "metadata"));
     }
 
     #[test]
-    fn format_register_function_validation_error_is_readable() {
-        let issues = validate_register_function("", &None, &None, &None, &None).unwrap_err();
-        let body = format_register_function_validation_error("fn.bad", &issues);
+    fn format_validation_error_for_function_is_readable() {
+        let issues = validate_register_function("", &None, &None, &None).unwrap_err();
+        let body = format_validation_error(
+            "registerfunction",
+            "register_function_validation_failed",
+            "fn.bad",
+            &issues,
+        );
         assert_eq!(body.code, "register_function_validation_failed");
         assert!(body.message.contains("registerfunction validation failed"));
         assert!(body.message.contains("id"));
+    }
+
+    #[test]
+    fn format_validation_error_produces_correct_body() {
+        let issues = vec![ValidationIssue {
+            field: "id",
+            message: "must be a non-empty string",
+        }];
+        let body = format_validation_error(
+            "registertrigger",
+            "register_trigger_validation_failed",
+            "t1",
+            &issues,
+        );
+        assert_eq!(body.code, "register_trigger_validation_failed");
+        assert!(body.message.contains("registertrigger"));
+        assert!(body.message.contains("t1"));
+        assert!(body.message.contains("id must be a non-empty string"));
+    }
+
+    #[test]
+    fn format_validation_error_truncates_long_id() {
+        let long_id = "a".repeat(300);
+        let issues = vec![ValidationIssue {
+            field: "config",
+            message: "must be a JSON object",
+        }];
+        let body = format_validation_error(
+            "registertrigger",
+            "register_trigger_validation_failed",
+            &long_id,
+            &issues,
+        );
+        // id in the message should be truncated, not the full 300 chars
+        assert!(body.message.len() < 200);
+        assert!(body.message.contains("..."));
+    }
+
+    #[test]
+    fn format_validation_error_sanitizes_control_chars_in_id() {
+        let bad_id = "evil\n\rid";
+        let issues = vec![ValidationIssue {
+            field: "id",
+            message: "must be a non-empty string",
+        }];
+        let body = format_validation_error(
+            "registertrigger",
+            "register_trigger_validation_failed",
+            bad_id,
+            &issues,
+        );
+        assert!(!body.message.contains('\n'));
+        assert!(!body.message.contains('\r'));
     }
 }
