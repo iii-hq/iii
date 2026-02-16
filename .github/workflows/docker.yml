@@ -169,15 +169,18 @@ jobs:
         id: merge
         run: |
           TAGS="${{ steps.meta.outputs.tags }}"
-          for tag in $TAGS; do
-            docker buildx imagetools create \
-              -t ${{ env.GHCR_REPO }}:$tag \
-              ${{ env.GHCR_REPO }}:build-amd64 \
-              ${{ env.GHCR_REPO }}:build-arm64
-            docker buildx imagetools create \
-              -t ${{ env.DOCKERHUB_REPO }}:$tag \
-              ${{ env.DOCKERHUB_REPO }}:build-amd64 \
-              ${{ env.DOCKERHUB_REPO }}:build-arm64
+          for ref in $TAGS; do
+            if [[ "$ref" == ghcr.io/* ]]; then
+              docker buildx imagetools create \
+                -t "$ref" \
+                ${{ env.GHCR_REPO }}:build-amd64 \
+                ${{ env.GHCR_REPO }}:build-arm64
+            else
+              docker buildx imagetools create \
+                -t "$ref" \
+                ${{ env.DOCKERHUB_REPO }}:build-amd64 \
+                ${{ env.DOCKERHUB_REPO }}:build-arm64
+            fi
           done
 
       - name: Run Trivy vulnerability scanner
