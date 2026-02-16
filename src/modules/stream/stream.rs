@@ -365,7 +365,7 @@ impl StreamCoreModule {
 
 #[service(name = "stream")]
 impl StreamCoreModule {
-    #[function(id = "stream.set", description = "Set a value in a stream")]
+    #[function(id = "stream::set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
@@ -449,7 +449,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.get", description = "Get a value from a stream")]
+    #[function(id = "stream::get", description = "Get a value from a stream")]
     pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
@@ -494,7 +494,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.delete", description = "Delete a value from a stream")]
+    #[function(id = "stream::delete", description = "Delete a value from a stream")]
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
@@ -569,7 +569,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.list", description = "List all items in a stream group")]
+    #[function(id = "stream::list", description = "List all items in a stream group")]
     pub async fn list(&self, input: StreamListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
@@ -613,7 +613,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.list_groups", description = "List all groups in a stream")]
+    #[function(id = "stream::list_groups", description = "List all groups in a stream")]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,
@@ -659,7 +659,7 @@ impl StreamCoreModule {
     }
 
     #[function(
-        id = "stream.listAll",
+        id = "stream::list_all",
         description = "List all available stream with metadata"
     )]
     pub async fn list_all(
@@ -696,7 +696,7 @@ impl StreamCoreModule {
     }
 
     #[function(
-        id = "stream.update",
+        id = "stream::update",
         description = "Atomically update a stream value with multiple operations"
     )]
     pub async fn update(

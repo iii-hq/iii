@@ -60,7 +60,7 @@ impl Module for KvServer {
 #[service(name = "kv_server")]
 impl KvServer {
     #[function(
-        id = "kv_server.get",
+        id = "kv_server::get",
         description = "Get a value by key from the KV store"
     )]
     pub async fn get(&self, data: KvGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
@@ -70,7 +70,7 @@ impl KvServer {
     }
 
     #[function(
-        id = "kv_server.set",
+        id = "kv_server::set",
         description = "Set a value by key in the KV store"
     )]
     pub async fn set(&self, data: KvSetInput) -> FunctionResult<Option<SetResult>, ErrorBody> {
@@ -84,7 +84,7 @@ impl KvServer {
     }
 
     #[function(
-        id = "kv_server.delete",
+        id = "kv_server::delete",
         description = "Delete a value by key from the KV store"
     )]
     pub async fn delete(&self, data: KvDeleteInput) -> FunctionResult<DeleteResult, ErrorBody> {
@@ -99,7 +99,7 @@ impl KvServer {
     }
 
     #[function(
-        id = "kv_server.update",
+        id = "kv_server::update",
         description = "Update a value by key in the KV store"
     )]
     pub async fn update(&self, data: KvUpdateInput) -> FunctionResult<UpdateResult, ErrorBody> {
@@ -110,7 +110,7 @@ impl KvServer {
     }
 
     #[function(
-        id = "kv_server.list_keys_with_prefix",
+        id = "kv_server::list_keys_with_prefix",
         description = "List all keys with a prefix in the KV store"
     )]
     pub async fn list_keys_with_prefix(
@@ -128,7 +128,7 @@ impl KvServer {
         }
     }
 
-    #[function(id = "kv_server.list", description = "List all values in the KV store")]
+    #[function(id = "kv_server::list", description = "List all values in the KV store")]
     pub async fn list(&self, data: KvListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let result = self.storage.list(data.index.clone()).await;
         tracing::debug!(result = %result.len(), "Listing values from KV store");

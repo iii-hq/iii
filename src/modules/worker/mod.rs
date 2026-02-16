@@ -350,7 +350,7 @@ impl Module for WorkerModule {
 
 #[service(name = "engine")]
 impl WorkerModule {
-    #[function(id = "engine.functions.list", description = "List all functions")]
+    #[function(id = "engine::functions::list", description = "List all functions")]
     pub async fn get_functions(
         &self,
         input: FunctionsListInput,
@@ -365,7 +365,7 @@ impl WorkerModule {
     }
 
     #[function(
-        id = "engine.workers.list",
+        id = "engine::workers::list",
         description = "List all workers with metrics"
     )]
     pub async fn get_workers(
@@ -379,7 +379,7 @@ impl WorkerModule {
         })))
     }
 
-    #[function(id = "engine.triggers.list", description = "List all triggers")]
+    #[function(id = "engine::triggers::list", description = "List all triggers")]
     pub async fn get_triggers(
         &self,
         input: TriggersListInput,
@@ -394,7 +394,7 @@ impl WorkerModule {
     }
 
     #[function(
-        id = "engine.workers.register",
+        id = "engine::workers::register",
         description = "Register worker metadata"
     )]
     pub async fn register_worker(
