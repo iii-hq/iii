@@ -22,7 +22,7 @@ rabbitmq = ["lapin"]
 
 [dependencies]
 function-macros = { path = "function-macros" }
-iii-sdk = { version="0.0.4" , features=["otel"] }
+iii-sdk = { version="0.2.0" , features=["otel"] }
 #iii-sdk = { path = "", features=["otel"] } for local development
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal" ] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
