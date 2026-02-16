@@ -152,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Expose an HTTP Endpoint (API trigger)
 
-The REST API module maps HTTP routes to functions via the `api` trigger type. Functions should
+The REST API module maps HTTP routes to functions via the `http` trigger type. Functions should
 return `{ "status_code": <int>, "body": <json> }`.
 
 ```javascript
@@ -161,7 +161,7 @@ bridge.registerFunction({ function_id: 'api.echo' }, async (req) => {
 })
 
 bridge.registerTrigger({
-  trigger_type: 'api',
+  trigger_type: 'http',
   function_id: 'api.echo',
   config: { api_path: 'echo', http_method: 'POST' },
 })
@@ -174,7 +174,7 @@ With the default API config, the endpoint will be available at:
 
 Available core modules (registered in `src/modules/config.rs`):
 
-- `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
+- `modules::api::RestApiModule` – HTTP API trigger (`http`) on `host:port` (default `127.0.0.1:3111`).
 - `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `emit` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
 - `modules::stream::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
