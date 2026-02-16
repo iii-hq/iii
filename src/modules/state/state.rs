@@ -237,7 +237,7 @@ impl StateCoreModule {
 
 #[service(name = "state")]
 impl StateCoreModule {
-    #[function(id = "state.set", description = "Set a value in state")]
+    #[function(id = "state::set", description = "Set a value in state")]
     pub async fn set(&self, input: StateSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         match self
             .adapter
@@ -279,7 +279,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(id = "state.get", description = "Get a value from state")]
+    #[function(id = "state::get", description = "Get a value from state")]
     pub async fn get(&self, input: StateGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         match self.adapter.get(&input.scope, &input.key).await {
             Ok(value) => FunctionResult::Success(value),
@@ -290,7 +290,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(id = "state.delete", description = "Delete a value from state")]
+    #[function(id = "state::delete", description = "Delete a value from state")]
     pub async fn delete(
         &self,
         input: StateDeleteInput,
@@ -328,7 +328,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(id = "state.update", description = "Update a value in state")]
+    #[function(id = "state::update", description = "Update a value in state")]
     pub async fn update(
         &self,
         input: StateUpdateInput,
@@ -372,7 +372,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(id = "state.list", description = "Get a group from state")]
+    #[function(id = "state::list", description = "Get a group from state")]
     pub async fn list(
         &self,
         input: StateGetGroupInput,
@@ -386,7 +386,7 @@ impl StateCoreModule {
         }
     }
 
-    #[function(id = "state.list_groups", description = "List all state groups")]
+    #[function(id = "state::list_groups", description = "List all state groups")]
     pub async fn list_groups(
         &self,
         _input: StateListGroupsInput,
