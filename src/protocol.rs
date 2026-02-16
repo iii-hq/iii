@@ -155,13 +155,13 @@ mod tests {
 
     #[test]
     fn deserialize_unregister_trigger_with_type() {
-        let raw = r#"{"type":"unregistertrigger","id":"abc","trigger_type":"api"}"#;
+        let raw = r#"{"type":"unregistertrigger","id":"abc","trigger_type":"http"}"#;
         let message: Message = serde_json::from_str(raw).expect("message should deserialize");
 
         match message {
             Message::UnregisterTrigger { id, trigger_type } => {
                 assert_eq!(id, "abc");
-                assert_eq!(trigger_type.as_deref(), Some("api"));
+                assert_eq!(trigger_type.as_deref(), Some("http"));
             }
             _ => panic!("unexpected message variant"),
         }
