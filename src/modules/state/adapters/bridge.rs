@@ -64,7 +64,7 @@ impl StateAdapter for BridgeAdapter {
 
         let update_result = self
             .bridge
-            .call("kv_server.update", update_data)
+            .call("kv_server::update", update_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value in kv_server: {}", e))?;
 
@@ -85,7 +85,7 @@ impl StateAdapter for BridgeAdapter {
         };
         let set_result = self
             .bridge
-            .call("kv_server.set", set_data)
+            .call("kv_server::set", set_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
@@ -100,7 +100,7 @@ impl StateAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .call("kv_server.get", data)
+            .call("kv_server::get", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
 
@@ -114,7 +114,7 @@ impl StateAdapter for BridgeAdapter {
             key: key.to_string(),
         };
         self.bridge
-            .call("kv_server.delete", delete_data)
+            .call("kv_server::delete", delete_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
         Ok(())
@@ -127,7 +127,7 @@ impl StateAdapter for BridgeAdapter {
 
         let value = self
             .bridge
-            .call("kv_server.list", data)
+            .call("kv_server::list", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list values from kv_server: {}", e))?;
 
@@ -138,7 +138,7 @@ impl StateAdapter for BridgeAdapter {
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
         let value = self
             .bridge
-            .call("kv_server.list_groups", serde_json::json!({}))
+            .call("kv_server::list_groups", serde_json::json!({}))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
 
