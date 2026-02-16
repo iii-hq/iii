@@ -11,20 +11,16 @@ env:
   DOCKERHUB_REPO: iiidev/iii
 
 jobs:
-  build-and-push:
-    name: Build and Push Docker Image
+  build-amd64:
+    name: Build linux/amd64
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      security-events: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -56,24 +52,138 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Build and push
+      - name: Build and push amd64
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ env.GHCR_REPO }}:build-amd64
+            ${{ env.DOCKERHUB_REPO }}:build-amd64
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
 
+  build-arm64:
+    name: Build linux/arm64
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_REPO }}
+            ${{ env.DOCKERHUB_REPO }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=sha,enable=${{ github.ref_type != 'tag' }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Build and push arm64
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.GHCR_REPO }}:build-arm64
+            ${{ env.DOCKERHUB_REPO }}:build-arm64
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  merge-and-publish:
+    name: Merge manifests and publish
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_REPO }}
+            ${{ env.DOCKERHUB_REPO }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=sha,enable=${{ github.ref_type != 'tag' }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Create and push multi-platform manifest
+        id: merge
+        run: |
+          TAGS="${{ steps.meta.outputs.tags }}"
+          for tag in $TAGS; do
+            docker buildx imagetools create \
+              -t ${{ env.GHCR_REPO }}:$tag \
+              ${{ env.GHCR_REPO }}:build-amd64 \
+              ${{ env.GHCR_REPO }}:build-arm64
+            docker buildx imagetools create \
+              -t ${{ env.DOCKERHUB_REPO }}:$tag \
+              ${{ env.DOCKERHUB_REPO }}:build-amd64 \
+              ${{ env.DOCKERHUB_REPO }}:build-arm64
+          done
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: ${{ env.GHCR_REPO }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ env.GHCR_REPO }}:build-amd64
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
@@ -89,7 +199,7 @@ jobs:
       - name: Check for critical vulnerabilities
         uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: ${{ env.GHCR_REPO }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ env.GHCR_REPO }}:build-amd64
           format: 'table'
           severity: 'CRITICAL'
           exit-code: '1'
@@ -117,8 +227,7 @@ jobs:
           echo "- **Runtime:** Distroless (nonroot)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Details" >> $GITHUB_STEP_SUMMARY
-          echo "- **Platforms:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
-          echo "- **Digest:** \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms:** linux/amd64, linux/arm64 (parallel native builds)" >> $GITHUB_STEP_SUMMARY
 
       - name: Notify Slack - Docker Published
         if: success()
@@ -135,7 +244,7 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Docker Image Published* 🐳\n\nVersion: `${{ github.ref_name }}`\nPlatforms: `linux/amd64`, `linux/arm64`\nRuntime: Distroless (nonroot)\n\n*Images:*\n• `${{ env.DOCKERHUB_REPO }}:${{ github.ref_name }}`\n• `${{ env.GHCR_REPO }}:${{ github.ref_name }}`"
+                    "text": "*Docker Image Published* 🐳\n\nVersion: `${{ github.ref_name }}`\nPlatforms: `linux/amd64`, `linux/arm64` (parallel native builds)\nRuntime: Distroless (nonroot)\n\n*Images:*\n• `${{ env.DOCKERHUB_REPO }}:${{ github.ref_name }}`\n• `${{ env.GHCR_REPO }}:${{ github.ref_name }}`"
                   }
                 },
                 {
@@ -143,15 +252,20 @@ jobs:
                   "elements": [
                     {
                       "type": "mrkdwn",
-                      "text": "Digest: `${{ steps.build.outputs.digest }}` | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Build>"
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Build>"
                     }
                   ]
                 }
               ]
             }
 
+  notify-failure:
+    name: Notify Slack - Docker Failed
+    needs: [build-amd64, build-arm64, merge-and-publish]
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
       - name: Notify Slack - Docker Failed
-        if: failure()
         uses: slackapi/slack-github-action@v2.0.0
         continue-on-error: true
         with:
