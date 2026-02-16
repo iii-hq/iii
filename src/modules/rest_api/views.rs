@@ -194,7 +194,7 @@ pub async fn dynamic_handler(
 
         {
             // Tag the HTTP span as internal if the function is an engine.* function
-            let function_kind = if function_id.starts_with("engine.") {
+            let function_kind = if function_id.starts_with("engine::") {
                 "internal"
             } else {
                 "user"

@@ -575,7 +575,7 @@ impl OtelModule {
                         if !include_internal {
                             let is_internal = s.attributes.iter().any(|(k, v)| {
                                 (k == "iii.function.kind" && v == "internal")
-                                    || (k == "function_id" && v.starts_with("engine."))
+                                    || (k == "function_id" && v.starts_with("engine::"))
                             });
                             if is_internal {
                                 return false;
