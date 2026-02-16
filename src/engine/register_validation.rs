@@ -8,6 +8,15 @@ use serde_json::Value;
 
 use crate::protocol::ErrorBody;
 
+pub(crate) const MAX_ID_LEN: usize = 256;
+
+fn is_valid_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= MAX_ID_LEN
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ValidationIssue {
     pub field: &'static str,
@@ -36,22 +45,22 @@ pub(crate) fn validate_register_trigger(
     config: &Value,
 ) -> Result<(), Vec<ValidationIssue>> {
     let mut issues = Vec::new();
-    if id.trim().is_empty() {
+    if !is_valid_identifier(id) {
         issues.push(ValidationIssue {
             field: "id",
-            message: "must be a non-empty string",
+            message: "must be a non-empty alphanumeric string (max 256 chars, allows - _ . / :)",
         });
     }
-    if trigger_type.trim().is_empty() {
+    if !is_valid_identifier(trigger_type) {
         issues.push(ValidationIssue {
             field: "trigger_type",
-            message: "must be a non-empty string",
+            message: "must be a non-empty alphanumeric string (max 256 chars, allows - _ . / :)",
         });
     }
-    if function_id.trim().is_empty() {
+    if !is_valid_identifier(function_id) {
         issues.push(ValidationIssue {
             field: "function_id",
-            message: "must be a non-empty string",
+            message: "must be a non-empty alphanumeric string (max 256 chars, allows - _ . / :)",
         });
     }
     if !config.is_object() {
@@ -76,10 +85,10 @@ pub(crate) fn validate_register_function(
 ) -> Result<(), Vec<ValidationIssue>> {
     let mut issues = Vec::new();
 
-    if id.trim().is_empty() {
+    if !is_valid_identifier(id) {
         issues.push(ValidationIssue {
             field: "id",
-            message: "must be a non-empty string",
+            message: "must be a non-empty alphanumeric string (max 256 chars, allows - _ . / :)",
         });
     }
 
@@ -153,7 +162,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ValidationIssue, format_validation_error, validate_register_function,
+        MAX_ID_LEN, ValidationIssue, format_validation_error, validate_register_function,
         validate_register_trigger,
     };
 
@@ -244,5 +253,41 @@ mod tests {
         );
         assert!(!body.message.contains('\n'));
         assert!(!body.message.contains('\r'));
+    }
+
+    #[test]
+    fn validate_register_trigger_rejects_id_exceeding_max_length() {
+        let long_id = "a".repeat(MAX_ID_LEN + 1);
+        let err = validate_register_trigger(&long_id, "queue", "fn.demo", &json!({})).unwrap_err();
+        assert!(err.iter().any(|i| i.field == "id"));
+        assert!(err.iter().any(|i| i.message.contains("256")));
+    }
+
+    #[test]
+    fn validate_register_trigger_rejects_id_with_control_chars() {
+        let err =
+            validate_register_trigger("evil\nid", "queue", "fn.demo", &json!({})).unwrap_err();
+        assert!(err.iter().any(|i| i.field == "id"));
+        assert!(err.iter().any(|i| i.message.contains("alphanumeric")));
+    }
+
+    #[test]
+    fn validate_register_trigger_accepts_valid_identifier_chars() {
+        let result =
+            validate_register_trigger("my-trigger_v2.0/sub", "queue", "steps.demo", &json!({}));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_register_function_rejects_id_with_spaces() {
+        let err = validate_register_function("has space", &None, &None, &None).unwrap_err();
+        assert!(err.iter().any(|i| i.field == "id"));
+    }
+
+    #[test]
+    fn validate_register_trigger_rejects_trigger_type_exceeding_max_length() {
+        let long_type = "t".repeat(MAX_ID_LEN + 1);
+        let err = validate_register_trigger("t1", &long_type, "fn.demo", &json!({})).unwrap_err();
+        assert!(err.iter().any(|i| i.field == "trigger_type"));
     }
 }
