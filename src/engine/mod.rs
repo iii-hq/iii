@@ -4,6 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+mod register_validation;
+
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
@@ -15,6 +17,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
+    engine::register_validation::{
+        format_register_function_validation_error, format_register_trigger_validation_error,
+        validate_register_function, validate_register_trigger,
+    },
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
@@ -250,7 +256,25 @@ impl Engine {
                     "RegisterTrigger"
                 );
 
-                let _ = self
+                if let Err(issues) =
+                    validate_register_trigger(id, trigger_type, function_id, config)
+                {
+                    let err = format_register_trigger_validation_error(id, &issues);
+                    self.send_msg(
+                        worker,
+                        Message::TriggerRegistrationResult {
+                            id: id.clone(),
+                            trigger_type: trigger_type.clone(),
+                            function_id: function_id.clone(),
+                            error: Some(err),
+                        },
+                    )
+                    .await;
+
+                    return Ok(());
+                }
+
+                if let Err(err) = self
                     .trigger_registry
                     .register_trigger(Trigger {
                         id: id.clone(),
@@ -259,6 +283,20 @@ impl Engine {
                         config: config.clone(),
                         worker_id: Some(worker.id),
                     })
+                    .await
+                {
+                    self.send_msg(
+                        worker,
+                        Message::TriggerRegistrationResult {
+                            id: id.clone(),
+                            trigger_type: trigger_type.clone(),
+                            function_id: function_id.clone(),
+                            error: Some(ErrorBody {
+                                code: "trigger_registration_failed".into(),
+                                message: err.to_string(),
+                            }),
+                        },
+                    )
                     .await;
                 crate::modules::telemetry::collector::track_trigger_registered();
 
@@ -471,6 +509,23 @@ impl Engine {
                     description = ?description,
                     "RegisterFunction"
                 );
+
+                if let Err(issues) = validate_register_function(id, description, req, res, metadata)
+                {
+                    let err = format_register_function_validation_error(id, &issues);
+                    self.send_msg(
+                        worker,
+                        Message::TriggerRegistrationResult {
+                            id: id.clone(),
+                            trigger_type: "registerfunction".into(),
+                            function_id: id.clone(),
+                            error: Some(err),
+                        },
+                    )
+                    .await;
+
+                    return Ok(());
+                }
 
                 self.service_registry.register_service_from_function_id(id);
 
@@ -802,5 +857,78 @@ impl EngineTrait for Engine {
 
         self.functions
             .register_function(request.function_id, function);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
+
+    use super::{Engine, Outbound};
+    use crate::{protocol::Message, workers::Worker};
+
+    #[tokio::test]
+    async fn register_trigger_with_invalid_payload_returns_validation_error_message() {
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let worker = Worker::new(tx);
+
+        let msg = Message::RegisterTrigger {
+            id: "bad-trigger".into(),
+            trigger_type: "queue".into(),
+            function_id: "".into(),
+            config: serde_json::json!("not-an-object"),
+        };
+
+        engine.router_msg(&worker, &msg).await.unwrap();
+
+        let outbound = timeout(Duration::from_millis(250), rx.recv())
+            .await
+            .expect("expected outbound validation message within timeout")
+            .expect("expected outbound validation message");
+        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
+            panic!("unexpected outbound message");
+        };
+
+        let error = error.expect("expected validation error");
+        assert_eq!(error.code, "register_trigger_validation_failed");
+        assert!(error.message.contains("function_id"));
+        assert!(error.message.contains("config"));
+    }
+
+    #[tokio::test]
+    async fn register_function_with_invalid_payload_returns_validation_error_and_does_not_register()
+    {
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let worker = Worker::new(tx);
+
+        let msg = Message::RegisterFunction {
+            id: "  ".into(),
+            description: None,
+            request_format: Some(serde_json::json!("bad")),
+            response_format: None,
+            metadata: Some(serde_json::json!("bad")),
+        };
+
+        engine.router_msg(&worker, &msg).await.unwrap();
+
+        let outbound = timeout(Duration::from_millis(250), rx.recv())
+            .await
+            .expect("expected outbound validation message within timeout")
+            .expect("expected outbound validation message");
+        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
+            panic!("unexpected outbound message");
+        };
+
+        let error = error.expect("expected validation error");
+        assert_eq!(error.code, "register_function_validation_failed");
+        assert!(error.message.contains("id"));
+        assert!(error.message.contains("request_format"));
+        assert!(error.message.contains("metadata"));
+        assert!(engine.functions.get("  ").is_none());
     }
 }
