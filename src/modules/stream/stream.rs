@@ -373,7 +373,7 @@ impl StreamCoreModule {
         let item_id = input.item_id;
         let data = input.data;
 
-        let function_id = format!("stream.set({})", stream_name);
+        let function_id = format!("stream::set({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -456,7 +456,7 @@ impl StreamCoreModule {
         let group_id = input.group_id;
         let item_id = input.item_id;
 
-        let function_id = format!("stream.get({})", stream_name);
+        let function_id = format!("stream::get({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -503,7 +503,7 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        let function_id = format!("stream.delete({})", stream_name);
+        let function_id = format!("stream::delete({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -575,7 +575,7 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
-        let function_id = format!("stream.list({})", stream_name);
+        let function_id = format!("stream::list({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -624,7 +624,7 @@ impl StreamCoreModule {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
 
-        let function_id = format!("stream.list_groups({})", stream_name);
+        let function_id = format!("stream::list_groups({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -714,7 +714,7 @@ impl StreamCoreModule {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let function_id = format!("stream.update({})", stream_name);
+        let function_id = format!("stream::update({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
