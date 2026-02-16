@@ -613,7 +613,10 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream::list_groups", description = "List all groups in a stream")]
+    #[function(
+        id = "stream::list_groups",
+        description = "List all groups in a stream"
+    )]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,

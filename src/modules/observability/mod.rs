@@ -287,7 +287,10 @@ impl OtelModule {
     // OTEL-native Log Functions (recommended over legacy logger.*)
     // =========================================================================
 
-    #[function(id = "engine::log::info", description = "Log an info message using OTEL")]
+    #[function(
+        id = "engine::log::info",
+        description = "Log an info message using OTEL"
+    )]
     pub async fn log_info(&self, input: OtelLogInput) -> FunctionResult<Option<Value>, ErrorBody> {
         self.store_and_emit_log(&input, "INFO", 9).await;
         FunctionResult::NoResult
@@ -1054,7 +1057,10 @@ impl OtelModule {
     // Health Check Functions
     // =========================================================================
 
-    #[function(id = "engine::health::check", description = "Check system health status")]
+    #[function(
+        id = "engine::health::check",
+        description = "Check system health status"
+    )]
     pub async fn health_check(
         &self,
         _input: HealthCheckInput,

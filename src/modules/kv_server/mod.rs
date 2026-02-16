@@ -128,7 +128,10 @@ impl KvServer {
         }
     }
 
-    #[function(id = "kv_server::list", description = "List all values in the KV store")]
+    #[function(
+        id = "kv_server::list",
+        description = "List all values in the KV store"
+    )]
     pub async fn list(&self, data: KvListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let result = self.storage.list(data.index.clone()).await;
         tracing::debug!(result = %result.len(), "Listing values from KV store");
