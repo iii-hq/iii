@@ -73,25 +73,12 @@ if command -v jq >/dev/null 2>&1; then
   asset_url=$(printf '%s' "$json" \
     | jq -r --arg target "$target" '.assets[] | select(.name | test($target)) | .browser_download_url' \
     | head -n 1)
-  asset_id=$(printf '%s' "$json" \
-    | jq -r --arg target "$target" '.assets[] | select(.name | test($target)) | .id' \
-    | head -n 1)
 else
   asset_url=$(printf '%s' "$json" \
     | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
     | sed -E 's/.*"([^"]+)".*/\1/' \
     | grep "$target" \
     | head -n 1)
-  asset_id=$(printf '%s' "$json" | awk -v target="$target" '
-    /"id"[[:space:]]*:/ {
-      line=$0
-      gsub(/[^0-9]/, "", line)
-      if (line != "") last_id=line
-    }
-    /"name"[[:space:]]*:/ && $0 ~ target {
-      if (last_id != "") { print last_id; exit }
-    }
-  ')
 fi
 
 if [ -z "$asset_url" ]; then
