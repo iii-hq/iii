@@ -112,7 +112,7 @@ impl HttpFunctionsModule {
 
         self.engine.register_function_handler(
             RegisterFunctionRequest {
-                function_path: config.function_path.clone(),
+                function_id: config.function_path.clone(),
                 description: config.description,
                 request_format: config.request_format,
                 response_format: config.response_format,
@@ -150,7 +150,7 @@ impl HttpFunctionsModule {
         let trigger = crate::trigger::Trigger {
             id: config.trigger_id,
             trigger_type: format!("http_{}", config.trigger_type),
-            function_path: config.function_path,
+            function_id: config.function_path,
             config: config.config,
             worker_id: None,
         };

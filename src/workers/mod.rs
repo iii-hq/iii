@@ -171,6 +171,7 @@ pub struct Worker {
     pub id: Uuid,
     pub channel: mpsc::Sender<Outbound>,
     pub function_ids: Arc<RwLock<HashSet<String>>>,
+    pub http_function_ids: Arc<RwLock<HashSet<String>>>,
     pub invocations: Arc<RwLock<HashSet<Uuid>>>,
     pub runtime: Option<String>,
     pub version: Option<String>,
@@ -190,6 +191,7 @@ impl Worker {
             channel,
             invocations: Arc::new(RwLock::new(HashSet::new())),
             function_ids: Arc::new(RwLock::new(HashSet::new())),
+            http_function_ids: Arc::new(RwLock::new(HashSet::new())),
             runtime: None,
             version: None,
             connected_at: Utc::now(),
@@ -208,6 +210,7 @@ impl Worker {
             channel,
             invocations: Arc::new(RwLock::new(HashSet::new())),
             function_ids: Arc::new(RwLock::new(HashSet::new())),
+            http_function_ids: Arc::new(RwLock::new(HashSet::new())),
             runtime: None,
             version: None,
             connected_at: Utc::now(),
@@ -220,7 +223,9 @@ impl Worker {
     }
 
     pub async fn function_count(&self) -> usize {
-        self.function_ids.read().await.len()
+        let mut function_ids = self.function_ids.read().await.clone();
+        function_ids.extend(self.http_function_ids.read().await.iter().cloned());
+        function_ids.len()
     }
 
     pub async fn invocation_count(&self) -> usize {
@@ -228,13 +233,39 @@ impl Worker {
     }
 
     pub async fn get_function_ids(&self) -> Vec<String> {
-        self.function_ids.read().await.iter().cloned().collect()
+        let mut function_ids = self.function_ids.read().await.clone();
+        function_ids.extend(self.http_function_ids.read().await.iter().cloned());
+        function_ids.into_iter().collect()
     }
     pub async fn include_function_id(&self, function_id: &str) {
         self.function_ids
             .write()
             .await
             .insert(function_id.to_owned());
+    }
+
+    pub async fn include_http_function_id(&self, function_id: &str) {
+        self.http_function_ids
+            .write()
+            .await
+            .insert(function_id.to_owned());
+    }
+
+    pub async fn remove_http_function_id(&self, function_id: &str) -> bool {
+        self.http_function_ids.write().await.remove(function_id)
+    }
+
+    pub async fn has_http_function_id(&self, function_id: &str) -> bool {
+        self.http_function_ids.read().await.contains(function_id)
+    }
+
+    pub async fn get_http_function_ids(&self) -> Vec<String> {
+        self.http_function_ids
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub async fn add_invocation(&self, invocation_id: Uuid) {

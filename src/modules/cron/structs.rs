@@ -196,7 +196,7 @@ impl CronAdapter {
                                     "id": trigger.id,
                                     "scheduled_at": next.to_rfc3339(),
                                     "fired_at": chrono::Utc::now().to_rfc3339(),
-                                    "function_path": trigger.function_path,
+                                    "function_path": trigger.function_id,
                                 },
                                 "config": trigger.config,
                             })
