@@ -38,9 +38,9 @@ use crate::{
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
-                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
-                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSetInput,
-                StreamUpdateInput,
+                EventData, StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
+                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSendInput,
+                StreamSetInput, StreamUpdateInput,
             },
             trigger::{
                 JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
@@ -696,6 +696,35 @@ impl StreamCoreModule {
                 })
             }
         }
+    }
+
+    #[function(id = "stream::send", description = "Send a custom event to stream subscribers")]
+    pub async fn send(&self, input: StreamSendInput) -> FunctionResult<(), ErrorBody> {
+        let message = StreamWrapperMessage {
+            event_type: "stream".to_string(),
+            timestamp: Utc::now().timestamp_millis(),
+            stream_name: input.stream_name.clone(),
+            group_id: input.group_id.clone(),
+            id: input.id.clone(),
+            event: StreamOutboundMessage::Event {
+                event: EventData {
+                    event_type: input.event_type,
+                    data: input.data,
+                },
+            },
+        };
+
+        self.invoke_triggers(message.clone()).await;
+
+        if let Err(e) = self.adapter.emit_event(message).await {
+            tracing::error!(error = %e, "Failed to emit stream send event");
+            return FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to send event: {}", e),
+                code: "STREAM_SEND_ERROR".to_string(),
+            });
+        }
+
+        FunctionResult::Success(())
     }
 
     #[function(
