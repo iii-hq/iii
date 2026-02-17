@@ -93,7 +93,7 @@ impl BridgeAdapter {
 impl QueueAdapter for BridgeAdapter {
     /// Enqueues a message to the bridge for distribution to other engines.
     /// Failures are logged but do not block the caller.
-    async fn enqueue(&self, topic: &str, data: Value) {
+    async fn enqueue(&self, topic: &str, data: Value, _traceparent: Option<String>, _baggage: Option<String>) {
         let input = Self::build_enqueue_payload(topic, data);
         if let Err(e) = self
             .bridge

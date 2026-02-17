@@ -298,10 +298,12 @@ impl Engine {
                 // Create a span that's linked to the incoming trace context (if any)
                 let span = tracing::info_span!(
                     "handle_invocation",
+                    otel.name = %format!("handle_invocation {}", function_id),
                     worker_id = %worker.id,
                     function_id = %function_id,
                     invocation_id = ?invocation_id,
-                    otel.kind = "server"
+                    otel.kind = "server",
+                    otel.status_code = tracing::field::Empty,
                 )
                 .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
@@ -350,6 +352,7 @@ impl Engine {
                             match result {
                                 Ok(result) => match result {
                                     Ok(result) => {
+                                        tracing::Span::current().record("otel.status_code", "OK");
                                         engine
                                             .send_msg(
                                                 &worker,
@@ -365,6 +368,7 @@ impl Engine {
                                             .await;
                                     }
                                     Err(err) => {
+                                        tracing::Span::current().record("otel.status_code", "ERROR");
                                         engine
                                             .send_msg(
                                                 &worker,
@@ -381,6 +385,7 @@ impl Engine {
                                     }
                                 },
                                 Err(err) => {
+                                    tracing::Span::current().record("otel.status_code", "ERROR");
                                     tracing::error!(error = ?err, "Error remembering invocation");
                                     engine
                                         .send_msg(
@@ -527,13 +532,23 @@ impl Engine {
             .map(|entry| entry.value().clone())
             .collect();
 
+        let current_span = tracing::Span::current();
+
         for trigger in triggers {
             let engine = self.clone();
             let function_id = trigger.function_id.clone();
             let data = data.clone();
-            tokio::spawn(async move {
-                let _ = engine.call(&function_id, data).await;
-            });
+            let parent = current_span.clone();
+            let span_function_id = function_id.clone();
+            tokio::spawn(
+                async move {
+                    match engine.call(&function_id, data).await {
+                        Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
+                        Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
+                    }
+                }
+                .instrument(tracing::info_span!(parent: parent, "fire_trigger", function_id = %span_function_id, otel.status_code = tracing::field::Empty))
+            );
         }
     }
 

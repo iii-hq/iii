@@ -27,6 +27,7 @@ use iii_sdk::{
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::net::TcpListener;
+use tracing::Instrument;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -279,8 +280,12 @@ impl StreamCoreModule {
             triggers
         };
 
+        let current_span = tracing::Span::current();
+
         if let Ok(event_data) = serde_json::to_value(event_data) {
             tokio::spawn(async move {
+                let mut has_error = false;
+
                 for stream_trigger in triggers_to_invoke {
                     let trigger = &stream_trigger.trigger;
 
@@ -327,6 +332,7 @@ impl StreamCoreModule {
                                     error = ?err,
                                     "Error invoking condition function"
                                 );
+                                has_error = true;
                                 continue;
                             }
                         }
@@ -348,6 +354,7 @@ impl StreamCoreModule {
                             );
                         }
                         Err(err) => {
+                            has_error = true;
                             tracing::error!(
                                 function_id = %trigger.function_id,
                                 error = ?err,
@@ -356,7 +363,13 @@ impl StreamCoreModule {
                         }
                     }
                 }
-            });
+
+                if has_error {
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                } else {
+                    tracing::Span::current().record("otel.status_code", "OK");
+                }
+            }.instrument(tracing::info_span!(parent: current_span, "stream_triggers", otel.status_code = tracing::field::Empty)));
         } else {
             tracing::error!("Failed to convert event data to value");
         }

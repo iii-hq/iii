@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use tracing::Instrument;
+
 use crate::{
     builtins::{
         kv::BuiltinKvStore,
@@ -25,6 +27,7 @@ use crate::{
         QueueAdapter, SubscriberQueueConfig,
         registry::{QueueAdapterFuture, QueueAdapterRegistration},
     },
+    telemetry::SpanExt,
 };
 
 pub struct BuiltinQueueAdapter {
@@ -41,10 +44,35 @@ struct FunctionHandler {
 #[async_trait]
 impl JobHandler for FunctionHandler {
     async fn handle(&self, job: &crate::builtins::queue::Job) -> Result<(), String> {
-        match self.engine.call(&self.function_id, job.data.clone()).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("{:?}", e)),
+        tracing::debug!(
+            job_id = %job.id,
+            queue = %job.queue,
+            traceparent = ?job.traceparent,
+            baggage = ?job.baggage,
+            "Queue worker handling job with trace context"
+        );
+
+        let span = tracing::info_span!(
+            "queue_job",
+            otel.name = %format!("queue {}", job.queue),
+            job_id = %job.id,
+            queue = %job.queue,
+            otel.status_code = tracing::field::Empty,
+        )
+        .with_parent_headers(job.traceparent.as_deref(), job.baggage.as_deref());
+
+        async {
+            let result = self.engine.call(&self.function_id, job.data.clone()).await;
+            match &result {
+                Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
+                Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
+            }
+            result
         }
+        .instrument(span)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("{:?}", e))
     }
 }
 
@@ -99,8 +127,8 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
 
 #[async_trait]
 impl QueueAdapter for BuiltinQueueAdapter {
-    async fn enqueue(&self, topic: &str, data: Value) {
-        self.queue.push(topic, data).await;
+    async fn enqueue(&self, topic: &str, data: Value, traceparent: Option<String>, baggage: Option<String>) {
+        self.queue.push(topic, data, traceparent, baggage).await;
     }
 
     async fn subscribe(
