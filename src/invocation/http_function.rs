@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
@@ -8,7 +14,7 @@ use crate::invocation::method::HttpMethod;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpFunctionConfig {
-    #[serde(rename = "path", alias = "function_path")]
+    #[serde(alias = "path")]
     pub function_path: String,
     pub url: String,
     #[serde(default = "default_method")]
@@ -19,7 +25,7 @@ pub struct HttpFunctionConfig {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
-    pub auth: Option<crate::invocation::auth::HttpAuthRef>,
+    pub auth: Option<crate::invocation::auth::HttpAuthConfig>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]

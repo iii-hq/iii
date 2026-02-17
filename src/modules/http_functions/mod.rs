@@ -23,7 +23,6 @@ use crate::{
         http_function::HttpFunctionConfig,
         http_invoker::{HttpEndpointParams, HttpInvoker, HttpInvokerConfig},
         method::HttpAuth,
-        url_validator::UrlValidatorConfig,
     },
     modules::module::Module,
     protocol::ErrorBody,
@@ -188,20 +187,8 @@ impl Module for HttpFunctionsModule {
             .transpose()?
             .unwrap_or_default();
 
-        let allowlist = if config.security.url_allowlist.is_empty() {
-            vec!["*".to_string()]
-        } else {
-            config.security.url_allowlist.clone()
-        };
-
-        let url_validator = UrlValidatorConfig {
-            allowlist,
-            block_private_ips: config.security.block_private_ips,
-            require_https: config.security.require_https,
-        };
-
         let http_invoker = Arc::new(HttpInvoker::new(HttpInvokerConfig {
-            url_validator,
+            url_validator: config.security.clone().into(),
             ..HttpInvokerConfig::default()
         })?);
 
