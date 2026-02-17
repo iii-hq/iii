@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -133,22 +139,8 @@ impl HttpInvoker {
         }
     }
 
-    pub async fn deliver_webhook(
-        &self,
-        function_path: &str,
-        endpoint: &HttpEndpointParams<'_>,
-        trigger_type: &str,
-        trigger_id: &str,
-        payload: Value,
-    ) -> Result<(), ErrorBody> {
-        self.url_validator
-            .validate(endpoint.url)
-            .await
-            .map_err(|e| ErrorBody {
-                code: "url_validation_failed".into(),
-                message: e.to_string(),
-            })?;
-
+    /// Computes a timestamp and serializes the payload to bytes.
+    fn prepare_request(&self, data: &Value) -> Result<(u64, Vec<u8>), ErrorBody> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|err| ErrorBody {
@@ -157,10 +149,34 @@ impl HttpInvoker {
             })?
             .as_secs();
 
-        let body = serde_json::to_vec(&payload).map_err(|err| ErrorBody {
+        let body = serde_json::to_vec(data).map_err(|err| ErrorBody {
             code: "serialization_error".into(),
             message: err.to_string(),
         })?;
+
+        Ok((timestamp, body))
+    }
+
+    async fn validate_url(&self, url: &str) -> Result<(), ErrorBody> {
+        self.url_validator
+            .validate(url)
+            .await
+            .map_err(|e| ErrorBody {
+                code: "url_validation_failed".into(),
+                message: e.to_string(),
+            })
+    }
+
+    pub async fn deliver_webhook(
+        &self,
+        function_path: &str,
+        endpoint: &HttpEndpointParams<'_>,
+        trigger_type: &str,
+        trigger_id: &str,
+        payload: Value,
+    ) -> Result<(), ErrorBody> {
+        self.validate_url(endpoint.url).await?;
+        let (timestamp, body) = self.prepare_request(&payload)?;
 
         let invocation_id = Uuid::new_v4().to_string();
         let trace_id_value = format!("trace-{}", Uuid::new_v4());
@@ -207,26 +223,8 @@ impl HttpInvoker {
         caller_function: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<Option<Value>, ErrorBody> {
-        self.url_validator
-            .validate(endpoint.url)
-            .await
-            .map_err(|e| ErrorBody {
-                code: "url_validation_failed".into(),
-                message: e.to_string(),
-            })?;
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| ErrorBody {
-                code: "timestamp_error".into(),
-                message: err.to_string(),
-            })?
-            .as_secs();
-
-        let body = serde_json::to_vec(&data).map_err(|err| ErrorBody {
-            code: "serialization_error".into(),
-            message: err.to_string(),
-        })?;
+        self.validate_url(endpoint.url).await?;
+        let (timestamp, body) = self.prepare_request(&data)?;
 
         let mut request = self.build_base_request(
             endpoint,
@@ -276,7 +274,10 @@ impl HttpInvoker {
 
 fn http_method_to_reqwest(method: &HttpMethod) -> Method {
     match method {
+        HttpMethod::Get => Method::GET,
         HttpMethod::Post => Method::POST,
         HttpMethod::Put => Method::PUT,
+        HttpMethod::Patch => Method::PATCH,
+        HttpMethod::Delete => Method::DELETE,
     }
 }

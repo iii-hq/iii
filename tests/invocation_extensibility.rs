@@ -7,23 +7,36 @@ use iii::{
     protocol::ErrorBody,
 };
 
-#[tokio::test]
-async fn test_basic_function_invocation() {
-    let engine = Arc::new(Engine::new());
+/// Creates a test handler that wraps a simple transform function, hiding the
+/// verbose `Pin<Box<dyn Future ...>>` type coercion that would otherwise be
+/// repeated in every test.
+type HandlerFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
 
-    let handler = Handler::new(move |input: Value| {
-        Box::pin(async move {
-            FunctionResult::Success(Some(json!({
-                "input": input,
-                "output": "processed"
-            })))
-        })
+fn make_test_handler(
+    f: impl Fn(Value) -> Option<Value> + Send + Sync + 'static,
+) -> Handler<impl Fn(Value) -> HandlerFuture> {
+    Handler::new(move |input: Value| {
+        let result = f(input);
+        Box::pin(async move { FunctionResult::Success(result) })
             as std::pin::Pin<
                 Box<
                     dyn std::future::Future<Output = FunctionResult<Option<Value>, ErrorBody>>
                         + Send,
                 >,
             >
+    })
+}
+
+#[tokio::test]
+async fn test_basic_function_invocation() {
+    let engine = Arc::new(Engine::new());
+
+    let handler = make_test_handler(|input| {
+        Some(json!({
+            "input": input,
+            "output": "processed"
+        }))
     });
 
     engine.register_function_handler(
@@ -45,19 +58,7 @@ async fn test_basic_function_invocation() {
 async fn test_engine_function_registration() {
     let engine = Engine::new();
 
-    let handler = Handler::new(move |input: Value| {
-        Box::pin(async move {
-            FunctionResult::Success(Some(json!({
-                "input": input
-            })))
-        })
-            as std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = FunctionResult<Option<Value>, ErrorBody>>
-                        + Send,
-                >,
-            >
-    });
+    let handler = make_test_handler(|input| Some(json!({ "input": input })));
 
     engine.register_function_handler(
         iii::engine::RegisterFunctionRequest {

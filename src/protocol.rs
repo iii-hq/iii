@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::invocation::{auth::HttpAuthRef, method::HttpMethod};
+use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationRef {
@@ -22,7 +22,7 @@ pub struct HttpInvocationRef {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
-    pub auth: Option<HttpAuthRef>,
+    pub auth: Option<HttpAuthConfig>,
 }
 
 fn default_http_method() -> HttpMethod {
@@ -162,7 +162,7 @@ pub struct ErrorBody {
 mod tests {
     use super::Message;
     use crate::{
-        invocation::{auth::HttpAuthRef, method::HttpMethod},
+        invocation::{auth::HttpAuthConfig, method::HttpMethod},
         protocol::HttpInvocationRef,
     };
 
@@ -235,7 +235,7 @@ mod tests {
                     Some("value")
                 );
                 match auth {
-                    Some(HttpAuthRef::Bearer { token_key }) => {
+                    Some(HttpAuthConfig::Bearer { token_key }) => {
                         assert_eq!(token_key, "LAMBDA_TOKEN");
                     }
                     _ => panic!("unexpected auth variant"),

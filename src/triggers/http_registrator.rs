@@ -1,6 +1,11 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::{pin::Pin, sync::Arc};
 
-use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
 
@@ -13,6 +18,7 @@ use crate::{
         http_function::HttpFunctionConfig,
         http_invoker::{HttpEndpointParams, HttpInvoker},
     },
+    config::persistence::http_function_key,
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry},
 };
@@ -22,7 +28,6 @@ pub struct HttpTriggerRegistrator {
     http_invoker: Arc<HttpInvoker>,
     functions: Arc<FunctionsRegistry>,
     kv_store: Arc<BuiltinKvStore>,
-    triggers: Arc<DashMap<String, Trigger>>,
 }
 
 impl HttpTriggerRegistrator {
@@ -35,7 +40,6 @@ impl HttpTriggerRegistrator {
             http_invoker,
             functions,
             kv_store,
-            triggers: Arc::new(DashMap::new()),
         }
     }
 
@@ -77,7 +81,7 @@ impl HttpTriggerRegistrator {
                 message: format!("Function '{}' not found", trigger.function_id),
             })?;
 
-        let index = format!("http_function:{}", trigger.function_id);
+        let index = http_function_key(&trigger.function_id);
         let value = self
             .kv_store
             .get(index, "config".to_string())
@@ -155,14 +159,13 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
         let functions = self.functions.clone();
         let kv_store = self.kv_store.clone();
-        let triggers = self.triggers.clone();
 
         Box::pin(async move {
             functions
                 .get(&trigger.function_id)
                 .ok_or_else(|| anyhow::anyhow!("Function '{}' not found", trigger.function_id))?;
 
-            let index = format!("http_function:{}", trigger.function_id);
+            let index = http_function_key(&trigger.function_id);
             kv_store
                 .get(index, "config".to_string())
                 .await
@@ -180,7 +183,6 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
                 "Registering HTTP trigger"
             );
 
-            triggers.insert(trigger.id.clone(), trigger);
             Ok(())
         })
     }
@@ -189,8 +191,6 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        let triggers = self.triggers.clone();
-
         Box::pin(async move {
             tracing::info!(
                 trigger_id = %trigger.id,
@@ -199,7 +199,6 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
                 "Unregistering HTTP trigger"
             );
 
-            triggers.remove(&trigger.id);
             Ok(())
         })
     }

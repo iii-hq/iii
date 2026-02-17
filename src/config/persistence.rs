@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::sync::Arc;
 
 use crate::{
@@ -5,7 +11,11 @@ use crate::{
     protocol::ErrorBody,
 };
 
-const HTTP_FUNCTION_PREFIX: &str = "http_function:";
+pub const HTTP_FUNCTION_PREFIX: &str = "http_function:";
+
+pub fn http_function_key(path: &str) -> String {
+    format!("{}{}", HTTP_FUNCTION_PREFIX, path)
+}
 
 pub async fn load_http_functions_from_kv(
     kv_store: &Arc<BuiltinKvStore>,
@@ -45,7 +55,7 @@ pub async fn store_http_function_in_kv(
     kv_store: &Arc<BuiltinKvStore>,
     config: &HttpFunctionConfig,
 ) -> Result<(), ErrorBody> {
-    let index = format!("{}{}", HTTP_FUNCTION_PREFIX, config.function_path);
+    let index = http_function_key(&config.function_path);
     let value = serde_json::to_value(config).map_err(|err| ErrorBody {
         code: "kv_encode_failed".into(),
         message: err.to_string(),
@@ -60,7 +70,7 @@ pub async fn delete_http_function_from_kv(
     kv_store: &Arc<BuiltinKvStore>,
     function_path: &str,
 ) -> Result<(), ErrorBody> {
-    let index = format!("{}{}", HTTP_FUNCTION_PREFIX, function_path);
+    let index = http_function_key(function_path);
     kv_store.delete(index, "config".to_string()).await;
     Ok(())
 }

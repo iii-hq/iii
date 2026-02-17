@@ -78,7 +78,8 @@ impl Module for AdminApiModule {
             tracing::info!("  PUT    /admin/functions/{{path}} - Update function");
             tracing::info!("  DELETE /admin/functions/{{path}} - Delete function");
             tracing::warn!(
-                "⚠️  Secure this endpoint! Set {} environment variable",
+                "{} Secure this endpoint! Set {} environment variable",
+                "WARNING:".red().bold(),
                 "III_ADMIN_TOKEN".yellow()
             );
 
