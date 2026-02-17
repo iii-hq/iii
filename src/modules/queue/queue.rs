@@ -45,7 +45,7 @@ impl QueueCoreModule {
     #[function(id = "enqueue", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
-        let data = input.data;
+        let event_data = input.data;
         let topic = input.topic;
 
         if topic.is_empty() {
@@ -55,8 +55,8 @@ impl QueueCoreModule {
             });
         }
 
-        tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
-        let _ = adapter.enqueue(&topic, data).await;
+        tracing::debug!(topic = %topic, data = %event_data, "Enqueuing message");
+        let _ = adapter.enqueue(&topic, event_data.clone()).await;
 
         let topic_for_filter = topic.clone();
         let topic_for_payload = topic.clone();
@@ -78,7 +78,7 @@ impl QueueCoreModule {
                         "type": "event",
                         "id": trigger.id,
                         "topic": topic_for_payload.clone(),
-                        "function_path": trigger.function_path,
+                        "function_path": trigger.function_id,
                     },
                     "event": {
                         "topic": topic_for_payload.clone(),

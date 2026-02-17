@@ -28,7 +28,7 @@ async fn test_basic_function_invocation() {
 
     engine.register_function_handler(
         iii::engine::RegisterFunctionRequest {
-            function_path: "test.function".to_string(),
+            function_id: "test.function".to_string(),
             description: Some("Test function".to_string()),
             request_format: None,
             response_format: None,
@@ -38,7 +38,7 @@ async fn test_basic_function_invocation() {
     );
 
     let function = engine.functions.get("test.function").unwrap();
-    assert_eq!(function._function_path, "test.function");
+    assert_eq!(function._function_id, "test.function");
 }
 
 #[tokio::test]
@@ -61,7 +61,7 @@ async fn test_engine_function_registration() {
 
     engine.register_function_handler(
         iii::engine::RegisterFunctionRequest {
-            function_path: "another.test".to_string(),
+            function_id: "another.test".to_string(),
             description: Some("Another test function".to_string()),
             request_format: None,
             response_format: None,

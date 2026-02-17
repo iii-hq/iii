@@ -1143,6 +1143,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1461,11 +1467,12 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.5.0"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "colored",
@@ -1474,6 +1481,7 @@ dependencies = [
  "function-macros",
  "futures",
  "futures-util",
+ "glob",
  "hex",
  "iii-sdk",
  "indexmap",
@@ -1491,11 +1499,13 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
+ "ring",
  "rkyv",
  "serde",
  "serde_json",
  "serde_yaml",
  "serial_test",
+ "subtle",
  "tokio",
  "tower",
  "tower-http",

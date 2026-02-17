@@ -71,13 +71,13 @@ impl HttpTriggerRegistrator {
 
     pub async fn deliver(&self, trigger: &Trigger, payload: Value) -> Result<(), ErrorBody> {
         self.functions
-            .get(&trigger.function_path)
+            .get(&trigger.function_id)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
-                message: format!("Function '{}' not found", trigger.function_path),
+                message: format!("Function '{}' not found", trigger.function_id),
             })?;
 
-        let index = format!("http_function:{}", trigger.function_path);
+        let index = format!("http_function:{}", trigger.function_id);
         let value = self
             .kv_store
             .get(index, "config".to_string())
@@ -86,7 +86,7 @@ impl HttpTriggerRegistrator {
                 code: "config_not_found".into(),
                 message: format!(
                     "HTTP function config not found for '{}'",
-                    trigger.function_path
+                    trigger.function_id
                 ),
             })?;
 
@@ -108,7 +108,7 @@ impl HttpTriggerRegistrator {
 
         self.http_invoker
             .deliver_webhook(
-                &trigger.function_path,
+                &trigger.function_id,
                 &endpoint,
                 &trigger.trigger_type,
                 &trigger.id,
@@ -159,24 +159,24 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
 
         Box::pin(async move {
             functions
-                .get(&trigger.function_path)
-                .ok_or_else(|| anyhow::anyhow!("Function '{}' not found", trigger.function_path))?;
+                .get(&trigger.function_id)
+                .ok_or_else(|| anyhow::anyhow!("Function '{}' not found", trigger.function_id))?;
 
-            let index = format!("http_function:{}", trigger.function_path);
+            let index = format!("http_function:{}", trigger.function_id);
             kv_store
                 .get(index, "config".to_string())
                 .await
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "HTTP function config not found for '{}'",
-                        trigger.function_path
+                        trigger.function_id
                     )
                 })?;
 
             tracing::info!(
                 trigger_id = %trigger.id,
                 trigger_type = %trigger.trigger_type,
-                function_path = %trigger.function_path,
+                function_path = %trigger.function_id,
                 "Registering HTTP trigger"
             );
 
@@ -195,7 +195,7 @@ impl TriggerRegistrator for HttpTriggerRegistrator {
             tracing::info!(
                 trigger_id = %trigger.id,
                 trigger_type = %trigger.trigger_type,
-                function_path = %trigger.function_path,
+                function_path = %trigger.function_id,
                 "Unregistering HTTP trigger"
             );
 

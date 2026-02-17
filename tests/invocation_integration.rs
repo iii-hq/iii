@@ -26,7 +26,7 @@ async fn test_basic_invocation_flow() {
 
     engine.register_function_handler(
         iii::engine::RegisterFunctionRequest {
-            function_path: "test.processor".to_string(),
+            function_id: "test.processor".to_string(),
             description: Some("Test processor".to_string()),
             request_format: None,
             response_format: None,
@@ -36,7 +36,7 @@ async fn test_basic_invocation_flow() {
     );
 
     let function = engine.functions.get("test.processor").unwrap();
-    assert_eq!(function._function_path, "test.processor");
+    assert_eq!(function._function_id, "test.processor");
 }
 
 #[tokio::test]
@@ -55,7 +55,7 @@ async fn test_engine_cloning_preserves_functions() {
 
     engine1.register_function_handler(
         iii::engine::RegisterFunctionRequest {
-            function_path: "cloned.function".to_string(),
+            function_id: "cloned.function".to_string(),
             description: None,
             request_format: None,
             response_format: None,
