@@ -99,7 +99,7 @@ impl Module for RestApiCoreModule {
         self.engine
             .clone()
             .register_trigger_type(TriggerType {
-                id: "api".to_string(),
+                id: "http".to_string(),
                 _description: "HTTP API trigger".to_string(),
                 registrator: Box::new(self.clone()),
                 worker_id: None,
@@ -377,7 +377,7 @@ impl TriggerRegistrator for RestApiCoreModule {
                 .config
                 .get("api_path")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("api_path is required for api triggers"))?;
+                .ok_or_else(|| anyhow!("api_path is required for http triggers"))?;
 
             let http_method = trigger
                 .config
