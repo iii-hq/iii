@@ -64,8 +64,12 @@ impl JobHandler for FunctionHandler {
         async {
             let result = self.engine.call(&self.function_id, job.data.clone()).await;
             match &result {
-                Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
-                Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
+                Ok(_) => {
+                    tracing::Span::current().record("otel.status_code", "OK");
+                }
+                Err(_) => {
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                }
             }
             result
         }
@@ -127,7 +131,13 @@ pub fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterF
 
 #[async_trait]
 impl QueueAdapter for BuiltinQueueAdapter {
-    async fn enqueue(&self, topic: &str, data: Value, traceparent: Option<String>, baggage: Option<String>) {
+    async fn enqueue(
+        &self,
+        topic: &str,
+        data: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) {
         self.queue.push(topic, data, traceparent, baggage).await;
     }
 

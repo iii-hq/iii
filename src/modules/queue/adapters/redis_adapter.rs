@@ -89,7 +89,13 @@ crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RedisAdapte
 
 #[async_trait]
 impl QueueAdapter for RedisAdapter {
-    async fn enqueue(&self, topic: &str, data: Value, traceparent: Option<String>, baggage: Option<String>) {
+    async fn enqueue(
+        &self,
+        topic: &str,
+        data: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) {
         let topic = topic.to_string();
         let publisher = Arc::clone(&self.publisher);
 
@@ -202,8 +208,14 @@ impl QueueAdapter for RedisAdapter {
                 // Extract trace context from envelope, with backward compatibility
                 let (data, traceparent, baggage) = if let Some(trace) = parsed.get("__trace") {
                     let data = parsed.get("data").cloned().unwrap_or(Value::Null);
-                    let traceparent = trace.get("traceparent").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let baggage = trace.get("baggage").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let traceparent = trace
+                        .get("traceparent")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let baggage = trace
+                        .get("baggage")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     (data, traceparent, baggage)
                 } else {
                     // Legacy format: entire payload is the data
@@ -260,12 +272,19 @@ impl QueueAdapter for RedisAdapter {
                 )
                 .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
-                tokio::spawn(async move {
-                    match engine.call(&function_id, data).await {
-                        Ok(_) => { tracing::Span::current().record("otel.status_code", "OK"); }
-                        Err(_) => { tracing::Span::current().record("otel.status_code", "ERROR"); }
+                tokio::spawn(
+                    async move {
+                        match engine.call(&function_id, data).await {
+                            Ok(_) => {
+                                tracing::Span::current().record("otel.status_code", "OK");
+                            }
+                            Err(_) => {
+                                tracing::Span::current().record("otel.status_code", "ERROR");
+                            }
+                        }
                     }
-                }.instrument(span));
+                    .instrument(span),
+                );
             }
 
             tracing::debug!(topic = %topic_for_task, id = %id_for_task, "Subscription task ended");

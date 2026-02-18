@@ -26,7 +26,7 @@ use crate::{
     function::FunctionResult,
     modules::module::{AdapterFactory, ConfigurableModule, Module},
     protocol::ErrorBody,
-    telemetry::{inject_traceparent_from_context, inject_baggage_from_context},
+    telemetry::{inject_baggage_from_context, inject_traceparent_from_context},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 

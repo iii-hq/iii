@@ -368,7 +368,8 @@ impl Engine {
                                             .await;
                                     }
                                     Err(err) => {
-                                        tracing::Span::current().record("otel.status_code", "ERROR");
+                                        tracing::Span::current()
+                                            .record("otel.status_code", "ERROR");
                                         engine
                                             .send_msg(
                                                 &worker,

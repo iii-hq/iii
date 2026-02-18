@@ -52,7 +52,15 @@ impl Job {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) -> Self {
-        Self::new_with_group(queue, data, max_attempts, backoff_delay_ms, None, traceparent, baggage)
+        Self::new_with_group(
+            queue,
+            data,
+            max_attempts,
+            backoff_delay_ms,
+            None,
+            traceparent,
+            baggage,
+        )
     }
 
     pub fn new_with_group(
@@ -306,7 +314,13 @@ impl BuiltinQueue {
         format!("queue:{}:dlq", queue)
     }
 
-    pub async fn push(&self, queue: &str, data: Value, traceparent: Option<String>, baggage: Option<String>) -> String {
+    pub async fn push(
+        &self,
+        queue: &str,
+        data: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> String {
         let job = Job::new(
             queue,
             data,
@@ -338,7 +352,14 @@ impl BuiltinQueue {
         job_id
     }
 
-    pub async fn push_fifo(&self, queue: &str, data: Value, group_id: &str, traceparent: Option<String>, baggage: Option<String>) -> String {
+    pub async fn push_fifo(
+        &self,
+        queue: &str,
+        data: Value,
+        group_id: &str,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> String {
         let job = Job::new_with_group(
             queue,
             data,
@@ -372,7 +393,14 @@ impl BuiltinQueue {
         job_id
     }
 
-    pub async fn push_delayed(&self, queue: &str, data: Value, delay_ms: u64, traceparent: Option<String>, baggage: Option<String>) -> String {
+    pub async fn push_delayed(
+        &self,
+        queue: &str,
+        data: Value,
+        delay_ms: u64,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> String {
         let mut job = Job::new(
             queue,
             data,
@@ -1092,7 +1120,9 @@ mod tests {
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
         let data = serde_json::json!({"key": "value"});
-        let job_id = queue.push_delayed("test_queue", data, 5000, None, None).await;
+        let job_id = queue
+            .push_delayed("test_queue", data, 5000, None, None)
+            .await;
 
         let popped = queue.pop("test_queue").await;
         assert!(popped.is_none());
@@ -1218,7 +1248,9 @@ mod tests {
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config.clone());
 
         let data = serde_json::json!({"key": "value"});
-        let job_id = queue.push_delayed("test_queue", data, 5000, None, None).await;
+        let job_id = queue
+            .push_delayed("test_queue", data, 5000, None, None)
+            .await;
 
         let new_queue = BuiltinQueue::new(kv_store.clone(), pubsub.clone(), config);
         new_queue.rebuild_from_storage().await.unwrap();
@@ -1328,7 +1360,9 @@ mod tests {
 
         let job1_id = queue.push("work_queue", data1, None, None).await;
         let job2_id = queue.push("work_queue", data2, None, None).await;
-        let job3_id = queue.push_delayed("work_queue", data3, 5000, None, None).await;
+        let job3_id = queue
+            .push_delayed("work_queue", data3, 5000, None, None)
+            .await;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -1449,7 +1483,13 @@ mod tests {
         let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
 
         let job_id = queue
-            .push_fifo("test_queue", serde_json::json!({"order": 1}), "group-a", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"order": 1}),
+                "group-a",
+                None,
+                None,
+            )
             .await;
 
         let job_key = queue.job_key("test_queue", &job_id);
@@ -1736,7 +1776,13 @@ mod tests {
         // Push many jobs to the same group
         for i in 0..20 {
             queue
-                .push_fifo("race_queue", serde_json::json!({"order": i}), "same-group", None, None)
+                .push_fifo(
+                    "race_queue",
+                    serde_json::json!({"order": i}),
+                    "same-group",
+                    None,
+                    None,
+                )
                 .await;
         }
 
@@ -1817,13 +1863,31 @@ mod tests {
 
         // Push 3 jobs with same group_id
         let job_a_id = queue
-            .push_fifo("test_queue", serde_json::json!({"name": "A"}), "group1", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "A"}),
+                "group1",
+                None,
+                None,
+            )
             .await;
         let job_b_id = queue
-            .push_fifo("test_queue", serde_json::json!({"name": "B"}), "group1", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "B"}),
+                "group1",
+                None,
+                None,
+            )
             .await;
         let job_c_id = queue
-            .push_fifo("test_queue", serde_json::json!({"name": "C"}), "group1", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "C"}),
+                "group1",
+                None,
+                None,
+            )
             .await;
 
         // Pop A - this would be processed (oldest)
@@ -1901,19 +1965,49 @@ mod tests {
 
         // Push jobs: A1, B1, A2, B2, A3 (A and B are different groups)
         queue
-            .push_fifo("test_queue", serde_json::json!({"name": "A1"}), "groupA", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "A1"}),
+                "groupA",
+                None,
+                None,
+            )
             .await;
         queue
-            .push_fifo("test_queue", serde_json::json!({"name": "B1"}), "groupB", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "B1"}),
+                "groupB",
+                None,
+                None,
+            )
             .await;
         queue
-            .push_fifo("test_queue", serde_json::json!({"name": "A2"}), "groupA", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "A2"}),
+                "groupA",
+                None,
+                None,
+            )
             .await;
         queue
-            .push_fifo("test_queue", serde_json::json!({"name": "B2"}), "groupB", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "B2"}),
+                "groupB",
+                None,
+                None,
+            )
             .await;
         queue
-            .push_fifo("test_queue", serde_json::json!({"name": "A3"}), "groupA", None, None)
+            .push_fifo(
+                "test_queue",
+                serde_json::json!({"name": "A3"}),
+                "groupA",
+                None,
+                None,
+            )
             .await;
 
         // Create worker with max 2 concurrent groups
