@@ -16,7 +16,7 @@ use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
 use crate::{
@@ -45,7 +45,7 @@ impl QueueCoreModule {
     #[function(id = "enqueue", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
-        let data = input.data;
+        let event_data = input.data;
         let topic = input.topic;
 
         if topic.is_empty() {
@@ -55,8 +55,38 @@ impl QueueCoreModule {
             });
         }
 
-        tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
-        let _ = adapter.enqueue(&topic, data).await;
+        tracing::debug!(topic = %topic, data = %event_data, "Enqueuing message");
+        let _ = adapter.enqueue(&topic, event_data.clone()).await;
+
+        let topic_for_filter = topic.clone();
+        let topic_for_payload = topic.clone();
+        let event_data_for_payload = event_data.clone();
+
+        crate::triggers::http_registrator::HttpTriggerRegistrator::dispatch_http_triggers_from_engine(
+            &self.engine,
+            "http_event",
+            move |trigger| {
+                trigger.config
+                    .get("topic")
+                    .and_then(|v| v.as_str())
+                    .map(|value| value == topic_for_filter)
+                    .unwrap_or(false)
+            },
+            move |trigger| {
+                json!({
+                    "trigger": {
+                        "type": "event",
+                        "id": trigger.id,
+                        "topic": topic_for_payload.clone(),
+                        "function_path": trigger.function_id,
+                    },
+                    "event": {
+                        "topic": topic_for_payload.clone(),
+                        "data": event_data_for_payload.clone(),
+                    }
+                })
+            },
+        ).await;
 
         FunctionResult::Success(None)
     }
