@@ -52,7 +52,7 @@ pub enum StreamOutboundMessage {
     Create { data: Value },
     Update { data: Value },
     Delete { data: Value },
-    Event { data: EventData },
+    Event { event: EventData },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +146,16 @@ pub struct StreamUpdateInput {
 /// Input for stream.listAll (empty struct)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamListAllInput {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamSendInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: Value,
+}
 
 /// Metadata for a stream (used by stream.listAll)
 #[derive(Debug, Clone, Serialize, Deserialize)]
