@@ -17,7 +17,6 @@ use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
     protocol::ErrorBody,
-    telemetry::SpanExt,
 };
 
 pub struct Invocation {
@@ -92,8 +91,7 @@ impl InvocationHandler {
             function_id = %function_id,
             // Tag internal vs user functions for filtering
             "iii.function.kind" = %function_kind,
-        )
-        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+        );
 
         async {
             let (sender, receiver) = tokio::sync::oneshot::channel();
