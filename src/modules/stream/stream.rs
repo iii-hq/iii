@@ -698,7 +698,10 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream::send", description = "Send a custom event to stream subscribers")]
+    #[function(
+        id = "stream::send",
+        description = "Send a custom event to stream subscribers"
+    )]
     pub async fn send(&self, input: StreamSendInput) -> FunctionResult<(), ErrorBody> {
         let message = StreamWrapperMessage {
             event_type: "stream".to_string(),
