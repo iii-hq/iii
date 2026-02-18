@@ -278,7 +278,13 @@ impl QueueAdapter for RedisAdapter {
                             Ok(_) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                             }
-                            Err(_) => {
+                            Err(e) => {
+                                tracing::error!(
+                                    error = ?e,
+                                    function_id = %function_id,
+                                    topic = %topic_for_span,
+                                    "Failed to invoke function for queue job"
+                                );
                                 tracing::Span::current().record("otel.status_code", "ERROR");
                             }
                         }
