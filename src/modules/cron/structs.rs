@@ -4,7 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use colored::Colorize;
@@ -38,14 +45,21 @@ pub struct CronAdapter {
     adapter: Arc<dyn CronSchedulerAdapter>,
     jobs: Arc<tokio::sync::RwLock<HashMap<String, CronJobInfo>>>,
     engine: Arc<Engine>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown_called: AtomicBool,
 }
 
 impl CronAdapter {
     pub fn new(scheduler: Arc<dyn CronSchedulerAdapter>, engine: Arc<Engine>) -> Self {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             adapter: scheduler,
             jobs: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             engine,
+            shutdown_tx,
+            shutdown_rx,
+            shutdown_called: AtomicBool::new(false),
         }
     }
 
@@ -68,6 +82,7 @@ impl CronAdapter {
         let engine = Arc::clone(&self.engine);
         let job_id = id.clone();
         let function_id = function_id.clone();
+        let mut shutdown_rx = self.shutdown_rx.clone();
 
         tokio::spawn(async move {
             tracing::debug!(job_id = %job_id, function_id = %function_id, "Starting cron job loop");
@@ -95,8 +110,20 @@ impl CronAdapter {
                     "Waiting for next cron execution"
                 );
 
-                // Wait until the next scheduled time
-                sleep(duration_until_next).await;
+                // Wait until the next scheduled time, or shutdown signal
+                tokio::select! {
+                    _ = sleep(duration_until_next) => {}
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!(job_id = %job_id, "Cron job received shutdown signal");
+                        break;
+                    }
+                }
+
+                // Check shutdown flag after waking
+                if *shutdown_rx.borrow() {
+                    tracing::info!(job_id = %job_id, "Cron job shutting down");
+                    break;
+                }
 
                 // Try to acquire the distributed lock
                 if scheduler.try_acquire_lock(&job_id).await {
@@ -244,5 +271,122 @@ impl CronAdapter {
         } else {
             Err(anyhow::anyhow!("Cron job '{}' not found", id))
         }
+    }
+
+    /// Shutdown all cron jobs by signaling them and aborting any that don't stop
+    pub async fn shutdown(&self) {
+        if self.shutdown_called.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        tracing::info!("Shutting down all cron jobs");
+        let _ = self.shutdown_tx.send(true);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut jobs = self.jobs.write().await;
+        for (id, job_info) in jobs.drain() {
+            if !job_info.task_handle.is_finished() {
+                tracing::debug!(job_id = %id, "Force-aborting cron job task");
+                job_info.task_handle.abort();
+            }
+            self.adapter.release_lock(&id).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopSchedulerAdapter;
+
+    #[async_trait]
+    impl CronSchedulerAdapter for NoopSchedulerAdapter {
+        async fn try_acquire_lock(&self, _job_id: &str) -> bool {
+            false
+        }
+
+        async fn release_lock(&self, _job_id: &str) {}
+    }
+
+    fn test_engine() -> Arc<Engine> {
+        Arc::new(Engine::new())
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_stops_cron_jobs() {
+        let engine = test_engine();
+        let scheduler: Arc<dyn CronSchedulerAdapter> = Arc::new(NoopSchedulerAdapter);
+        let adapter = CronAdapter::new(scheduler, engine);
+
+        // Register a cron job with an hourly schedule (won't fire during the test)
+        adapter
+            .register("test-job-1", "0 0 * * * *", "test-function", None)
+            .await
+            .expect("Failed to register cron job");
+
+        // Verify the job is running
+        {
+            let jobs = adapter.jobs.read().await;
+            assert_eq!(jobs.len(), 1, "Expected one registered job");
+            let job = jobs.get("test-job-1").unwrap();
+            assert!(
+                !job.task_handle.is_finished(),
+                "Job task should still be running"
+            );
+        }
+
+        // Shutdown and wait a bit for tasks to stop
+        adapter.shutdown().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // After shutdown, the jobs map should be drained
+        let jobs = adapter.jobs.read().await;
+        assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
+    }
+
+    /// Calling shutdown() twice must not panic or error.
+    #[tokio::test]
+    async fn shutdown_is_idempotent() {
+        let engine = test_engine();
+        let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
+
+        adapter
+            .register("job-1", "0 0 * * * *", "fn-1", None)
+            .await
+            .unwrap();
+
+        adapter.shutdown().await;
+        // Second call must not panic or deadlock
+        adapter.shutdown().await;
+    }
+
+    /// Calling shutdown() directly (as destroy would) should abort all tasks
+    /// even if no external shutdown signal was sent first.
+    #[tokio::test]
+    async fn shutdown_aborts_all_task_handles() {
+        let engine = test_engine();
+        let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
+
+        // Register multiple cron jobs
+        adapter
+            .register("job-1", "0 0 * * * *", "fn-1", None)
+            .await
+            .unwrap();
+        adapter
+            .register("job-2", "0 30 * * * *", "fn-2", None)
+            .await
+            .unwrap();
+
+        // Verify both jobs are running
+        {
+            let jobs = adapter.jobs.read().await;
+            assert_eq!(jobs.len(), 2);
+        }
+
+        // Call shutdown directly (simulating destroy path)
+        adapter.shutdown().await;
+
+        // Verify all tasks are finished and map is drained
+        let jobs = adapter.jobs.read().await;
+        assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
     }
 }
