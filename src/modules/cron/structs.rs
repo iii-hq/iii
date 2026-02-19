@@ -38,7 +38,6 @@ pub struct CronAdapter {
     adapter: Arc<dyn CronSchedulerAdapter>,
     jobs: Arc<tokio::sync::RwLock<HashMap<String, CronJobInfo>>>,
     engine: Arc<Engine>,
-    #[allow(dead_code)]
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -266,7 +265,6 @@ impl CronAdapter {
     }
 
     /// Shutdown all cron jobs by signaling them and aborting any that don't stop
-    #[allow(dead_code)]
     pub async fn shutdown(&self) {
         tracing::info!("Shutting down all cron jobs");
         let _ = self.shutdown_tx.send(true);
@@ -277,6 +275,7 @@ impl CronAdapter {
                 tracing::debug!(job_id = %id, "Force-aborting cron job task");
                 job_info.task_handle.abort();
             }
+            self.adapter.release_lock(&id).await;
         }
     }
 }
