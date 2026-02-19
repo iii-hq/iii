@@ -1840,7 +1840,7 @@ impl InMemoryLogStorage {
             .collect();
 
         // Sort by timestamp (newest first)
-        result.sort_by(|a, b| b.timestamp_unix_nano.cmp(&a.timestamp_unix_nano));
+        result.sort_by_key(|b| std::cmp::Reverse(b.timestamp_unix_nano));
 
         // Get total before pagination
         let total = result.len();
