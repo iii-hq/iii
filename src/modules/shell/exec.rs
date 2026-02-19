@@ -250,11 +250,31 @@ impl Exec {
 
     async fn kill_process(&self) {
         if let Some(mut proc) = self.child.lock().await.take() {
-            if let Err(err) = proc.kill().await {
-                tracing::error!("Failed to kill process: {:?}", err);
-            } else {
-                tracing::debug!("Process killed");
+            #[cfg(not(windows))]
+            {
+                if let Some(id) = proc.id() {
+                    let pgid = nix::unistd::Pid::from_raw(id as i32);
+                    if let Err(err) =
+                        nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL)
+                    {
+                        tracing::error!("Failed to kill process group: {:?}", err);
+                    } else {
+                        tracing::debug!("Process group killed");
+                    }
+                }
             }
+
+            #[cfg(windows)]
+            {
+                if let Err(err) = proc.kill().await {
+                    tracing::error!("Failed to kill process: {:?}", err);
+                } else {
+                    tracing::debug!("Process killed");
+                }
+            }
+
+            // Reap the direct child to avoid zombies
+            let _ = proc.wait().await;
         }
     }
 }
