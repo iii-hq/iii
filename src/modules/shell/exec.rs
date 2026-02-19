@@ -24,7 +24,7 @@ use crate::modules::shell::{config::ExecConfig, glob_exec::GlobExec};
 pub struct Exec {
     exec: Vec<String>,
     glob_exec: Option<GlobExec>,
-    child: Arc<Mutex<Option<Child>>>,
+    children: Arc<Mutex<Vec<Child>>>,
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -39,7 +39,7 @@ impl Exec {
         Self {
             glob_exec: config.watch.map(GlobExec::new),
             exec: config.exec,
-            child: Arc::new(Mutex::new(None::<Child>)),
+            children: Arc::new(Mutex::new(Vec::new())),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -124,38 +124,11 @@ impl Exec {
     }
 
     async fn run_pipeline(&self) -> Result<()> {
-        let mut shutdown_rx = self.shutdown_rx.clone();
-
+        let mut children = self.children.lock().await;
         for cmd in &self.exec {
             let spawned = self.spawn_single(cmd)?;
-            *self.child.lock().await = Some(spawned);
-
-            // Check if this is the last command in the pipeline
-            let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
-
-            if !is_last {
-                // Take child out of the mutex so we don't hold the lock during wait.
-                // This allows stop_process()/shutdown() to proceed if called concurrently.
-                let mut child = self.child.lock().await.take().unwrap();
-
-                // ⏳ wait for command to finish OR shutdown signal
-                let status = tokio::select! {
-                    status = child.wait() => status?,
-                    _ = shutdown_rx.changed() => {
-                        tracing::info!("Pipeline interrupted by shutdown signal");
-                        // Put child back so stop_process() can kill it
-                        *self.child.lock().await = Some(child);
-                        return Ok(());
-                    }
-                };
-
-                if !status.success() {
-                    tracing::error!("Pipeline step failed, aborting pipeline");
-                    break;
-                }
-            }
+            children.push(spawned);
         }
-
         Ok(())
     }
 
@@ -222,68 +195,75 @@ impl Exec {
     }
 
     pub async fn stop_process(&self) {
-        if let Some(mut child) = self.child.lock().await.take() {
-            #[cfg(not(windows))]
-            let pgid = child.id().map(|id| nix::unistd::Pid::from_raw(id as i32));
+        let mut children: Vec<Child> = self.children.lock().await.drain(..).collect();
 
-            #[cfg(not(windows))]
-            if let Some(pgid) = pgid {
-                // 1️⃣ Ask the whole process group politely
-                let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM);
-            }
+        if children.is_empty() {
+            return;
+        }
 
-            #[cfg(windows)]
-            {
-                use winapi::{
-                    shared::minwindef::{FALSE, TRUE},
-                    um::{
-                        consoleapi::SetConsoleCtrlHandler,
-                        wincon::{
-                            AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
-                        },
+        // 1️⃣ Ask all process groups politely
+        #[cfg(not(windows))]
+        let pgids: Vec<Option<nix::unistd::Pid>> = children
+            .iter()
+            .map(|c| c.id().map(|id| nix::unistd::Pid::from_raw(id as i32)))
+            .collect();
+
+        #[cfg(not(windows))]
+        for pgid in pgids.iter().flatten() {
+            let _ = nix::sys::signal::killpg(*pgid, nix::sys::signal::Signal::SIGTERM);
+        }
+
+        #[cfg(windows)]
+        {
+            use winapi::{
+                shared::minwindef::{FALSE, TRUE},
+                um::{
+                    consoleapi::SetConsoleCtrlHandler,
+                    wincon::{
+                        AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
                     },
-                };
+                },
+            };
 
-                // 1️⃣ Ask politely - send CTRL_BREAK_EVENT to the process group
+            for child in &children {
                 if let Some(pid) = child.id() {
                     unsafe {
-                        // Attach to the child's console to send the signal
                         if AttachConsole(pid) != 0 {
-                            // Disable our own Ctrl+C handler temporarily to avoid killing ourselves
                             SetConsoleCtrlHandler(None, TRUE);
-
-                            // Send CTRL_BREAK_EVENT to the process group (0 = current process group)
-                            // This is the Windows equivalent of SIGTERM
                             GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
-
-                            // Re-enable our handler and detach
                             SetConsoleCtrlHandler(None, FALSE);
                             FreeConsole();
                         }
                     }
                 }
             }
+        }
 
-            // 2️⃣ Wait a bit
-            let exited = timeout(Duration::from_secs(3), child.wait()).await;
+        // 2️⃣ Wait for all to exit (with timeout)
+        let wait_all = async {
+            for child in &mut children {
+                let _ = child.wait().await;
+            }
+        };
 
-            if exited.is_err() {
-                // 3️⃣ Force kill the entire process group
-                tracing::warn!("Process did not exit gracefully, killing");
-                #[cfg(not(windows))]
-                if let Some(pgid) = pgid {
-                    let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL);
-                }
-                #[cfg(windows)]
-                {
-                    let _ = child.kill().await;
-                }
+        if timeout(Duration::from_secs(3), wait_all).await.is_err() {
+            // 3️⃣ Force kill all remaining process groups
+            tracing::warn!("Processes did not exit gracefully, killing");
+            #[cfg(not(windows))]
+            for pgid in pgids.iter().flatten() {
+                let _ = nix::sys::signal::killpg(*pgid, nix::sys::signal::Signal::SIGKILL);
+            }
+            #[cfg(windows)]
+            for child in &mut children {
+                let _ = child.kill().await;
             }
         }
     }
 
     async fn kill_process(&self) {
-        if let Some(mut proc) = self.child.lock().await.take() {
+        let children: Vec<Child> = self.children.lock().await.drain(..).collect();
+
+        for mut proc in children {
             #[cfg(not(windows))]
             {
                 if let Some(id) = proc.id() {
@@ -330,7 +310,7 @@ mod tests {
         // Spawn the process (sh -c "sleep 300 & sleep 300 & wait")
         let child = exec.spawn_single(&exec.exec[0]).unwrap();
         let child_pid = child.id().unwrap() as i32;
-        *exec.child.lock().await = Some(child);
+        exec.children.lock().await.push(child);
 
         // Give children time to spawn
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -369,7 +349,7 @@ mod tests {
 
         let child = exec.spawn_single(&exec.exec[0]).unwrap();
         let child_pid = child.id().unwrap() as i32;
-        *exec.child.lock().await = Some(child);
+        exec.children.lock().await.push(child);
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
