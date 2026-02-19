@@ -270,6 +270,9 @@ impl Exec {
                 {
                     let _ = child.kill().await;
                 }
+
+                // Reap the child to avoid zombie processes
+                let _ = child.wait().await;
             }
         }
     }
@@ -380,6 +383,36 @@ mod tests {
         assert!(
             pids_after.is_empty(),
             "orphaned processes remain in group {}: {:?}",
+            child_pid,
+            pids_after
+        );
+    }
+
+    /// Verifies that stop_process() reaps the child after SIGKILL (no zombie left).
+    /// Uses a process that traps SIGTERM so the graceful path always times out.
+    #[tokio::test]
+    async fn stop_process_reaps_child_after_sigkill() {
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec!["trap '' TERM; sleep 300".to_string()],
+        });
+
+        let child = exec.spawn_single(&exec.exec[0]).unwrap();
+        let child_pid = child.id().unwrap() as i32;
+        *exec.child.lock().await = Some(child);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // stop_process sends SIGTERM, waits 3s, then SIGKILL
+        exec.stop_process().await;
+
+        // After stop_process returns, the child should be fully reaped (no zombie)
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let pids_after: Vec<i32> = get_pids_in_group(child_pid);
+        assert!(
+            pids_after.is_empty(),
+            "zombie or orphaned processes remain in group {}: {:?}",
             child_pid,
             pids_after
         );
