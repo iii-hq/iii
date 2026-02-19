@@ -4,7 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use colored::Colorize;
@@ -40,6 +47,7 @@ pub struct CronAdapter {
     engine: Arc<Engine>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown_called: AtomicBool,
 }
 
 impl CronAdapter {
@@ -51,6 +59,7 @@ impl CronAdapter {
             engine,
             shutdown_tx,
             shutdown_rx,
+            shutdown_called: AtomicBool::new(false),
         }
     }
 
@@ -266,6 +275,9 @@ impl CronAdapter {
 
     /// Shutdown all cron jobs by signaling them and aborting any that don't stop
     pub async fn shutdown(&self) {
+        if self.shutdown_called.swap(true, Ordering::SeqCst) {
+            return;
+        }
         tracing::info!("Shutting down all cron jobs");
         let _ = self.shutdown_tx.send(true);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -329,6 +341,22 @@ mod tests {
         // After shutdown, the jobs map should be drained
         let jobs = adapter.jobs.read().await;
         assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
+    }
+
+    /// Calling shutdown() twice must not panic or error.
+    #[tokio::test]
+    async fn shutdown_is_idempotent() {
+        let engine = test_engine();
+        let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
+
+        adapter
+            .register("job-1", "0 0 * * * *", "fn-1", None)
+            .await
+            .unwrap();
+
+        adapter.shutdown().await;
+        // Second call must not panic or deadlock
+        adapter.shutdown().await;
     }
 
     /// Calling shutdown() directly (as destroy would) should abort all tasks
