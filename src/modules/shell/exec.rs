@@ -190,19 +190,12 @@ impl Exec {
     pub async fn stop_process(&self) {
         if let Some(mut child) = self.child.lock().await.take() {
             #[cfg(not(windows))]
-            {
-                use nix::{
-                    sys::signal::{Signal, kill},
-                    unistd::Pid,
-                };
+            let pgid = child.id().map(|id| nix::unistd::Pid::from_raw(id as i32));
 
-                let pid = match child.id() {
-                    Some(id) => Pid::from_raw(id as i32),
-                    None => return,
-                };
-
-                // 1️⃣ Ask politely
-                let _ = kill(pid, Signal::SIGTERM);
+            #[cfg(not(windows))]
+            if let Some(pgid) = pgid {
+                // 1️⃣ Ask the whole process group politely
+                let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM);
             }
 
             #[cfg(windows)]
@@ -241,9 +234,16 @@ impl Exec {
             let exited = timeout(Duration::from_secs(3), child.wait()).await;
 
             if exited.is_err() {
-                // 3️⃣ Force kill
+                // 3️⃣ Force kill the entire process group
                 tracing::warn!("Process did not exit gracefully, killing");
-                let _ = child.kill().await;
+                #[cfg(not(windows))]
+                if let Some(pgid) = pgid {
+                    let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL);
+                }
+                #[cfg(windows)]
+                {
+                    let _ = child.kill().await;
+                }
             }
         }
     }
