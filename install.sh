@@ -20,30 +20,6 @@ else
   uname_s=$(uname -s 2>/dev/null || echo unknown)
   uname_m=$(uname -m 2>/dev/null || echo unknown)
 
-  case "$uname_s" in
-    Darwin)
-      os="apple-darwin"
-      ;;
-    Linux)
-      if [ -n "${III_USE_GLIBC:-}" ]; then
-        sys_glibc=$(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+$' || echo "0.0")
-        required_glibc="2.35"
-        if printf '%s\n%s\n' "$required_glibc" "$sys_glibc" | sort -V -C; then
-          os="unknown-linux-gnu"
-          echo "using glibc build (system glibc: $sys_glibc)"
-        else
-          echo "warning: system glibc $sys_glibc is older than required $required_glibc, falling back to musl" >&2
-          os="unknown-linux-musl"
-        fi
-      else
-        os="unknown-linux-musl"
-      fi
-      ;;
-    *)
-      err "unsupported OS: $uname_s"
-      ;;
-  esac
-
   case "$uname_m" in
     x86_64|amd64)
       arch="x86_64"
@@ -51,8 +27,45 @@ else
     arm64|aarch64)
       arch="aarch64"
       ;;
+    armv7*)
+      arch="armv7"
+      ;;
     *)
       err "unsupported architecture: $uname_m"
+      ;;
+  esac
+
+  case "$uname_s" in
+    Darwin)
+      os="apple-darwin"
+      ;;
+    Linux)
+      case "$arch" in
+        x86_64)
+          if [ -n "${III_USE_GLIBC:-}" ]; then
+            sys_glibc=$(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+$' || echo "0.0")
+            required_glibc="2.35"
+            if printf '%s\n%s\n' "$required_glibc" "$sys_glibc" | sort -V -C; then
+              os="unknown-linux-gnu"
+              echo "using glibc build (system glibc: $sys_glibc)"
+            else
+              echo "warning: system glibc $sys_glibc is older than required $required_glibc, falling back to musl" >&2
+              os="unknown-linux-musl"
+            fi
+          else
+            os="unknown-linux-musl"
+          fi
+          ;;
+        aarch64)
+          os="unknown-linux-gnu"
+          ;;
+        armv7)
+          os="unknown-linux-gnueabihf"
+          ;;
+      esac
+      ;;
+    *)
+      err "unsupported OS: $uname_s"
       ;;
   esac
 
