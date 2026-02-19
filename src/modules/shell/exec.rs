@@ -258,3 +258,103 @@ impl Exec {
         }
     }
 }
+
+#[cfg(test)]
+#[cfg(not(windows))]
+mod tests {
+    use super::*;
+
+    /// Spawns `sh -c "sleep 300 & sleep 300 & wait"` via Exec,
+    /// calls stop_process(), and asserts all processes in the group are dead.
+    #[tokio::test]
+    async fn stop_process_kills_entire_process_group() {
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec!["sleep 300 & sleep 300 & wait".to_string()],
+        });
+
+        // Spawn the process (sh -c "sleep 300 & sleep 300 & wait")
+        let child = exec.spawn_single(&exec.exec[0]).unwrap();
+        let child_pid = child.id().unwrap() as i32;
+        *exec.child.lock().await = Some(child);
+
+        // Give children time to spawn
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Collect all PIDs in the process group (PGID = child_pid due to setsid)
+        let pids_before: Vec<i32> = get_pids_in_group(child_pid);
+        assert!(
+            pids_before.len() >= 2,
+            "expected at least 2 processes in group, got {:?}",
+            pids_before
+        );
+
+        // Kill via stop_process
+        exec.stop_process().await;
+
+        // Give OS time to reap
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Verify all processes in the group are dead
+        let pids_after: Vec<i32> = get_pids_in_group(child_pid);
+        assert!(
+            pids_after.is_empty(),
+            "orphaned processes remain in group {}: {:?}",
+            child_pid,
+            pids_after
+        );
+    }
+
+    /// Same test but for kill_process() (the file-change restart path).
+    #[tokio::test]
+    async fn kill_process_kills_entire_process_group() {
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec!["sleep 300 & sleep 300 & wait".to_string()],
+        });
+
+        let child = exec.spawn_single(&exec.exec[0]).unwrap();
+        let child_pid = child.id().unwrap() as i32;
+        *exec.child.lock().await = Some(child);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let pids_before: Vec<i32> = get_pids_in_group(child_pid);
+        assert!(
+            pids_before.len() >= 2,
+            "expected at least 2 processes in group, got {:?}",
+            pids_before
+        );
+
+        exec.kill_process().await;
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let pids_after: Vec<i32> = get_pids_in_group(child_pid);
+        assert!(
+            pids_after.is_empty(),
+            "orphaned processes remain in group {}: {:?}",
+            child_pid,
+            pids_after
+        );
+    }
+
+    /// Returns PIDs of all alive processes whose PGID matches the given group id.
+    fn get_pids_in_group(pgid: i32) -> Vec<i32> {
+        let output = std::process::Command::new("ps")
+            .args(["-eo", "pid,pgid"])
+            .output()
+            .expect("failed to run ps");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .skip(1) // header
+            .filter_map(|line| {
+                let mut cols = line.split_whitespace();
+                let pid: i32 = cols.next()?.parse().ok()?;
+                let group: i32 = cols.next()?.parse().ok()?;
+                if group == pgid { Some(pid) } else { None }
+            })
+            .collect()
+    }
+}
