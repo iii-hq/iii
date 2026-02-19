@@ -93,7 +93,22 @@ impl BridgeAdapter {
 impl QueueAdapter for BridgeAdapter {
     /// Enqueues a message to the bridge for distribution to other engines.
     /// Failures are logged but do not block the caller.
-    async fn enqueue(&self, topic: &str, data: Value) {
+    ///
+    /// Note: trace context (`_traceparent`, `_baggage`) is intentionally not
+    /// propagated — the bridge protocol does not support W3C trace headers.
+    async fn enqueue(
+        &self,
+        topic: &str,
+        data: Value,
+        _traceparent: Option<String>,
+        _baggage: Option<String>,
+    ) {
+        tracing::debug!(
+            topic = %topic,
+            has_traceparent = _traceparent.is_some(),
+            has_baggage = _baggage.is_some(),
+            "enqueue via bridge: trace context not forwarded (bridge protocol limitation)"
+        );
         let input = Self::build_enqueue_payload(topic, data);
         if let Err(e) = self
             .bridge

@@ -15,6 +15,7 @@ use tokio::{
     task::JoinHandle,
     time::timeout,
 };
+use tracing::Instrument;
 
 use crate::{
     engine::{Engine, EngineTrait},
@@ -25,6 +26,7 @@ use crate::{
         },
         redis::DEFAULT_REDIS_CONNECTION_TIMEOUT,
     },
+    telemetry::SpanExt,
 };
 
 pub struct RedisAdapter {
@@ -87,14 +89,28 @@ crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RedisAdapte
 
 #[async_trait]
 impl QueueAdapter for RedisAdapter {
-    async fn enqueue(&self, topic: &str, data: Value) {
+    async fn enqueue(
+        &self,
+        topic: &str,
+        data: Value,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) {
         let topic = topic.to_string();
-        let data = data.clone();
         let publisher = Arc::clone(&self.publisher);
 
         tracing::debug!(topic = %topic, data = %data, "Publishing to Redis queue");
 
-        let json = match serde_json::to_string(&data) {
+        // Wrap data in an envelope that includes trace context
+        let envelope = serde_json::json!({
+            "__trace": {
+                "traceparent": traceparent,
+                "baggage": baggage,
+            },
+            "data": data,
+        });
+
+        let json = match serde_json::to_string(&envelope) {
             Ok(json) => json,
             Err(e) => {
                 tracing::error!(error = %e, topic = %topic, "Failed to serialize queue data");
@@ -181,7 +197,7 @@ impl QueueAdapter for RedisAdapter {
 
                 tracing::debug!(payload = %payload, "Received message from Redis");
 
-                let data: Value = match serde_json::from_str(&payload) {
+                let parsed: Value = match serde_json::from_str(&payload) {
                     Ok(data) => data,
                     Err(e) => {
                         tracing::error!(error = %e, topic = %topic_for_task, "Failed to parse message as JSON");
@@ -189,10 +205,34 @@ impl QueueAdapter for RedisAdapter {
                     }
                 };
 
-                tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, "Received message from Redis queue, invoking function");
+                // Extract trace context from envelope, with backward compatibility.
+                // Only treat as envelope when "__trace" is an object AND "data" is present,
+                // so payloads that merely contain a "__trace" key are not silently clobbered.
+                let (data, traceparent, baggage) =
+                    if parsed.get("__trace").and_then(|v| v.as_object()).is_some()
+                        && parsed.get("data").is_some()
+                    {
+                        let trace = parsed.get("__trace").unwrap();
+                        let data = parsed.get("data").cloned().unwrap();
+                        let traceparent = trace
+                            .get("traceparent")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let baggage = trace
+                            .get("baggage")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        (data, traceparent, baggage)
+                    } else {
+                        // Legacy format or non-envelope payload: use entire payload as data
+                        (parsed, None, None)
+                    };
+
+                tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, traceparent = ?traceparent, "Received message from Redis queue, invoking function");
 
                 let engine = Arc::clone(&engine);
                 let function_id = function_id_for_task.clone();
+                let topic_for_span = topic_for_task.clone();
 
                 if let Some(condition_function_id) = condition_function_id_for_task.as_ref() {
                     tracing::debug!(
@@ -229,10 +269,34 @@ impl QueueAdapter for RedisAdapter {
                     }
                 }
 
-                // We may want to limit concurrency at some point
-                tokio::spawn(async move {
-                    let _ = engine.call(&function_id, data).await;
-                });
+                // Create span with parent from trace context propagated through Redis
+                let span = tracing::info_span!(
+                    "queue_job",
+                    otel.name = %format!("queue {}", topic_for_span),
+                    queue = %topic_for_span,
+                    otel.status_code = tracing::field::Empty,
+                )
+                .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+
+                tokio::spawn(
+                    async move {
+                        match engine.call(&function_id, data).await {
+                            Ok(_) => {
+                                tracing::Span::current().record("otel.status_code", "OK");
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = ?e,
+                                    function_id = %function_id,
+                                    topic = %topic_for_span,
+                                    "Failed to invoke function for queue job"
+                                );
+                                tracing::Span::current().record("otel.status_code", "ERROR");
+                            }
+                        }
+                    }
+                    .instrument(span),
+                );
             }
 
             tracing::debug!(topic = %topic_for_task, id = %id_for_task, "Subscription task ended");
