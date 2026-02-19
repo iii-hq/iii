@@ -4,7 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{path::Path, process::Stdio, sync::Arc};
+use std::{
+    path::Path,
+    process::Stdio,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::Result;
 use colored::Colorize;
@@ -27,6 +34,7 @@ pub struct Exec {
     child: Arc<Mutex<Option<Child>>>,
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    shutdown_called: Arc<AtomicBool>,
 }
 
 const MAX_WATCH_EVENTS: usize = 100;
@@ -42,11 +50,15 @@ impl Exec {
             child: Arc::new(Mutex::new(None::<Child>)),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
+            shutdown_called: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Signal all loops in run()/run_pipeline() to stop, then kill the child process.
     pub async fn shutdown(&self) {
+        if self.shutdown_called.swap(true, Ordering::SeqCst) {
+            return; // Already called
+        }
         tracing::info!("ExecModule received shutdown signal, stopping process");
         let _ = self.shutdown_tx.send(true);
         self.stop_process().await;
@@ -416,6 +428,25 @@ mod tests {
             child_pid,
             pids_after
         );
+    }
+
+    /// Calling shutdown() twice must not panic or error.
+    #[tokio::test]
+    async fn shutdown_is_idempotent() {
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec!["sleep 300".to_string()],
+        });
+
+        let child = exec.spawn_single(&exec.exec[0]).unwrap();
+        *exec.child.lock().await = Some(child);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // First shutdown
+        exec.shutdown().await;
+        // Second shutdown — must not panic
+        exec.shutdown().await;
     }
 
     /// Returns PIDs of all alive processes whose PGID matches the given group id.
