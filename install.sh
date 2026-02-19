@@ -25,7 +25,19 @@ else
       os="apple-darwin"
       ;;
     Linux)
-      os="unknown-linux-gnu"
+      if [ -n "${III_USE_GLIBC:-}" ]; then
+        sys_glibc=$(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+$' || echo "0.0")
+        required_glibc="2.35"
+        if printf '%s\n%s\n' "$required_glibc" "$sys_glibc" | sort -V -C; then
+          os="unknown-linux-gnu"
+          echo "using glibc build (system glibc: $sys_glibc)"
+        else
+          echo "warning: system glibc $sys_glibc is older than required $required_glibc, falling back to musl" >&2
+          os="unknown-linux-musl"
+        fi
+      else
+        os="unknown-linux-musl"
+      fi
       ;;
     *)
       err "unsupported OS: $uname_s"
