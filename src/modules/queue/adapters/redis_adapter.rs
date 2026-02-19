@@ -205,22 +205,28 @@ impl QueueAdapter for RedisAdapter {
                     }
                 };
 
-                // Extract trace context from envelope, with backward compatibility
-                let (data, traceparent, baggage) = if let Some(trace) = parsed.get("__trace") {
-                    let data = parsed.get("data").cloned().unwrap_or(Value::Null);
-                    let traceparent = trace
-                        .get("traceparent")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let baggage = trace
-                        .get("baggage")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    (data, traceparent, baggage)
-                } else {
-                    // Legacy format: entire payload is the data
-                    (parsed, None, None)
-                };
+                // Extract trace context from envelope, with backward compatibility.
+                // Only treat as envelope when "__trace" is an object AND "data" is present,
+                // so payloads that merely contain a "__trace" key are not silently clobbered.
+                let (data, traceparent, baggage) =
+                    if parsed.get("__trace").and_then(|v| v.as_object()).is_some()
+                        && parsed.get("data").is_some()
+                    {
+                        let trace = parsed.get("__trace").unwrap();
+                        let data = parsed.get("data").cloned().unwrap();
+                        let traceparent = trace
+                            .get("traceparent")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let baggage = trace
+                            .get("baggage")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        (data, traceparent, baggage)
+                    } else {
+                        // Legacy format or non-envelope payload: use entire payload as data
+                        (parsed, None, None)
+                    };
 
                 tracing::debug!(topic = %topic_for_task, function_id = %function_id_for_task, traceparent = ?traceparent, "Received message from Redis queue, invoking function");
 
