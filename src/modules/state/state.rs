@@ -12,6 +12,7 @@ use std::{
 use function_macros::{function, service};
 use once_cell::sync::Lazy;
 use serde_json::Value;
+use tracing::Instrument;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -118,117 +119,131 @@ impl StateCoreModule {
         let event_key = event_data.key.clone();
         let event_scope = event_data.scope.clone();
 
+        let current_span = tracing::Span::current();
+
         if let Ok(event_data) = serde_json::to_value(event_data) {
-            tokio::spawn(async move {
-                tracing::debug!("Invoking triggers for event type {:?}", event_type);
+            tokio::spawn(
+                async move {
+                    tracing::debug!("Invoking triggers for event type {:?}", event_type);
+                    let mut has_error = false;
 
-                for trigger in triggers {
-                    let trigger = trigger.clone();
+                    for trigger in triggers {
+                        let trigger = trigger.clone();
 
-                    if let Some(scope) = &trigger.config.scope {
-                        tracing::info!(
-                            scope = %scope,
-                            event_scope = %event_scope,
-                            "Checking trigger scope"
-                        );
-                        if scope != &event_scope {
+                        if let Some(scope) = &trigger.config.scope {
                             tracing::info!(
                                 scope = %scope,
                                 event_scope = %event_scope,
-                                "Trigger scope does not match event scope, skipping trigger"
+                                "Checking trigger scope"
                             );
-                            continue;
+                            if scope != &event_scope {
+                                tracing::info!(
+                                    scope = %scope,
+                                    event_scope = %event_scope,
+                                    "Trigger scope does not match event scope, skipping trigger"
+                                );
+                                continue;
+                            }
                         }
-                    }
 
-                    if let Some(key) = &trigger.config.key {
-                        tracing::info!(
-                            key = %key,
-                            event_key = %event_key,
-                            "Checking trigger key"
-                        );
-                        if key != &event_key {
+                        if let Some(key) = &trigger.config.key {
                             tracing::info!(
                                 key = %key,
                                 event_key = %event_key,
-                                "Trigger key does not match event key, skipping trigger"
+                                "Checking trigger key"
                             );
-                            continue;
-                        }
-                    }
-
-                    if let Some(condition_function_id) = trigger.config.condition_function_id {
-                        tracing::debug!(
-                            condition_function_id = %condition_function_id,
-                            "Checking trigger conditions"
-                        );
-
-                        match engine
-                            .call(&condition_function_id, event_data.clone())
-                            .await
-                        {
-                            Ok(Some(result)) => {
-                                tracing::debug!(
-                                    condition_function_id = %condition_function_id,
-                                    result = ?result,
-                                    "Condition function result"
+                            if key != &event_key {
+                                tracing::info!(
+                                    key = %key,
+                                    event_key = %event_key,
+                                    "Trigger key does not match event key, skipping trigger"
                                 );
+                                continue;
+                            }
+                        }
 
-                                if let Some(passed) = result.as_bool()
-                                    && !passed
-                                {
+                        if let Some(condition_function_id) = trigger.config.condition_function_id {
+                            tracing::debug!(
+                                condition_function_id = %condition_function_id,
+                                "Checking trigger conditions"
+                            );
+
+                            match engine
+                                .call(&condition_function_id, event_data.clone())
+                                .await
+                            {
+                                Ok(Some(result)) => {
                                     tracing::debug!(
-                                        function_id = %trigger.trigger.function_id,
-                                        "Condition check failed, skipping handler"
+                                        condition_function_id = %condition_function_id,
+                                        result = ?result,
+                                        "Condition function result"
+                                    );
+
+                                    if let Some(passed) = result.as_bool()
+                                        && !passed
+                                    {
+                                        tracing::debug!(
+                                            function_id = %trigger.trigger.function_id,
+                                            "Condition check failed, skipping handler"
+                                        );
+                                        continue;
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::warn!(
+                                        condition_function_id = %condition_function_id,
+                                        "Condition function returned no result"
+                                    );
+                                    continue;
+                                }
+                                Err(err) => {
+                                    has_error = true;
+                                    tracing::error!(
+                                        condition_function_id = %condition_function_id,
+                                        error = ?err,
+                                        "Error invoking condition function"
                                     );
                                     continue;
                                 }
                             }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    condition_function_id = %condition_function_id,
-                                    "Condition function returned no result"
+                        }
+
+                        // Invoke the handler function
+                        tracing::info!(
+                            function_id = %trigger.trigger.function_id,
+                            "Invoking trigger"
+                        );
+
+                        let call_result = engine
+                            .call(&trigger.trigger.function_id, event_data.clone())
+                            .await;
+
+                        match call_result {
+                            Ok(_) => {
+                                tracing::debug!(
+                                    function_id = %trigger.trigger.function_id,
+                                    "Trigger handler invoked successfully"
                                 );
-                                continue;
                             }
                             Err(err) => {
+                                has_error = true;
                                 tracing::error!(
-                                    condition_function_id = %condition_function_id,
+                                    function_id = %trigger.trigger.function_id,
                                     error = ?err,
-                                    "Error invoking condition function"
+                                    "Error invoking trigger handler"
                                 );
-                                continue;
                             }
                         }
                     }
 
-                    // Invoke the handler function
-                    tracing::info!(
-                        function_id = %trigger.trigger.function_id,
-                        "Invoking trigger"
-                    );
-
-                    let call_result = engine
-                        .call(&trigger.trigger.function_id, event_data.clone())
-                        .await;
-
-                    match call_result {
-                        Ok(_) => {
-                            tracing::debug!(
-                                function_id = %trigger.trigger.function_id,
-                                "Trigger handler invoked successfully"
-                            );
-                        }
-                        Err(err) => {
-                            tracing::error!(
-                                function_id = %trigger.trigger.function_id,
-                                error = ?err,
-                                "Error invoking trigger handler"
-                            );
-                        }
+                    if has_error {
+                        tracing::Span::current().record("otel.status_code", "ERROR");
+                    } else {
+                        tracing::Span::current().record("otel.status_code", "OK");
                     }
                 }
-            });
+                .instrument(tracing::info_span!(parent: current_span, "state_triggers", otel.status_code = tracing::field::Empty))
+            );
         } else {
             tracing::error!("Failed to convert event data to value");
         }

@@ -17,7 +17,6 @@ use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
     protocol::ErrorBody,
-    telemetry::SpanExt,
 };
 
 pub struct Invocation {
@@ -81,8 +80,8 @@ impl InvocationHandler {
         };
 
         let span = tracing::info_span!(
-            "invoke",
-            otel.name = %format!("invoke {}", function_id),
+            "call",
+            otel.name = %format!("call {}", function_id),
             otel.kind = "server",
             otel.status_code = tracing::field::Empty,
             // FAAS semantic conventions (https://opentelemetry.io/docs/specs/semconv/faas/)
@@ -92,8 +91,7 @@ impl InvocationHandler {
             function_id = %function_id,
             // Tag internal vs user functions for filtering
             "iii.function.kind" = %function_kind,
-        )
-        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
+        );
 
         async {
             let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -241,7 +239,16 @@ impl InvocationHandler {
                 }
             }
 
-            receiver.await
+            let result = receiver.await;
+            match &result {
+                Ok(Ok(_)) => {
+                    tracing::Span::current().record("otel.status_code", "OK");
+                }
+                Ok(Err(_)) | Err(_) => {
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                }
+            };
+            result
         }
         .instrument(span)
         .await
