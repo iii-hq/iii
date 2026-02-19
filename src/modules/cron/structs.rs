@@ -330,4 +330,35 @@ mod tests {
         let jobs = adapter.jobs.read().await;
         assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
     }
+
+    /// Calling shutdown() directly (as destroy would) should abort all tasks
+    /// even if no external shutdown signal was sent first.
+    #[tokio::test]
+    async fn shutdown_aborts_all_task_handles() {
+        let engine = test_engine();
+        let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
+
+        // Register multiple cron jobs
+        adapter
+            .register("job-1", "0 0 * * * *", "fn-1", None)
+            .await
+            .unwrap();
+        adapter
+            .register("job-2", "0 30 * * * *", "fn-2", None)
+            .await
+            .unwrap();
+
+        // Verify both jobs are running
+        {
+            let jobs = adapter.jobs.read().await;
+            assert_eq!(jobs.len(), 2);
+        }
+
+        // Call shutdown directly (simulating destroy path)
+        adapter.shutdown().await;
+
+        // Verify all tasks are finished and map is drained
+        let jobs = adapter.jobs.read().await;
+        assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
+    }
 }
