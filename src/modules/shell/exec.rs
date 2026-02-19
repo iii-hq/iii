@@ -136,6 +136,10 @@ impl Exec {
     }
 
     async fn run_pipeline(&self) -> Result<()> {
+        if self.exec.is_empty() {
+            return Ok(());
+        }
+
         let mut shutdown_rx = self.shutdown_rx.clone();
 
         let last_idx = self.exec.len() - 1;
@@ -153,8 +157,11 @@ impl Exec {
                     status = child.wait() => status?,
                     _ = shutdown_rx.changed() => {
                         tracing::info!("Pipeline interrupted by shutdown signal");
-                        // Put child back so stop_process() can kill it
+                        // Put child back and kill it — shutdown() may have already
+                        // called stop_process() while the child was extracted, finding
+                        // None. We must kill it ourselves to avoid orphaning.
                         *self.child.lock().await = Some(child);
+                        self.stop_process().await;
                         return Ok(());
                     }
                 };
