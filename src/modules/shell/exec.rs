@@ -24,7 +24,7 @@ use crate::modules::shell::{config::ExecConfig, glob_exec::GlobExec};
 pub struct Exec {
     exec: Vec<String>,
     glob_exec: Option<GlobExec>,
-    children: Arc<Mutex<Vec<Child>>>,
+    child: Arc<Mutex<Option<Child>>>,
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -39,7 +39,7 @@ impl Exec {
         Self {
             glob_exec: config.watch.map(GlobExec::new),
             exec: config.exec,
-            children: Arc::new(Mutex::new(Vec::new())),
+            child: Arc::new(Mutex::new(None::<Child>)),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -124,11 +124,38 @@ impl Exec {
     }
 
     async fn run_pipeline(&self) -> Result<()> {
-        let mut children = self.children.lock().await;
+        let mut shutdown_rx = self.shutdown_rx.clone();
+
         for cmd in &self.exec {
             let spawned = self.spawn_single(cmd)?;
-            children.push(spawned);
+            *self.child.lock().await = Some(spawned);
+
+            // Check if this is the last command in the pipeline
+            let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
+
+            if !is_last {
+                // Take child out of the mutex so we don't hold the lock during wait.
+                // This allows stop_process()/shutdown() to proceed if called concurrently.
+                let mut child = self.child.lock().await.take().unwrap();
+
+                // Wait for command to finish OR shutdown signal
+                let status = tokio::select! {
+                    status = child.wait() => status?,
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!("Pipeline interrupted by shutdown signal");
+                        // Put child back so stop_process() can kill it
+                        *self.child.lock().await = Some(child);
+                        return Ok(());
+                    }
+                };
+
+                if !status.success() {
+                    tracing::error!("Pipeline step failed, aborting pipeline");
+                    break;
+                }
+            }
         }
+
         Ok(())
     }
 
@@ -195,37 +222,28 @@ impl Exec {
     }
 
     pub async fn stop_process(&self) {
-        let mut children: Vec<Child> = self.children.lock().await.drain(..).collect();
+        if let Some(mut child) = self.child.lock().await.take() {
+            #[cfg(not(windows))]
+            let pgid = child.id().map(|id| nix::unistd::Pid::from_raw(id as i32));
 
-        if children.is_empty() {
-            return;
-        }
+            #[cfg(not(windows))]
+            if let Some(pgid) = pgid {
+                // 1️⃣ Ask the whole process group politely
+                let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM);
+            }
 
-        // 1️⃣ Ask all process groups politely
-        #[cfg(not(windows))]
-        let pgids: Vec<Option<nix::unistd::Pid>> = children
-            .iter()
-            .map(|c| c.id().map(|id| nix::unistd::Pid::from_raw(id as i32)))
-            .collect();
-
-        #[cfg(not(windows))]
-        for pgid in pgids.iter().flatten() {
-            let _ = nix::sys::signal::killpg(*pgid, nix::sys::signal::Signal::SIGTERM);
-        }
-
-        #[cfg(windows)]
-        {
-            use winapi::{
-                shared::minwindef::{FALSE, TRUE},
-                um::{
-                    consoleapi::SetConsoleCtrlHandler,
-                    wincon::{
-                        AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
+            #[cfg(windows)]
+            {
+                use winapi::{
+                    shared::minwindef::{FALSE, TRUE},
+                    um::{
+                        consoleapi::SetConsoleCtrlHandler,
+                        wincon::{
+                            AttachConsole, CTRL_BREAK_EVENT, FreeConsole, GenerateConsoleCtrlEvent,
+                        },
                     },
-                },
-            };
+                };
 
-            for child in &children {
                 if let Some(pid) = child.id() {
                     unsafe {
                         if AttachConsole(pid) != 0 {
@@ -237,33 +255,27 @@ impl Exec {
                     }
                 }
             }
-        }
 
-        // 2️⃣ Wait for all to exit (with timeout)
-        let wait_all = async {
-            for child in &mut children {
-                let _ = child.wait().await;
-            }
-        };
+            // 2️⃣ Wait a bit
+            let exited = timeout(Duration::from_secs(3), child.wait()).await;
 
-        if timeout(Duration::from_secs(3), wait_all).await.is_err() {
-            // 3️⃣ Force kill all remaining process groups
-            tracing::warn!("Processes did not exit gracefully, killing");
-            #[cfg(not(windows))]
-            for pgid in pgids.iter().flatten() {
-                let _ = nix::sys::signal::killpg(*pgid, nix::sys::signal::Signal::SIGKILL);
-            }
-            #[cfg(windows)]
-            for child in &mut children {
-                let _ = child.kill().await;
+            if exited.is_err() {
+                // 3️⃣ Force kill the entire process group
+                tracing::warn!("Process did not exit gracefully, killing");
+                #[cfg(not(windows))]
+                if let Some(pgid) = pgid {
+                    let _ = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL);
+                }
+                #[cfg(windows)]
+                {
+                    let _ = child.kill().await;
+                }
             }
         }
     }
 
     async fn kill_process(&self) {
-        let children: Vec<Child> = self.children.lock().await.drain(..).collect();
-
-        for mut proc in children {
+        if let Some(mut proc) = self.child.lock().await.take() {
             #[cfg(not(windows))]
             {
                 if let Some(id) = proc.id() {
@@ -310,7 +322,7 @@ mod tests {
         // Spawn the process (sh -c "sleep 300 & sleep 300 & wait")
         let child = exec.spawn_single(&exec.exec[0]).unwrap();
         let child_pid = child.id().unwrap() as i32;
-        exec.children.lock().await.push(child);
+        *exec.child.lock().await = Some(child);
 
         // Give children time to spawn
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -349,7 +361,7 @@ mod tests {
 
         let child = exec.spawn_single(&exec.exec[0]).unwrap();
         let child_pid = child.id().unwrap() as i32;
-        exec.children.lock().await.push(child);
+        *exec.child.lock().await = Some(child);
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
