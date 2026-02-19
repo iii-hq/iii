@@ -40,14 +40,28 @@ impl Module for ExecCoreModule {
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn start_background_tasks(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
         let watcher = self.watcher.clone();
 
+        let watcher_for_shutdown = watcher.clone();
         tokio::spawn(async move {
-            if let Err(err) = watcher.run().await {
-                tracing::error!("Watcher failed: {:?}", err);
+            tokio::select! {
+                result = watcher.run() => {
+                    if let Err(err) = result {
+                        tracing::error!("Watcher failed: {:?}", err);
+                    }
+                }
+                _ = shutdown.changed() => {
+                    tracing::info!("ExecModule received shutdown signal, stopping process");
+                    watcher_for_shutdown.stop_process().await;
+                }
             }
-
-            Ok(())
         });
 
         Ok(())
