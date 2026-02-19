@@ -25,6 +25,8 @@ pub struct Exec {
     exec: Vec<String>,
     glob_exec: Option<GlobExec>,
     child: Arc<Mutex<Option<Child>>>,
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 const MAX_WATCH_EVENTS: usize = 100;
@@ -33,11 +35,21 @@ impl Exec {
     pub fn new(config: ExecConfig) -> Self {
         tracing::info!("Creating Exec module with config: {:?}", config);
 
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             glob_exec: config.watch.map(GlobExec::new),
             exec: config.exec,
             child: Arc::new(Mutex::new(None::<Child>)),
+            shutdown_tx: Arc::new(shutdown_tx),
+            shutdown_rx,
         }
+    }
+
+    /// Signal all loops in run()/run_pipeline() to stop, then kill the child process.
+    pub async fn shutdown(&self) {
+        tracing::info!("ExecModule received shutdown signal, stopping process");
+        let _ = self.shutdown_tx.send(true);
+        self.stop_process().await;
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
@@ -73,34 +85,47 @@ impl Exec {
         // 🔥 start pipeline
         self.run_pipeline().await?;
 
-        while let Some(event) = rx.recv().await {
-            if !self.should_restart(&event) {
-                continue;
+        let mut shutdown_rx = self.shutdown_rx.clone();
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    match event {
+                        Some(event) if self.should_restart(&event) => {
+                            tracing::info!(
+                                "File change detected {} → restarting pipeline",
+                                event
+                                    .paths
+                                    .iter()
+                                    .map(|p| {
+                                        p.strip_prefix(&cwd)
+                                            .map(|s| s.to_string_lossy().to_string())
+                                            .unwrap_or_else(|_| p.to_string_lossy().to_string())
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                                    .purple()
+                            );
+
+                            self.kill_process().await;
+                            self.run_pipeline().await?;
+                        }
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    tracing::info!("ExecModule file watcher shutting down");
+                    break;
+                }
             }
-
-            tracing::info!(
-                "File change detected {} → restarting pipeline",
-                event
-                    .paths
-                    .iter()
-                    .map(|p| {
-                        p.strip_prefix(&cwd)
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| p.to_string_lossy().to_string())
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-                    .purple()
-            );
-
-            self.kill_process().await;
-            self.run_pipeline().await?;
         }
 
         Ok(())
     }
 
     async fn run_pipeline(&self) -> Result<()> {
+        let mut shutdown_rx = self.shutdown_rx.clone();
+
         for cmd in &self.exec {
             let spawned = self.spawn_single(cmd)?;
             *self.child.lock().await = Some(spawned);
@@ -109,16 +134,25 @@ impl Exec {
             let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
 
             if !is_last {
-                // ⏳ wait for command to finish
-                let status = self.child.lock().await.as_mut().unwrap().wait().await?;
+                // Take child out of the mutex so we don't hold the lock during wait.
+                // This allows stop_process()/shutdown() to proceed if called concurrently.
+                let mut child = self.child.lock().await.take().unwrap();
+
+                // ⏳ wait for command to finish OR shutdown signal
+                let status = tokio::select! {
+                    status = child.wait() => status?,
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!("Pipeline interrupted by shutdown signal");
+                        // Put child back so stop_process() can kill it
+                        *self.child.lock().await = Some(child);
+                        return Ok(());
+                    }
+                };
 
                 if !status.success() {
                     tracing::error!("Pipeline step failed, aborting pipeline");
                     break;
                 }
-
-                // clear child before next step
-                *self.child.lock().await = None;
             }
         }
 

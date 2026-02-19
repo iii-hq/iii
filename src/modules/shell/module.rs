@@ -33,13 +33,23 @@ impl Module for ExecCoreModule {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        self.watcher.stop_process().await;
+        self.watcher.shutdown().await;
         Ok(())
     }
 
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        let watcher = self.watcher.clone();
+
+        tokio::spawn(async move {
+            if let Err(err) = watcher.run().await {
+                tracing::error!("Watcher failed: {:?}", err);
+            }
+
+            Ok(())
+        });
+
         Ok(())
     }
 
@@ -49,19 +59,9 @@ impl Module for ExecCoreModule {
     ) -> anyhow::Result<()> {
         let watcher = self.watcher.clone();
 
-        let watcher_for_shutdown = watcher.clone();
         tokio::spawn(async move {
-            tokio::select! {
-                result = watcher.run() => {
-                    if let Err(err) = result {
-                        tracing::error!("Watcher failed: {:?}", err);
-                    }
-                }
-                _ = shutdown.changed() => {
-                    tracing::info!("ExecModule received shutdown signal, stopping process");
-                    watcher_for_shutdown.stop_process().await;
-                }
-            }
+            let _ = shutdown.changed().await;
+            watcher.shutdown().await;
         });
 
         Ok(())
