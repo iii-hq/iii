@@ -138,14 +138,12 @@ impl Exec {
     async fn run_pipeline(&self) -> Result<()> {
         let mut shutdown_rx = self.shutdown_rx.clone();
 
-        for cmd in &self.exec {
+        let last_idx = self.exec.len() - 1;
+        for (idx, cmd) in self.exec.iter().enumerate() {
             let spawned = self.spawn_single(cmd)?;
             *self.child.lock().await = Some(spawned);
 
-            // Check if this is the last command in the pipeline
-            let is_last = std::ptr::eq(cmd, self.exec.last().unwrap());
-
-            if !is_last {
+            if idx < last_idx {
                 // Take child out of the mutex so we don't hold the lock during wait.
                 // This allows stop_process()/shutdown() to proceed if called concurrently.
                 let mut child = self.child.lock().await.take().unwrap();
