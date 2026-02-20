@@ -165,17 +165,27 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
         continue-on-error: true
 
-      - name: Create and push multi-platform manifest
-        id: merge
+      - name: Create and push multi-platform manifest (GHCR)
+        id: merge-ghcr
         run: |
-          TAGS="${{ steps.meta.outputs.tags }}"
-          for tag in $TAGS; do
+          echo "${{ steps.meta.outputs.tag-names }}" | while IFS= read -r tag; do
+            tag=$(echo "$tag" | tr -d '\r\n' | xargs)
+            [ -z "$tag" ] && continue
             docker buildx imagetools create \
-              -t ${{ env.GHCR_REPO }}:$tag \
+              -t "${{ env.GHCR_REPO }}:$tag" \
               ${{ env.GHCR_REPO }}:build-amd64 \
               ${{ env.GHCR_REPO }}:build-arm64
+          done
+
+      - name: Create and push multi-platform manifest (DockerHub)
+        id: merge-dockerhub
+        continue-on-error: true
+        run: |
+          echo "${{ steps.meta.outputs.tag-names }}" | while IFS= read -r tag; do
+            tag=$(echo "$tag" | tr -d '\r\n' | xargs)
+            [ -z "$tag" ] && continue
             docker buildx imagetools create \
-              -t ${{ env.DOCKERHUB_REPO }}:$tag \
+              -t "${{ env.DOCKERHUB_REPO }}:$tag" \
               ${{ env.DOCKERHUB_REPO }}:build-amd64 \
               ${{ env.DOCKERHUB_REPO }}:build-arm64
           done
@@ -191,7 +201,7 @@ jobs:
 
       - name: Upload Trivy scan results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: success()
         continue-on-error: true
         with:
           sarif_file: 'trivy-results.sarif'
