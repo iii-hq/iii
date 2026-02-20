@@ -9,7 +9,7 @@ use std::{pin::Pin, sync::Arc};
 use anyhow::anyhow;
 use axum::{
     Router,
-    extract::Extension,
+    extract::{DefaultBodyLimit, Extension},
     http::{Method, StatusCode},
 };
 use colored::Colorize;
@@ -24,7 +24,7 @@ use tower_http::{
 };
 
 use super::{
-    config::RestApiConfig,
+    config::HttpConfig,
     hot_router::{HotRouter, MakeHotRouterService},
     views::dynamic_handler,
 };
@@ -59,20 +59,20 @@ impl PathRouter {
 }
 
 #[derive(Clone)]
-pub struct RestApiCoreModule {
+pub struct HttpModule {
     engine: Arc<Engine>,
-    config: RestApiConfig,
+    pub config: HttpConfig,
     pub routers_registry: Arc<DashMap<String, PathRouter>>,
     shared_routers: Arc<RwLock<Router>>,
 }
 
 #[async_trait::async_trait]
-impl Module for RestApiCoreModule {
+impl Module for HttpModule {
     fn name(&self) -> &'static str {
-        "RestApiCoreModule"
+        "HttpModule"
     }
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
-        let config: RestApiConfig = config
+        let config: HttpConfig = config
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
@@ -131,7 +131,7 @@ impl Module for RestApiCoreModule {
 
 const ALLOW_ORIGIN_ANY: &str = "*";
 
-impl RestApiCoreModule {
+impl HttpModule {
     fn normalize_http_path_for_key(http_path: &str) -> String {
         if http_path == "/" {
             "/".to_string()
@@ -170,6 +170,9 @@ impl RestApiCoreModule {
         new_router = new_router.layer(ConcurrencyLimitLayer::new(
             self.config.concurrency_request_limit,
         ));
+
+        // Add Body Limit Layer
+        new_router = new_router.layer(DefaultBodyLimit::max(self.config.body_limit));
 
         // Update the shared router
         let mut shared_router = self.shared_routers.write().await;
@@ -214,7 +217,7 @@ impl RestApiCoreModule {
     }
     fn build_routers_from_routers_registry(
         engine: Arc<Engine>,
-        api_handler: Arc<RestApiCoreModule>,
+        api_handler: Arc<HttpModule>,
         routers_registry: &DashMap<String, PathRouter>,
     ) -> Router {
         use axum::routing::{delete, get, post, put};
@@ -226,40 +229,91 @@ impl RestApiCoreModule {
 
             let method = entry.http_method.clone();
             let path_for_extension = entry.http_path.clone();
+
+            // Register original path
             router = match method.as_str() {
                 "GET" => router.route(
                     &path,
-                    get(dynamic_handler).layer(Extension(path_for_extension)),
+                    get(dynamic_handler).layer(Extension(path_for_extension.clone())),
                 ),
                 "POST" => router.route(
                     &path,
-                    post(dynamic_handler).layer(Extension(path_for_extension)),
+                    post(dynamic_handler).layer(Extension(path_for_extension.clone())),
                 ),
                 "PUT" => router.route(
                     &path,
-                    put(dynamic_handler).layer(Extension(path_for_extension)),
+                    put(dynamic_handler).layer(Extension(path_for_extension.clone())),
                 ),
                 "DELETE" => router.route(
                     &path,
-                    delete(dynamic_handler).layer(Extension(path_for_extension)),
+                    delete(dynamic_handler).layer(Extension(path_for_extension.clone())),
                 ),
                 "PATCH" => router.route(
                     &path,
-                    axum::routing::patch(dynamic_handler).layer(Extension(path_for_extension)),
+                    axum::routing::patch(dynamic_handler)
+                        .layer(Extension(path_for_extension.clone())),
                 ),
                 "HEAD" => router.route(
                     &path,
-                    axum::routing::head(dynamic_handler).layer(Extension(path_for_extension)),
+                    axum::routing::head(dynamic_handler)
+                        .layer(Extension(path_for_extension.clone())),
                 ),
                 "OPTIONS" => router.route(
                     &path,
-                    axum::routing::options(dynamic_handler).layer(Extension(path_for_extension)),
+                    axum::routing::options(dynamic_handler)
+                        .layer(Extension(path_for_extension.clone())),
                 ),
                 _ => {
                     tracing::warn!("Unsupported HTTP method: {}", method.purple());
                     router
                 }
             };
+
+            // If ignore_trailing_slash is enabled, register alternate path (with or without trailing slash)
+            if api_handler.config.ignore_trailing_slash {
+                let alt_path = if path.ends_with('/') {
+                    path.strip_suffix('/').unwrap().to_string()
+                } else {
+                    format!("{}/", path)
+                };
+
+                if !alt_path.is_empty() {
+                    router = match method.as_str() {
+                        "GET" => router.route(
+                            &alt_path,
+                            get(dynamic_handler).layer(Extension(path_for_extension.clone())),
+                        ),
+                        "POST" => router.route(
+                            &alt_path,
+                            post(dynamic_handler).layer(Extension(path_for_extension.clone())),
+                        ),
+                        "PUT" => router.route(
+                            &alt_path,
+                            put(dynamic_handler).layer(Extension(path_for_extension.clone())),
+                        ),
+                        "DELETE" => router.route(
+                            &alt_path,
+                            delete(dynamic_handler).layer(Extension(path_for_extension.clone())),
+                        ),
+                        "PATCH" => router.route(
+                            &alt_path,
+                            axum::routing::patch(dynamic_handler)
+                                .layer(Extension(path_for_extension.clone())),
+                        ),
+                        "HEAD" => router.route(
+                            &alt_path,
+                            axum::routing::head(dynamic_handler)
+                                .layer(Extension(path_for_extension.clone())),
+                        ),
+                        "OPTIONS" => router.route(
+                            &alt_path,
+                            axum::routing::options(dynamic_handler)
+                                .layer(Extension(path_for_extension.clone())),
+                        ),
+                        _ => router,
+                    };
+                }
+            }
         }
 
         router
@@ -317,11 +371,21 @@ impl RestApiCoreModule {
         http_method: &str,
         http_path: &str,
     ) -> Option<(String, Option<String>)> {
-        let key = Self::build_router_key(http_method, http_path);
+        let mut key = Self::build_router_key(http_method, http_path);
         tracing::debug!("Looking up router for key: {}", key);
-        self.routers_registry
-            .get(&key)
-            .map(|r| (r.function_id.clone(), r.condition_function_id.clone()))
+        let mut result = self.routers_registry.get(&key);
+
+        if result.is_none() && self.config.ignore_trailing_slash {
+            let alt_path = if http_path.ends_with('/') {
+                http_path.strip_suffix('/').unwrap().to_string()
+            } else {
+                format!("{}/", http_path)
+            };
+            key = Self::build_router_key(http_method, &alt_path);
+            result = self.routers_registry.get(&key);
+        }
+
+        result.map(|r| (r.function_id.clone(), r.condition_function_id.clone()))
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
@@ -365,7 +429,7 @@ impl RestApiCoreModule {
     }
 }
 
-impl TriggerRegistrator for RestApiCoreModule {
+impl TriggerRegistrator for HttpModule {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -429,26 +493,26 @@ impl TriggerRegistrator for RestApiCoreModule {
 }
 
 crate::register_module!(
-    "modules::api::RestApiModule",
-    RestApiCoreModule,
+    "modules::http::HttpModule",
+    HttpModule,
     enabled_by_default = true
 );
 
 #[cfg(test)]
 mod tests {
-    use super::RestApiCoreModule;
+    use super::HttpModule;
 
     #[test]
     fn build_router_key_normalizes_leading_slash() {
-        let a = RestApiCoreModule::build_router_key("GET", "users/:id");
-        let b = RestApiCoreModule::build_router_key("get", "/users/:id");
+        let a = HttpModule::build_router_key("GET", "users/:id");
+        let b = HttpModule::build_router_key("get", "/users/:id");
         assert_eq!(a, b);
         assert_eq!(a, "GET:users/:id");
     }
 
     #[test]
     fn build_router_key_keeps_root_path() {
-        let key = RestApiCoreModule::build_router_key("GET", "/");
+        let key = HttpModule::build_router_key("GET", "/");
         assert_eq!(key, "GET:/");
     }
 

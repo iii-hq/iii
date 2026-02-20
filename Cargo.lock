@@ -1461,11 +1461,12 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "colored",

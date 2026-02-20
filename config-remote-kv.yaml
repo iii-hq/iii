@@ -9,7 +9,7 @@ modules:
         config:
           bridge_url: ws://localhost:49133
 
-  - class: modules::api::RestApiModule
+  - class: modules::http::HttpModule
     config:
       port: ${API_PORT:3111}
       host: 127.0.0.1

@@ -16,8 +16,16 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
-    protocol::ErrorBody,
+    protocol::{ErrorBody, MiddlewareAction},
 };
+
+#[derive(Debug, Clone)]
+pub struct MiddlewareInvocationResult {
+    pub action: MiddlewareAction,
+    pub request: Option<Value>,
+    pub context: Option<Value>,
+    pub response: Option<Value>,
+}
 
 pub struct Invocation {
     pub id: Uuid,
@@ -35,12 +43,30 @@ type Invocations = Arc<DashMap<Uuid, Invocation>>;
 #[derive(Default)]
 pub struct InvocationHandler {
     invocations: Invocations,
+    pending_middleware:
+        Arc<DashMap<Uuid, oneshot::Sender<Result<MiddlewareInvocationResult, ErrorBody>>>>,
 }
 impl InvocationHandler {
     pub fn new() -> Self {
         Self {
             invocations: Arc::new(DashMap::new()),
+            pending_middleware: Arc::new(DashMap::new()),
         }
+    }
+
+    pub fn add_middleware_invocation(
+        &self,
+        id: Uuid,
+        sender: oneshot::Sender<Result<MiddlewareInvocationResult, ErrorBody>>,
+    ) {
+        self.pending_middleware.insert(id, sender);
+    }
+
+    pub fn remove_middleware_invocation(
+        &self,
+        id: &Uuid,
+    ) -> Option<oneshot::Sender<Result<MiddlewareInvocationResult, ErrorBody>>> {
+        self.pending_middleware.remove(id).map(|(_, sender)| sender)
     }
 
     pub fn remove(&self, invocation_id: &Uuid) -> Option<Invocation> {

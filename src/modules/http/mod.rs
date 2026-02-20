@@ -7,7 +7,9 @@
 mod api_core;
 mod config;
 mod hot_router;
+mod pipeline;
 mod types;
 mod views;
 
-pub use api_core::RestApiCoreModule;
+pub use api_core::HttpModule;
+pub use pipeline::MiddlewarePipeline;

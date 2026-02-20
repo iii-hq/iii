@@ -102,7 +102,7 @@ If you want to run without Redis, create a minimal config that only loads module
 
 ```yaml
 modules:
-  - class: modules::api::RestApiModule
+  - class: modules::http::HttpModule
     config:
       host: 127.0.0.1
       port: 3111
@@ -174,7 +174,7 @@ With the default API config, the endpoint will be available at:
 
 Available core modules (registered in `src/modules/config.rs`):
 
-- `modules::api::RestApiModule` – HTTP API trigger (`http`) on `host:port` (default `127.0.0.1:3111`).
+- `modules::http::HttpModule` – HTTP API trigger (`http`) on `host:port` (default `127.0.0.1:3111`).
 - `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `emit` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
 - `modules::stream::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
@@ -183,7 +183,7 @@ Available core modules (registered in `src/modules/config.rs`):
 - `modules::shell::ExecModule` – File watcher that runs commands (only when configured).
 
 If `config.yaml` is missing, the engine loads the default module list:
-RestApi, Queue, Logging, Cron, Stream. Queue/Stream expect Redis; Cron uses built-in KV by default.
+Http, Queue, Logging, Cron, Stream. Queue/Stream expect Redis; Cron uses built-in KV by default.
 
 ## Protocol Summary
 

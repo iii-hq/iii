@@ -1,5 +1,5 @@
 modules:
-  - class: modules::api::RestApiModule
+  - class: modules::http::HttpModule
     config:
       host: 0.0.0.0
       port: 3111

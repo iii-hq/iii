@@ -21,7 +21,7 @@ pub struct TriggerMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIrequest {
+pub struct HttpRequest {
     pub query_params: HashMap<String, String>,
     pub path_params: HashMap<String, String>,
     pub headers: HashMap<String, String>,
@@ -30,9 +30,15 @@ pub struct APIrequest {
     pub body: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TriggerMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_ip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
-impl APIrequest {
+impl HttpRequest {
     pub fn new(
         query_params: HashMap<String, String>,
         path_params: HashMap<String, String>,
@@ -42,7 +48,7 @@ impl APIrequest {
         body: Option<Json<Value>>,
     ) -> Self {
         let body_value = body.map(|Json(v)| v).unwrap_or(serde_json::json!({}));
-        APIrequest {
+        HttpRequest {
             query_params,
             path_params,
             headers: headers
@@ -57,18 +63,21 @@ impl APIrequest {
                 path: Some(path),
                 method: Some(method),
             }),
+            remote_ip: None,
+            protocol: None,
+            host: None,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIresponse {
+pub struct HttpResponse {
     pub status_code: u16,
     pub headers: Vec<String>,
     pub body: Value,
 }
 
-impl APIresponse {
+impl HttpResponse {
     pub fn from_function_return(value: Value) -> Self {
         let status_code = value
             .get("status_code")
@@ -84,7 +93,7 @@ impl APIresponse {
             })
             .unwrap_or_default();
         let body = value.get("body").cloned().unwrap_or(json!({}));
-        APIresponse {
+        HttpResponse {
             status_code,
             headers,
             body,
