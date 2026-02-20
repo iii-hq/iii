@@ -149,6 +149,12 @@ modules:
       #     action: webhook
       #     webhook_url: https://hooks.slack.com/services/xxx
 
+  - class: modules::heartbeat::HeartbeatModule
+    config:
+      enabled: ${III_HEARTBEAT_ENABLED:false}
+      interval_seconds: 60
+      cloud_endpoint: ${III_CLOUD_ENDPOINT:}
+
   - class: modules::queue::QueueModule
     config:
       adapter:
