@@ -22,9 +22,25 @@ fn default_concurrency_request_limit() -> usize {
     1024
 }
 
+fn default_body_limit() -> usize {
+    1048576 // 1MB
+}
+
+fn default_trust_proxy() -> bool {
+    false
+}
+
+fn default_request_id_header() -> String {
+    "x-request-id".to_string()
+}
+
+fn default_ignore_trailing_slash() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RestApiConfig {
+pub struct HttpConfig {
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -39,9 +55,24 @@ pub struct RestApiConfig {
 
     #[serde(default = "default_concurrency_request_limit")]
     pub concurrency_request_limit: usize,
+
+    #[serde(default = "default_body_limit")]
+    pub body_limit: usize,
+
+    #[serde(default = "default_trust_proxy")]
+    pub trust_proxy: bool,
+
+    #[serde(default = "default_request_id_header")]
+    pub request_id_header: String,
+
+    #[serde(default = "default_ignore_trailing_slash")]
+    pub ignore_trailing_slash: bool,
+
+    #[serde(default)]
+    pub not_found_function: Option<String>,
 }
 
-impl Default for RestApiConfig {
+impl Default for HttpConfig {
     fn default() -> Self {
         Self {
             port: default_port(),
@@ -49,6 +80,11 @@ impl Default for RestApiConfig {
             default_timeout: default_timeout(),
             cors: None,
             concurrency_request_limit: default_concurrency_request_limit(),
+            body_limit: default_body_limit(),
+            trust_proxy: default_trust_proxy(),
+            request_id_header: default_request_id_header(),
+            ignore_trailing_slash: default_ignore_trailing_slash(),
+            not_found_function: None,
         }
     }
 }

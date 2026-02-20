@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
-    invocation::InvocationHandler,
+    invocation::{InvocationHandler, MiddlewareInvocationResult},
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
@@ -27,6 +27,9 @@ use crate::{
     trigger::{Trigger, TriggerRegistry, TriggerType},
     workers::{Worker, WorkerRegistry},
 };
+
+pub mod middleware;
+use middleware::{MiddlewareEntry, MiddlewareRegistry};
 
 /// Magic prefix for OTLP binary frames (used by SDKs for trace spans)
 const OTLP_WS_PREFIX: &[u8] = b"OTLP";
@@ -139,6 +142,7 @@ pub struct Engine {
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
+    pub middleware_registry: Arc<MiddlewareRegistry>,
 }
 
 impl Engine {
@@ -149,6 +153,7 @@ impl Engine {
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
+            middleware_registry: Arc::new(MiddlewareRegistry::new()),
         }
     }
 
@@ -521,6 +526,67 @@ impl Engine {
                 // If we receive it here, just ignore it
                 Ok(())
             }
+            Message::RegisterMiddleware {
+                middleware_id,
+                phase,
+                scope,
+                priority,
+                function_id,
+            } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    middleware_id = %middleware_id,
+                    phase = ?phase,
+                    function_id = %function_id,
+                    "RegisterMiddleware"
+                );
+
+                self.middleware_registry.register(MiddlewareEntry {
+                    middleware_id: middleware_id.clone(),
+                    phase: phase.clone(),
+                    scope: scope.clone(),
+                    priority: priority.unwrap_or(100),
+                    function_id: function_id.clone(),
+                    worker_id: worker.id.to_string(),
+                });
+
+                Ok(())
+            }
+            Message::DeregisterMiddleware { middleware_id } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    middleware_id = %middleware_id,
+                    "DeregisterMiddleware"
+                );
+                self.middleware_registry.deregister(middleware_id);
+                Ok(())
+            }
+            Message::InvokeMiddleware { .. }
+            | Message::UploadChunk { .. }
+            | Message::UploadAbort { .. } => Ok(()),
+            Message::MiddlewareResult {
+                invocation_id,
+                action,
+                request,
+                context,
+                response,
+            } => {
+                tracing::debug!(
+                    invocation_id = %invocation_id,
+                    action = ?action,
+                    "MiddlewareResult"
+                );
+                worker.remove_invocation(invocation_id).await;
+                if let Some(tx) = self.invocations.remove_middleware_invocation(invocation_id) {
+                    let _ = tx.send(Ok(MiddlewareInvocationResult {
+                        action: action.clone(),
+                        request: request.clone(),
+                        context: context.clone(),
+                        response: response.clone(),
+                    }));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -550,6 +616,58 @@ impl Engine {
                 }
                 .instrument(tracing::info_span!(parent: parent, "fire_trigger", function_id = %span_function_id, otel.status_code = tracing::field::Empty))
             );
+        }
+    }
+
+    pub async fn invoke_middleware(
+        &self,
+        worker_id: &str,
+        middleware_id: &str,
+        phase: crate::protocol::MiddlewarePhase,
+        request: crate::protocol::MiddlewareRequest,
+    ) -> Result<MiddlewareInvocationResult, ErrorBody> {
+        let worker_uuid = Uuid::parse_str(worker_id).map_err(|_| ErrorBody {
+            code: "invalid_worker_id".into(),
+            message: "Invalid worker ID".into(),
+        })?;
+        let worker = self
+            .worker_registry
+            .get_worker(&worker_uuid)
+            .ok_or_else(|| ErrorBody {
+                code: "worker_not_found".into(),
+                message: "Worker not found".into(),
+            })?;
+
+        let invocation_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.invocations
+            .add_middleware_invocation(invocation_id, tx);
+
+        worker.add_invocation(invocation_id).await;
+
+        let msg = Message::InvokeMiddleware {
+            invocation_id,
+            middleware_id: middleware_id.to_string(),
+            phase,
+            request,
+        };
+
+        if !self.send_msg(&worker, msg).await {
+            self.invocations
+                .remove_middleware_invocation(&invocation_id);
+            worker.remove_invocation(&invocation_id).await;
+            return Err(ErrorBody {
+                code: "send_error".into(),
+                message: "Failed to send message to worker".into(),
+            });
+        }
+
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(ErrorBody {
+                code: "invocation_cancelled".into(),
+                message: "Invocation cancelled".into(),
+            }),
         }
     }
 
@@ -675,10 +793,18 @@ impl Engine {
         for invocation_id in worker_invocations.iter() {
             tracing::debug!(invocation_id = %invocation_id, "Halting invocation");
             self.invocations.halt_invocation(invocation_id);
+            if let Some(tx) = self.invocations.remove_middleware_invocation(invocation_id) {
+                let _ = tx.send(Err(ErrorBody {
+                    code: "worker_disconnected".into(),
+                    message: "Worker disconnected".into(),
+                }));
+            }
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
         self.worker_registry.unregister_worker(&worker.id);
+        self.middleware_registry
+            .deregister_by_worker(&worker.id.to_string());
 
         let workers_data = serde_json::json!({
             "event": "worker_disconnected",

@@ -19,6 +19,7 @@ pub mod modules {
     pub mod bridge_client;
     pub mod config;
     pub mod cron;
+    pub mod http;
     pub mod kv_server;
     pub mod module;
     pub mod observability;
@@ -26,7 +27,6 @@ pub mod modules {
     pub mod queue;
     pub mod redis;
     pub mod registry;
-    pub mod rest_api;
     pub mod shell;
     pub mod state;
     pub mod stream;

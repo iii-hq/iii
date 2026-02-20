@@ -81,6 +81,88 @@ pub enum Message {
     WorkerRegistered {
         worker_id: String,
     },
+
+    // Middleware Protocol
+    RegisterMiddleware {
+        middleware_id: String,
+        phase: MiddlewarePhase,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<MiddlewareScope>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        priority: Option<u16>, // default 100
+        function_id: String,
+    },
+    DeregisterMiddleware {
+        middleware_id: String,
+    },
+    InvokeMiddleware {
+        invocation_id: Uuid,
+        middleware_id: String,
+        phase: MiddlewarePhase,
+        request: MiddlewareRequest,
+    },
+    MiddlewareResult {
+        invocation_id: Uuid,
+        action: MiddlewareAction,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request: Option<Value>, // Modified request fields (merged)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context: Option<Value>, // Modified context (merged)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response: Option<Value>, // Direct response if action == "respond"
+    },
+
+    // Stream Protocol
+    UploadChunk {
+        upload_id: String,
+        seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        eof: bool,
+    },
+    UploadAbort {
+        upload_id: String,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum MiddlewarePhase {
+    OnRequest,
+    PreHandler,
+    Handler,
+    PostHandler,
+    OnResponse,
+    OnError,
+    OnTimeout,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiddlewareScope {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiddlewareRequest {
+    pub phase: MiddlewarePhase,
+    pub request: Value, // The HttpRequest
+    pub context: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_route: Option<MatchedRoute>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedRoute {
+    pub function_id: String,
+    pub path_pattern: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MiddlewareAction {
+    Continue,
+    Respond,
 }
 
 /// Worker resource metrics for health monitoring.

@@ -26,7 +26,7 @@ modules:
           store_method: file_based
           file_path: ./data/state_store.db
 
-  - class: modules::api::RestApiModule
+  - class: modules::http::HttpModule
     config:
       port: 3111
       host: 127.0.0.1
