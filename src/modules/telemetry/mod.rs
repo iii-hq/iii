@@ -47,7 +47,7 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             api_key: String::new(),
-            heartbeat_interval_secs: 60,
+            heartbeat_interval_secs: 30,
         }
     }
 }
