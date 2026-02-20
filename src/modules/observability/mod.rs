@@ -1466,7 +1466,11 @@ impl Module for OtelModule {
 
                     loop {
                         tokio::select! {
-                            _ = shutdown_rx.changed() => {
+                            result = shutdown_rx.changed() => {
+                                if result.is_err() {
+                                    tracing::debug!("[OtelModule] Shutdown channel closed");
+                                    break;
+                                }
                                 if *shutdown_rx.borrow() {
                                     tracing::debug!("[OtelModule] Log trigger subscriber shutting down");
                                     break;
@@ -1506,7 +1510,11 @@ impl Module for OtelModule {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
                 loop {
                     tokio::select! {
-                        _ = shutdown_rx.changed() => {
+                        result = shutdown_rx.changed() => {
+                            if result.is_err() {
+                                tracing::debug!("[OtelModule] Shutdown channel closed");
+                                break;
+                            }
                             if *shutdown_rx.borrow() {
                                 tracing::debug!("[OtelModule] Metrics retention task shutting down");
                                 break;
@@ -1531,7 +1539,11 @@ impl Module for OtelModule {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
                 loop {
                     tokio::select! {
-                        _ = shutdown_rx.changed() => {
+                        result = shutdown_rx.changed() => {
+                            if result.is_err() {
+                                tracing::debug!("[OtelModule] Shutdown channel closed");
+                                break;
+                            }
                             if *shutdown_rx.borrow() {
                                 tracing::debug!("[OtelModule] Alert evaluation task shutting down");
                                 break;

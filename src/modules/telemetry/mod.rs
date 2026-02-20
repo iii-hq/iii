@@ -39,7 +39,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_heartbeat_interval() -> u64 {
-    3600
+    30
 }
 
 impl Default for TelemetryConfig {
@@ -245,7 +245,11 @@ impl Module for TelemetryModule {
 
             loop {
                 tokio::select! {
-                    _ = shutdown_rx.changed() => {
+                    result = shutdown_rx.changed() => {
+                        if result.is_err() {
+                            tracing::debug!("[Telemetry] Shutdown channel closed");
+                            break;
+                        }
                         if *shutdown_rx.borrow() {
                             tracing::debug!("[Telemetry] Heartbeat task shutting down");
                             break;
