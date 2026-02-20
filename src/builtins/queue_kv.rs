@@ -432,6 +432,69 @@ impl QueueKvStore {
         result
     }
 
+    pub async fn lrange(&self, key: &str, start: isize, stop: isize) -> Vec<String> {
+        let lists = self.lists.read().await;
+        let Some(list) = lists.get(key) else {
+            return vec![];
+        };
+
+        let len = list.len() as isize;
+        let start = if start < 0 {
+            (len + start).max(0) as usize
+        } else {
+            (start as usize).min(list.len())
+        };
+        let stop = if stop < 0 {
+            (len + stop).max(0) as usize
+        } else {
+            (stop as usize).min(list.len().saturating_sub(1))
+        };
+
+        if start > stop || start >= list.len() {
+            return vec![];
+        }
+
+        list.iter()
+            .skip(start)
+            .take(stop - start + 1)
+            .cloned()
+            .collect()
+    }
+
+    pub async fn list_keys_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let lists = self.lists.read().await;
+        let sorted_sets = self.sorted_sets.read().await;
+
+        let mut keys: HashSet<String> = lists
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+
+        for k in sorted_sets.keys() {
+            if k.starts_with(prefix) {
+                keys.insert(k.clone());
+            }
+        }
+
+        let mut sorted_keys: Vec<String> = keys.into_iter().collect();
+        sorted_keys.sort();
+        sorted_keys
+    }
+
+    pub async fn zcount(&self, key: &str, min: i64, max: i64) -> usize {
+        let sorted_sets = self.sorted_sets.read().await;
+        let Some(set) = sorted_sets.get(key) else {
+            return 0;
+        };
+
+        let mut count = 0;
+        for (_score, members) in set.range(min..=max) {
+            count += members.len();
+        }
+        count
+    }
+
     pub async fn has_queue_state(&self, prefix: &str) -> bool {
         let lists = self.lists.read().await;
         let sorted_sets = self.sorted_sets.read().await;

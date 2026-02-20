@@ -632,6 +632,98 @@ impl BuiltinQueue {
         }
     }
 
+    pub async fn list_queues(&self) -> Vec<String> {
+        let keys = self.kv_store.list_keys_with_prefix("queue:").await;
+        let job_keys = self.kv_store.list_job_keys("queue:").await;
+
+        let mut queue_names: HashSet<String> = HashSet::new();
+
+        for key in &keys {
+            let parts: Vec<&str> = key.splitn(3, ':').collect();
+            if parts.len() >= 2 {
+                queue_names.insert(parts[1].to_string());
+            }
+        }
+
+        for key in &job_keys {
+            if key.contains(":jobs:") {
+                let parts: Vec<&str> = key.splitn(3, ':').collect();
+                if parts.len() >= 2 {
+                    queue_names.insert(parts[1].to_string());
+                }
+            }
+        }
+
+        let mut names: Vec<String> = queue_names.into_iter().collect();
+        names.sort();
+        names
+    }
+
+    pub async fn waiting_count(&self, queue: &str) -> u64 {
+        self.kv_store.llen(&self.waiting_key(queue)).await as u64
+    }
+
+    pub async fn active_count(&self, queue: &str) -> u64 {
+        self.kv_store.llen(&self.active_key(queue)).await as u64
+    }
+
+    pub async fn delayed_count(&self, queue: &str) -> u64 {
+        self.kv_store
+            .zcount(&self.delayed_key(queue), 0, i64::MAX)
+            .await as u64
+    }
+
+    pub async fn list_jobs_in_state(
+        &self,
+        queue: &str,
+        state: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Vec<Value> {
+        let job_ids: Vec<String> = match state {
+            "waiting" | "active" | "dlq" => {
+                let key = match state {
+                    "waiting" => self.waiting_key(queue),
+                    "active" => self.active_key(queue),
+                    "dlq" => self.dlq_key(queue),
+                    _ => unreachable!(),
+                };
+                self.kv_store
+                    .lrange(&key, offset as isize, (offset + limit - 1) as isize)
+                    .await
+            }
+            "delayed" => {
+                let all = self
+                    .kv_store
+                    .zrangebyscore(&self.delayed_key(queue), 0, i64::MAX)
+                    .await;
+                all.into_iter().skip(offset).take(limit).collect()
+            }
+            _ => vec![],
+        };
+
+        if state == "dlq" {
+            return job_ids
+                .into_iter()
+                .filter_map(|entry| serde_json::from_str::<Value>(&entry).ok())
+                .collect();
+        }
+
+        let mut jobs = Vec::new();
+        for job_id in job_ids {
+            let job_key = self.job_key(queue, &job_id);
+            if let Some(job_value) = self.kv_store.get_job(&job_key).await {
+                jobs.push(job_value);
+            }
+        }
+        jobs
+    }
+
+    pub async fn get_job_by_id(&self, queue: &str, job_id: &str) -> Option<Value> {
+        let job_key = self.job_key(queue, job_id);
+        self.kv_store.get_job(&job_key).await
+    }
+
     pub async fn dlq_count(&self, queue: &str) -> u64 {
         let dlq_key = self.dlq_key(queue);
         self.kv_store.llen(&dlq_key).await as u64
