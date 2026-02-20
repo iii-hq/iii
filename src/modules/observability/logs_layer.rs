@@ -16,7 +16,7 @@ use tracing_opentelemetry::OtelData;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-use super::otel::{InMemoryLogStorage, StoredLog};
+use super::otel::{InMemoryLogStorage, OTEL_PASSTHROUGH_TARGET, StoredLog};
 
 /// Visitor that collects fields from tracing events
 struct LogFieldVisitor {
@@ -123,6 +123,12 @@ where
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         let metadata = event.metadata();
 
+        // Skip forwarded OTel log records — these are emitted by emit_log_to_console
+        // for terminal display only and are already stored by ingest_otlp_logs.
+        if metadata.target() == OTEL_PASSTHROUGH_TARGET {
+            return;
+        }
+
         // Extract trace_id and span_id from current span context
         // We need to get the span's own trace_id and span_id from the builder,
         // not from parent_cx which would be empty for root spans
@@ -207,5 +213,32 @@ where
 
         // Store the log
         self.storage.store(log);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tracing_subscriber::prelude::*;
+
+    use super::super::otel::{InMemoryLogStorage, OTEL_PASSTHROUGH_TARGET};
+    use super::OtelLogsLayer;
+
+    #[test]
+    fn passthrough_events_are_not_stored() {
+        let storage = Arc::new(InMemoryLogStorage::new(100));
+        let layer = OtelLogsLayer::new(storage.clone(), "test-service".to_string());
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("normal message");
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, "passthrough message");
+        });
+
+        let (total, logs) =
+            storage.get_logs_filtered(None, None, None, None, None, None, None, None);
+        assert_eq!(total, 1, "passthrough event must not be stored");
+        assert_eq!(logs[0].body, "normal message");
     }
 }
