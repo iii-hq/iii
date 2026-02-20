@@ -4,13 +4,14 @@ modules:
       port: ${STREAM_PORT:3112}
       host: 127.0.0.1
       adapter:
-        # class: modules::stream::adapters::KvStore
-        # config:
-        #   store_method: file_based # Options: in_memory, file_based
-        #   file_path: ./data/stream_store
-        class: modules::stream::adapters::RedisAdapter
+        class: modules::stream::adapters::KvStore
         config:
-          redis_url: redis://localhost:6379
+          store_method: file_based # Options: in_memory, file_based
+          file_path: ./data/stream_store
+        # Modules can connect to various backend services, visit iii.dev/docs for the latest list
+        # class: modules::stream::adapters::RedisAdapter
+        # config:
+        #   redis_url: redis://localhost:6379
 
   - class: modules::kv_server::KvServer
     config:
@@ -43,26 +44,68 @@ modules:
           - DELETE
           - OPTIONS
 
+  - class: modules::queue::QueueModule
+    config:
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
+        config:
+          store_method: file_based # Options: in_memory, file_based
+          file_path: ./data/queue_store
+        # class: modules::queue::RedisAdapter
+        # config:
+        #   redis_url: redis://localhost:6379
+
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::LocalAdapter
+
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::KvCronAdapter
+
   - class: modules::observability::OtelModule
     config:
-      # === Core Configuration (Required) ===
+      # Core Configuration (Required)
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii}
       service_version: ${SERVICE_VERSION:0.2.0}
 
-      # === Service Identity (Optional) ===
-      service_namespace: ${SERVICE_NAMESPACE:production}  # Optional: environment/namespace for the service
-      # === Trace Exporter Configuration (Required) ===
+      # Service Identity (Optional)
+      # Environment/namespace for the service. Typical settings are production, and development
+      service_namespace: ${SERVICE_NAMESPACE:development}
+
+      # Trace Exporter Configuration (Required)
       # Exporter type: "otlp" (export to collector) or "memory" (store in-memory) or "both"
       exporter: ${OTEL_EXPORTER_TYPE:memory}
+
       # OTLP endpoint - required when exporter is "otlp" or "both"
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
 
-      # === Sampling Configuration ===
+      # Memory Storage Configuration
+      # Max spans to keep in memory - used when exporter is "memory" or "both"
+      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
+
+      # Metrics Configuration
+      metrics_enabled: true
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory} # Options: memory, otlp
+      metrics_retention_seconds: 3600 # How long to keep metrics in memory (default: 1 hour)
+      metrics_max_count: 10000 # Maximum number of metrics to store
+
+      # OTEL Logs Configuration
+      logs_enabled: ${OTEL_LOGS_ENABLED:true}
+      logs_exporter: ${OTEL_LOGS_EXPORTER:memory} # Options: memory, otlp, both
+      logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000} # Maximum number of log records to store
+      logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600} # How long to keep logs in memory (default: 1 hour)
+      logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0} # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
+      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true} # Output SDK logs to engine console (default: true)
+
+      # Sampling Configuration
       # Basic sampling ratio (0.0 to 1.0). Use 1.0 to sample everything.
       sampling_ratio: 1.0
 
-      # Enables per-operation rules, per-service rules, and rate limiting
+      # Can set per-operation rules, per-service rules, and rate limiting
       # sampling:
       #   default: 0.1  # 10% default sampling rate for operations not matching any rule
       #   parent_based: true  # Always enabled for AdvancedSampler - ensures consistent trace sampling
@@ -112,24 +155,7 @@ modules:
       #   rate_limit:
       #     max_traces_per_second: 100  # Max 100 traces/sec (parent-sampled traces always included)
 
-      # === Memory Storage Configuration ===
-      # Max spans to keep in memory - used when exporter is "memory" or "both"
-      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
-
-      # === Metrics Configuration ===
-      metrics_enabled: true
-      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}  # Options: memory, otlp
-      metrics_retention_seconds: 3600  # How long to keep metrics in memory (default: 1 hour)
-      metrics_max_count: 10000  # Maximum number of metrics to store
-
-      # === OTEL Logs Configuration ===
-      logs_enabled: ${OTEL_LOGS_ENABLED:true}
-      logs_exporter: ${OTEL_LOGS_EXPORTER:memory}  # Options: memory, otlp, both
-      logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}  # Maximum number of log records to store
-      logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}  # How long to keep logs in memory (default: 1 hour)
-      logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}  # Sampling ratio for logs (0.0 to 1.0). 1.0 keeps all logs
-      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}  # Output SDK logs to engine console (default: true)
-      # === Alert Rules (Optional) ===
+      # Alert Rules (Optional)
       # Alert rules for metric threshold monitoring - see docs/OTEL-IMPLEMENTATION.md
       # Alerts are evaluated every 10 seconds
       # alerts:
@@ -148,23 +174,6 @@ modules:
       #     operator: "<"
       #     action: webhook
       #     webhook_url: https://hooks.slack.com/services/xxx
-
-  - class: modules::queue::QueueModule
-    config:
-      adapter:
-        class: modules::queue::RedisAdapter
-        config:
-          redis_url: redis://localhost:6379
-
-  - class: modules::pubsub::PubSubModule
-    config:
-      adapter:
-        class: modules::pubsub::LocalAdapter
-
-  - class: modules::cron::CronModule
-    config:
-      adapter:
-        class: modules::cron::KvCronAdapter
 
   # - class: modules::bridge_client::BridgeClientModule
   #   config:
