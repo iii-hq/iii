@@ -47,7 +47,7 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             api_key: String::new(),
-            heartbeat_interval_secs: 3600,
+            heartbeat_interval_secs: 60,
         }
     }
 }
@@ -58,7 +58,9 @@ impl Default for TelemetryConfig {
 
 fn get_or_create_install_id() -> String {
     let base_dir = dirs::home_dir().unwrap_or_else(|| {
-        tracing::warn!("Failed to resolve home directory, falling back to temp dir for telemetry_id");
+        tracing::warn!(
+            "Failed to resolve home directory, falling back to temp dir for telemetry_id"
+        );
         std::env::temp_dir()
     });
     let path = base_dir.join(".iii").join("telemetry_id");
@@ -74,7 +76,20 @@ fn get_or_create_install_id() -> String {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(&path, &id).ok();
+
+    // Atomic write: write to temp file then rename to avoid partial reads
+    let tmp_path = path.with_extension("tmp");
+    if std::fs::write(&tmp_path, &id).is_ok() {
+        // Set owner-only permissions on Unix before rename
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&tmp_path, perms).ok();
+        }
+        std::fs::rename(&tmp_path, &path).ok();
+    }
+
     id
 }
 
@@ -85,7 +100,7 @@ fn get_or_create_install_id() -> String {
 pub struct TelemetryModule {
     engine: Arc<Engine>,
     config: TelemetryConfig,
-    client: AmplitudeClient,
+    client: Arc<AmplitudeClient>,
     install_id: String,
     start_time: Instant,
 }
@@ -124,6 +139,17 @@ impl Module for DisabledTelemetryModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         Ok(())
     }
+
+    async fn start_background_tasks(
+        &self,
+        _shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -151,14 +177,14 @@ impl Module for TelemetryModule {
         }
 
         if telemetry_config.api_key.is_empty() {
-            telemetry_config.api_key = "AMPLITUDE_KEY_HERE".to_string();
+            telemetry_config.api_key = "e8fb1f8d290a72dbb2d9b264926be4bf".to_string();
         }
 
         let install_id = get_or_create_install_id();
 
         tracing::info!("Anonymous telemetry enabled. Set III_TELEMETRY_ENABLED=false to disable.");
 
-        let client = AmplitudeClient::new(telemetry_config.api_key.clone());
+        let client = Arc::new(AmplitudeClient::new(telemetry_config.api_key.clone()));
 
         Ok(Box::new(TelemetryModule {
             engine,
@@ -191,7 +217,7 @@ impl Module for TelemetryModule {
         );
 
         let client_event = event;
-        let client = AmplitudeClient::new(self.config.api_key.clone());
+        let client = Arc::clone(&self.client);
         tokio::spawn(async move {
             if let Err(e) = client.send_event(client_event).await {
                 tracing::debug!(error = %e, "Failed to send engine_started telemetry event");
@@ -206,12 +232,11 @@ impl Module for TelemetryModule {
         shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
         let interval_secs = self.config.heartbeat_interval_secs;
-        let api_key = self.config.api_key.clone();
+        let client = Arc::clone(&self.client);
         let install_id = self.install_id.clone();
         let mut shutdown_rx = shutdown;
 
         tokio::spawn(async move {
-            let client = AmplitudeClient::new(api_key);
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
 

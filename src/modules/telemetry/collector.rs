@@ -14,7 +14,6 @@ use std::sync::{
 pub struct TelemetryCollector {
     // Cron
     pub cron_executions: AtomicU64,
-    pub cron_errors: AtomicU64,
 
     // Queue
     pub queue_emits: AtomicU64,
@@ -54,7 +53,6 @@ impl Default for TelemetryCollector {
     fn default() -> Self {
         Self {
             cron_executions: AtomicU64::new(0),
-            cron_errors: AtomicU64::new(0),
             queue_emits: AtomicU64::new(0),
             queue_consumes: AtomicU64::new(0),
             state_sets: AtomicU64::new(0),
@@ -84,7 +82,6 @@ impl TelemetryCollector {
         serde_json::json!({
             "cron": {
                 "executions": self.cron_executions.load(Ordering::Relaxed),
-                "errors": self.cron_errors.load(Ordering::Relaxed),
             },
             "queue": {
                 "emits": self.queue_emits.load(Ordering::Relaxed),
@@ -135,10 +132,6 @@ pub fn collector() -> &'static TelemetryCollector {
 
 pub fn track_cron_execution() {
     collector().cron_executions.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn track_cron_error() {
-    collector().cron_errors.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn track_queue_emit() {

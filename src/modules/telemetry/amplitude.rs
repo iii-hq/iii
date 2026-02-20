@@ -41,7 +41,10 @@ impl AmplitudeClient {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to build Amplitude HTTP client with custom config, using defaults");
+                reqwest::Client::default()
+            });
 
         Self { api_key, client }
     }
@@ -54,6 +57,8 @@ impl AmplitudeClient {
     /// Send a batch of events to Amplitude.
     /// If the API key is empty, this silently skips sending (for dev/testing).
     /// Uses exponential backoff (1s, 2s, 4s) with 3 attempts max.
+    /// Returns `Ok(())` even when all retries are exhausted — telemetry is fire-and-forget
+    /// and must never block or fail the caller.
     pub async fn send_batch(&self, events: Vec<AmplitudeEvent>) -> anyhow::Result<()> {
         if self.api_key.is_empty() {
             return Ok(());
