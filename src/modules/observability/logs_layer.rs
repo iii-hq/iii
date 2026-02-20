@@ -236,7 +236,8 @@ mod tests {
             tracing::info!(target: OTEL_PASSTHROUGH_TARGET, "passthrough message");
         });
 
-        let (total, logs) = storage.get_logs_filtered(None, None, None, None, None, None, None, None);
+        let (total, logs) =
+            storage.get_logs_filtered(None, None, None, None, None, None, None, None);
         assert_eq!(total, 1, "passthrough event must not be stored");
         assert_eq!(logs[0].body, "normal message");
     }

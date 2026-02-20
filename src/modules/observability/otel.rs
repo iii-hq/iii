@@ -1956,12 +1956,24 @@ fn emit_log_to_console(log: &StoredLog) {
 
     // OTEL severity numbers: TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24
     match log.severity_number {
-        1..=4 => tracing::trace!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body),
-        5..=8 => tracing::debug!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body),
-        9..=12 => tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body),
-        13..=16 => tracing::warn!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body),
-        17..=24 => tracing::error!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body),
-        _ => tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body),
+        1..=4 => {
+            tracing::trace!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        5..=8 => {
+            tracing::debug!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        9..=12 => {
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        13..=16 => {
+            tracing::warn!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        17..=24 => {
+            tracing::error!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        _ => {
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
     }
 }
 
