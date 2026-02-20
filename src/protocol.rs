@@ -28,6 +28,11 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
+    FunctionRegistrationResult {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorBody>,
+    },
     UnregisterTrigger {
         id: String,
         #[serde(default)]
@@ -164,6 +169,48 @@ mod tests {
                 assert_eq!(trigger_type.as_deref(), Some("http"));
             }
             _ => panic!("unexpected message variant"),
+        }
+    }
+
+    #[test]
+    fn serialize_function_registration_result_with_error() {
+        let msg = Message::FunctionRegistrationResult {
+            id: "fn.test".into(),
+            error: Some(super::ErrorBody {
+                code: "register_function_validation_failed".into(),
+                message: "id is required".into(),
+            }),
+        };
+        let json = serde_json::to_string(&msg).expect("should serialize");
+        assert!(json.contains("\"type\":\"functionregistrationresult\""));
+        assert!(json.contains("\"id\":\"fn.test\""));
+        assert!(json.contains("\"code\":\"register_function_validation_failed\""));
+    }
+
+    #[test]
+    fn serialize_function_registration_result_success() {
+        let msg = Message::FunctionRegistrationResult {
+            id: "fn.test".into(),
+            error: None,
+        };
+        let json = serde_json::to_string(&msg).expect("should serialize");
+        assert!(json.contains("\"type\":\"functionregistrationresult\""));
+        assert!(json.contains("\"id\":\"fn.test\""));
+        // error should be omitted (skip_serializing_if)
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn deserialize_function_registration_result() {
+        let raw = r#"{"type":"functionregistrationresult","id":"fn.test","error":{"code":"bad","message":"oops"}}"#;
+        let msg: Message = serde_json::from_str(raw).expect("should deserialize");
+        match msg {
+            Message::FunctionRegistrationResult { id, error } => {
+                assert_eq!(id, "fn.test");
+                let err = error.expect("error should be present");
+                assert_eq!(err.code, "bad");
+            }
+            _ => panic!("unexpected variant"),
         }
     }
 }
