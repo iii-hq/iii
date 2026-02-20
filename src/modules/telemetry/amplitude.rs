@@ -19,6 +19,7 @@ pub struct AmplitudeEvent {
     pub os_name: String,
     pub app_version: String,
     pub time: i64,
+    pub insert_id: Option<String>,
 }
 
 /// Payload sent to Amplitude HTTP API.

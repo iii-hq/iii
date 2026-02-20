@@ -57,10 +57,11 @@ impl Default for TelemetryConfig {
 // =============================================================================
 
 fn get_or_create_install_id() -> String {
-    let path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".iii")
-        .join("telemetry_id");
+    let base_dir = dirs::home_dir().unwrap_or_else(|| {
+        tracing::warn!("Failed to resolve home directory, falling back to temp dir for telemetry_id");
+        std::env::temp_dir()
+    });
+    let path = base_dir.join(".iii").join("telemetry_id");
 
     if let Ok(id) = std::fs::read_to_string(&path) {
         let id = id.trim().to_string();
@@ -99,6 +100,7 @@ impl TelemetryModule {
             os_name: std::env::consts::OS.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             time: chrono::Utc::now().timestamp_millis(),
+            insert_id: Some(uuid::Uuid::new_v4().to_string()),
         }
     }
 }
@@ -146,6 +148,10 @@ impl Module for TelemetryModule {
         if !telemetry_config.enabled {
             tracing::info!("Anonymous telemetry disabled.");
             return Ok(Box::new(DisabledTelemetryModule));
+        }
+
+        if telemetry_config.api_key.is_empty() {
+            telemetry_config.api_key = "AMPLITUDE_KEY_HERE".to_string();
         }
 
         let install_id = get_or_create_install_id();
@@ -252,6 +258,7 @@ impl Module for TelemetryModule {
                             os_name: std::env::consts::OS.to_string(),
                             app_version: env!("CARGO_PKG_VERSION").to_string(),
                             time: chrono::Utc::now().timestamp_millis(),
+                            insert_id: Some(uuid::Uuid::new_v4().to_string()),
                         };
 
                         if let Err(e) = client.send_event(event).await {
@@ -291,5 +298,5 @@ impl Module for TelemetryModule {
 crate::register_module!(
     "modules::telemetry::TelemetryModule",
     TelemetryModule,
-    enabled_by_default = true
+    mandatory
 );
