@@ -64,6 +64,7 @@ impl QueueCoreModule {
 
         tracing::debug!(topic = %topic, traceparent = ?traceparent, baggage = ?baggage, "Enqueuing message with trace context");
         let _ = adapter.enqueue(&topic, data, traceparent, baggage).await;
+        crate::modules::telemetry::collector::track_queue_emit();
 
         FunctionResult::Success(None)
     }

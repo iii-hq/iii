@@ -260,6 +260,7 @@ impl Engine {
                         worker_id: Some(worker.id),
                     })
                     .await;
+                crate::modules::telemetry::collector::track_trigger_registered();
 
                 Ok(())
             }
@@ -777,6 +778,7 @@ impl EngineTrait for Engine {
         };
 
         self.functions.register_function(function_id, function);
+        crate::modules::telemetry::collector::track_function_registered();
     }
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)

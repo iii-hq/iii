@@ -426,6 +426,7 @@ impl StreamCoreModule {
             }
         };
 
+        crate::modules::telemetry::collector::track_stream_set();
         match result {
             Ok(result) => {
                 let event = if result.old_value.is_some() {
@@ -473,6 +474,7 @@ impl StreamCoreModule {
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
+        crate::modules::telemetry::collector::track_stream_get();
         match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.get function");
@@ -554,6 +556,7 @@ impl StreamCoreModule {
             None => adapter.delete(&stream_name, &group_id, &item_id).await,
         };
 
+        crate::modules::telemetry::collector::track_stream_delete();
         match result {
             Ok(result) => {
                 if let Some(old_value) = result.old_value.clone() {
@@ -592,6 +595,7 @@ impl StreamCoreModule {
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
+        crate::modules::telemetry::collector::track_stream_list();
         match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.getGroup function");
@@ -795,6 +799,7 @@ impl StreamCoreModule {
             None => adapter.update(&stream_name, &group_id, &item_id, ops).await,
         };
 
+        crate::modules::telemetry::collector::track_stream_update();
         match result {
             Ok(result) => {
                 let event = if result.old_value.is_some() {
