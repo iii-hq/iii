@@ -925,6 +925,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_http_trigger_with_invalid_api_path_returns_validation_error_message() {
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel(8);
+        let worker = Worker::new(tx);
+
+        let msg = Message::RegisterTrigger {
+            id: "bad-http-trigger".into(),
+            trigger_type: "http".into(),
+            function_id: "steps.demo".into(),
+            config: serde_json::json!({
+                "api_path": "users",
+                "http_method": "GET"
+            }),
+        };
+
+        engine.router_msg(&worker, &msg).await.unwrap();
+
+        let outbound = timeout(Duration::from_millis(250), rx.recv())
+            .await
+            .expect("expected outbound validation message within timeout")
+            .expect("expected outbound validation message");
+        let Outbound::Protocol(Message::TriggerRegistrationResult { error, .. }) = outbound else {
+            panic!("unexpected outbound message");
+        };
+
+        let error = error.expect("expected validation error");
+        assert_eq!(error.code, "register_trigger_validation_failed");
+        assert!(error.message.contains("api_path"));
+    }
+
+    #[tokio::test]
     async fn register_function_with_invalid_payload_returns_validation_error_and_does_not_register()
     {
         let engine = Engine::new();

@@ -69,6 +69,15 @@ pub(crate) fn validate_register_trigger(
             message: "must be a JSON object",
         });
     }
+    if trigger_type == "http" && config.is_object() {
+        let api_path = config.get("api_path").and_then(|v| v.as_str());
+        if !matches!(api_path, Some(path) if path.starts_with('/')) {
+            issues.push(ValidationIssue {
+                field: "config",
+                message: "api_path must start with '/' for http triggers",
+            });
+        }
+    }
 
     if issues.is_empty() {
         Ok(())
@@ -179,6 +188,30 @@ mod tests {
         let err =
             validate_register_trigger("t1", "queue", "steps.demo", &json!("bad")).unwrap_err();
         assert!(err.iter().any(|i| i.field == "config"));
+    }
+
+    #[test]
+    fn validate_register_trigger_http_rejects_api_path_without_leading_slash() {
+        let err = validate_register_trigger(
+            "t1",
+            "http",
+            "fn.demo",
+            &json!({"api_path": "users", "http_method": "GET"}),
+        )
+        .unwrap_err();
+        assert!(err.iter().any(|i| i.field == "config"));
+        assert!(err.iter().any(|i| i.message.contains("api_path")));
+    }
+
+    #[test]
+    fn validate_register_trigger_http_accepts_api_path_with_leading_slash() {
+        let result = validate_register_trigger(
+            "t1",
+            "http",
+            "fn.demo",
+            &json!({"api_path": "/users", "http_method": "GET"}),
+        );
+        assert!(result.is_ok());
     }
 
     #[test]
