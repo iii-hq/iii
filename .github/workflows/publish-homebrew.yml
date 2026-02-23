@@ -47,8 +47,9 @@ jobs:
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: homebrew-tap
           permission-contents: write
-          repository: ${{ env.TAP_REPO }}
 
       - name: Checkout tap repository
         uses: actions/checkout@v4
@@ -93,17 +94,15 @@ jobs:
       - name: Update formula
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          VERSION_NUMBER="${VERSION#v}"  # Remove 'v' prefix
           X86_SHA="${{ steps.checksums.outputs.x86_64_sha256 }}"
           ARM_SHA="${{ steps.checksums.outputs.aarch64_sha256 }}"
 
           cd homebrew-tap
 
-          cat > ${{ env.FORMULA_PATH }} <<BREWEOF
+          sed 's/^          //' <<BREWEOF > ${{ env.FORMULA_PATH }}
           class Iii < Formula
             desc "WebSocket-based process communication engine"
             homepage "https://github.com/iii-hq/iii"
-            version "${VERSION_NUMBER}"
 
             on_macos do
               if Hardware::CPU.arm?
@@ -120,8 +119,7 @@ jobs:
             end
 
             test do
-              system "#{bin}/iii", "--version"
-              assert_match "${VERSION_NUMBER}", shell_output("#{bin}/iii --version")
+              assert_match version.to_s, shell_output("#{bin}/iii --version")
             end
           end
           BREWEOF
@@ -131,18 +129,11 @@ jobs:
 
       - name: Test formula locally
         run: |
-          cd homebrew-tap
-
-          # Audit formula for common issues
-          brew audit --new --formula ${{ env.FORMULA_PATH }}
-
-          # Install formula locally to verify it works
-          brew install --build-from-source ./${{ env.FORMULA_PATH }}
-
-          # Test installation
+          brew update
+          brew tap iii-hq/tap "$GITHUB_WORKSPACE/homebrew-tap"
+          brew audit --new iii-hq/tap/iii
+          brew install --build-from-source iii-hq/tap/iii
           iii --version
-
-          # Uninstall after test
           brew uninstall iii
 
       - name: Commit and push changes

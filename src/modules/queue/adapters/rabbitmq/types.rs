@@ -20,10 +20,20 @@ pub struct Job {
     pub attempts_made: u32,
     pub max_attempts: u32,
     pub created_at: u64,
+    #[serde(default)]
+    pub traceparent: Option<String>,
+    #[serde(default)]
+    pub baggage: Option<String>,
 }
 
 impl Job {
-    pub fn new(topic: impl Into<String>, data: Value, max_attempts: u32) -> Self {
+    pub fn new(
+        topic: impl Into<String>,
+        data: Value,
+        max_attempts: u32,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             topic: topic.into(),
@@ -34,6 +44,8 @@ impl Job {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as u64,
+            traceparent,
+            baggage,
         }
     }
 
@@ -113,7 +125,13 @@ mod tests {
 
     #[test]
     fn test_job_creation() {
-        let job = Job::new("test.topic", serde_json::json!({"key": "value"}), 3);
+        let job = Job::new(
+            "test.topic",
+            serde_json::json!({"key": "value"}),
+            3,
+            None,
+            None,
+        );
         assert_eq!(job.topic, "test.topic");
         assert_eq!(job.attempts_made, 0);
         assert_eq!(job.max_attempts, 3);

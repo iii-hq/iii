@@ -27,6 +27,7 @@ use iii_sdk::{
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::net::TcpListener;
+use tracing::Instrument;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -38,9 +39,9 @@ use crate::{
             adapters::StreamAdapter,
             config::StreamModuleConfig,
             structs::{
-                StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
-                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSetInput,
-                StreamUpdateInput,
+                EventData, StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
+                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSendInput,
+                StreamSetInput, StreamUpdateInput,
             },
             trigger::{
                 JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
@@ -279,8 +280,12 @@ impl StreamCoreModule {
             triggers
         };
 
+        let current_span = tracing::Span::current();
+
         if let Ok(event_data) = serde_json::to_value(event_data) {
             tokio::spawn(async move {
+                let mut has_error = false;
+
                 for stream_trigger in triggers_to_invoke {
                     let trigger = &stream_trigger.trigger;
 
@@ -327,6 +332,7 @@ impl StreamCoreModule {
                                     error = ?err,
                                     "Error invoking condition function"
                                 );
+                                has_error = true;
                                 continue;
                             }
                         }
@@ -348,6 +354,7 @@ impl StreamCoreModule {
                             );
                         }
                         Err(err) => {
+                            has_error = true;
                             tracing::error!(
                                 function_id = %trigger.function_id,
                                 error = ?err,
@@ -356,7 +363,13 @@ impl StreamCoreModule {
                         }
                     }
                 }
-            });
+
+                if has_error {
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                } else {
+                    tracing::Span::current().record("otel.status_code", "OK");
+                }
+            }.instrument(tracing::info_span!(parent: current_span, "stream_triggers", otel.status_code = tracing::field::Empty)));
         } else {
             tracing::error!("Failed to convert event data to value");
         }
@@ -365,7 +378,7 @@ impl StreamCoreModule {
 
 #[service(name = "stream")]
 impl StreamCoreModule {
-    #[function(id = "stream.set", description = "Set a value in a stream")]
+    #[function(id = "stream::set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
@@ -373,7 +386,7 @@ impl StreamCoreModule {
         let item_id = input.item_id;
         let data = input.data;
 
-        let function_id = format!("stream.set({})", stream_name);
+        let function_id = format!("stream::set({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -413,6 +426,7 @@ impl StreamCoreModule {
             }
         };
 
+        crate::modules::telemetry::collector::track_stream_set();
         match result {
             Ok(result) => {
                 let event = if result.old_value.is_some() {
@@ -449,17 +463,18 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.get", description = "Get a value from a stream")]
+    #[function(id = "stream::get", description = "Get a value from a stream")]
     pub async fn get(&self, input: StreamGetInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
 
-        let function_id = format!("stream.get({})", stream_name);
+        let function_id = format!("stream::get({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
+        crate::modules::telemetry::collector::track_stream_get();
         match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.get function");
@@ -494,7 +509,7 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.delete", description = "Delete a value from a stream")]
+    #[function(id = "stream::delete", description = "Delete a value from a stream")]
     pub async fn delete(
         &self,
         input: StreamDeleteInput,
@@ -503,7 +518,7 @@ impl StreamCoreModule {
         let stream_name = input.stream_name;
         let group_id = input.group_id;
         let item_id = input.item_id;
-        let function_id = format!("stream.delete({})", stream_name);
+        let function_id = format!("stream::delete({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -541,6 +556,7 @@ impl StreamCoreModule {
             None => adapter.delete(&stream_name, &group_id, &item_id).await,
         };
 
+        crate::modules::telemetry::collector::track_stream_delete();
         match result {
             Ok(result) => {
                 if let Some(old_value) = result.old_value.clone() {
@@ -569,16 +585,17 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.list", description = "List all items in a stream group")]
+    #[function(id = "stream::list", description = "List all items in a stream group")]
     pub async fn list(&self, input: StreamListInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
         let group_id = input.group_id;
 
-        let function_id = format!("stream.list({})", stream_name);
+        let function_id = format!("stream::list({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
+        crate::modules::telemetry::collector::track_stream_list();
         match function {
             Some(_) => {
                 tracing::debug!(function_id = %function_id, "Calling custom stream.getGroup function");
@@ -613,7 +630,10 @@ impl StreamCoreModule {
         }
     }
 
-    #[function(id = "stream.list_groups", description = "List all groups in a stream")]
+    #[function(
+        id = "stream::list_groups",
+        description = "List all groups in a stream"
+    )]
     pub async fn list_groups(
         &self,
         input: StreamListGroupsInput,
@@ -621,7 +641,7 @@ impl StreamCoreModule {
         let cloned_input = input.clone();
         let stream_name = input.stream_name;
 
-        let function_id = format!("stream.list_groups({})", stream_name);
+        let function_id = format!("stream::list_groups({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -659,7 +679,7 @@ impl StreamCoreModule {
     }
 
     #[function(
-        id = "stream.listAll",
+        id = "stream::list_all",
         description = "List all available stream with metadata"
     )]
     pub async fn list_all(
@@ -696,7 +716,39 @@ impl StreamCoreModule {
     }
 
     #[function(
-        id = "stream.update",
+        id = "stream::send",
+        description = "Send a custom event to stream subscribers"
+    )]
+    pub async fn send(&self, input: StreamSendInput) -> FunctionResult<(), ErrorBody> {
+        let message = StreamWrapperMessage {
+            event_type: "stream".to_string(),
+            timestamp: Utc::now().timestamp_millis(),
+            stream_name: input.stream_name.clone(),
+            group_id: input.group_id.clone(),
+            id: input.id.clone(),
+            event: StreamOutboundMessage::Event {
+                event: EventData {
+                    event_type: input.event_type,
+                    data: input.data,
+                },
+            },
+        };
+
+        self.invoke_triggers(message.clone()).await;
+
+        if let Err(e) = self.adapter.emit_event(message).await {
+            tracing::error!(error = %e, "Failed to emit stream send event");
+            return FunctionResult::Failure(ErrorBody {
+                message: format!("Failed to send event: {}", e),
+                code: "STREAM_SEND_ERROR".to_string(),
+            });
+        }
+
+        FunctionResult::Success(())
+    }
+
+    #[function(
+        id = "stream::update",
         description = "Atomically update a stream value with multiple operations"
     )]
     pub async fn update(
@@ -711,7 +763,7 @@ impl StreamCoreModule {
 
         tracing::debug!(stream_name = %stream_name, group_id = %group_id, item_id = %item_id, ops_count = ops.len(), "Executing atomic stream update");
 
-        let function_id = format!("stream.update({})", stream_name);
+        let function_id = format!("stream::update({})", stream_name);
         let function = self.engine.functions.get(&function_id);
         let adapter = self.adapter.clone();
 
@@ -747,6 +799,7 @@ impl StreamCoreModule {
             None => adapter.update(&stream_name, &group_id, &item_id, ops).await,
         };
 
+        crate::modules::telemetry::collector::track_stream_update();
         match result {
             Ok(result) => {
                 let event = if result.old_value.is_some() {

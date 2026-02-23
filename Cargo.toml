@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.3.0"
+version = "0.6.1"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -22,7 +22,7 @@ rabbitmq = ["lapin"]
 
 [dependencies]
 function-macros = { path = "function-macros" }
-iii-sdk = { version="0.0.4" , features=["otel"] }
+iii-sdk = { version="0.2.0" , features=["otel"] }
 #iii-sdk = { path = "", features=["otel"] } for local development
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal" ] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
@@ -46,6 +46,7 @@ serde_yaml = "0.9"
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap = "6"
+indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -62,6 +63,7 @@ rand = "0.8"
 rkyv = "0.8.12"
 nix = { version = "0.30.1", features = ["signal", "process"] }
 winapi = { version = "0.3.9", features = ["minwindef", "wincon", "winbase", "consoleapi"] }
+dirs = "6"
 
 [dev-dependencies]
 mockall = "0.13"

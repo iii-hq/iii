@@ -30,6 +30,7 @@ pub mod modules {
     pub mod shell;
     pub mod state;
     pub mod stream;
+    pub mod telemetry;
     pub mod worker;
 }
 

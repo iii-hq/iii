@@ -11,8 +11,10 @@ use std::sync::Arc;
 use futures::StreamExt;
 use lapin::{Channel, message::Delivery, options::*};
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 
 use crate::engine::{Engine, EngineTrait};
+use crate::telemetry::SpanExt;
 
 use super::consumer::JobParser;
 use super::naming::RabbitNames;
@@ -195,48 +197,65 @@ impl Worker {
         function_id: &str,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let engine = Arc::clone(&self.engine);
-        let data = job.data.clone();
+        let span = tracing::info_span!(
+            "queue_job",
+            otel.name = %format!("queue {}", job.topic),
+            job_id = %job.id,
+            queue = %job.topic,
+            otel.status_code = tracing::field::Empty,
+        )
+        .with_parent_headers(job.traceparent.as_deref(), job.baggage.as_deref());
 
-        if let Some(condition_path) = condition_function_id {
-            match engine.call(condition_path, data.clone()).await {
-                Ok(Some(result)) => {
-                    if let Some(passed) = result.as_bool()
-                        && !passed
-                    {
-                        tracing::debug!(
-                            function_id = %function_id,
-                            "Condition check failed, skipping handler"
+        async {
+            let engine = Arc::clone(&self.engine);
+            let data = job.data.clone();
+
+            if let Some(condition_path) = condition_function_id {
+                match engine.call(condition_path, data.clone()).await {
+                    Ok(Some(result)) => {
+                        if let Some(passed) = result.as_bool()
+                            && !passed
+                        {
+                            tracing::debug!(
+                                function_id = %function_id,
+                                "Condition check failed, skipping handler"
+                            );
+                            tracing::Span::current().record("otel.status_code", "OK");
+                            return Ok(());
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            condition_function_id = %condition_path,
+                            "Condition function returned no result"
                         );
-                        return Ok(());
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            condition_function_id = %condition_path,
+                            error = ?err,
+                            "Error invoking condition function"
+                        );
+                        tracing::Span::current().record("otel.status_code", "ERROR");
+                        return Err(format!("Condition function error: {:?}", err).into());
                     }
                 }
-                Ok(None) => {
-                    tracing::warn!(
-                        condition_function_id = %condition_path,
-                        "Condition function returned no result"
-                    );
-                }
-                Err(err) => {
-                    tracing::error!(
-                        condition_function_id = %condition_path,
-                        error = ?err,
-                        "Error invoking condition function"
-                    );
-                    return Err(format!("Condition function error: {:?}", err).into());
-                }
             }
-        }
 
-        match engine.call(function_id, data).await {
-            Ok(_) => {
-                tracing::debug!(job_id = %job.id, "Job processed successfully");
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!(job_id = %job.id, error = ?e, "Job processing failed");
-                Err(format!("Job processing error: {:?}", e).into())
+            match engine.call(function_id, data).await {
+                Ok(_) => {
+                    tracing::debug!(job_id = %job.id, "Job processed successfully");
+                    tracing::Span::current().record("otel.status_code", "OK");
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!(job_id = %job.id, error = ?e, "Job processing failed");
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    Err(format!("Job processing error: {:?}", e).into())
+                }
             }
         }
+        .instrument(span)
+        .await
     }
 }

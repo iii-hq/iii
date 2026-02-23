@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use anyhow::Ok;
 use serde_json::Value;
 
 use super::{config::ExecConfig, exec::Exec};
@@ -33,21 +32,32 @@ impl Module for ExecCoreModule {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        self.watcher.stop_process().await;
+        self.watcher.shutdown().await;
         Ok(())
     }
 
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn start_background_tasks(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
         let watcher = self.watcher.clone();
 
         tokio::spawn(async move {
             if let Err(err) = watcher.run().await {
                 tracing::error!("Watcher failed: {:?}", err);
             }
+        });
 
-            Ok(())
+        let watcher = self.watcher.clone();
+        tokio::spawn(async move {
+            let _ = shutdown.changed().await;
+            watcher.shutdown().await;
         });
 
         Ok(())

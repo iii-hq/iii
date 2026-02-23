@@ -1840,7 +1840,7 @@ impl InMemoryLogStorage {
             .collect();
 
         // Sort by timestamp (newest first)
-        result.sort_by(|a, b| b.timestamp_unix_nano.cmp(&a.timestamp_unix_nano));
+        result.sort_by_key(|b| std::cmp::Reverse(b.timestamp_unix_nano));
 
         // Get total before pagination
         let total = result.len();
@@ -1934,7 +1934,16 @@ fn extract_log_attributes(attributes: &[OtlpKeyValue]) -> HashMap<String, serde_
     attrs
 }
 
+/// Tracing target used by [`emit_log_to_console`] to mark forwarded OTLP log records.
+///
+/// [`OtelLogsLayer`](super::logs_layer::OtelLogsLayer) matches on this target to skip
+/// re-storing logs that were already persisted by `ingest_otlp_logs`.
+pub(crate) const OTEL_PASSTHROUGH_TARGET: &str = "iii::otel_passthrough";
+
 /// Emit a log to the console via tracing based on severity level.
+///
+/// Uses [`OTEL_PASSTHROUGH_TARGET`] so `OtelLogsLayer` skips these events
+/// and avoids storing them a second time (they are already stored by `ingest_otlp_logs`).
 fn emit_log_to_console(log: &StoredLog) {
     let data = if log.attributes.is_empty() {
         String::new()
@@ -1947,12 +1956,24 @@ fn emit_log_to_console(log: &StoredLog) {
 
     // OTEL severity numbers: TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24
     match log.severity_number {
-        1..=4 => tracing::trace!(service = %service, data = %data, "{}", body),
-        5..=8 => tracing::debug!(service = %service, data = %data, "{}", body),
-        9..=12 => tracing::info!(service = %service, data = %data, "{}", body),
-        13..=16 => tracing::warn!(service = %service, data = %data, "{}", body),
-        17..=24 => tracing::error!(service = %service, data = %data, "{}", body),
-        _ => tracing::info!(service = %service, data = %data, "{}", body),
+        1..=4 => {
+            tracing::trace!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        5..=8 => {
+            tracing::debug!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        9..=12 => {
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        13..=16 => {
+            tracing::warn!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        17..=24 => {
+            tracing::error!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
+        _ => {
+            tracing::info!(target: OTEL_PASSTHROUGH_TARGET, service = %service, data = %data, "{}", body)
+        }
     }
 }
 
