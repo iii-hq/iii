@@ -51,8 +51,8 @@ impl StateRedisAdapter {
 
 #[async_trait]
 impl StateAdapter for StateRedisAdapter {
-    async fn set(&self, group_id: &str, item_id: &str, data: Value) -> anyhow::Result<SetResult> {
-        let key: String = format!("state:{}", group_id);
+    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult> {
+        let scope_key: String = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
         let value = serde_json::to_string(&data)
             .map_err(|e| anyhow::anyhow!("Failed to serialize data: {}", e))?;
@@ -68,8 +68,8 @@ impl StateAdapter for StateRedisAdapter {
         );
 
         let result: redis::RedisResult<Option<String>> = script
-            .key(&key)
-            .arg(item_id)
+            .key(&scope_key)
+            .arg(key)
             .arg(&value)
             .invoke_async(&mut *conn)
             .await
@@ -92,11 +92,11 @@ impl StateAdapter for StateRedisAdapter {
         }
     }
 
-    async fn get(&self, group_id: &str, item_id: &str) -> anyhow::Result<Option<Value>> {
-        let key = format!("state:{}", group_id);
+    async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>> {
+        let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        match conn.hget::<_, _, Option<String>>(&key, &item_id).await {
+        match conn.hget::<_, _, Option<String>>(&scope_key, &key).await {
             Ok(Some(s)) => serde_json::from_str(&s)
                 .map_err(|e| anyhow::anyhow!("Failed to deserialize value from Redis: {}", e))
                 .map(Some),
@@ -107,12 +107,12 @@ impl StateAdapter for StateRedisAdapter {
 
     async fn update(
         &self,
-        group_id: &str,
-        item_id: &str,
+        scope: &str,
+        key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
-        let key = format!("state:{}", group_id);
+        let scope_key = format!("state:{}", scope);
 
         // Serialize operations to JSON
         let ops_json = serde_json::to_string(&ops)
@@ -229,8 +229,8 @@ impl StateAdapter for StateRedisAdapter {
         );
 
         let result: redis::RedisResult<Vec<String>> = script
-            .key(&key)
-            .arg(item_id)
+            .key(&scope_key)
+            .arg(key)
             .arg(&ops_json)
             .invoke_async(&mut *conn)
             .await;
@@ -242,7 +242,7 @@ impl StateAdapter for StateRedisAdapter {
                     tracing::warn!(values = ?values, "cjson not available, falling back to Rust-based update");
 
                     // Fall back to Rust-based approach
-                    return self.update_rust_based(group_id, item_id, ops).await;
+                    return self.update_rust_based(scope, key, ops).await;
                 }
 
                 if values.len() == 3 {
@@ -271,7 +271,7 @@ impl StateAdapter for StateRedisAdapter {
             Err(e) => {
                 // If script fails, try Rust-based fallback
                 tracing::debug!(error = %e, "Lua script failed, falling back to Rust-based update");
-                self.update_rust_based(group_id, item_id, ops).await
+                self.update_rust_based(scope, key, ops).await
             }
             _ => Err(anyhow::anyhow!(
                 "Unexpected return value from update script"
@@ -279,22 +279,22 @@ impl StateAdapter for StateRedisAdapter {
         }
     }
 
-    async fn delete(&self, group_id: &str, item_id: &str) -> anyhow::Result<()> {
-        let key = format!("state:{}", group_id);
+    async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()> {
+        let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
-        conn.hdel::<_, String, ()>(&key, item_id.to_string())
+        conn.hdel::<_, String, ()>(&scope_key, key.to_string())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from Redis: {}", e))?;
         Ok(())
     }
 
-    async fn list(&self, group_id: &str) -> anyhow::Result<Vec<Value>> {
-        let key = format!("state:{}", group_id);
+    async fn list(&self, scope: &str) -> anyhow::Result<Vec<Value>> {
+        let scope_key = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
 
         let values = conn
-            .hgetall::<String, HashMap<String, String>>(key)
+            .hgetall::<String, HashMap<String, String>>(scope_key)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get group from Redis: {}", e))?;
 
@@ -324,8 +324,8 @@ impl StateAdapter for StateRedisAdapter {
                 .await?;
 
             for key in keys {
-                if let Some(group_id) = key.strip_prefix("state:") {
-                    groups.push(group_id.to_string());
+                if let Some(scope) = key.strip_prefix("state:") {
+                    groups.push(scope.to_string());
                 }
             }
 
@@ -348,17 +348,17 @@ impl StateRedisAdapter {
     // Fallback method that does JSON manipulation in Rust
     async fn update_rust_based(
         &self,
-        group_id: &str,
-        item_id: &str,
+        scope: &str,
+        key: &str,
         ops: Vec<UpdateOp>,
     ) -> anyhow::Result<UpdateResult> {
         let mut conn = self.publisher.lock().await;
-        let key = format!("state:{}", group_id);
+        let scope_key = format!("state:{}", scope);
 
         // Simple atomic get-and-set approach
         // Get old value
         let old_value_str: Option<String> = conn
-            .hget::<_, _, Option<String>>(&key, item_id)
+            .hget::<_, _, Option<String>>(&scope_key, key)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get old value: {}", e))?;
 
@@ -438,8 +438,8 @@ impl StateRedisAdapter {
         );
 
         let result: redis::RedisResult<()> = script
-            .key(&key)
-            .arg(item_id)
+            .key(&scope_key)
+            .arg(key)
             .arg(&new_value_str)
             .invoke_async(&mut *conn)
             .await;

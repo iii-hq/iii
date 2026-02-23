@@ -1,0 +1,216 @@
+name: Publish to Chocolatey
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_DIR: packaging/chocolatey
+
+jobs:
+  publish-chocolatey:
+    name: Build and Push Chocolatey Package
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ($version -notmatch '^v\d+\.\d+\.\d+$') {
+            Write-Error "Invalid version format. Expected: v1.2.3"
+            exit 1
+          }
+
+          if ($version -match '-') {
+            Write-Error "Pre-release versions not allowed in Chocolatey"
+            exit 1
+          }
+
+          Write-Host "Version validated: $version"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows binary
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          $url = "https://github.com/iii-hq/iii/releases/download/$version/iii-x86_64-pc-windows-msvc.zip"
+
+          Write-Host "Downloading from: $url"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile "iii-windows.zip" -ErrorAction Stop
+          } catch {
+            Write-Error "Failed to download: $_"
+            exit 1
+          }
+
+          # Verify download
+          if (!(Test-Path "iii-windows.zip")) {
+            Write-Error "Download failed: file not found"
+            exit 1
+          }
+
+          $fileSize = (Get-Item "iii-windows.zip").Length
+          if ($fileSize -lt 1024) {
+            Write-Error "Download failed: file too small ($fileSize bytes)"
+            exit 1
+          }
+
+          Write-Host "Downloaded: $fileSize bytes"
+
+      - name: Calculate SHA256 checksum
+        id: checksum
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash -Path "iii-windows.zip" -Algorithm SHA256
+          $checksum = $hash.Hash.ToLower()
+
+          Write-Host "SHA256: $checksum"
+          echo "checksum=$checksum" >> $env:GITHUB_OUTPUT
+
+      - name: Prepare package directory
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          $versionNumber = $version.TrimStart('v')
+          $checksum = "${{ steps.checksum.outputs.checksum }}"
+
+          # Create build directory
+          New-Item -ItemType Directory -Force -Path "choco-build/tools"
+
+          # Copy and process nuspec template
+          $nuspec = Get-Content "${{ env.PACKAGE_DIR }}/iii.nuspec.template" -Raw
+          $nuspec = $nuspec -replace '{{VERSION}}', $versionNumber
+          $nuspec | Set-Content "choco-build/iii.nuspec"
+
+          # Copy and process install script template
+          $install = Get-Content "${{ env.PACKAGE_DIR }}/tools/chocolateyinstall.ps1.template" -Raw
+          $install = $install -replace '{{VERSION}}', $versionNumber
+          $install = $install -replace '{{CHECKSUM_X64}}', $checksum
+          $install | Set-Content "choco-build/tools/chocolateyinstall.ps1"
+
+          Write-Host "Package prepared in choco-build/"
+          Get-ChildItem -Recurse choco-build/
+
+      - name: Install Chocolatey (if needed)
+        shell: pwsh
+        run: |
+          if (!(Get-Command choco -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Chocolatey..."
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          }
+
+          choco --version
+
+      - name: Build Chocolatey package
+        shell: pwsh
+        run: |
+          cd choco-build
+          choco pack
+
+          # Verify package created
+          $package = Get-ChildItem -Filter "iii.*.nupkg"
+          if (!$package) {
+            Write-Error "Package build failed"
+            exit 1
+          }
+
+          Write-Host "Package built: $($package.Name)"
+
+      - name: Test package installation locally
+        shell: pwsh
+        run: |
+          cd choco-build
+          $package = Get-ChildItem -Filter "iii.*.nupkg"
+
+          # Install locally to test
+          choco install $package.Name --source . --force -y
+
+          # Test binary
+          iii --version
+
+          # Uninstall after test
+          choco uninstall iii -y
+
+      - name: Push to Chocolatey
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        shell: pwsh
+        run: |
+          cd choco-build
+          $package = Get-ChildItem -Filter "iii.*.nupkg"
+
+          $env:CHOCOLATEY_API_KEY = "${{ secrets.CHOCOLATEY_API_KEY }}"
+          choco push $package.Name --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+
+          Write-Host "Package published to Chocolatey!"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        shell: pwsh
+        run: |
+          Write-Host "🏃 DRY RUN MODE - No package pushed"
+          Write-Host ""
+          Write-Host "Package validated successfully:"
+          Write-Host "- Version: ${{ github.event.inputs.version }}"
+          Write-Host "- Checksum: ${{ steps.checksum.outputs.checksum }}"
+          Write-Host "- Package builds correctly"
+          Write-Host "- Installation test passed"
+          Write-Host ""
+          Write-Host "Set dry_run=false to publish for real."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ Chocolatey package published",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Chocolatey Package Published* 🍫\n\nVersion: `${{ github.event.inputs.version }}`\n\nUsers can now install with:\n```choco install iii```\n\nNote: May take 30-60 minutes for Chocolatey moderation."
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ Chocolatey publish failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Chocolatey Publish Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }

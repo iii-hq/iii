@@ -87,11 +87,15 @@ impl FunctionsRegistry {
 
     pub fn remove(&self, function_id: &str) {
         self.functions.remove(function_id);
-        tracing::info!("{} Function {}", "[REMOVED]".red(), function_id.purple());
+        tracing::info!(
+            "{} Function {}",
+            "[UNREGISTERED]".red(),
+            function_id.purple()
+        );
     }
 
     pub fn get(&self, function_id: &str) -> Option<Function> {
-        tracing::debug!("Searching for function path: {}", function_id);
+        tracing::debug!("Searching for function: {}", function_id);
         self.functions
             .get(function_id)
             .map(|entry| entry.value().clone())

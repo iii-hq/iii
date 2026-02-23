@@ -19,11 +19,14 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::module::{AdapterFactory, ConfigurableModule, Module},
     protocol::ErrorBody,
+    telemetry::{inject_baggage_from_context, inject_traceparent_from_context},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -55,8 +58,13 @@ impl QueueCoreModule {
             });
         }
 
-        tracing::debug!(topic = %topic, data = %data, "Enqueuing message");
-        let _ = adapter.enqueue(&topic, data).await;
+        let ctx = tracing::Span::current().context();
+        let traceparent = inject_traceparent_from_context(&ctx);
+        let baggage = inject_baggage_from_context(&ctx);
+
+        tracing::debug!(topic = %topic, traceparent = ?traceparent, baggage = ?baggage, "Enqueuing message with trace context");
+        let _ = adapter.enqueue(&topic, data, traceparent, baggage).await;
+        crate::modules::telemetry::collector::track_queue_emit();
 
         FunctionResult::Success(None)
     }

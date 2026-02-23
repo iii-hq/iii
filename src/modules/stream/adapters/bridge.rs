@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use iii_sdk::{
-    Bridge, UpdateOp, UpdateResult,
+    III, UpdateOp, UpdateResult,
     types::{DeleteResult, SetResult},
 };
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
@@ -46,14 +46,14 @@ pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
     handler_function_id: String,
-    bridge: Arc<Bridge>,
+    bridge: Arc<III>,
 }
 
 impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(Bridge::new(&bridge_url));
+        let bridge = Arc::new(III::new(&bridge_url));
         let handler_function_id = format!("stream::bridge::on_pub::{}", uuid::Uuid::new_v4());
         let res = bridge.connect().await;
 
@@ -100,7 +100,7 @@ impl StreamAdapter for BridgeAdapter {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        self.bridge.disconnect();
+        self.bridge.shutdown_async().await;
         Ok(())
     }
 
@@ -134,7 +134,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let set_result = self
             .bridge
-            .call("kv_server.set", set_data)
+            .call("kv_server::set", set_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value in kv_server: {}", e))?;
 
@@ -158,7 +158,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .call("kv_server.get", data)
+            .call("kv_server::get", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get value from kv_server: {}", e))?;
 
@@ -178,7 +178,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let delete_result = self
             .bridge
-            .call("kv_server.delete", delete_data)
+            .call("kv_server::delete", delete_data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value from kv_server: {}", e))?;
 
@@ -193,7 +193,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let value = self
             .bridge
-            .call("kv_server.list", data)
+            .call("kv_server::list", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get group from kv_server: {}", e))?;
 
@@ -207,7 +207,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let value = self
             .bridge
-            .call("kv_server.list_keys_with_prefix", data)
+            .call("kv_server::list_keys_with_prefix", data)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list groups from kv_server: {}", e))?;
 
@@ -251,7 +251,7 @@ impl StreamAdapter for BridgeAdapter {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to deserialize stream message");
-                            Err(iii_sdk::BridgeError::Remote {
+                            Err(iii_sdk::IIIError::Remote {
                                 code: "DESERIALIZATION_ERROR".to_string(),
                                 message: format!("Failed to deserialize stream message: {}", e),
                             })

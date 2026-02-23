@@ -53,7 +53,7 @@ impl APIrequest {
             method: method.clone(),
             body: body_value,
             trigger: Some(TriggerMetadata {
-                trigger_type: "api".to_string(),
+                trigger_type: "http".to_string(),
                 path: Some(path),
                 method: Some(method),
             }),

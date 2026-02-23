@@ -1,0 +1,259 @@
+name: Publish to Flatpak
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_NAME: iii
+  APP_ID: com.motia.iii
+
+jobs:
+  publish-flatpak:
+    name: Build and Publish Flatpak Package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Flatpak and flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+
+          # Add Flathub repository
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+          # Install Freedesktop SDK
+          sudo flatpak install -y flathub org.freedesktop.Platform//23.08 org.freedesktop.Sdk//23.08
+
+      - name: Download Linux binaries
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "Downloading Linux binaries..."
+          curl -L --fail -o iii-x86_64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
+
+          curl -L --fail -o iii-aarch64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+
+          # Verify downloads
+          for file in iii-x86_64.tar.gz iii-aarch64.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+
+          echo "Downloads verified:"
+          ls -lh iii-*.tar.gz
+
+      - name: Download and verify checksums
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "Downloading checksums..."
+          curl -L --fail -o checksums.txt \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/checksums.txt"
+
+          echo "Verifying checksums..."
+
+          # Extract and verify checksums
+          X86_SUM=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SUM=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+
+          echo "$X86_SUM  iii-x86_64.tar.gz" | sha256sum -c - || exit 1
+          echo "$ARM_SUM  iii-aarch64.tar.gz" | sha256sum -c - || exit 1
+
+          echo "✓ All checksums verified"
+
+      - name: Create Flatpak manifest
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+          X86_SHA=$(grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SHA=$(grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt | awk '{print $1}')
+
+          mkdir -p flatpak
+
+          cat > flatpak/${{ env.APP_ID }}.yml <<FLATEOF
+          app-id: ${{ env.APP_ID }}
+          runtime: org.freedesktop.Platform
+          runtime-version: '23.08'
+          sdk: org.freedesktop.Sdk
+          command: iii
+
+          finish-args:
+            - --share=network
+            - --socket=fallback-x11
+            - --socket=wayland
+            - --filesystem=home
+
+          modules:
+            - name: iii
+              buildsystem: simple
+              build-commands:
+                - install -Dm755 iii /app/bin/iii
+              sources:
+                - type: archive
+                  only-arches:
+                    - x86_64
+                  url: https://github.com/iii-hq/iii/releases/download/v${VERSION_NUMBER}/iii-x86_64-unknown-linux-musl.tar.gz
+                  sha256: ${X86_SHA}
+                  dest: .
+                - type: archive
+                  only-arches:
+                    - aarch64
+                  url: https://github.com/iii-hq/iii/releases/download/v${VERSION_NUMBER}/iii-aarch64-unknown-linux-musl.tar.gz
+                  sha256: ${ARM_SHA}
+                  dest: .
+          FLATEOF
+
+          echo "Flatpak manifest created:"
+          cat flatpak/${{ env.APP_ID }}.yml
+
+      - name: Build Flatpak package
+        run: |
+          set -e
+
+          echo "Building Flatpak package..."
+          flatpak-builder --repo=repo --force-clean build-dir flatpak/${{ env.APP_ID }}.yml
+
+          echo "Creating bundle..."
+          flatpak build-bundle repo ${{ env.APP_ID }}.flatpak ${{ env.APP_ID }}
+
+          echo "✓ Flatpak package built"
+          ls -lh ${{ env.APP_ID }}.flatpak
+
+      - name: Test Flatpak installation
+        run: |
+          set -e
+
+          echo "Installing Flatpak package..."
+          sudo flatpak install --user -y ${{ env.APP_ID }}.flatpak
+
+          echo "Testing binary..."
+          flatpak run ${{ env.APP_ID }} --version
+
+          echo "Flatpak info:"
+          flatpak info ${{ env.APP_ID }}
+
+          echo "Uninstalling..."
+          sudo flatpak uninstall --user -y ${{ env.APP_ID }}
+
+          echo "✓ Flatpak installation test passed"
+
+      - name: Prepare Flathub submission
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Clone Flathub repository (would need to be created first)
+          # git clone https://github.com/flathub/${{ env.APP_ID }}.git flathub-repo
+          # cd flathub-repo
+          # cp ../flatpak/${{ env.APP_ID }}.yml .
+          # git add ${{ env.APP_ID }}.yml
+          # git commit -m "Update to $VERSION"
+          # git push
+
+          echo "Note: Flathub publishing requires:"
+          echo "1. Create Flathub application repository at https://github.com/flathub/${{ env.APP_ID }}"
+          echo "2. Submit manifest via pull request"
+          echo "3. Wait for Flathub review and approval"
+          echo ""
+          echo "Manifest file: flatpak/${{ env.APP_ID }}.yml"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "🏃 DRY RUN MODE - No package pushed to Flathub"
+          echo ""
+          echo "Package validated successfully:"
+          echo "- Version: $VERSION"
+          echo "- Architectures: x86_64, aarch64"
+          echo "- Checksums verified"
+          echo "- Flatpak builds correctly"
+          echo "- Installation test passed"
+          echo ""
+          echo "Manifest ready at: flatpak/${{ env.APP_ID }}.yml"
+          echo ""
+          echo "To publish to Flathub:"
+          echo "1. Fork https://github.com/flathub/flathub"
+          echo "2. Create new app repo at https://github.com/flathub/${{ env.APP_ID }}"
+          echo "3. Submit manifest via PR"
+          echo ""
+          echo "Set dry_run=false to proceed with Flathub submission process."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ Flatpak package built",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Flatpak Package Built* 📦\n\nVersion: `${{ github.event.inputs.version }}`\n\nArchitectures: x86_64, aarch64\n\nNext: Submit to Flathub for review"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ Flatpak build failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Flatpak Build Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }

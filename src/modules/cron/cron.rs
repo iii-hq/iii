@@ -62,6 +62,27 @@ impl Module for CronCoreModule {
         tracing::info!("{} Cron trigger type initialized", "[READY]".green());
         Ok(())
     }
+
+    async fn start_background_tasks(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        let adapter = Arc::clone(&self.adapter);
+
+        tokio::spawn(async move {
+            let _ = shutdown.changed().await;
+            tracing::info!("CronModule received shutdown signal, stopping cron jobs");
+            adapter.shutdown().await;
+        });
+
+        Ok(())
+    }
+
+    async fn destroy(&self) -> anyhow::Result<()> {
+        tracing::info!("Destroying CronModule");
+        self.adapter.shutdown().await;
+        Ok(())
+    }
 }
 
 impl TriggerRegistrator for CronCoreModule {

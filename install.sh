@@ -20,18 +20,6 @@ else
   uname_s=$(uname -s 2>/dev/null || echo unknown)
   uname_m=$(uname -m 2>/dev/null || echo unknown)
 
-  case "$uname_s" in
-    Darwin)
-      os="apple-darwin"
-      ;;
-    Linux)
-      os="unknown-linux-gnu"
-      ;;
-    *)
-      err "unsupported OS: $uname_s"
-      ;;
-  esac
-
   case "$uname_m" in
     x86_64|amd64)
       arch="x86_64"
@@ -39,8 +27,45 @@ else
     arm64|aarch64)
       arch="aarch64"
       ;;
+    armv7*)
+      arch="armv7"
+      ;;
     *)
       err "unsupported architecture: $uname_m"
+      ;;
+  esac
+
+  case "$uname_s" in
+    Darwin)
+      os="apple-darwin"
+      ;;
+    Linux)
+      case "$arch" in
+        x86_64)
+          if [ -n "${III_USE_GLIBC:-}" ]; then
+            sys_glibc=$(ldd --version 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+$' || echo "0.0")
+            required_glibc="2.35"
+            if printf '%s\n%s\n' "$required_glibc" "$sys_glibc" | sort -V -C; then
+              os="unknown-linux-gnu"
+              echo "using glibc build (system glibc: $sys_glibc)"
+            else
+              echo "warning: system glibc $sys_glibc is older than required $required_glibc, falling back to musl" >&2
+              os="unknown-linux-musl"
+            fi
+          else
+            os="unknown-linux-musl"
+          fi
+          ;;
+        aarch64)
+          os="unknown-linux-gnu"
+          ;;
+        armv7)
+          os="unknown-linux-gnueabihf"
+          ;;
+      esac
+      ;;
+    *)
+      err "unsupported OS: $uname_s"
       ;;
   esac
 
@@ -49,11 +74,7 @@ fi
 
 api_headers="-H Accept:application/vnd.github+json -H X-GitHub-Api-Version:2022-11-28"
 github_api() {
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl -fsSL $api_headers -H "Authorization: Bearer $GITHUB_TOKEN" "$1"
-  else
-    curl -fsSL $api_headers "$1"
-  fi
+  curl -fsSL $api_headers "$1"
 }
 
 if [ -n "$VERSION" ]; then
@@ -77,25 +98,12 @@ if command -v jq >/dev/null 2>&1; then
   asset_url=$(printf '%s' "$json" \
     | jq -r --arg target "$target" '.assets[] | select(.name | test($target)) | .browser_download_url' \
     | head -n 1)
-  asset_id=$(printf '%s' "$json" \
-    | jq -r --arg target "$target" '.assets[] | select(.name | test($target)) | .id' \
-    | head -n 1)
 else
   asset_url=$(printf '%s' "$json" \
     | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
     | sed -E 's/.*"([^"]+)".*/\1/' \
     | grep "$target" \
     | head -n 1)
-  asset_id=$(printf '%s' "$json" | awk -v target="$target" '
-    /"id"[[:space:]]*:/ {
-      line=$0
-      gsub(/[^0-9]/, "", line)
-      if (line != "") last_id=line
-    }
-    /"name"[[:space:]]*:/ && $0 ~ target {
-      if (last_id != "") { print last_id; exit }
-    }
-  ')
 fi
 
 if [ -z "$asset_url" ]; then
@@ -126,13 +134,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${asset_id:-}" ] && [ "$asset_id" != "null" ]; then
-  asset_api_url="https://api.github.com/repos/$REPO/releases/assets/$asset_id"
-  curl -fsSL -H "Accept: application/octet-stream" -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H "X-GitHub-Api-Version: 2022-11-28" -L "$asset_api_url" -o "$tmpdir/$asset_name"
-else
-  curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name"
-fi
+curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name"
 
 case "$asset_name" in
   *.tar.gz|*.tgz)

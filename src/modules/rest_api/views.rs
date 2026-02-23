@@ -194,7 +194,7 @@ pub async fn dynamic_handler(
 
         {
             // Tag the HTTP span as internal if the function is an engine.* function
-            let function_kind = if function_id.starts_with("engine.") {
+            let function_kind = if function_id.starts_with("engine::") {
                 "internal"
             } else {
                 "user"
@@ -279,6 +279,8 @@ pub async fn dynamic_handler(
         let func_result = engine
             .call(&function_id, api_request_value)
             .await;
+
+            crate::modules::telemetry::collector::track_api_request();
 
             return match func_result {
                 Ok(result) => {

@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       slack_ts: ${{ steps.slack.outputs.ts }}
-    
+
     steps:
       - name: Post initial Slack message
         id: slack
@@ -180,13 +180,13 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-latest
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-latest
+            os: ubuntu-22.04
 
     steps:
       - name: Generate token
@@ -231,7 +231,7 @@ jobs:
         run: |
           RESULT='${{ needs.build-release.result }}'
           echo "Build result: $RESULT"
-          
+
           if [ "$RESULT" == "success" ]; then
             echo "status=success" >> $GITHUB_OUTPUT
             echo "count=9" >> $GITHUB_OUTPUT
@@ -261,3 +261,127 @@ jobs:
                   - type: "mrkdwn"
                     text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}|View Release>"
 
+  trigger-package-managers:
+    name: Trigger Package Manager Workflows
+    needs: [notify-start, build-release]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-') }}  # Production releases only
+    permissions:
+      actions: write  # Required for createWorkflowDispatch
+
+    steps:
+      - name: Trigger Homebrew workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-homebrew.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger Chocolatey workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-chocolatey.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger AUR workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-aur.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger apt/deb workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-apt.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger RPM (RHEL) workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-rpm-rhel.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Trigger RPM (Fedora) workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'publish-rpm-fedora.yml',
+              ref: 'main',
+              inputs: {
+                version: '${{ github.ref_name }}',
+                dry_run: 'false'
+              }
+            });
+
+      - name: Update Slack - Package Managers Triggered
+        if: always()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ needs.notify-start.outputs.slack_ts }}
+            text: "📦 Package managers triggered for ${{ github.ref_name }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Release ${{ github.ref_name }}* 🚀\n\n✅ Tests passed\n✅ Release created\n✅ Binaries built (9/9)\n✅ Release validated\n📦 Publishing to package managers..."
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Homebrew, Chocolatey, AUR, apt/deb, RPM (RHEL), RPM (Fedora) | <${{ github.server_url }}/${{ github.repository }}/actions|View Workflows>"

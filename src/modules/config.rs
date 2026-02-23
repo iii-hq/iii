@@ -426,7 +426,12 @@ impl EngineBuilder {
         }
 
         // Setup router
-        let app = Router::new().route("/", get(ws_handler)).with_state(engine);
+        let app = Router::new()
+            .route("/", get(ws_handler))
+            .with_state(AppState {
+                engine,
+                shutdown_rx: shutdown_rx.clone(),
+            });
 
         // Bind and serve
         let listener = TcpListener::bind(&self.address).await?;
@@ -458,15 +463,21 @@ impl Default for EngineBuilder {
 // WebSocket Handler
 // =============================================================================
 
+#[derive(Clone)]
+struct AppState {
+    engine: Arc<Engine>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+}
+
 async fn ws_handler(
-    State(engine): State<Arc<Engine>>,
+    State(state): State<AppState>,
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
-    let engine = engine.clone();
+    let engine = state.engine.clone();
 
     ws.on_upgrade(move |socket| async move {
-        if let Err(err) = engine.handle_worker(socket, addr).await {
+        if let Err(err) = engine.handle_worker(socket, addr, state.shutdown_rx).await {
             tracing::error!(addr = %addr, error = ?err, "worker error");
         }
     })

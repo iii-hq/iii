@@ -1,0 +1,215 @@
+name: Publish to Homebrew
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  TAP_REPO: iii-hq/homebrew-tap
+  FORMULA_PATH: Formula/iii.rb
+
+jobs:
+  publish-homebrew:
+    name: Update Homebrew Formula
+    runs-on: macos-latest
+    permissions:
+      contents: read  # For checkout only
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          # Check for pre-release (contains hyphen)
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed in Homebrew"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ steps.generate_token.outputs.token }}
+          path: homebrew-tap
+
+      - name: Download release assets
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Download both macOS binaries
+          curl -L --fail -o iii-x86_64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-apple-darwin.tar.gz"
+
+          curl -L --fail -o iii-aarch64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-apple-darwin.tar.gz"
+
+          # Verify downloads (must be non-empty)
+          for file in iii-x86_64.tar.gz iii-aarch64.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+          ls -lh *.tar.gz
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        run: |
+          X86_SHA=$(shasum -a 256 iii-x86_64.tar.gz | awk '{print $1}')
+          ARM_SHA=$(shasum -a 256 iii-aarch64.tar.gz | awk '{print $1}')
+
+          echo "x86_64_sha256=${X86_SHA}" >> $GITHUB_OUTPUT
+          echo "aarch64_sha256=${ARM_SHA}" >> $GITHUB_OUTPUT
+
+          echo "Checksums calculated:"
+          echo "  x86_64: ${X86_SHA}"
+          echo "  aarch64: ${ARM_SHA}"
+
+      - name: Update formula
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          X86_SHA="${{ steps.checksums.outputs.x86_64_sha256 }}"
+          ARM_SHA="${{ steps.checksums.outputs.aarch64_sha256 }}"
+
+          cd homebrew-tap
+
+          sed 's/^          //' <<BREWEOF > ${{ env.FORMULA_PATH }}
+          class Iii < Formula
+            desc "WebSocket-based process communication engine"
+            homepage "https://github.com/iii-hq/iii"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM_SHA}"
+              else
+                url "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-apple-darwin.tar.gz"
+                sha256 "${X86_SHA}"
+              end
+            end
+
+            def install
+              bin.install "iii"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/iii --version")
+            end
+          end
+          BREWEOF
+
+          echo "Formula updated:"
+          cat ${{ env.FORMULA_PATH }}
+
+      - name: Test formula locally
+        run: |
+          brew update
+          brew tap iii-hq/tap "$GITHUB_WORKSPACE/homebrew-tap"
+          brew audit --new iii-hq/tap/iii
+          brew install --build-from-source iii-hq/tap/iii
+          iii --version
+          brew uninstall iii
+
+      - name: Commit and push changes
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          cd homebrew-tap
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add ${{ env.FORMULA_PATH }}
+          git commit -m "chore: update iii to ${{ github.event.inputs.version }}
+            Automated update from release workflow.
+
+            Changes:
+            - Version: ${{ github.event.inputs.version }}
+            - x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}
+            - aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}
+          "
+
+          git push origin main
+
+          echo "Formula published to homebrew-tap!"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          echo "🏃 DRY RUN MODE - No changes pushed"
+          echo ""
+          echo "Formula validated successfully:"
+          echo "- Version: ${{ github.event.inputs.version }}"
+          echo "- x86_64 SHA256: ${{ steps.checksums.outputs.x86_64_sha256 }}"
+          echo "- aarch64 SHA256: ${{ steps.checksums.outputs.aarch64_sha256 }}"
+          echo "- Formula passes brew audit"
+          echo "- Installation test passed"
+          echo ""
+          echo "Set dry_run=false to publish for real."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ Homebrew formula updated",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Homebrew Formula Updated* 🍺\n\nVersion: `${{ github.event.inputs.version }}`\n\nUsers can now install with:\n```brew tap iii-hq/tap\nbrew install iii```"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ Homebrew publish failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Homebrew Publish Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }

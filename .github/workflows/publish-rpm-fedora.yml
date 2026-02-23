@@ -1,0 +1,353 @@
+name: Publish to RPM (Fedora)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  PACKAGE_NAME: iii
+  SPEC_TEMPLATE: packaging/rpm/iii-fedora.spec.template
+
+jobs:
+  publish-rpm-fedora:
+    name: Build and Publish RPM Package (Fedora)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate version format
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Expected: v1.2.3"
+            exit 1
+          fi
+
+          if [[ "$VERSION" =~ - ]]; then
+            echo "Error: Pre-release versions not allowed"
+            exit 1
+          fi
+
+          echo "Version validated: $VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install RPM build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm rpmlint
+
+      - name: Download Linux binaries
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Download both architectures
+          curl -L --fail -o iii-x86_64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-x86_64-unknown-linux-musl.tar.gz"
+
+          curl -L --fail -o iii-aarch64.tar.gz \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/iii-aarch64-unknown-linux-musl.tar.gz"
+
+          # Verify downloads (must be non-empty)
+          for file in iii-x86_64.tar.gz iii-aarch64.tar.gz; do
+            if [ ! -s "$file" ]; then
+              echo "Error: $file is missing or empty"
+              exit 1
+            fi
+          done
+          ls -lh *.tar.gz
+
+      - name: Download and verify checksums
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Download checksum file from release
+          curl -L --fail -o checksums.txt \
+            "https://github.com/iii-hq/iii/releases/download/${VERSION}/checksums.txt"
+
+          # Verify checksums for both architectures
+          grep "iii-x86_64-unknown-linux-musl.tar.gz" checksums.txt > checksum-x86_64.txt
+          grep "iii-aarch64-unknown-linux-musl.tar.gz" checksums.txt > checksum-aarch64.txt
+
+          # Verify x86_64
+          echo "Verifying x86_64 checksum..."
+          sed 's/iii-x86_64-unknown-linux-musl.tar.gz/iii-x86_64.tar.gz/' checksum-x86_64.txt | sha256sum -c -
+
+          # Verify aarch64
+          echo "Verifying aarch64 checksum..."
+          sed 's/iii-aarch64-unknown-linux-musl.tar.gz/iii-aarch64.tar.gz/' checksum-aarch64.txt | sha256sum -c -
+
+          echo "All checksums verified successfully"
+
+      - name: Prepare RPM build environment
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Create rpmbuild directory structure for x86_64
+          mkdir -p ~/rpmbuild-x86_64/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Create rpmbuild directory structure for aarch64
+          mkdir -p ~/rpmbuild-aarch64/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Extract binaries to SOURCES
+          mkdir -p ~/rpmbuild-x86_64/SOURCES/iii-${VERSION_NUMBER}
+          tar -xzf iii-x86_64.tar.gz -C ~/rpmbuild-x86_64/SOURCES/iii-${VERSION_NUMBER}
+
+          mkdir -p ~/rpmbuild-aarch64/SOURCES/iii-${VERSION_NUMBER}
+          tar -xzf iii-aarch64.tar.gz -C ~/rpmbuild-aarch64/SOURCES/iii-${VERSION_NUMBER}
+
+          # Create source tarballs for rpmbuild
+          (cd ~/rpmbuild-x86_64/SOURCES && tar czf iii-x86_64-unknown-linux-musl.tar.gz iii-${VERSION_NUMBER})
+          (cd ~/rpmbuild-aarch64/SOURCES && tar czf iii-aarch64-unknown-linux-musl.tar.gz iii-${VERSION_NUMBER})
+
+          echo "RPM build environment prepared"
+
+      - name: Generate spec files from template
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+          CHANGELOG_DATE=$(date "+%a %b %d %Y")
+
+          # Generate x86_64 spec file
+          sed "s/{{VERSION}}/${VERSION_NUMBER}/g" ${{ env.SPEC_TEMPLATE }} | \
+            sed "s/{{CHANGELOG_DATE}}/${CHANGELOG_DATE}/g" > ~/rpmbuild-x86_64/SPECS/iii.spec
+
+          # Generate aarch64 spec file (same content, different BuildArch)
+          sed "s/{{VERSION}}/${VERSION_NUMBER}/g" ${{ env.SPEC_TEMPLATE }} | \
+            sed "s/{{CHANGELOG_DATE}}/${CHANGELOG_DATE}/g" | \
+            sed "s/BuildArch:[[:space:]]*x86_64/BuildArch:      aarch64/g" > ~/rpmbuild-aarch64/SPECS/iii.spec
+
+          echo "=== x86_64 spec file ==="
+          cat ~/rpmbuild-x86_64/SPECS/iii.spec
+          echo ""
+          echo "=== aarch64 spec file ==="
+          cat ~/rpmbuild-aarch64/SPECS/iii.spec
+
+      - name: Build RPM packages
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Build x86_64 package
+          echo "=== Building x86_64 package ==="
+          rpmbuild --define "_topdir $HOME/rpmbuild-x86_64" \
+            -bb ~/rpmbuild-x86_64/SPECS/iii.spec
+
+          # Build aarch64 package
+          echo "=== Building aarch64 package ==="
+          rpmbuild --define "_topdir $HOME/rpmbuild-aarch64" \
+            -bb ~/rpmbuild-aarch64/SPECS/iii.spec
+
+          # Copy built packages to workspace with verification
+          echo "Verifying x86_64 RPM..."
+          x86_rpm=$(find ~/rpmbuild-x86_64/RPMS/x86_64/ -name "iii-${VERSION_NUMBER}-1.*.x86_64.rpm")
+          if [ $(echo "$x86_rpm" | wc -l) -ne 1 ]; then
+            echo "Error: Expected exactly 1 x86_64 RPM, found: $(echo "$x86_rpm" | wc -l)"
+            exit 1
+          fi
+          cp "$x86_rpm" ./iii-${VERSION_NUMBER}-1.fc.x86_64.rpm
+
+          echo "Verifying aarch64 RPM..."
+          aarch64_rpm=$(find ~/rpmbuild-aarch64/RPMS/aarch64/ -name "iii-${VERSION_NUMBER}-1.*.aarch64.rpm")
+          if [ $(echo "$aarch64_rpm" | wc -l) -ne 1 ]; then
+            echo "Error: Expected exactly 1 aarch64 RPM, found: $(echo "$aarch64_rpm" | wc -l)"
+            exit 1
+          fi
+          cp "$aarch64_rpm" ./iii-${VERSION_NUMBER}-1.fc.aarch64.rpm
+
+          echo "Packages built:"
+          ls -lh *.rpm
+
+      - name: Verify packages
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Verifying x86_64 package ==="
+          rpm -qip iii-${VERSION_NUMBER}-1.fc.x86_64.rpm
+          echo ""
+          echo "=== x86_64 package files ==="
+          rpm -qlp iii-${VERSION_NUMBER}-1.fc.x86_64.rpm
+          echo ""
+
+          echo "=== Verifying aarch64 package ==="
+          rpm -qip iii-${VERSION_NUMBER}-1.fc.aarch64.rpm
+          echo ""
+          echo "=== aarch64 package files ==="
+          rpm -qlp iii-${VERSION_NUMBER}-1.fc.aarch64.rpm
+          echo ""
+
+          echo "Package verification passed"
+
+      - name: Run rpmlint checks
+        continue-on-error: true
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Running rpmlint on x86_64 package ==="
+          rpmlint iii-${VERSION_NUMBER}-1.fc.x86_64.rpm || true
+
+          echo ""
+          echo "=== Running rpmlint on aarch64 package ==="
+          rpmlint iii-${VERSION_NUMBER}-1.fc.aarch64.rpm || true
+
+      - name: Test x86_64 package installation
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Testing x86_64 package ==="
+          # Install
+          sudo rpm -ivh iii-${VERSION_NUMBER}-1.fc.x86_64.rpm
+
+          # Test
+          iii --version
+          rpm -q iii
+          rpm -ql iii
+
+          # Uninstall
+          sudo rpm -e iii
+
+          echo "x86_64 package test passed"
+
+      - name: Test aarch64 package installation
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          echo "=== Testing aarch64 package ==="
+          # Install package (binary won't run on x86_64 runner, but we can verify install/uninstall)
+          sudo rpm -ivh iii-${VERSION_NUMBER}-1.fc.aarch64.rpm || {
+            echo "Note: Binary installation expected to have issues on non-aarch64 host"
+            echo "Verifying package structure instead..."
+            rpm -qlp iii-${VERSION_NUMBER}-1.fc.aarch64.rpm | grep "/usr/bin/iii"
+          }
+
+          # Try to query package if installed
+          if rpm -q iii &>/dev/null; then
+            echo "Package installed, checking files..."
+            rpm -ql iii || true
+            # Uninstall
+            sudo rpm -e iii
+          fi
+
+          echo "aarch64 package test passed"
+
+      - name: Install package_cloud CLI
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        run: |
+          gem install package_cloud
+
+      - name: Push to Packagecloud
+        if: ${{ github.event.inputs.dry_run == 'false' }}
+        env:
+          PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+        run: |
+          set -e
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Define target distributions
+          DISTROS=(
+            "fedora/39"
+            "fedora/40"
+          )
+
+          # Push both architectures to all distributions
+          for distro in "${DISTROS[@]}"; do
+            echo "Pushing to ${distro}..."
+
+            if ! package_cloud push "iii-hq/iii-rpm-fedora/${distro}" "iii-${VERSION_NUMBER}-1.fc.x86_64.rpm"; then
+              echo "Error: Failed to push x86_64 package to ${distro}"
+              exit 1
+            fi
+
+            if ! package_cloud push "iii-hq/iii-rpm-fedora/${distro}" "iii-${VERSION_NUMBER}-1.fc.aarch64.rpm"; then
+              echo "Error: Failed to push aarch64 package to ${distro}"
+              exit 1
+            fi
+
+            echo "Successfully pushed to ${distro}"
+          done
+
+          echo ""
+          echo "All packages published to Packagecloud successfully!"
+          echo "Published to: ${DISTROS[*]}"
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "🏃 DRY RUN MODE - No packages pushed"
+          echo ""
+          echo "Packages validated successfully:"
+          echo "- Version: $VERSION"
+          echo "- Checksums verified against release"
+          echo "- x86_64 package builds and installs"
+          echo "- aarch64 package builds and verified"
+          echo "- Package metadata verified with rpm -qip"
+          echo "- rpmlint quality checks completed"
+          echo "- Ready to publish to: fedora/39, fedora/40"
+          echo ""
+          echo "Set dry_run=false to publish for real."
+
+      - name: Notify Slack on success
+        if: ${{ success() && github.event.inputs.dry_run == 'false' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "✅ Fedora RPM packages published",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Fedora RPM Packages Published* 📦\n\nVersion: `${{ github.event.inputs.version }}`\n\nDistributions: Fedora 39, 40\nArchitectures: x86_64, aarch64\n\nUsers can now install with:\n```sudo dnf install iii```"
+                  }
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: ${{ failure() }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "❌ Fedora RPM publish failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Fedora RPM Publish Failed* ❌\n\nVersion: `${{ github.event.inputs.version }}`\n\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                  }
+                }
+              ]
+            }

@@ -17,21 +17,21 @@ Install (prebuilt binary)
 This installer currently supports macOS and Linux (not native Windows).
 You can install the latest release binary with:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
 To install a specific version, pass it as the first argument (the leading `v` is optional):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh -s -- v0.2.1
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- v0.2.1
 ```
 Or set `VERSION` explicitly:
 ```bash
-VERSION=0.2.1 curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
+VERSION=0.2.1 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
 By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` or `PREFIX`:
 ```bash
-BIN_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/iii-hq/iii/main/install.sh | sh
+BIN_DIR=/usr/local/bin curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
 To check that the binary is on your PATH and see the current version:
@@ -117,7 +117,7 @@ Config files support environment expansion like `${REDIS_URL:redis://localhost:6
 
 ## Connect a Worker
 
-Node.js (SDK in `packages/node/iii`):
+Node.js:
 
 ```javascript
 import { Bridge } from '@iii-dev/sdk'
@@ -129,7 +129,7 @@ bridge.registerFunction({ function_id: 'math.add' }, async (input) => {
 })
 ```
 
-Rust (SDK in `packages/rust/iii`):
+Rust:
 
 ```rust
 use iii_sdk::Bridge;
@@ -152,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Expose an HTTP Endpoint (API trigger)
 
-The REST API module maps HTTP routes to functions via the `api` trigger type. Functions should
+The REST API module maps HTTP routes to functions via the `http` trigger type. Functions should
 return `{ "status_code": <int>, "body": <json> }`.
 
 ```javascript
@@ -161,7 +161,7 @@ bridge.registerFunction({ function_id: 'api.echo' }, async (req) => {
 })
 
 bridge.registerTrigger({
-  trigger_type: 'api',
+  type: 'http',
   function_id: 'api.echo',
   config: { api_path: 'echo', http_method: 'POST' },
 })
@@ -174,8 +174,8 @@ With the default API config, the endpoint will be available at:
 
 Available core modules (registered in `src/modules/config.rs`):
 
-- `modules::api::RestApiModule` – HTTP API trigger (`api`) on `host:port` (default `127.0.0.1:3111`).
-- `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `emit` function).
+- `modules::api::RestApiModule` – HTTP API trigger (`http`) on `host:port` (default `127.0.0.1:3111`).
+- `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `enqueue` function).
 - `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
 - `modules::stream::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
   `stream.set/get/delete/list` functions (Redis-backed by default).
@@ -188,7 +188,7 @@ RestApi, Queue, Logging, Cron, Stream. Queue/Stream expect Redis; Cron uses buil
 ## Protocol Summary
 
 The engine speaks JSON messages over WebSocket. Key message types:
-`registerfunction`, `invokefunction`, `invocationresult`, `registertrigger_type`,
+`registerfunction`, `invokefunction`, `invocationresult`,
 `registertrigger`, `unregistertrigger`, `triggerregistrationresult`, `registerservice`,
 `functionsavailable`, `ping`, `pong`.
 
@@ -201,7 +201,6 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 - `src/protocol.rs` – WebSocket message schema.
 - `src/modules/` – Core modules (API, event, cron, stream, logging, shell).
 - `config.yaml` – Example module configuration.
-- `packages/node/*` and `packages/rust/*` – SDKs and higher-level frameworks.
 - `examples/custom_queue_adapter.rs` – Example of a custom module + adapter.
 
 ## Development
