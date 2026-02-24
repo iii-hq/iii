@@ -117,19 +117,16 @@ pub fn detect_client_type() -> &'static str {
     "iii_direct"
 }
 
-pub fn detect_client_type_from_workers(worker_names: &[Option<String>]) -> &'static str {
-    let env_type = detect_client_type();
-    if env_type == "motia" {
-        return "motia";
-    }
-
-    for name in worker_names.iter().flatten() {
+pub fn detect_client_type_from_workers(
+    worker_names: &std::collections::HashSet<String>,
+) -> &'static str {
+    for name in worker_names {
         if name.to_lowercase().contains("motia") {
             return "motia";
         }
     }
 
-    "iii_direct"
+    detect_client_type()
 }
 
 pub fn detect_language() -> Option<String> {

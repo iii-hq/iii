@@ -8,7 +8,7 @@ pub mod amplitude;
 pub mod collector;
 pub mod environment;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -132,8 +132,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> serde_json::Value {
     let function_count = functions.len();
 
     let mut triggers_list: Vec<serde_json::Value> = Vec::new();
-    let mut trigger_types_used: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut trigger_types_used: HashSet<String> = HashSet::new();
 
     for entry in engine.trigger_registry.triggers.iter() {
         let trigger = entry.value();
@@ -164,9 +163,9 @@ fn collect_functions_and_triggers(engine: &Engine) -> serde_json::Value {
     })
 }
 
-fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, Vec<Option<String>>) {
+fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, HashSet<String>) {
     let mut runtime_counts: HashMap<String, u64> = HashMap::new();
-    let mut worker_names: Vec<Option<String>> = Vec::new();
+    let mut worker_names: HashSet<String> = HashSet::new();
 
     for entry in engine.worker_registry.workers.iter() {
         let worker = entry.value();
@@ -175,24 +174,26 @@ fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, Vec<Option
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         *runtime_counts.entry(runtime).or_insert(0) += 1;
-        worker_names.push(worker.name.clone());
+        if let Some(name) = &worker.name {
+            worker_names.insert(name.clone());
+        }
     }
 
     (runtime_counts, worker_names)
 }
 
 fn build_client_context(
-    worker_names: &[Option<String>],
+    worker_names: &HashSet<String>,
     runtime_counts: &HashMap<String, u64>,
 ) -> serde_json::Value {
     let client_type = environment::detect_client_type_from_workers(worker_names);
 
-    let sdk_detected: Vec<&str> = runtime_counts
+    let sdk_detected: Vec<String> = runtime_counts
         .keys()
-        .filter_map(|r| match r.as_str() {
-            "node" => Some("motia-js"),
-            "python" => Some("motia-py"),
-            _ => None,
+        .map(|r| match r.as_str() {
+            "node" => "motia-js".to_string(),
+            "python" => "motia-py".to_string(),
+            other => other.to_string(),
         })
         .collect();
 
@@ -333,7 +334,7 @@ impl Module for TelemetryModule {
             .functions
             .iter()
             .filter_map(|entry| entry.key().split('.').next().map(String::from))
-            .collect::<std::collections::HashSet<_>>()
+            .collect::<HashSet<_>>()
             .into_iter()
             .collect();
 
