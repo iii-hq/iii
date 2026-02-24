@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 license = "Elastic-2.0"
 
