@@ -85,7 +85,6 @@ fn detect_timezone() -> String {
     std::env::var("TZ").unwrap_or_else(|_| "Unknown".to_string())
 }
 
-
 pub fn is_ci_environment() -> bool {
     const CI_ENV_VARS: &[&str] = &[
         "CI",
