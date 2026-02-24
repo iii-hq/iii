@@ -124,7 +124,7 @@ import { Bridge } from '@iii-dev/sdk'
 
 const bridge = new Bridge('ws://127.0.0.1:49134')
 
-bridge.registerFunction({ function_id: 'math.add' }, async (input) => {
+bridge.registerFunction({ id: 'math.add' }, async (input) => {
   return { sum: input.a + input.b }
 })
 ```
@@ -156,7 +156,7 @@ The REST API module maps HTTP routes to functions via the `http` trigger type. F
 return `{ "status_code": <int>, "body": <json> }`.
 
 ```javascript
-bridge.registerFunction({ function_id: 'api.echo' }, async (req) => {
+bridge.registerFunction({ id: 'api.echo' }, async (req) => {
   return { status_code: 200, body: { ok: true, input: req.body } }
 })
 
