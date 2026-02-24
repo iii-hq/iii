@@ -57,6 +57,10 @@ impl JobHandler for FunctionHandler {
             otel.name = %format!("queue {}", job.queue),
             job_id = %job.id,
             queue = %job.queue,
+            "messaging.system" = "iii-queue",
+            "messaging.destination.name" = %job.queue,
+            "messaging.operation.type" = "process",
+            "baggage.queue" = %job.queue,
             otel.status_code = tracing::field::Empty,
         )
         .with_parent_headers(job.traceparent.as_deref(), job.baggage.as_deref());

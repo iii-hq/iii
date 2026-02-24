@@ -58,7 +58,13 @@ impl QueueCoreModule {
             });
         }
 
-        let ctx = tracing::Span::current().context();
+        // Record the queue topic on the current span for trace visibility
+        let current_span = tracing::Span::current();
+        current_span.set_attribute("messaging.destination.name", topic.clone());
+        current_span.set_attribute("messaging.operation.type", "publish".to_string());
+        current_span.set_attribute("baggage.topic", topic.clone());
+
+        let ctx = current_span.context();
         let traceparent = inject_traceparent_from_context(&ctx);
         let baggage = inject_baggage_from_context(&ctx);
 
