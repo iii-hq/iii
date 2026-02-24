@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  III_TELEMETRY_ENABLED: "false"
 
 jobs:
   test:

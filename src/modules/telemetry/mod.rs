@@ -6,7 +6,9 @@
 
 pub mod amplitude;
 pub mod collector;
+pub mod environment;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,10 +21,7 @@ use crate::modules::module::Module;
 
 use self::amplitude::{AmplitudeClient, AmplitudeEvent};
 use self::collector::collector;
-
-// =============================================================================
-// Configuration
-// =============================================================================
+use self::environment::EnvironmentInfo;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelemetryConfig {
@@ -39,7 +38,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_heartbeat_interval() -> u64 {
-    30
+    6 * 60 * 60
 }
 
 impl Default for TelemetryConfig {
@@ -47,14 +46,16 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             api_key: String::new(),
-            heartbeat_interval_secs: 30,
+            heartbeat_interval_secs: 6 * 60 * 60,
         }
     }
 }
 
-// =============================================================================
-// Install ID persistence
-// =============================================================================
+fn resolve_project_id() -> Option<String> {
+    std::env::var("III_PROJECT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
 
 fn get_or_create_install_id() -> String {
     let base_dir = dirs::home_dir().unwrap_or_else(|| {
@@ -77,10 +78,8 @@ fn get_or_create_install_id() -> String {
         std::fs::create_dir_all(parent).ok();
     }
 
-    // Atomic write: write to temp file then rename to avoid partial reads
     let tmp_path = path.with_extension("tmp");
     if std::fs::write(&tmp_path, &id).is_ok() {
-        // Set owner-only permissions on Unix before rename
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -93,9 +92,118 @@ fn get_or_create_install_id() -> String {
     id
 }
 
-// =============================================================================
-// Telemetry Module
-// =============================================================================
+enum DisableReason {
+    UserOptOut,
+    CiDetected,
+    DevOptOut,
+    Config,
+}
+
+fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
+    if !config.enabled {
+        return Some(DisableReason::Config);
+    }
+
+    if let Ok(env_val) = std::env::var("III_TELEMETRY_ENABLED")
+        && (env_val == "false" || env_val == "0")
+    {
+        return Some(DisableReason::UserOptOut);
+    }
+
+    if environment::is_ci_environment() {
+        return Some(DisableReason::CiDetected);
+    }
+
+    if environment::is_dev_optout() {
+        return Some(DisableReason::DevOptOut);
+    }
+
+    None
+}
+
+fn collect_functions_and_triggers(engine: &Engine) -> serde_json::Value {
+    let functions: Vec<String> = engine
+        .functions
+        .iter()
+        .map(|entry| entry.key().clone())
+        .filter(|id| !id.starts_with("engine::"))
+        .collect();
+
+    let function_count = functions.len();
+
+    let mut triggers_list: Vec<serde_json::Value> = Vec::new();
+    let mut trigger_types_used: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    for entry in engine.trigger_registry.triggers.iter() {
+        let trigger = entry.value();
+        trigger_types_used.insert(trigger.trigger_type.clone());
+        triggers_list.push(serde_json::json!({
+            "id": trigger.id,
+            "type": trigger.trigger_type,
+            "function_id": trigger.function_id,
+        }));
+    }
+
+    let trigger_count = triggers_list.len();
+
+    let services: Vec<String> = engine
+        .service_registry
+        .services
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+
+    serde_json::json!({
+        "functions": functions,
+        "function_count": function_count,
+        "triggers": triggers_list,
+        "trigger_count": trigger_count,
+        "trigger_types_used": trigger_types_used.into_iter().collect::<Vec<_>>(),
+        "services": services,
+    })
+}
+
+fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, Vec<Option<String>>) {
+    let mut runtime_counts: HashMap<String, u64> = HashMap::new();
+    let mut worker_names: Vec<Option<String>> = Vec::new();
+
+    for entry in engine.worker_registry.workers.iter() {
+        let worker = entry.value();
+        let runtime = worker
+            .runtime
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        *runtime_counts.entry(runtime).or_insert(0) += 1;
+        worker_names.push(worker.name.clone());
+    }
+
+    (runtime_counts, worker_names)
+}
+
+fn build_client_context(
+    worker_names: &[Option<String>],
+    runtime_counts: &HashMap<String, u64>,
+) -> serde_json::Value {
+    let client_type = environment::detect_client_type_from_workers(worker_names);
+
+    let sdk_detected: Vec<&str> = runtime_counts
+        .keys()
+        .filter_map(|r| match r.as_str() {
+            "node" => Some("motia-js"),
+            "python" => Some("motia-py"),
+            _ => None,
+        })
+        .collect();
+
+    let worker_runtimes: Vec<&String> = runtime_counts.keys().collect();
+
+    serde_json::json!({
+        "type": client_type,
+        "sdk_detected": sdk_detected,
+        "worker_runtimes": worker_runtimes,
+    })
+}
 
 pub struct TelemetryModule {
     engine: Arc<Engine>,
@@ -103,24 +211,40 @@ pub struct TelemetryModule {
     client: Arc<AmplitudeClient>,
     install_id: String,
     start_time: Instant,
+    env_info: EnvironmentInfo,
 }
 
 impl TelemetryModule {
+    fn build_user_properties(&self) -> serde_json::Value {
+        let mut props = serde_json::json!({
+            "environment": self.env_info.to_json(),
+            "device_type": environment::detect_device_type(),
+        });
+        if let Some(project_id) = resolve_project_id() {
+            props["project_id"] = serde_json::Value::String(project_id);
+        }
+        props
+    }
+
     fn build_event(&self, event_type: &str, properties: serde_json::Value) -> AmplitudeEvent {
         AmplitudeEvent {
             device_id: self.install_id.clone(),
+            user_id: Some(self.install_id.clone()),
             event_type: event_type.to_string(),
             event_properties: properties,
+            user_properties: Some(self.build_user_properties()),
             platform: "III Engine".to_string(),
             os_name: std::env::consts::OS.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             time: chrono::Utc::now().timestamp_millis(),
             insert_id: Some(uuid::Uuid::new_v4().to_string()),
+            country: None,
+            language: environment::detect_language(),
+            ip: Some("$remote".to_string()),
         }
     }
 }
 
-/// A no-op telemetry module used when telemetry is disabled.
 struct DisabledTelemetryModule;
 
 #[async_trait]
@@ -164,15 +288,21 @@ impl Module for TelemetryModule {
             None => TelemetryConfig::default(),
         };
 
-        // Check env var override
-        if let Ok(env_val) = std::env::var("III_TELEMETRY_ENABLED")
-            && (env_val == "false" || env_val == "0")
-        {
-            telemetry_config.enabled = false;
-        }
-
-        if !telemetry_config.enabled {
-            tracing::info!("Anonymous telemetry disabled.");
+        if let Some(reason) = check_disabled(&telemetry_config) {
+            match reason {
+                DisableReason::Config => {
+                    tracing::info!("Anonymous telemetry disabled (config).");
+                }
+                DisableReason::UserOptOut => {
+                    tracing::info!("Anonymous telemetry disabled (user opt-out).");
+                }
+                DisableReason::CiDetected => {
+                    tracing::info!("Anonymous telemetry disabled (CI detected).");
+                }
+                DisableReason::DevOptOut => {
+                    tracing::info!("Anonymous telemetry disabled (dev opt-out).");
+                }
+            }
             return Ok(Box::new(DisabledTelemetryModule));
         }
 
@@ -181,6 +311,7 @@ impl Module for TelemetryModule {
         }
 
         let install_id = get_or_create_install_id();
+        let env_info = EnvironmentInfo::collect();
 
         tracing::info!("Anonymous telemetry enabled. Set III_TELEMETRY_ENABLED=false to disable.");
 
@@ -192,11 +323,11 @@ impl Module for TelemetryModule {
             client,
             install_id,
             start_time: Instant::now(),
+            env_info,
         }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        // Collect active module names from registered functions
         let active_modules: Vec<String> = self
             .engine
             .functions
@@ -206,6 +337,9 @@ impl Module for TelemetryModule {
             .into_iter()
             .collect();
 
+        let registry_data = collect_functions_and_triggers(&self.engine);
+        let client_type = environment::detect_client_type();
+
         let event = self.build_event(
             "engine_started",
             serde_json::json!({
@@ -213,13 +347,16 @@ impl Module for TelemetryModule {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
                 "active_modules": active_modules,
+                "registry": registry_data,
+                "client_context": {
+                    "type": client_type,
+                },
             }),
         );
 
-        let client_event = event;
         let client = Arc::clone(&self.client);
         tokio::spawn(async move {
-            if let Err(e) = client.send_event(client_event).await {
+            if let Err(e) = client.send_event(event).await {
                 tracing::debug!(error = %e, "Failed to send engine_started telemetry event");
             }
         });
@@ -234,14 +371,21 @@ impl Module for TelemetryModule {
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(&self.client);
         let install_id = self.install_id.clone();
+        let env_info = self.env_info.clone();
+        let engine = Arc::clone(&self.engine);
+        let start_time = self.start_time;
+        let project_id = resolve_project_id();
         let mut shutdown_rx = shutdown;
 
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
 
-            // Skip the first immediate tick
             interval.tick().await;
+
+            let mut prev_invocations: u64 = 0;
+            let mut prev_queue_emits: u64 = 0;
+            let mut prev_api_requests: u64 = 0;
 
             loop {
                 tokio::select! {
@@ -265,29 +409,71 @@ impl Module for TelemetryModule {
                         let workers_spawns = accumulator.workers_spawns.load(std::sync::atomic::Ordering::Relaxed);
                         let workers_deaths = accumulator.workers_deaths.load(std::sync::atomic::Ordering::Relaxed);
 
+                        let queue_emits_now = collector().queue_emits.load(std::sync::atomic::Ordering::Relaxed);
+                        let api_requests_now = collector().api_requests.load(std::sync::atomic::Ordering::Relaxed);
+
+                        let invocation_delta = invocations_total.saturating_sub(prev_invocations);
+                        let queue_emit_delta = queue_emits_now.saturating_sub(prev_queue_emits);
+                        let api_request_delta = api_requests_now.saturating_sub(prev_api_requests);
+
+                        let rate_invocations = if interval_secs > 0 { invocation_delta as f64 / interval_secs as f64 } else { 0.0 };
+                        let rate_queue_emits = if interval_secs > 0 { queue_emit_delta as f64 / interval_secs as f64 } else { 0.0 };
+                        let rate_api_requests = if interval_secs > 0 { api_request_delta as f64 / interval_secs as f64 } else { 0.0 };
+
+                        prev_invocations = invocations_total;
+                        prev_queue_emits = queue_emits_now;
+                        prev_api_requests = api_requests_now;
+
+                        let (runtime_counts, worker_names) = collect_worker_runtimes(&engine);
+                        let client_context = build_client_context(&worker_names, &runtime_counts);
+                        let registry_data = collect_functions_and_triggers(&engine);
+                        let uptime_secs = start_time.elapsed().as_secs();
+
                         let properties = serde_json::json!({
+                            "uptime_secs": uptime_secs,
                             "invocations": {
                                 "total": invocations_total,
                                 "success": invocations_success,
                                 "error": invocations_error,
                             },
+                            "rates": {
+                                "invocations_per_sec": rate_invocations,
+                                "queue_emits_per_sec": rate_queue_emits,
+                                "api_requests_per_sec": rate_api_requests,
+                            },
                             "workers": {
                                 "spawns": workers_spawns,
                                 "deaths": workers_deaths,
                                 "active": workers_spawns.saturating_sub(workers_deaths),
+                                "runtimes": runtime_counts,
                             },
                             "modules": telemetry_snapshot,
+                            "registry": registry_data,
+                            "client_context": client_context,
                         });
+
+                        let mut user_props = serde_json::json!({
+                            "environment": env_info.to_json(),
+                            "device_type": environment::detect_device_type(),
+                        });
+                        if let Some(pid) = &project_id {
+                            user_props["project_id"] = serde_json::Value::String(pid.clone());
+                        }
 
                         let event = AmplitudeEvent {
                             device_id: install_id.clone(),
+                            user_id: Some(install_id.clone()),
                             event_type: "engine_heartbeat".to_string(),
                             event_properties: properties,
+                            user_properties: Some(user_props),
                             platform: "III Engine".to_string(),
                             os_name: std::env::consts::OS.to_string(),
                             app_version: env!("CARGO_PKG_VERSION").to_string(),
                             time: chrono::Utc::now().timestamp_millis(),
                             insert_id: Some(uuid::Uuid::new_v4().to_string()),
+                            country: None,
+                            language: environment::detect_language(),
+                            ip: Some("$remote".to_string()),
                         };
 
                         if let Err(e) = client.send_event(event).await {
@@ -304,16 +490,20 @@ impl Module for TelemetryModule {
     async fn destroy(&self) -> anyhow::Result<()> {
         let uptime_secs = self.start_time.elapsed().as_secs();
         let telemetry_snapshot = collector().snapshot();
+        let registry_data = collect_functions_and_triggers(&self.engine);
+        let (runtime_counts, worker_names) = collect_worker_runtimes(&self.engine);
+        let client_context = build_client_context(&worker_names, &runtime_counts);
 
         let event = self.build_event(
             "engine_stopped",
             serde_json::json!({
                 "uptime_secs": uptime_secs,
                 "counters": telemetry_snapshot,
+                "registry": registry_data,
+                "client_context": client_context,
             }),
         );
 
-        // Fire-and-forget with a short timeout to avoid blocking shutdown
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             self.client.send_event(event),

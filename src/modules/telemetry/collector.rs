@@ -47,6 +47,9 @@ pub struct TelemetryCollector {
     // Registrations
     pub function_registrations: AtomicU64,
     pub trigger_registrations: AtomicU64,
+
+    // Workers
+    pub peak_active_workers: AtomicU64,
 }
 
 impl Default for TelemetryCollector {
@@ -72,6 +75,7 @@ impl Default for TelemetryCollector {
             api_requests: AtomicU64::new(0),
             function_registrations: AtomicU64::new(0),
             trigger_registrations: AtomicU64::new(0),
+            peak_active_workers: AtomicU64::new(0),
         }
     }
 }
@@ -115,6 +119,9 @@ impl TelemetryCollector {
             "registrations": {
                 "functions": self.function_registrations.load(Ordering::Relaxed),
                 "triggers": self.trigger_registrations.load(Ordering::Relaxed),
+            },
+            "workers": {
+                "peak_active": self.peak_active_workers.load(Ordering::Relaxed),
             },
         })
     }
@@ -214,4 +221,20 @@ pub fn track_trigger_registered() {
     collector()
         .trigger_registrations
         .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn track_peak_workers(current_active: u64) {
+    let peak = &collector().peak_active_workers;
+    loop {
+        let prev = peak.load(Ordering::Relaxed);
+        if current_active <= prev {
+            break;
+        }
+        if peak
+            .compare_exchange_weak(prev, current_active, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            break;
+        }
+    }
 }
