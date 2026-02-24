@@ -118,14 +118,8 @@ pub fn detect_client_type() -> &'static str {
 }
 
 pub fn detect_client_type_from_workers(
-    worker_names: &std::collections::HashSet<String>,
+    _worker_names: &std::collections::HashSet<String>,
 ) -> &'static str {
-    for name in worker_names {
-        if name.to_lowercase().contains("motia") {
-            return "motia";
-        }
-    }
-
     detect_client_type()
 }
 

@@ -14,7 +14,17 @@ use opentelemetry::KeyValue;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{engine::Outbound, modules::observability::metrics::get_engine_metrics};
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct WorkerTelemetryMeta {
+    pub language: Option<String>,
+    pub project_name: Option<String>,
+    pub framework: Option<String>,
+    pub amplitude_api_key: Option<String>,
+}
 
 #[derive(Default)]
 pub struct WorkerRegistry {
@@ -79,6 +89,7 @@ impl WorkerRegistry {
         version: Option<String>,
         name: Option<String>,
         os: Option<String>,
+        telemetry: Option<WorkerTelemetryMeta>,
     ) {
         if let Some(mut worker) = self.workers.get_mut(worker_id) {
             worker.runtime = Some(runtime);
@@ -88,6 +99,9 @@ impl WorkerRegistry {
             }
             if os.is_some() {
                 worker.os = os;
+            }
+            if telemetry.is_some() {
+                worker.telemetry = telemetry;
             }
         }
     }
@@ -158,6 +172,7 @@ pub struct Worker {
     pub os: Option<String>,
     pub ip_address: Option<String>,
     pub status: WorkerStatus,
+    pub telemetry: Option<WorkerTelemetryMeta>,
 }
 
 impl Worker {
@@ -175,6 +190,7 @@ impl Worker {
             os: None,
             ip_address: None,
             status: WorkerStatus::Connected,
+            telemetry: None,
         }
     }
 
@@ -192,6 +208,7 @@ impl Worker {
             os: None,
             ip_address: Some(ip_address),
             status: WorkerStatus::Connected,
+            telemetry: None,
         }
     }
 

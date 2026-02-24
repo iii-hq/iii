@@ -18,6 +18,7 @@ use crate::{
     modules::module::Module,
     protocol::{ErrorBody, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
+    workers::WorkerTelemetryMeta,
 };
 
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
@@ -80,13 +81,13 @@ pub struct WorkerInfo {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisterWorkerInput {
-    /// Worker ID injected by engine from caller context
     #[serde(rename = "_caller_worker_id")]
     pub worker_id: String,
     pub runtime: Option<String>,
     pub version: Option<String>,
     pub name: Option<String>,
     pub os: Option<String>,
+    pub telemetry: Option<WorkerTelemetryMeta>,
 }
 
 #[derive(Clone)]
@@ -212,6 +213,7 @@ impl WorkerModule {
             input.version,
             input.name,
             input.os,
+            input.telemetry,
         );
     }
 }
