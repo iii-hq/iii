@@ -136,12 +136,9 @@ jobs:
         shell: pwsh
         run: |
           cd choco-build
-          $package = Get-ChildItem -Filter "iii.*.nupkg"
 
-          # Install locally to test
-          choco install $package.Name --source . --force -y
+          choco install iii --source . --force -y
 
-          # Test binary
           iii --version
 
           # Uninstall after test
