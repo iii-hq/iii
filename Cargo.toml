@@ -64,6 +64,9 @@ rkyv = "0.8.12"
 nix = { version = "0.30.1", features = ["signal", "process"] }
 winapi = { version = "0.3.9", features = ["minwindef", "wincon", "winbase", "consoleapi"] }
 dirs = "6"
+hostname = "0.4"
+sha2 = "0.10"
+iana-time-zone = "0.1"
 
 [dev-dependencies]
 mockall = "0.13"

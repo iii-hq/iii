@@ -45,6 +45,8 @@ impl WorkerRegistry {
         let acc = crate::modules::observability::metrics::get_metrics_accumulator();
         acc.workers_spawns
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        crate::modules::telemetry::collector::track_peak_workers(count as u64);
     }
 
     pub fn unregister_worker(&self, worker_id: &Uuid) {

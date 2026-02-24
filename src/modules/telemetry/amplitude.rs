@@ -13,13 +13,23 @@ const MAX_RETRIES: u32 = 3;
 #[derive(Debug, Clone, Serialize)]
 pub struct AmplitudeEvent {
     pub device_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     pub event_type: String,
     pub event_properties: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_properties: Option<serde_json::Value>,
     pub platform: String,
     pub os_name: String,
     pub app_version: String,
     pub time: i64,
     pub insert_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
 }
 
 /// Payload sent to Amplitude HTTP API.
