@@ -30,6 +30,83 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
+const MAX_QUEUE_NAME_LEN: usize = 128;
+const MAX_JOB_ID_LEN: usize = 256;
+const VALID_JOB_STATES: &[&str] = &["waiting", "active", "delayed", "dlq"];
+const MAX_LIMIT: usize = 500;
+
+fn validate_queue_name(name: &str) -> Result<(), ErrorBody> {
+    if name.is_empty() {
+        return Err(ErrorBody {
+            code: "topic_not_set".into(),
+            message: "Topic is not set".into(),
+        });
+    }
+    if name.len() > MAX_QUEUE_NAME_LEN {
+        return Err(ErrorBody {
+            code: "invalid_topic".into(),
+            message: format!(
+                "Topic name exceeds maximum length of {} characters",
+                MAX_QUEUE_NAME_LEN
+            ),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err(ErrorBody {
+            code: "invalid_topic".into(),
+            message: "Topic name contains invalid characters (allowed: alphanumeric, -, _, ., :)"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_job_id(job_id: &str) -> Result<(), ErrorBody> {
+    if job_id.is_empty() {
+        return Err(ErrorBody {
+            code: "missing_params".into(),
+            message: "job_id is required".into(),
+        });
+    }
+    if job_id.len() > MAX_JOB_ID_LEN {
+        return Err(ErrorBody {
+            code: "invalid_job_id".into(),
+            message: format!(
+                "job_id exceeds maximum length of {} characters",
+                MAX_JOB_ID_LEN
+            ),
+        });
+    }
+    if !job_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err(ErrorBody {
+            code: "invalid_job_id".into(),
+            message: "job_id contains invalid characters (allowed: alphanumeric, -, _, ., :)"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_job_state(state: &str) -> Result<(), ErrorBody> {
+    if !VALID_JOB_STATES.contains(&state) {
+        return Err(ErrorBody {
+            code: "invalid_state".into(),
+            message: format!(
+                "Invalid job state '{}'. Must be one of: {}",
+                state,
+                VALID_JOB_STATES.join(", ")
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct QueueCoreModule {
     adapter: Arc<dyn QueueAdapter>,
@@ -43,6 +120,31 @@ pub struct QueueInput {
     data: Value,
 }
 
+#[derive(Deserialize)]
+pub struct QueueStatsInput {
+    topic: String,
+}
+
+#[derive(Deserialize)]
+pub struct QueueJobsInput {
+    topic: String,
+    state: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+#[derive(Deserialize)]
+pub struct QueueJobInput {
+    topic: String,
+    job_id: String,
+}
+
 #[service(name = "queue")]
 impl QueueCoreModule {
     #[function(id = "enqueue", description = "Enqueue a message")]
@@ -51,11 +153,8 @@ impl QueueCoreModule {
         let data = input.data;
         let topic = input.topic;
 
-        if topic.is_empty() {
-            return FunctionResult::Failure(ErrorBody {
-                code: "topic_not_set".into(),
-                message: "Topic is not set".into(),
-            });
+        if let Err(e) = validate_queue_name(&topic) {
+            return FunctionResult::Failure(e);
         }
 
         let ctx = tracing::Span::current().context();
@@ -67,6 +166,130 @@ impl QueueCoreModule {
         crate::modules::telemetry::collector::track_queue_emit();
 
         FunctionResult::Success(None)
+    }
+
+    #[function(id = "list_queues", description = "List all queues with stats")]
+    pub async fn list_queues(&self, _input: Value) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.adapter.list_queues().await {
+            Ok(queues) => FunctionResult::Success(Some(serde_json::json!({ "queues": queues }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "list_queues_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "stats", description = "Get queue depth stats")]
+    pub async fn stats(&self, input: QueueStatsInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
+        }
+
+        match self.adapter.queue_stats(&input.topic).await {
+            Ok(stats) => FunctionResult::Success(Some(stats)),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "stats_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "jobs", description = "List jobs by state")]
+    pub async fn jobs(&self, input: QueueJobsInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
+        }
+        if let Err(e) = validate_job_state(&input.state) {
+            return FunctionResult::Failure(e);
+        }
+
+        let limit = input.limit.min(MAX_LIMIT);
+
+        match self
+            .adapter
+            .list_jobs(&input.topic, &input.state, input.offset, limit)
+            .await
+        {
+            Ok(jobs) => FunctionResult::Success(Some(serde_json::json!({
+                "jobs": jobs,
+                "count": jobs.len(),
+                "offset": input.offset,
+                "limit": input.limit,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "jobs_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "job", description = "Get single job detail")]
+    pub async fn job(&self, input: QueueJobInput) -> FunctionResult<Option<Value>, ErrorBody> {
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
+        }
+        if let Err(e) = validate_job_id(&input.job_id) {
+            return FunctionResult::Failure(e);
+        }
+
+        match self.adapter.get_job(&input.topic, &input.job_id).await {
+            Ok(Some(job)) => FunctionResult::Success(Some(job)),
+            Ok(None) => FunctionResult::Failure(ErrorBody {
+                code: "not_found".into(),
+                message: format!("Job {} not found in queue {}", input.job_id, input.topic),
+            }),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "job_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(
+        id = "redrive_dlq",
+        description = "Redrive all DLQ jobs back to waiting"
+    )]
+    pub async fn redrive_dlq(
+        &self,
+        input: QueueStatsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
+        }
+
+        tracing::warn!(queue = %input.topic, "Redriving DLQ jobs back to waiting");
+
+        match self.adapter.redrive_dlq(&input.topic).await {
+            Ok(count) => FunctionResult::Success(Some(serde_json::json!({
+                "queue": input.topic,
+                "redriven": count,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "redrive_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
+    }
+
+    #[function(id = "dlq_count", description = "Get DLQ count for a queue")]
+    pub async fn dlq_count(
+        &self,
+        input: QueueStatsInput,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        if let Err(e) = validate_queue_name(&input.topic) {
+            return FunctionResult::Failure(e);
+        }
+
+        match self.adapter.dlq_count(&input.topic).await {
+            Ok(count) => FunctionResult::Success(Some(serde_json::json!({
+                "queue": input.topic,
+                "dlq_count": count,
+            }))),
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "dlq_count_failed".into(),
+                message: format!("{:?}", e),
+            }),
+        }
     }
 }
 
