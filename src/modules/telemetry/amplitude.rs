@@ -96,20 +96,7 @@ impl AmplitudeClient {
                 Ok(response) if response.status().is_success() => {
                     return Ok(());
                 }
-                Ok(response) => {
-                    tracing::debug!(
-                        attempt,
-                        status = %response.status(),
-                        "Amplitude request failed, retrying"
-                    );
-                }
-                Err(err) => {
-                    tracing::debug!(
-                        attempt,
-                        error = %err,
-                        "Amplitude request error, retrying"
-                    );
-                }
+                Ok(_) | Err(_) => {}
             }
 
             if attempt < MAX_RETRIES {
@@ -118,7 +105,6 @@ impl AmplitudeClient {
             }
         }
 
-        tracing::debug!("Amplitude: all retry attempts exhausted, dropping events");
         Ok(())
     }
 }

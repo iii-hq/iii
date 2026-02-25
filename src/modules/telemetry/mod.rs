@@ -308,9 +308,7 @@ impl TelemetryModule {
         sdk_telemetry: Option<&WorkerTelemetryMeta>,
     ) {
         let effective = Self::effective_client(client, sdk_telemetry);
-        if let Err(e) = effective.send_event(event).await {
-            tracing::debug!(error = %e, "Failed to send telemetry event");
-        }
+        let _ = effective.send_event(event).await;
     }
 }
 
@@ -495,11 +493,9 @@ impl Module for TelemetryModule {
                 tokio::select! {
                     result = shutdown_rx.changed() => {
                         if result.is_err() {
-                            tracing::debug!("[Telemetry] Shutdown channel closed");
                             break;
                         }
                         if *shutdown_rx.borrow() {
-                            tracing::debug!("[Telemetry] Heartbeat task shutting down");
                             break;
                         }
                     }
