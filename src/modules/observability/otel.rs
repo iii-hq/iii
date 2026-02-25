@@ -1239,7 +1239,9 @@ fn otlp_kv_to_key_value(kv: &OtlpKeyValue) -> Option<KeyValue> {
 
 /// Convert parsed OTLP spans to SpanData for export via the OTel SDK pipeline.
 fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<SpanData> {
-    use opentelemetry::trace::{Event, Link, SpanContext, SpanKind, Status, TraceFlags, TraceState};
+    use opentelemetry::trace::{
+        Event, Link, SpanContext, SpanKind, Status, TraceFlags, TraceState,
+    };
     use opentelemetry::{InstrumentationScope, SpanId, TraceId};
     use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
     use std::borrow::Cow;
@@ -1286,18 +1288,11 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
 
                 let trace_flags = TraceFlags::SAMPLED;
 
-                let span_context = SpanContext::new(
-                    trace_id,
-                    span_id,
-                    trace_flags,
-                    true,
-                    TraceState::NONE,
-                );
+                let span_context =
+                    SpanContext::new(trace_id, span_id, trace_flags, true, TraceState::NONE);
 
-                let start_time =
-                    UNIX_EPOCH + Duration::from_nanos(span.start_time_unix_nano.0);
-                let end_time =
-                    UNIX_EPOCH + Duration::from_nanos(span.end_time_unix_nano.0);
+                let start_time = UNIX_EPOCH + Duration::from_nanos(span.start_time_unix_nano.0);
+                let end_time = UNIX_EPOCH + Duration::from_nanos(span.end_time_unix_nano.0);
 
                 let attributes: Vec<KeyValue> = span
                     .attributes
@@ -1318,16 +1313,17 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                         _ => None,
                     })
                     .or_else(|| {
-                        attributes.iter().find(|kv| kv.key.as_str() == "otel.kind").and_then(
-                            |kv| match kv.value.as_str().as_ref() {
+                        attributes
+                            .iter()
+                            .find(|kv| kv.key.as_str() == "otel.kind")
+                            .and_then(|kv| match kv.value.as_str().as_ref() {
                                 "client" | "CLIENT" => Some(SpanKind::Client),
                                 "server" | "SERVER" => Some(SpanKind::Server),
                                 "producer" | "PRODUCER" => Some(SpanKind::Producer),
                                 "consumer" | "CONSUMER" => Some(SpanKind::Consumer),
                                 "internal" | "INTERNAL" => Some(SpanKind::Internal),
                                 _ => None,
-                            },
-                        )
+                            })
                     })
                     .unwrap_or(SpanKind::Internal);
 
@@ -1336,8 +1332,11 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                     .iter()
                     .map(|e| {
                         let ts = UNIX_EPOCH + Duration::from_nanos(e.time_unix_nano.0);
-                        let attrs: Vec<KeyValue> =
-                            e.attributes.iter().filter_map(otlp_kv_to_key_value).collect();
+                        let attrs: Vec<KeyValue> = e
+                            .attributes
+                            .iter()
+                            .filter_map(otlp_kv_to_key_value)
+                            .collect();
                         Event::new(e.name.clone(), ts, attrs, 0)
                     })
                     .collect();
@@ -1348,15 +1347,13 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                     .filter_map(|l| {
                         let lt = TraceId::from_hex(&l.trace_id).ok()?;
                         let ls = SpanId::from_hex(&l.span_id).ok()?;
-                        let lc = SpanContext::new(
-                            lt,
-                            ls,
-                            TraceFlags::SAMPLED,
-                            true,
-                            TraceState::NONE,
-                        );
-                        let attrs: Vec<KeyValue> =
-                            l.attributes.iter().filter_map(otlp_kv_to_key_value).collect();
+                        let lc =
+                            SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, TraceState::NONE);
+                        let attrs: Vec<KeyValue> = l
+                            .attributes
+                            .iter()
+                            .filter_map(otlp_kv_to_key_value)
+                            .collect();
                         Some(Link::new(lc, attrs, 0))
                     })
                     .collect();
@@ -1364,9 +1361,7 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                 let status = match span.status.as_ref() {
                     Some(s) => match s.code {
                         1 => Status::Ok,
-                        2 => Status::error(
-                            s.message.as_deref().unwrap_or("error").to_string(),
-                        ),
+                        2 => Status::error(s.message.as_deref().unwrap_or("error").to_string()),
                         _ => Status::Unset,
                     },
                     None => Status::Unset,
@@ -1434,10 +1429,7 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
                 for span in &scope_span.spans {
                     // Convert parent_span_id (skip if empty or all zeros)
                     let parent_span_id = span.parent_span_id.as_ref().and_then(|p| {
-                        if p.is_empty()
-                            || p == "0000000000000000"
-                            || p.chars().all(|c| c == '0')
-                        {
+                        if p.is_empty() || p == "0000000000000000" || p.chars().all(|c| c == '0') {
                             None
                         } else {
                             Some(p.clone())
@@ -1529,7 +1521,10 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
         let span_count = stored_spans.len();
         if span_count > 0 {
             storage.add_spans(stored_spans);
-            tracing::debug!(span_count = span_count, "Ingested OTLP spans into memory storage");
+            tracing::debug!(
+                span_count = span_count,
+                "Ingested OTLP spans into memory storage"
+            );
         }
     }
 
@@ -1541,10 +1536,7 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
             let exporter = forwarder.lock().await;
             match exporter.export(span_data).await {
                 Ok(()) => {
-                    tracing::debug!(
-                        span_count = count,
-                        "Forwarded SDK spans to OTLP collector"
-                    );
+                    tracing::debug!(span_count = count, "Forwarded SDK spans to OTLP collector");
                 }
                 Err(e) => {
                     tracing::warn!(error = ?e, "Failed to forward SDK spans to OTLP collector");
