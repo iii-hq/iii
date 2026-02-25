@@ -433,6 +433,39 @@ impl Module for TelemetryModule {
             let _ = client_for_started.send_event(event).await;
         });
 
+        let engine_for_registry = Arc::clone(&self.engine);
+        let client_for_registry = Arc::clone(self.active_client());
+        let ctx_for_registry = self.ctx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            let active_modules: Vec<String> = engine_for_registry
+                .functions
+                .iter()
+                .filter_map(|entry| entry.key().split('.').next().map(String::from))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let registry_data = collect_functions_and_triggers(&engine_for_registry);
+            let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine_for_registry);
+            let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
+
+            let event = ctx_for_registry.build_event(
+                "engine_registry_snapshot",
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "active_modules": active_modules,
+                    "registry": registry_data,
+                    "client_context": client_context,
+                }),
+                sdk_telemetry.as_ref(),
+            );
+
+            let _ = client_for_registry.send_event(event).await;
+        });
+
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
