@@ -662,10 +662,7 @@ fn init_sdk_span_forwarder(endpoint: &str) {
         .build()
     {
         Ok(forwarder) => {
-            if SDK_SPAN_FORWARDER
-                .set(Arc::new(forwarder))
-                .is_err()
-            {
+            if SDK_SPAN_FORWARDER.set(Arc::new(forwarder)).is_err() {
                 tracing::debug!("SDK span forwarder already initialized");
             }
         }
