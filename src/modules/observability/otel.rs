@@ -662,7 +662,12 @@ fn init_sdk_span_forwarder(endpoint: &str) {
         .build()
     {
         Ok(forwarder) => {
-            let _ = SDK_SPAN_FORWARDER.set(Arc::new(tokio::sync::Mutex::new(forwarder)));
+            if SDK_SPAN_FORWARDER
+                .set(Arc::new(tokio::sync::Mutex::new(forwarder)))
+                .is_err()
+            {
+                tracing::debug!("SDK span forwarder already initialized");
+            }
         }
         Err(e) => {
             tracing::warn!(
@@ -1272,9 +1277,17 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                     })
                     .unwrap_or(SpanId::INVALID);
 
+                // Spans arriving via ingest_otlp_json originate from an external SDK
+                // process (Node.js), so a valid parent span is always remote.
                 let parent_span_is_remote = parent_span_id != SpanId::INVALID;
 
-                let trace_flags = TraceFlags::SAMPLED;
+                // Respect incoming W3C trace flags from the OTLP span (lowest 8 bits
+                // of the u32). Fall back to SAMPLED when absent, since spans
+                // arriving via OTLP were already exported by the upstream SDK.
+                let trace_flags = span
+                    .flags
+                    .map(|f| TraceFlags::new(f as u8))
+                    .unwrap_or(TraceFlags::SAMPLED);
 
                 let span_context =
                     SpanContext::new(trace_id, span_id, trace_flags, true, TraceState::NONE);
