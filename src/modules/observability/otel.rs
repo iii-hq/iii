@@ -650,8 +650,8 @@ impl SpanExporter for TeeSpanExporter {
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 /// Global OTLP exporter for forwarding SDK-ingested spans to the collector.
-static SDK_SPAN_FORWARDER: OnceLock<Arc<tokio::sync::Mutex<opentelemetry_otlp::SpanExporter>>> =
-    OnceLock::new();
+/// `SpanExporter::export` takes `&self`, so no Mutex is needed.
+static SDK_SPAN_FORWARDER: OnceLock<Arc<opentelemetry_otlp::SpanExporter>> = OnceLock::new();
 
 /// Build a second OTLP span exporter and store it in the global `SDK_SPAN_FORWARDER`
 /// so that SDK-ingested spans can be forwarded to the collector.
@@ -663,7 +663,7 @@ fn init_sdk_span_forwarder(endpoint: &str) {
     {
         Ok(forwarder) => {
             if SDK_SPAN_FORWARDER
-                .set(Arc::new(tokio::sync::Mutex::new(forwarder)))
+                .set(Arc::new(forwarder))
                 .is_err()
             {
                 tracing::debug!("SDK span forwarder already initialized");
@@ -1248,9 +1248,11 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                 .scope
                 .as_ref()
                 .map(|s| {
-                    InstrumentationScope::builder(s.name.clone())
-                        .with_version(s.version.clone())
-                        .build()
+                    let mut builder = InstrumentationScope::builder(s.name.clone());
+                    if !s.version.is_empty() {
+                        builder = builder.with_version(s.version.clone());
+                    }
+                    builder.build()
                 })
                 .unwrap_or_else(|| InstrumentationScope::builder("unknown").build());
 
@@ -1353,6 +1355,10 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                             .as_deref()
                             .and_then(|ts| ts.parse::<TraceState>().ok())
                             .unwrap_or(TraceState::NONE);
+                        // OtlpSpanLink does not expose per-link trace flags in the
+                        // current OTLP spec; default to TraceFlags::SAMPLED. If
+                        // OtlpSpanLink gains a flags field, parse it here via
+                        // TraceFlags::new() and pass to SpanContext::new instead.
                         let lc = SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, trace_state);
                         let attrs: Vec<KeyValue> = l
                             .attributes
@@ -1538,8 +1544,7 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
         let span_data = convert_otlp_to_span_data(&request);
         if !span_data.is_empty() {
             let count = span_data.len();
-            let exporter = forwarder.lock().await;
-            match exporter.export(span_data).await {
+            match forwarder.export(span_data).await {
                 Ok(()) => {
                     tracing::debug!(span_count = count, "Forwarded SDK spans to OTLP collector");
                 }
