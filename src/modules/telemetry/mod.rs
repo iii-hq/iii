@@ -417,6 +417,7 @@ impl Module for TelemetryModule {
         let env_info_for_started = self.env_info.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let (runtime_counts, worker_names) = collect_worker_runtimes(&engine_for_started);
             let active_modules: Vec<String> = engine_for_started
                 .functions
                 .iter()
@@ -426,10 +427,8 @@ impl Module for TelemetryModule {
                 .collect();
             let registry_data = collect_functions_and_triggers(&engine_for_started);
             let sdk_telemetry = collect_sdk_telemetry(&engine_for_started);
-            let client_type = sdk_telemetry
-                .as_ref()
-                .and_then(|t| t.framework.clone())
-                .unwrap_or_else(|| environment::detect_client_type().to_string());
+            let client_context =
+                build_client_context(&worker_names, &runtime_counts, sdk_telemetry.as_ref());
             let mut props = serde_json::json!({
                 "environment": env_info_for_started.to_json(),
                 "device_type": environment::detect_device_type(),
@@ -459,7 +458,7 @@ impl Module for TelemetryModule {
                     "arch": std::env::consts::ARCH,
                     "active_modules": active_modules,
                     "registry": registry_data,
-                    "client_context": { "type": client_type },
+                    "client_context": client_context,
                 }),
                 user_properties: Some(props),
                 platform: "III Engine".to_string(),
