@@ -23,8 +23,6 @@ pub struct WorkerTelemetryMeta {
     pub language: Option<String>,
     pub project_name: Option<String>,
     pub framework: Option<String>,
-    #[serde(skip_serializing)]
-    pub amplitude_api_key: Option<String>,
 }
 
 impl std::fmt::Debug for WorkerTelemetryMeta {
@@ -33,10 +31,6 @@ impl std::fmt::Debug for WorkerTelemetryMeta {
             .field("language", &self.language)
             .field("project_name", &self.project_name)
             .field("framework", &self.framework)
-            .field(
-                "amplitude_api_key",
-                &self.amplitude_api_key.as_ref().map(|_| "<redacted>"),
-            )
             .finish()
     }
 }

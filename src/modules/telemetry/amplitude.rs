@@ -105,6 +105,7 @@ impl AmplitudeClient {
             }
         }
 
+        tracing::debug!("Amplitude: all retry attempts exhausted, dropping events");
         Ok(())
     }
 }
