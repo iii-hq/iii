@@ -653,6 +653,26 @@ static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 static SDK_SPAN_FORWARDER: OnceLock<Arc<tokio::sync::Mutex<opentelemetry_otlp::SpanExporter>>> =
     OnceLock::new();
 
+/// Build a second OTLP span exporter and store it in the global `SDK_SPAN_FORWARDER`
+/// so that SDK-ingested spans can be forwarded to the collector.
+fn init_sdk_span_forwarder(endpoint: &str) {
+    match opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+    {
+        Ok(forwarder) => {
+            let _ = SDK_SPAN_FORWARDER.set(Arc::new(tokio::sync::Mutex::new(forwarder)));
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to create SDK span forwarder, SDK spans will not be exported to collector"
+            );
+        }
+    }
+}
+
 /// Initialize OpenTelemetry with the given configuration.
 ///
 /// Returns an `OpenTelemetryLayer` that can be composed with other tracing layers,
@@ -703,23 +723,7 @@ where
                 .build()
             {
                 Ok(exporter) => {
-                    // Build a second exporter for forwarding SDK-ingested spans
-                    match opentelemetry_otlp::SpanExporter::builder()
-                        .with_tonic()
-                        .with_endpoint(&config.endpoint)
-                        .build()
-                    {
-                        Ok(forwarder) => {
-                            let _ = SDK_SPAN_FORWARDER
-                                .set(Arc::new(tokio::sync::Mutex::new(forwarder)));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Failed to create SDK span forwarder, SDK spans will not be exported to collector"
-                            );
-                        }
-                    }
+                    init_sdk_span_forwarder(&config.endpoint);
 
                     // Initialize in-memory storage for SDK span ingestion (API access)
                     let memory_storage =
@@ -778,23 +782,7 @@ where
                 .build()
             {
                 Ok(otlp_exporter) => {
-                    // Build a second exporter for forwarding SDK-ingested spans
-                    match opentelemetry_otlp::SpanExporter::builder()
-                        .with_tonic()
-                        .with_endpoint(&config.endpoint)
-                        .build()
-                    {
-                        Ok(forwarder) => {
-                            let _ = SDK_SPAN_FORWARDER
-                                .set(Arc::new(tokio::sync::Mutex::new(forwarder)));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Failed to create SDK span forwarder, SDK spans will not be exported to collector"
-                            );
-                        }
-                    }
+                    init_sdk_span_forwarder(&config.endpoint);
 
                     // Create tee exporter that sends to both
                     let tee_exporter = TeeSpanExporter::new(
@@ -1284,7 +1272,7 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                     })
                     .unwrap_or(SpanId::INVALID);
 
-                let parent_span_is_remote = false;
+                let parent_span_is_remote = parent_span_id != SpanId::INVALID;
 
                 let trace_flags = TraceFlags::SAMPLED;
 

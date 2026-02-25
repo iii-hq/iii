@@ -194,12 +194,23 @@ impl CronAdapter {
                         }
 
 
-                        let _ = engine.call(&function_id, event_data).await;
-                        crate::modules::telemetry::collector::track_cron_execution();
+                        match engine.call(&function_id, event_data).await {
+                            Ok(_) => {
+                                crate::modules::telemetry::collector::track_cron_execution();
+                                tracing::Span::current().record("otel.status_code", "OK");
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    job_id = %job_id,
+                                    function_id = %function_id,
+                                    error = ?e,
+                                    "Cron job execution failed"
+                                );
+                                tracing::Span::current().record("otel.status_code", "ERROR");
+                            }
+                        }
 
-                        tracing::Span::current().record("otel.status_code", "OK");
-
-                        // Release the lock
+                        // Release the lock regardless of success or error
                         scheduler.release_lock(&job_id).await;
                     }
                     .instrument(cron_span)
