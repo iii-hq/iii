@@ -1348,8 +1348,13 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                     .filter_map(|l| {
                         let lt = TraceId::from_hex(&l.trace_id).ok()?;
                         let ls = SpanId::from_hex(&l.span_id).ok()?;
+                        let trace_state = l
+                            .trace_state
+                            .as_deref()
+                            .and_then(|ts| ts.parse::<TraceState>().ok())
+                            .unwrap_or(TraceState::NONE);
                         let lc =
-                            SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, TraceState::NONE);
+                            SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, trace_state);
                         let attrs: Vec<KeyValue> = l
                             .attributes
                             .iter()
