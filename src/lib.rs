@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 pub mod builtins;
+pub mod channels;
 pub mod engine;
 pub mod function;
 pub mod invocation;

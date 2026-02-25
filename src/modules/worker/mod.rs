@@ -16,7 +16,7 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::module::Module,
-    protocol::{ErrorBody, WorkerMetrics},
+    protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
     workers::WorkerTelemetryMeta,
 };
@@ -26,6 +26,18 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct CreateChannelInput {
+    #[serde(default)]
+    pub buffer_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct CreateChannelOutput {
+    pub writer: StreamChannelRef,
+    pub reader: StreamChannelRef,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct FunctionsListInput {
@@ -352,6 +364,23 @@ impl Module for WorkerModule {
 
 #[service(name = "engine")]
 impl WorkerModule {
+    #[function(id = "channels::create", description = "Create a streaming channel pair")]
+    pub async fn create_function(
+        &self,
+        input: CreateChannelInput,
+    ) -> FunctionResult<CreateChannelOutput, ErrorBody> {
+        let channel_mgr = self.engine.channel_manager.clone();
+        let buffer_size = input.buffer_size.unwrap_or(64);
+        let (writer_ref, reader_ref) = channel_mgr.create_channel(buffer_size);
+
+        let result = CreateChannelOutput {
+            writer: writer_ref,
+            reader: reader_ref,
+        };
+
+        FunctionResult::Success(result)
+    }
+
     #[function(id = "engine::functions::list", description = "List all functions")]
     pub async fn get_functions(
         &self,

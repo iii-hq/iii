@@ -135,6 +135,21 @@ pub struct ErrorBody {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamDirection {
+    #[default]
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StreamChannelRef {
+    pub channel_id: String,
+    pub access_key: String,
+    pub direction: StreamDirection,
+}
+
 #[cfg(test)]
 mod tests {
     use super::Message;

@@ -1499,6 +1499,7 @@ dependencies = [
  "hex",
  "hostname",
  "iana-time-zone",
+ "http-body-util",
  "iii-sdk",
  "indexmap",
  "inventory",
