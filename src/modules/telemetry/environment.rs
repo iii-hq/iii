@@ -117,7 +117,6 @@ pub fn detect_client_type() -> &'static str {
     "iii_direct"
 }
 
-
 pub fn detect_language() -> Option<String> {
     std::env::var("LANG")
         .or_else(|_| std::env::var("LC_ALL"))

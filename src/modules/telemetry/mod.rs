@@ -167,9 +167,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> serde_json::Value {
     })
 }
 
-fn collect_worker_data(
-    engine: &Engine,
-) -> (HashMap<String, u64>, Option<WorkerTelemetryMeta>) {
+fn collect_worker_data(engine: &Engine) -> (HashMap<String, u64>, Option<WorkerTelemetryMeta>) {
     let mut runtime_counts: HashMap<String, u64> = HashMap::new();
     let mut best_telemetry: Option<(uuid::Uuid, WorkerTelemetryMeta)> = None;
 
@@ -417,8 +415,7 @@ impl Module for TelemetryModule {
                 .collect();
             let registry_data = collect_functions_and_triggers(&engine_for_started);
             let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine_for_started);
-            let client_context =
-                build_client_context(&runtime_counts, sdk_telemetry.as_ref());
+            let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
 
             let event = ctx_for_started.build_event(
                 "engine_started",
@@ -529,8 +526,7 @@ impl Module for TelemetryModule {
         let telemetry_snapshot = collector().snapshot();
         let registry_data = collect_functions_and_triggers(&self.engine);
         let (runtime_counts, sdk_telemetry) = collect_worker_data(&self.engine);
-        let client_context =
-            build_client_context(&runtime_counts, sdk_telemetry.as_ref());
+        let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
 
         let event = self.ctx.build_event(
             "engine_stopped",
