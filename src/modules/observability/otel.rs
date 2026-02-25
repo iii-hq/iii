@@ -1353,8 +1353,7 @@ fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<Spa
                             .as_deref()
                             .and_then(|ts| ts.parse::<TraceState>().ok())
                             .unwrap_or(TraceState::NONE);
-                        let lc =
-                            SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, trace_state);
+                        let lc = SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, trace_state);
                         let attrs: Vec<KeyValue> = l
                             .attributes
                             .iter()
