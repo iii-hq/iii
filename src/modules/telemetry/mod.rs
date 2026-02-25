@@ -620,11 +620,8 @@ impl Module for TelemetryModule {
         );
 
         let client = Self::effective_client(&self.client, sdk_telemetry.as_ref());
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            client.send_event(event),
-        )
-        .await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.send_event(event)).await;
 
         Ok(())
     }
