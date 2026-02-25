@@ -184,18 +184,26 @@ fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, HashSet<St
 }
 
 fn collect_sdk_telemetry(engine: &Engine) -> Option<WorkerTelemetryMeta> {
-    for entry in engine.worker_registry.workers.iter() {
-        let worker = entry.value();
-        if let Some(telemetry) = &worker.telemetry
-            && (telemetry.language.is_some()
+    let mut with_telemetry: Vec<_> = engine
+        .worker_registry
+        .workers
+        .iter()
+        .filter_map(|entry| {
+            let worker = entry.value();
+            let telemetry = worker.telemetry.as_ref()?;
+            if telemetry.language.is_some()
                 || telemetry.project_name.is_some()
                 || telemetry.framework.is_some()
-                || telemetry.amplitude_api_key.is_some())
-        {
-            return Some(telemetry.clone());
-        }
-    }
-    None
+                || telemetry.amplitude_api_key.is_some()
+            {
+                Some((worker.id, telemetry.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    with_telemetry.sort_by(|a, b| a.0.cmp(&b.0));
+    with_telemetry.into_iter().next().map(|(_, t)| t)
 }
 
 fn build_client_context(
@@ -465,8 +473,12 @@ impl Module for TelemetryModule {
                 language,
                 ip: Some("$remote".to_string()),
             };
-            TelemetryModule::send_event_to_clients(&client_for_started, event, sdk_telemetry.as_ref())
-                .await;
+            TelemetryModule::send_event_to_clients(
+                &client_for_started,
+                event,
+                sdk_telemetry.as_ref(),
+            )
+            .await;
         });
 
         tokio::spawn(async move {

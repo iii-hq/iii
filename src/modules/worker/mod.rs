@@ -440,8 +440,7 @@ mod tests {
                 "amplitude_api_key": "test-key-123"
             }
         });
-        let input: RegisterWorkerInput =
-            serde_json::from_value(json).expect("deserialize");
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
         assert_eq!(input.worker_id, "550e8400-e29b-41d4-a716-446655440000");
         let telemetry = input.telemetry.expect("telemetry present");
         assert_eq!(telemetry.amplitude_api_key.as_deref(), Some("test-key-123"));

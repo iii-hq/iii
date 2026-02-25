@@ -117,6 +117,7 @@ pub fn detect_client_type() -> &'static str {
     "iii_direct"
 }
 
+/// Placeholder for future worker-based client type detection; currently delegates to detect_client_type().
 pub fn detect_client_type_from_workers(
     _worker_names: &std::collections::HashSet<String>,
 ) -> &'static str {

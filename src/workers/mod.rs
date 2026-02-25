@@ -18,12 +18,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::{engine::Outbound, modules::observability::metrics::get_engine_metrics};
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Clone, Deserialize, Serialize, Default)]
 pub struct WorkerTelemetryMeta {
     pub language: Option<String>,
     pub project_name: Option<String>,
     pub framework: Option<String>,
+    #[serde(skip_serializing)]
     pub amplitude_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for WorkerTelemetryMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerTelemetryMeta")
+            .field("language", &self.language)
+            .field("project_name", &self.project_name)
+            .field("framework", &self.framework)
+            .field(
+                "amplitude_api_key",
+                &self.amplitude_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Default)]
@@ -100,9 +115,7 @@ impl WorkerRegistry {
             if os.is_some() {
                 worker.os = os;
             }
-            if telemetry.is_some() {
-                worker.telemetry = telemetry;
-            }
+            worker.telemetry = telemetry;
         }
     }
 
