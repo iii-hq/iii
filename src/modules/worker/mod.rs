@@ -18,6 +18,7 @@ use crate::{
     modules::module::Module,
     protocol::{ErrorBody, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
+    workers::WorkerTelemetryMeta,
 };
 
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
@@ -80,13 +81,13 @@ pub struct WorkerInfo {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisterWorkerInput {
-    /// Worker ID injected by engine from caller context
     #[serde(rename = "_caller_worker_id")]
     pub worker_id: String,
     pub runtime: Option<String>,
     pub version: Option<String>,
     pub name: Option<String>,
     pub os: Option<String>,
+    pub telemetry: Option<WorkerTelemetryMeta>,
 }
 
 #[derive(Clone)]
@@ -212,6 +213,7 @@ impl WorkerModule {
             input.version,
             input.name,
             input.os,
+            input.telemetry,
         );
     }
 }
@@ -417,3 +419,31 @@ impl WorkerModule {
 }
 
 crate::register_module!("modules::worker::WorkerModule", WorkerModule, mandatory);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn test_register_worker_input_deserializes_telemetry() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "runtime": "node",
+            "version": "1.0.0",
+            "name": "host:123",
+            "os": "darwin 25.0",
+            "telemetry": {
+                "language": "en-US",
+                "project_name": "my-project",
+                "framework": "express"
+            }
+        });
+        let input: RegisterWorkerInput = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(input.worker_id, "550e8400-e29b-41d4-a716-446655440000");
+        let telemetry = input.telemetry.expect("telemetry present");
+        assert_eq!(telemetry.language.as_deref(), Some("en-US"));
+        assert_eq!(telemetry.project_name.as_deref(), Some("my-project"));
+        assert_eq!(telemetry.framework.as_deref(), Some("express"));
+    }
+}

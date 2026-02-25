@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::engine::Engine;
 use crate::modules::module::Module;
+use crate::workers::WorkerTelemetryMeta;
 
 use self::amplitude::{AmplitudeClient, AmplitudeEvent};
 use self::collector::collector;
@@ -29,6 +30,8 @@ pub struct TelemetryConfig {
     pub enabled: bool,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub sdk_api_key: Option<String>,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
 }
@@ -46,6 +49,7 @@ impl Default for TelemetryConfig {
         Self {
             enabled: true,
             api_key: String::new(),
+            sdk_api_key: None,
             heartbeat_interval_secs: 6 * 60 * 60,
         }
     }
@@ -163,9 +167,9 @@ fn collect_functions_and_triggers(engine: &Engine) -> serde_json::Value {
     })
 }
 
-fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, HashSet<String>) {
+fn collect_worker_data(engine: &Engine) -> (HashMap<String, u64>, Option<WorkerTelemetryMeta>) {
     let mut runtime_counts: HashMap<String, u64> = HashMap::new();
-    let mut worker_names: HashSet<String> = HashSet::new();
+    let mut best_telemetry: Option<(uuid::Uuid, WorkerTelemetryMeta)> = None;
 
     for entry in engine.worker_registry.workers.iter() {
         let worker = entry.value();
@@ -174,25 +178,35 @@ fn collect_worker_runtimes(engine: &Engine) -> (HashMap<String, u64>, HashSet<St
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         *runtime_counts.entry(runtime).or_insert(0) += 1;
-        if let Some(name) = &worker.name {
-            worker_names.insert(name.clone());
+
+        if let Some(telemetry) = worker.telemetry.as_ref()
+            && (telemetry.language.is_some()
+                || telemetry.project_name.is_some()
+                || telemetry.framework.is_some())
+            && best_telemetry
+                .as_ref()
+                .is_none_or(|(id, _)| worker.id < *id)
+        {
+            best_telemetry = Some((worker.id, telemetry.clone()));
         }
     }
 
-    (runtime_counts, worker_names)
+    (runtime_counts, best_telemetry.map(|(_, t)| t))
 }
 
 fn build_client_context(
-    worker_names: &HashSet<String>,
     runtime_counts: &HashMap<String, u64>,
+    sdk_telemetry: Option<&WorkerTelemetryMeta>,
 ) -> serde_json::Value {
-    let client_type = environment::detect_client_type_from_workers(worker_names);
+    let client_type = sdk_telemetry
+        .and_then(|t| t.framework.clone())
+        .unwrap_or_else(|| environment::detect_client_type().to_string());
 
     let sdk_detected: Vec<String> = runtime_counts
         .keys()
         .map(|r| match r.as_str() {
-            "node" => "motia-js".to_string(),
-            "python" => "motia-py".to_string(),
+            "node" => "iii-js".to_string(),
+            "python" => "iii-py".to_string(),
             other => other.to_string(),
         })
         .collect();
@@ -206,17 +220,18 @@ fn build_client_context(
     })
 }
 
-pub struct TelemetryModule {
-    engine: Arc<Engine>,
-    config: TelemetryConfig,
-    client: Arc<AmplitudeClient>,
+/// Cloneable context for building telemetry events inside spawned tasks.
+#[derive(Clone)]
+struct TelemetryContext {
     install_id: String,
-    start_time: Instant,
     env_info: EnvironmentInfo,
 }
 
-impl TelemetryModule {
-    fn build_user_properties(&self) -> serde_json::Value {
+impl TelemetryContext {
+    fn build_user_properties(
+        &self,
+        sdk_telemetry: Option<&WorkerTelemetryMeta>,
+    ) -> serde_json::Value {
         let mut props = serde_json::json!({
             "environment": self.env_info.to_json(),
             "device_type": environment::detect_device_type(),
@@ -224,25 +239,56 @@ impl TelemetryModule {
         if let Some(project_id) = resolve_project_id() {
             props["project_id"] = serde_json::Value::String(project_id);
         }
+        if let Some(telemetry) = sdk_telemetry {
+            if let Some(project_name) = &telemetry.project_name {
+                props["project_name"] = serde_json::Value::String(project_name.clone());
+            }
+            if let Some(framework) = &telemetry.framework {
+                props["framework"] = serde_json::Value::String(framework.clone());
+            }
+        }
         props
     }
 
-    fn build_event(&self, event_type: &str, properties: serde_json::Value) -> AmplitudeEvent {
+    fn build_event(
+        &self,
+        event_type: &str,
+        properties: serde_json::Value,
+        sdk_telemetry: Option<&WorkerTelemetryMeta>,
+    ) -> AmplitudeEvent {
+        let language = sdk_telemetry
+            .and_then(|t| t.language.clone())
+            .or_else(environment::detect_language);
         AmplitudeEvent {
             device_id: self.install_id.clone(),
             user_id: Some(self.install_id.clone()),
             event_type: event_type.to_string(),
             event_properties: properties,
-            user_properties: Some(self.build_user_properties()),
+            user_properties: Some(self.build_user_properties(sdk_telemetry)),
             platform: "III Engine".to_string(),
             os_name: std::env::consts::OS.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             time: chrono::Utc::now().timestamp_millis(),
             insert_id: Some(uuid::Uuid::new_v4().to_string()),
             country: None,
-            language: environment::detect_language(),
+            language,
             ip: Some("$remote".to_string()),
         }
+    }
+}
+
+pub struct TelemetryModule {
+    engine: Arc<Engine>,
+    config: TelemetryConfig,
+    client: Arc<AmplitudeClient>,
+    sdk_client: Option<Arc<AmplitudeClient>>,
+    ctx: TelemetryContext,
+    start_time: Instant,
+}
+
+impl TelemetryModule {
+    fn active_client(&self) -> &Arc<AmplitudeClient> {
+        self.sdk_client.as_ref().unwrap_or(&self.client)
     }
 }
 
@@ -318,50 +364,28 @@ impl Module for TelemetryModule {
 
         let client = Arc::new(AmplitudeClient::new(telemetry_config.api_key.clone()));
 
+        let sdk_client = telemetry_config
+            .sdk_api_key
+            .as_deref()
+            .filter(|k| !k.is_empty())
+            .map(|key| Arc::new(AmplitudeClient::new(key.to_owned())));
+
+        let ctx = TelemetryContext {
+            install_id: install_id.clone(),
+            env_info,
+        };
+
         Ok(Box::new(TelemetryModule {
             engine,
             config: telemetry_config,
             client,
-            install_id,
+            sdk_client,
+            ctx,
             start_time: Instant::now(),
-            env_info,
         }))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        let active_modules: Vec<String> = self
-            .engine
-            .functions
-            .iter()
-            .filter_map(|entry| entry.key().split('.').next().map(String::from))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        let registry_data = collect_functions_and_triggers(&self.engine);
-        let client_type = environment::detect_client_type();
-
-        let event = self.build_event(
-            "engine_started",
-            serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "os": std::env::consts::OS,
-                "arch": std::env::consts::ARCH,
-                "active_modules": active_modules,
-                "registry": registry_data,
-                "client_context": {
-                    "type": client_type,
-                },
-            }),
-        );
-
-        let client = Arc::clone(&self.client);
-        tokio::spawn(async move {
-            if let Err(e) = client.send_event(event).await {
-                tracing::debug!(error = %e, "Failed to send engine_started telemetry event");
-            }
-        });
-
         Ok(())
     }
 
@@ -370,13 +394,77 @@ impl Module for TelemetryModule {
         shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
         let interval_secs = self.config.heartbeat_interval_secs;
-        let client = Arc::clone(&self.client);
-        let install_id = self.install_id.clone();
-        let env_info = self.env_info.clone();
+        let client = Arc::clone(self.active_client());
         let engine = Arc::clone(&self.engine);
+        let ctx = self.ctx.clone();
         let start_time = self.start_time;
-        let project_id = resolve_project_id();
         let mut shutdown_rx = shutdown;
+
+        let engine_for_started = Arc::clone(&self.engine);
+        let client_for_started = Arc::clone(self.active_client());
+        let ctx_for_started = self.ctx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let active_modules: Vec<String> = engine_for_started
+                .functions
+                .iter()
+                .filter_map(|entry| entry.key().split('.').next().map(String::from))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let registry_data = collect_functions_and_triggers(&engine_for_started);
+            let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine_for_started);
+            let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
+
+            let event = ctx_for_started.build_event(
+                "engine_started",
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "active_modules": active_modules,
+                    "registry": registry_data,
+                    "client_context": client_context,
+                }),
+                sdk_telemetry.as_ref(),
+            );
+
+            let _ = client_for_started.send_event(event).await;
+        });
+
+        let engine_for_registry = Arc::clone(&self.engine);
+        let client_for_registry = Arc::clone(self.active_client());
+        let ctx_for_registry = self.ctx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+            let active_modules: Vec<String> = engine_for_registry
+                .functions
+                .iter()
+                .filter_map(|entry| entry.key().split('.').next().map(String::from))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let registry_data = collect_functions_and_triggers(&engine_for_registry);
+            let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine_for_registry);
+            let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
+
+            let event = ctx_for_registry.build_event(
+                "engine_registry_snapshot",
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "active_modules": active_modules,
+                    "registry": registry_data,
+                    "client_context": client_context,
+                }),
+                sdk_telemetry.as_ref(),
+            );
+
+            let _ = client_for_registry.send_event(event).await;
+        });
 
         tokio::spawn(async move {
             let mut interval =
@@ -392,11 +480,9 @@ impl Module for TelemetryModule {
                 tokio::select! {
                     result = shutdown_rx.changed() => {
                         if result.is_err() {
-                            tracing::debug!("[Telemetry] Shutdown channel closed");
                             break;
                         }
                         if *shutdown_rx.borrow() {
-                            tracing::debug!("[Telemetry] Heartbeat task shutting down");
                             break;
                         }
                     }
@@ -425,8 +511,8 @@ impl Module for TelemetryModule {
                         prev_queue_emits = queue_emits_now;
                         prev_api_requests = api_requests_now;
 
-                        let (runtime_counts, worker_names) = collect_worker_runtimes(&engine);
-                        let client_context = build_client_context(&worker_names, &runtime_counts);
+                        let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine);
+                        let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
                         let registry_data = collect_functions_and_triggers(&engine);
                         let uptime_secs = start_time.elapsed().as_secs();
 
@@ -453,33 +539,13 @@ impl Module for TelemetryModule {
                             "client_context": client_context,
                         });
 
-                        let mut user_props = serde_json::json!({
-                            "environment": env_info.to_json(),
-                            "device_type": environment::detect_device_type(),
-                        });
-                        if let Some(pid) = &project_id {
-                            user_props["project_id"] = serde_json::Value::String(pid.clone());
-                        }
+                        let event = ctx.build_event(
+                            "engine_heartbeat",
+                            properties,
+                            sdk_telemetry.as_ref(),
+                        );
 
-                        let event = AmplitudeEvent {
-                            device_id: install_id.clone(),
-                            user_id: Some(install_id.clone()),
-                            event_type: "engine_heartbeat".to_string(),
-                            event_properties: properties,
-                            user_properties: Some(user_props),
-                            platform: "III Engine".to_string(),
-                            os_name: std::env::consts::OS.to_string(),
-                            app_version: env!("CARGO_PKG_VERSION").to_string(),
-                            time: chrono::Utc::now().timestamp_millis(),
-                            insert_id: Some(uuid::Uuid::new_v4().to_string()),
-                            country: None,
-                            language: environment::detect_language(),
-                            ip: Some("$remote".to_string()),
-                        };
-
-                        if let Err(e) = client.send_event(event).await {
-                            tracing::debug!(error = %e, "Failed to send heartbeat telemetry event");
-                        }
+                        let _ = client.send_event(event).await;
                     }
                 }
             }
@@ -492,10 +558,10 @@ impl Module for TelemetryModule {
         let uptime_secs = self.start_time.elapsed().as_secs();
         let telemetry_snapshot = collector().snapshot();
         let registry_data = collect_functions_and_triggers(&self.engine);
-        let (runtime_counts, worker_names) = collect_worker_runtimes(&self.engine);
-        let client_context = build_client_context(&worker_names, &runtime_counts);
+        let (runtime_counts, sdk_telemetry) = collect_worker_data(&self.engine);
+        let client_context = build_client_context(&runtime_counts, sdk_telemetry.as_ref());
 
-        let event = self.build_event(
+        let event = self.ctx.build_event(
             "engine_stopped",
             serde_json::json!({
                 "uptime_secs": uptime_secs,
@@ -503,11 +569,12 @@ impl Module for TelemetryModule {
                 "registry": registry_data,
                 "client_context": client_context,
             }),
+            sdk_telemetry.as_ref(),
         );
 
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.client.send_event(event),
+            self.active_client().send_event(event),
         )
         .await;
 

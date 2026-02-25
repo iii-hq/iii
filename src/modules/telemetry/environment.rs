@@ -117,18 +117,6 @@ pub fn detect_client_type() -> &'static str {
     "iii_direct"
 }
 
-pub fn detect_client_type_from_workers(
-    worker_names: &std::collections::HashSet<String>,
-) -> &'static str {
-    for name in worker_names {
-        if name.to_lowercase().contains("motia") {
-            return "motia";
-        }
-    }
-
-    detect_client_type()
-}
-
 pub fn detect_language() -> Option<String> {
     std::env::var("LANG")
         .or_else(|_| std::env::var("LC_ALL"))

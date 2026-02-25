@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1533,17 +1533,19 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cae7e4697f56d9c45562b039a2699c69dcfc53384574e49c7fa435b47f15d18"
+checksum = "35bc9688c79f5dec8e24234db51c4304e8c4ff26e393c8e35a8a5c52bd860eb3"
 dependencies = [
  "async-trait",
  "futures-util",
  "hostname",
  "opentelemetry",
+ "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
+ "reqwest",
  "serde",
  "serde_json",
  "sysinfo",
