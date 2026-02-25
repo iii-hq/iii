@@ -283,25 +283,24 @@ impl TelemetryModule {
         }
     }
 
+    fn effective_client(
+        client: &Arc<AmplitudeClient>,
+        sdk_telemetry: Option<&WorkerTelemetryMeta>,
+    ) -> Arc<AmplitudeClient> {
+        sdk_telemetry
+            .and_then(|t| t.amplitude_api_key.clone())
+            .and_then(|k| if k.is_empty() { None } else { Some(k) })
+            .map(|key| Arc::new(AmplitudeClient::new(key)))
+            .unwrap_or_else(|| Arc::clone(client))
+    }
+
     async fn send_event_to_clients(
         client: &Arc<AmplitudeClient>,
         event: AmplitudeEvent,
         sdk_telemetry: Option<&WorkerTelemetryMeta>,
     ) {
-        let secondary_key = sdk_telemetry.and_then(|t| t.amplitude_api_key.clone());
-
-        if let Some(key) = secondary_key {
-            let secondary_client = Arc::new(AmplitudeClient::new(key));
-            let secondary_event = event.clone();
-            let secondary = Arc::clone(&secondary_client);
-            tokio::spawn(async move {
-                if let Err(e) = secondary.send_event(secondary_event).await {
-                    tracing::debug!(error = %e, "Failed to send telemetry to secondary Amplitude key");
-                }
-            });
-        }
-
-        if let Err(e) = client.send_event(event).await {
+        let effective = Self::effective_client(client, sdk_telemetry);
+        if let Err(e) = effective.send_event(event).await {
             tracing::debug!(error = %e, "Failed to send telemetry event");
         }
     }
@@ -390,44 +389,6 @@ impl Module for TelemetryModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        let active_modules: Vec<String> = self
-            .engine
-            .functions
-            .iter()
-            .filter_map(|entry| entry.key().split('.').next().map(String::from))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        let registry_data = collect_functions_and_triggers(&self.engine);
-        let sdk_telemetry = collect_sdk_telemetry(&self.engine);
-        let client_type = sdk_telemetry
-            .as_ref()
-            .and_then(|t| t.framework.clone())
-            .unwrap_or_else(|| environment::detect_client_type().to_string());
-
-        let event = self.build_event(
-            "engine_started",
-            serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "os": std::env::consts::OS,
-                "arch": std::env::consts::ARCH,
-                "active_modules": active_modules,
-                "registry": registry_data,
-                "client_context": {
-                    "type": client_type,
-                },
-            }),
-            sdk_telemetry.as_ref(),
-        );
-
-        let client = Arc::clone(&self.client);
-        let sdk_telemetry_owned = sdk_telemetry;
-        tokio::spawn(async move {
-            TelemetryModule::send_event_to_clients(&client, event, sdk_telemetry_owned.as_ref())
-                .await;
-        });
-
         Ok(())
     }
 
@@ -443,6 +404,70 @@ impl Module for TelemetryModule {
         let start_time = self.start_time;
         let project_id = resolve_project_id();
         let mut shutdown_rx = shutdown;
+
+        let engine_for_started = Arc::clone(&self.engine);
+        let client_for_started = Arc::clone(&self.client);
+        let install_id_for_started = self.install_id.clone();
+        let env_info_for_started = self.env_info.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let active_modules: Vec<String> = engine_for_started
+                .functions
+                .iter()
+                .filter_map(|entry| entry.key().split('.').next().map(String::from))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            let registry_data = collect_functions_and_triggers(&engine_for_started);
+            let sdk_telemetry = collect_sdk_telemetry(&engine_for_started);
+            let client_type = sdk_telemetry
+                .as_ref()
+                .and_then(|t| t.framework.clone())
+                .unwrap_or_else(|| environment::detect_client_type().to_string());
+            let mut props = serde_json::json!({
+                "environment": env_info_for_started.to_json(),
+                "device_type": environment::detect_device_type(),
+            });
+            if let Some(project_id) = resolve_project_id() {
+                props["project_id"] = serde_json::Value::String(project_id);
+            }
+            if let Some(telemetry) = &sdk_telemetry {
+                if let Some(project_name) = &telemetry.project_name {
+                    props["project_name"] = serde_json::Value::String(project_name.clone());
+                }
+                if let Some(framework) = &telemetry.framework {
+                    props["framework"] = serde_json::Value::String(framework.clone());
+                }
+            }
+            let language = sdk_telemetry
+                .as_ref()
+                .and_then(|t| t.language.clone())
+                .or_else(environment::detect_language);
+            let event = AmplitudeEvent {
+                device_id: install_id_for_started.clone(),
+                user_id: Some(install_id_for_started.clone()),
+                event_type: "engine_started".to_string(),
+                event_properties: serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "active_modules": active_modules,
+                    "registry": registry_data,
+                    "client_context": { "type": client_type },
+                }),
+                user_properties: Some(props),
+                platform: "III Engine".to_string(),
+                os_name: std::env::consts::OS.to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                time: chrono::Utc::now().timestamp_millis(),
+                insert_id: Some(uuid::Uuid::new_v4().to_string()),
+                country: None,
+                language,
+                ip: Some("$remote".to_string()),
+            };
+            TelemetryModule::send_event_to_clients(&client_for_started, event, sdk_telemetry.as_ref())
+                .await;
+        });
 
         tokio::spawn(async move {
             let mut interval =
@@ -586,22 +611,10 @@ impl Module for TelemetryModule {
             sdk_telemetry.as_ref(),
         );
 
-        let secondary_key = sdk_telemetry
-            .as_ref()
-            .and_then(|t| t.amplitude_api_key.clone());
-        if let Some(key) = secondary_key {
-            let secondary_client = AmplitudeClient::new(key);
-            let secondary_event = event.clone();
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                secondary_client.send_event(secondary_event),
-            )
-            .await;
-        }
-
+        let client = Self::effective_client(&self.client, sdk_telemetry.as_ref());
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.client.send_event(event),
+            client.send_event(event),
         )
         .await;
 

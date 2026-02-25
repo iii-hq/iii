@@ -419,3 +419,31 @@ impl WorkerModule {
 }
 
 crate::register_module!("modules::worker::WorkerModule", WorkerModule, mandatory);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn test_register_worker_input_deserializes_amplitude_api_key() {
+        let json = serde_json::json!({
+            "_caller_worker_id": "550e8400-e29b-41d4-a716-446655440000",
+            "runtime": "node",
+            "version": "1.0.0",
+            "name": "host:123",
+            "os": "darwin 25.0",
+            "telemetry": {
+                "language": "en-US",
+                "project_name": "my-project",
+                "framework": "express",
+                "amplitude_api_key": "test-key-123"
+            }
+        });
+        let input: RegisterWorkerInput =
+            serde_json::from_value(json).expect("deserialize");
+        assert_eq!(input.worker_id, "550e8400-e29b-41d4-a716-446655440000");
+        let telemetry = input.telemetry.expect("telemetry present");
+        assert_eq!(telemetry.amplitude_api_key.as_deref(), Some("test-key-123"));
+    }
+}
