@@ -13,6 +13,7 @@ use crate::{invocation::method::HttpAuth, protocol::ErrorBody};
 pub enum HttpAuthConfig {
     Hmac { secret_key: String },
     Bearer { token_key: String },
+    #[serde(rename = "api_key")]
     ApiKey { header: String, value_key: String },
 }
 
