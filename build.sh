@@ -7,6 +7,6 @@ if [ "$1" == "linux" ]; then
 else
   echo "Building for current platform"
   cargo build --release
-  rm .bin/iii || true
-  mv target/release/iii .bin/iii
+  rm .bin/iiii || true
+  mv target/release/iii .bin/iiii
 fi

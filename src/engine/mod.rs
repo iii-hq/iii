@@ -8,6 +8,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
 use tracing::Instrument;
@@ -15,6 +16,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
+    channels::ChannelManager,
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
     modules::worker::TRIGGER_WORKERS_AVAILABLE,
@@ -116,7 +118,11 @@ where
 
 #[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
-    async fn call(&self, function_id: &str, input: Value) -> Result<Option<Value>, ErrorBody>;
+    async fn call(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
         &self,
@@ -139,6 +145,7 @@ pub struct Engine {
     pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
+    pub channel_manager: Arc<ChannelManager>,
 }
 
 impl Engine {
@@ -149,6 +156,7 @@ impl Engine {
             trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
+            channel_manager: Arc::new(ChannelManager::new()),
         }
     }
 
@@ -679,6 +687,7 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
+        self.channel_manager.remove_channels_by_worker(&worker.id);
         self.worker_registry.unregister_worker(&worker.id);
 
         let workers_data = serde_json::json!({
@@ -693,7 +702,15 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
-    async fn call(&self, function_id: &str, input: Value) -> Result<Option<Value>, ErrorBody> {
+    async fn call(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody> {
+        let input = serde_json::to_value(input).map_err(|e| ErrorBody {
+            code: "serialization_error".into(),
+            message: e.to_string(),
+        })?;
         let function_opt = self.functions.get(function_id);
 
         if let Some(function) = function_opt {

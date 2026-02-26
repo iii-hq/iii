@@ -36,6 +36,7 @@ opentelemetry-otlp = { version = "0.31", features = ["tonic", "grpc-tonic", "log
 opentelemetry-semantic-conventions = "0.31"
 futures = "0.3"
 futures-util = "0.3"
+http-body-util = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 axum = { version = "0.8", features = ["ws", "macros"] }
