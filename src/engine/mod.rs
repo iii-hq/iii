@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use chrono::Utc;
@@ -168,6 +168,12 @@ impl Engine {
 
     fn remove_function(&self, function_id: &str) {
         self.functions.remove(function_id);
+    }
+
+    fn remove_function_from_engine(&self, function_id: &str) {
+        self.remove_function(function_id);
+        self.service_registry
+            .remove_function_from_services(function_id);
     }
 
     async fn remember_invocation(
@@ -464,8 +470,8 @@ impl Engine {
                     function_id = %id,
                     "UnregisterFunction"
                 );
-                if worker.has_http_function_id(id).await {
-                    worker.remove_http_function_id(id).await;
+                if worker.has_external_function_id(id).await {
+                    worker.remove_external_function_id(id).await;
                     if let Some(http_module) = self
                         .service_registry
                         .get_service::<HttpFunctionsModule>("http_functions")
@@ -475,14 +481,14 @@ impl Engine {
                                 worker_id = %worker.id,
                                 function_id = %id,
                                 error = ?err,
-                                "Failed to unregister HTTP function"
+                                "Failed to unregister external function"
                             );
                         }
                     } else {
                         self.remove_function(id);
                     }
                 } else {
-                    worker.function_ids.write().await.remove(id);
+                    worker.remove_function_id(id).await;
                     self.remove_function(id);
                 }
 
@@ -544,7 +550,7 @@ impl Engine {
                         return Ok(());
                     }
 
-                    worker.include_http_function_id(id).await;
+                    worker.include_external_function_id(id).await;
                     return Ok(());
                 }
 
@@ -730,35 +736,26 @@ impl Engine {
     }
 
     async fn cleanup_worker(&self, worker: &Worker) {
-        let worker_http_functions = worker.get_http_function_ids().await;
-        let worker_http_function_set: HashSet<String> =
-            worker_http_functions.iter().cloned().collect();
-        let worker_functions = worker
-            .get_function_ids()
-            .await
-            .into_iter()
-            .filter(|function_id| !worker_http_function_set.contains(function_id))
-            .collect::<Vec<String>>();
+        let regular_functions = worker.get_regular_function_ids().await;
+        let external_functions = worker.get_external_function_ids().await;
 
-        tracing::debug!(worker_id = %worker.id, functions = ?worker_functions, "Worker registered functions");
-        for function_id in worker_functions.iter() {
-            self.remove_function(function_id);
-            self.service_registry
-                .remove_function_from_services(function_id);
+        tracing::debug!(worker_id = %worker.id, functions = ?regular_functions, "Worker registered functions");
+        for function_id in regular_functions.iter() {
+            self.remove_function_from_engine(function_id);
         }
 
-        if !worker_http_functions.is_empty() {
+        if !external_functions.is_empty() {
             if let Some(http_module) = self
                 .service_registry
                 .get_service::<HttpFunctionsModule>("http_functions")
             {
-                for function_id in worker_http_functions.iter() {
+                for function_id in external_functions.iter() {
                     if let Err(err) = http_module.unregister_http_function(function_id).await {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %function_id,
                             error = ?err,
-                            "Failed to unregister HTTP function during worker cleanup"
+                            "Failed to unregister external function during worker cleanup"
                         );
                         self.remove_function(function_id);
                     }
@@ -766,10 +763,8 @@ impl Engine {
                         .remove_function_from_services(function_id);
                 }
             } else {
-                for function_id in worker_http_functions.iter() {
-                    self.remove_function(function_id);
-                    self.service_registry
-                        .remove_function_from_services(function_id);
+                for function_id in external_functions.iter() {
+                    self.remove_function_from_engine(function_id);
                 }
             }
         }
@@ -984,7 +979,7 @@ mod tests {
             .expect("register function");
 
         assert!(engine.functions.get("external.my_lambda").is_some());
-        assert!(worker.has_http_function_id("external.my_lambda").await);
+        assert!(worker.has_external_function_id("external.my_lambda").await);
 
         let http_module = engine
             .service_registry
