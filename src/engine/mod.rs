@@ -493,6 +493,12 @@ impl Engine {
                     Box::new(worker.clone()),
                 );
 
+                #[cfg(feature = "heartbeat")]
+                crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_registration(
+                    crate::modules::heartbeat::lifecycle::EventKind::RegisterFunction,
+                    Some(serde_json::json!({"function_id": id})),
+                );
+
                 worker.include_function_id(id).await;
                 Ok(())
             }
@@ -595,6 +601,12 @@ impl Engine {
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
+
+        #[cfg(feature = "heartbeat")]
+        crate::modules::heartbeat::lifecycle::get_lifecycle_tracker().record_first(
+            crate::modules::heartbeat::lifecycle::EventKind::FirstConnection,
+            Some(serde_json::json!({"worker_id": worker.id.to_string()})),
+        );
 
         // Send worker ID back to the worker
         self.send_msg(

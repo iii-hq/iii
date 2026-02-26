@@ -17,7 +17,8 @@ name = "custom_queue_adapter"
 path = "examples/custom_queue_adapter.rs"
 
 [features]
-default = []
+default = ["heartbeat"]
+heartbeat = []
 rabbitmq = ["lapin"]
 
 [dependencies]
@@ -51,6 +52,7 @@ indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
 async-trait = "0.1.89"
 colored = "3.0.0"
 cron = "0.15"
@@ -58,6 +60,8 @@ once_cell = "1.21.3"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 hex = "0.4"
+gethostname = "1.0"
+parking_lot = "0.12"
 notify = "8.2.0"
 inventory = "0.3"
 rand = "0.8"
