@@ -257,7 +257,7 @@ impl StateCoreModule {
         crate::modules::telemetry::collector::track_state_set();
         match self
             .adapter
-            .set(&input.scope, &input.key, input.data.clone())
+            .set(&input.scope, &input.key, input.value.clone())
             .await
         {
             Ok(value) => {

@@ -77,11 +77,11 @@ impl StateAdapter for BridgeAdapter {
         Ok(())
     }
 
-    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult> {
         let set_data = KvSetInput {
             index: self.gen_key(scope),
             key: key.to_string(),
-            value: data,
+            value,
         };
         let set_result = self
             .bridge

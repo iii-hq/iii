@@ -12,7 +12,8 @@ use serde_json::Value;
 pub struct StateSetInput {
     pub scope: String,
     pub key: String,
-    pub data: Value,
+    #[serde(alias = "data")]
+    pub value: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

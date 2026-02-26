@@ -51,11 +51,11 @@ impl StateRedisAdapter {
 
 #[async_trait]
 impl StateAdapter for StateRedisAdapter {
-    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult> {
         let scope_key: String = format!("state:{}", scope);
         let mut conn = self.publisher.lock().await;
-        let value = serde_json::to_string(&data)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize data: {}", e))?;
+        let serialized = serde_json::to_string(&value)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize value: {}", e))?;
 
         // Use Lua script for atomic get-and-set operation
         // This script atomically gets the old value and sets the new value
@@ -70,7 +70,7 @@ impl StateAdapter for StateRedisAdapter {
         let result: redis::RedisResult<Option<String>> = script
             .key(&scope_key)
             .arg(key)
-            .arg(&value)
+            .arg(&serialized)
             .invoke_async(&mut *conn)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to atomically set value in Redis: {}", e))?;
@@ -78,7 +78,7 @@ impl StateAdapter for StateRedisAdapter {
         match result {
             Ok(s) => {
                 let old_value = s.map(|s| serde_json::from_str(&s).unwrap_or(Value::Null));
-                let new_value = data.clone();
+                let new_value = value.clone();
 
                 Ok(SetResult {
                     old_value,
