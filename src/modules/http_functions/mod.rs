@@ -8,14 +8,11 @@ pub mod config;
 
 use std::{pin::Pin, sync::Arc};
 
+use dashmap::DashMap;
 use futures::Future;
 use serde_json::Value;
 
 use crate::{
-    builtins::kv::BuiltinKvStore,
-    config::persistence::{
-        delete_http_function_from_kv, load_http_functions_from_kv, store_http_function_in_kv,
-    },
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionResult,
     invocation::{
@@ -26,9 +23,6 @@ use crate::{
     },
     modules::module::Module,
     protocol::ErrorBody,
-    trigger::TriggerType,
-    triggers::http_registrator::HttpTriggerRegistrator,
-    triggers::http_trigger::HttpTriggerConfig,
 };
 
 use config::HttpFunctionsConfig;
@@ -39,8 +33,8 @@ type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, E
 pub struct HttpFunctionsModule {
     engine: Arc<Engine>,
     http_invoker: Arc<HttpInvoker>,
-    kv_store: Arc<BuiltinKvStore>,
-    http_trigger_registrator: Arc<HttpTriggerRegistrator>,
+    http_functions: Arc<DashMap<String, HttpFunctionConfig>>,
+    #[allow(dead_code)]
     config: HttpFunctionsConfig,
 }
 
@@ -112,66 +106,32 @@ impl HttpFunctionsModule {
         self.engine.register_function_handler(
             RegisterFunctionRequest {
                 function_id: config.function_path.clone(),
-                description: config.description,
-                request_format: config.request_format,
-                response_format: config.response_format,
-                metadata: config.metadata,
+                description: config.description.clone(),
+                request_format: config.request_format.clone(),
+                response_format: config.response_format.clone(),
+                metadata: config.metadata.clone(),
             },
             handler,
         );
 
-        Ok(())
-    }
+        self.http_functions
+            .insert(config.function_path.clone(), config);
 
-    pub async fn persist_and_register(&self, config: HttpFunctionConfig) -> Result<(), ErrorBody> {
-        store_http_function_in_kv(&self.kv_store, &config).await?;
-        self.register_http_function(config).await
+        Ok(())
     }
 
     pub async fn unregister_http_function(&self, function_path: &str) -> Result<(), ErrorBody> {
+        self.http_functions.remove(function_path);
         self.engine.functions.remove(function_path);
-        delete_http_function_from_kv(&self.kv_store, function_path).await
-    }
-
-    pub async fn register_http_trigger(&self, config: HttpTriggerConfig) -> Result<(), ErrorBody> {
-        let _function = self
-            .engine
-            .functions
-            .get(&config.function_path)
-            .ok_or_else(|| ErrorBody {
-                code: "function_not_found".into(),
-                message: format!(
-                    "http_trigger '{}' references '{}' but no function with that path exists",
-                    config.trigger_id, config.function_path
-                ),
-            })?;
-
-        let trigger = crate::trigger::Trigger {
-            id: config.trigger_id,
-            trigger_type: format!("http_{}", config.trigger_type),
-            function_id: config.function_path,
-            config: config.config,
-            worker_id: None,
-        };
-
-        self.engine
-            .trigger_registry
-            .register_trigger(trigger)
-            .await
-            .map_err(|e| ErrorBody {
-                code: "trigger_registration_failed".into(),
-                message: e.to_string(),
-            })?;
-
         Ok(())
-    }
-
-    pub fn kv_store(&self) -> &Arc<BuiltinKvStore> {
-        &self.kv_store
     }
 
     pub fn http_invoker(&self) -> &Arc<HttpInvoker> {
         &self.http_invoker
+    }
+
+    pub fn http_functions(&self) -> &Arc<DashMap<String, HttpFunctionConfig>> {
+        &self.http_functions
     }
 }
 
@@ -192,22 +152,12 @@ impl Module for HttpFunctionsModule {
             ..HttpInvokerConfig::default()
         })?);
 
-        let kv_store = engine
-            .service_registry
-            .get_service::<BuiltinKvStore>("kv_store")
-            .unwrap_or_else(|| Arc::new(BuiltinKvStore::new(None)));
-
-        let http_trigger_registrator = Arc::new(HttpTriggerRegistrator::new(
-            http_invoker.clone(),
-            engine.functions.clone(),
-            kv_store.clone(),
-        ));
+        let http_functions = Arc::new(DashMap::new());
 
         Ok(Box::new(Self {
             engine,
             http_invoker,
-            kv_store,
-            http_trigger_registrator,
+            http_functions,
             config,
         }))
     }
@@ -218,45 +168,6 @@ impl Module for HttpFunctionsModule {
         self.engine
             .service_registry
             .register_service("http_functions", Arc::new(self.clone()));
-
-        let registrator_cron = (*self.http_trigger_registrator).clone();
-        let registrator_event = (*self.http_trigger_registrator).clone();
-
-        self.engine
-            .trigger_registry
-            .register_trigger_type(TriggerType {
-                id: "http_cron".to_string(),
-                _description: "HTTP Cron Trigger".to_string(),
-                registrator: Box::new(registrator_cron),
-                worker_id: None,
-            })
-            .await?;
-
-        self.engine
-            .trigger_registry
-            .register_trigger_type(TriggerType {
-                id: "http_event".to_string(),
-                _description: "HTTP Event Trigger".to_string(),
-                registrator: Box::new(registrator_event),
-                worker_id: None,
-            })
-            .await?;
-
-        for func_config in &self.config.functions {
-            self.persist_and_register(func_config.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!(e.message))?;
-        }
-
-        load_http_functions_from_kv(&self.kv_store, &self.engine, self)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.message))?;
-
-        for trigger_config in &self.config.triggers {
-            self.register_http_trigger(trigger_config.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!(e.message))?;
-        }
 
         Ok(())
     }

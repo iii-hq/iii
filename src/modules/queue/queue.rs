@@ -16,7 +16,7 @@ use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -63,38 +63,10 @@ impl QueueCoreModule {
         let baggage = inject_baggage_from_context(&ctx);
 
         tracing::debug!(topic = %topic, traceparent = ?traceparent, baggage = ?baggage, "Enqueuing message with trace context");
-        let _ = adapter.enqueue(&topic, event_data.clone(), traceparent, baggage).await;
+        let _ = adapter
+            .enqueue(&topic, event_data.clone(), traceparent, baggage)
+            .await;
         crate::modules::telemetry::collector::track_queue_emit();
-
-        let topic_for_filter = topic.clone();
-        let topic_for_payload = topic.clone();
-        let event_data_for_payload = event_data.clone();
-
-        crate::triggers::http_registrator::HttpTriggerRegistrator::dispatch_http_triggers_from_engine(
-            &self.engine,
-            "http_event",
-            move |trigger| {
-                trigger.config
-                    .get("topic")
-                    .and_then(|v| v.as_str())
-                    .map(|value| value == topic_for_filter)
-                    .unwrap_or(false)
-            },
-            move |trigger| {
-                json!({
-                    "trigger": {
-                        "type": "event",
-                        "id": trigger.id,
-                        "topic": topic_for_payload.clone(),
-                        "function_path": trigger.function_id,
-                    },
-                    "event": {
-                        "topic": topic_for_payload.clone(),
-                        "data": event_data_for_payload.clone(),
-                    }
-                })
-            },
-        ).await;
 
         FunctionResult::Success(None)
     }

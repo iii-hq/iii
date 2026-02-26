@@ -15,11 +15,9 @@ pub mod protocol;
 pub mod services;
 pub mod telemetry;
 pub mod trigger;
-pub mod triggers;
 pub mod workers;
 
 pub mod modules {
-    pub mod admin_api;
     pub mod bridge_client;
     pub mod config;
     pub mod cron;

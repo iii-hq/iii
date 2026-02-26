@@ -57,6 +57,7 @@ impl HttpInvoker {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.client_timeout_secs))
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| SecurityError::InvalidUrl)?;
         let url_validator = UrlValidator::new(config.url_validator)?;

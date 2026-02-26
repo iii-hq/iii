@@ -6,17 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config::SecurityConfig, invocation::http_function::HttpFunctionConfig,
-    triggers::http_trigger::HttpTriggerConfig,
-};
+use crate::config::SecurityConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HttpFunctionsConfig {
-    #[serde(default)]
-    pub functions: Vec<HttpFunctionConfig>,
-    #[serde(default)]
-    pub triggers: Vec<HttpTriggerConfig>,
     #[serde(default)]
     pub security: SecurityConfig,
 }

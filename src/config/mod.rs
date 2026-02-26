@@ -4,8 +4,6 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-pub mod persistence;
-
 use serde::{Deserialize, Serialize};
 
 use crate::invocation::url_validator::UrlValidatorConfig;

@@ -10,8 +10,9 @@ use iii::{
 /// Creates a test handler that wraps a simple transform function, hiding the
 /// verbose `Pin<Box<dyn Future ...>>` type coercion that would otherwise be
 /// repeated in every test.
-type HandlerFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
+type HandlerFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>,
+>;
 
 fn make_test_handler(
     f: impl Fn(Value) -> Option<Value> + Send + Sync + 'static,

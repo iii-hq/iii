@@ -86,6 +86,7 @@ async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Outbound {
     Protocol(Message),
     Raw(WsMessage),
@@ -533,7 +534,7 @@ impl Engine {
                         updated_at: None,
                     };
 
-                    if let Err(err) = http_module.persist_and_register(config).await {
+                    if let Err(err) = http_module.register_http_function(config).await {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -936,13 +937,11 @@ mod tests {
     use super::{Engine, Outbound};
 
     #[tokio::test]
-    async fn register_function_with_http_invocation_persists_and_cleans_up() {
+    async fn register_function_with_http_invocation_registers_and_cleans_up() {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
 
         let http_functions_config = HttpFunctionsConfig {
-            functions: Vec::new(),
-            triggers: Vec::new(),
             security: SecurityConfig {
                 require_https: false,
                 block_private_ips: false,
@@ -992,26 +991,20 @@ mod tests {
             .get_service::<HttpFunctionsModule>("http_functions")
             .expect("http_functions service registered");
 
-        let stored = http_module
-            .kv_store()
-            .get(
-                "http_function:external.my_lambda".to_string(),
-                "config".to_string(),
-            )
-            .await;
-        assert!(stored.is_some());
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key("external.my_lambda")
+        );
 
         engine.cleanup_worker(&worker).await;
 
         assert!(engine.functions.get("external.my_lambda").is_none());
 
-        let stored_after_cleanup = http_module
-            .kv_store()
-            .get(
-                "http_function:external.my_lambda".to_string(),
-                "config".to_string(),
-            )
-            .await;
-        assert!(stored_after_cleanup.is_none());
+        assert!(
+            !http_module
+                .http_functions()
+                .contains_key("external.my_lambda")
+        );
     }
 }
