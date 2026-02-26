@@ -42,7 +42,7 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
 async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
     // Match on the prefix to determine which handler to use
-    let (prefix, name, result) = if bytes.starts_with(OTLP_WS_PREFIX) {
+    let (_prefix, name, result) = if bytes.starts_with(OTLP_WS_PREFIX) {
         let payload = &bytes[OTLP_WS_PREFIX.len()..];
         match std::str::from_utf8(payload) {
             Ok(json_str) => (OTLP_WS_PREFIX, "OTLP", ingest_otlp_json(json_str).await),
@@ -81,7 +81,6 @@ async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
     if let Err(err) = result {
         tracing::warn!(peer = %peer, error = ?err, "{} ingestion error", name);
     }
-    let _ = prefix; // Suppress unused warning
     true
 }
 
@@ -476,23 +475,33 @@ impl Engine {
                         .service_registry
                         .get_service::<HttpFunctionsModule>("http_functions")
                     {
-                        if let Err(err) = http_module.unregister_http_function(id).await {
-                            tracing::error!(
-                                worker_id = %worker.id,
-                                function_id = %id,
-                                error = ?err,
-                                "Failed to unregister external function"
-                            );
+                        match http_module.unregister_http_function(id).await {
+                            Ok(()) => {
+                                tracing::debug!(
+                                    worker_id = %worker.id,
+                                    function_id = %id,
+                                    "Unregistered external function"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    worker_id = %worker.id,
+                                    function_id = %id,
+                                    error = ?err,
+                                    "Failed to unregister external function"
+                                );
+                            }
                         }
+                        self.service_registry
+                            .remove_function_from_services(id);
                     } else {
-                        self.remove_function(id);
+                        self.remove_function_from_engine(id);
                     }
                 } else {
                     worker.remove_function_id(id).await;
-                    self.remove_function(id);
+                    self.remove_function_from_engine(id);
                 }
 
-                self.service_registry.remove_function_from_services(id);
                 Ok(())
             }
             Message::RegisterFunction {

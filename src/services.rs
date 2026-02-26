@@ -88,12 +88,12 @@ impl ServicesRegistry {
     }
 
     pub fn register_service_from_function_id(&self, function_id: &str) {
-        let parts: Vec<&str> = function_id.split(".").collect();
-        if parts.len() < 2 {
+        let Some(service_name) = Self::get_service_name_from_function_id(function_id) else {
             return;
-        }
-        let service_name = parts[0].to_string();
-        let function_name = parts[1..].join(".");
+        };
+        let Some(function_name) = Self::get_function_name_from_function_id(function_id) else {
+            return;
+        };
 
         if !self.services.contains_key(&service_name) {
             let service = Service::new(service_name.clone(), "".to_string());
@@ -108,10 +108,6 @@ impl ServicesRegistry {
             tracing::warn!(service_name = %service.name, "Service already exists");
         }
         self.services.insert(service.name.clone(), service);
-    }
-
-    pub fn _remove_service(&self, service: &Service) {
-        self.services.remove(&service.name);
     }
 
     pub fn insert_function_to_service(&self, service_name: &String, function: &str) {
