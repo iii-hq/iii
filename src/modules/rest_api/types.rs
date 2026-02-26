@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
-use axum::{Json, http::header::HeaderMap};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::protocol::StreamChannelRef;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerMetadata {
@@ -21,7 +22,7 @@ pub struct TriggerMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIrequest {
+pub struct HttpRequest {
     pub query_params: HashMap<String, String>,
     pub path_params: HashMap<String, String>,
     pub headers: HashMap<String, String>,
@@ -30,45 +31,19 @@ pub struct APIrequest {
     pub body: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TriggerMetadata>,
-}
 
-impl APIrequest {
-    pub fn new(
-        query_params: HashMap<String, String>,
-        path_params: HashMap<String, String>,
-        headers: HeaderMap,
-        path: String,
-        method: String,
-        body: Option<Json<Value>>,
-    ) -> Self {
-        let body_value = body.map(|Json(v)| v).unwrap_or(serde_json::json!({}));
-        APIrequest {
-            query_params,
-            path_params,
-            headers: headers
-                .iter()
-                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect(),
-            path: path.clone(),
-            method: method.clone(),
-            body: body_value,
-            trigger: Some(TriggerMetadata {
-                trigger_type: "http".to_string(),
-                path: Some(path),
-                method: Some(method),
-            }),
-        }
-    }
+    pub request_body: StreamChannelRef,
+    pub response: StreamChannelRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIresponse {
+pub struct HttpResponse {
     pub status_code: u16,
     pub headers: Vec<String>,
     pub body: Value,
 }
 
-impl APIresponse {
+impl HttpResponse {
     pub fn from_function_return(value: Value) -> Self {
         let status_code = value
             .get("status_code")
@@ -84,7 +59,7 @@ impl APIresponse {
             })
             .unwrap_or_default();
         let body = value.get("body").cloned().unwrap_or(json!({}));
-        APIresponse {
+        HttpResponse {
             status_code,
             headers,
             body,

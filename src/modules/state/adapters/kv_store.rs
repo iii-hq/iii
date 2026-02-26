@@ -40,10 +40,10 @@ impl StateAdapter for BuiltinKvStoreAdapter {
         Ok(())
     }
 
-    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult> {
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult> {
         Ok(self
             .storage
-            .set(scope.to_string(), key.to_string(), data.clone())
+            .set(scope.to_string(), key.to_string(), value.clone())
             .await)
     }
 

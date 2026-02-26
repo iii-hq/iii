@@ -14,7 +14,7 @@ use serde_json::Value;
 
 #[async_trait]
 pub trait StateAdapter: Send + Sync {
-    async fn set(&self, scope: &str, key: &str, data: Value) -> anyhow::Result<SetResult>;
+    async fn set(&self, scope: &str, key: &str, value: Value) -> anyhow::Result<SetResult>;
     async fn get(&self, scope: &str, key: &str) -> anyhow::Result<Option<Value>>;
     async fn delete(&self, scope: &str, key: &str) -> anyhow::Result<()>;
     async fn update(
