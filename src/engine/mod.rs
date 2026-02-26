@@ -7,6 +7,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -18,8 +19,8 @@ use uuid::Uuid;
 use crate::{
     channels::ChannelManager,
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
-    invocation::InvocationHandler,
-    modules::worker::TRIGGER_WORKERS_AVAILABLE,
+    invocation::{InvocationHandler, http_function::HttpFunctionConfig},
+    modules::{http_functions::HttpFunctionsModule, worker::TRIGGER_WORKERS_AVAILABLE},
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -41,7 +42,7 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
 async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
     // Match on the prefix to determine which handler to use
-    let (prefix, name, result) = if bytes.starts_with(OTLP_WS_PREFIX) {
+    let (_prefix, name, result) = if bytes.starts_with(OTLP_WS_PREFIX) {
         let payload = &bytes[OTLP_WS_PREFIX.len()..];
         match std::str::from_utf8(payload) {
             Ok(json_str) => (OTLP_WS_PREFIX, "OTLP", ingest_otlp_json(json_str).await),
@@ -80,11 +81,11 @@ async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
     if let Err(err) = result {
         tracing::warn!(peer = %peer, error = ?err, "{} ingestion error", name);
     }
-    let _ = prefix; // Suppress unused warning
     true
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Outbound {
     Protocol(Message),
     Raw(WsMessage),
@@ -166,6 +167,12 @@ impl Engine {
 
     fn remove_function(&self, function_id: &str) {
         self.functions.remove(function_id);
+    }
+
+    fn remove_function_from_engine(&self, function_id: &str) {
+        self.remove_function(function_id);
+        self.service_registry
+            .remove_function_from_services(function_id);
     }
 
     async fn remember_invocation(
@@ -462,8 +469,38 @@ impl Engine {
                     function_id = %id,
                     "UnregisterFunction"
                 );
-                worker.function_ids.write().await.remove(id);
-                self.remove_function(id);
+                if worker.has_external_function_id(id).await {
+                    worker.remove_external_function_id(id).await;
+                    if let Some(http_module) = self
+                        .service_registry
+                        .get_service::<HttpFunctionsModule>("http_functions")
+                    {
+                        match http_module.unregister_http_function(id).await {
+                            Ok(()) => {
+                                tracing::debug!(
+                                    worker_id = %worker.id,
+                                    function_id = %id,
+                                    "Unregistered external function"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    worker_id = %worker.id,
+                                    function_id = %id,
+                                    error = ?err,
+                                    "Failed to unregister external function"
+                                );
+                            }
+                        }
+                        self.service_registry.remove_function_from_services(id);
+                    } else {
+                        self.remove_function_from_engine(id);
+                    }
+                } else {
+                    worker.remove_function_id(id).await;
+                    self.remove_function_from_engine(id);
+                }
+
                 Ok(())
             }
             Message::RegisterFunction {
@@ -472,6 +509,7 @@ impl Engine {
                 request_format: req,
                 response_format: res,
                 metadata,
+                invocation,
             } => {
                 tracing::debug!(
                     worker_id = %worker.id,
@@ -481,6 +519,48 @@ impl Engine {
                 );
 
                 self.service_registry.register_service_from_function_id(id);
+
+                if let Some(invocation) = invocation {
+                    let Some(http_module) = self
+                        .service_registry
+                        .get_service::<HttpFunctionsModule>("http_functions")
+                    else {
+                        tracing::error!(
+                            worker_id = %worker.id,
+                            function_id = %id,
+                            "HTTP functions module not loaded"
+                        );
+                        return Ok(());
+                    };
+
+                    let config = HttpFunctionConfig {
+                        function_path: id.clone(),
+                        url: invocation.url.clone(),
+                        method: invocation.method.clone(),
+                        timeout_ms: invocation.timeout_ms,
+                        headers: invocation.headers.clone(),
+                        auth: invocation.auth.clone(),
+                        description: description.clone(),
+                        request_format: req.clone(),
+                        response_format: res.clone(),
+                        metadata: metadata.clone(),
+                        registered_at: Some(Utc::now()),
+                        updated_at: None,
+                    };
+
+                    if let Err(err) = http_module.register_http_function(config).await {
+                        tracing::error!(
+                            worker_id = %worker.id,
+                            function_id = %id,
+                            error = ?err,
+                            "Failed to register HTTP invocation function"
+                        );
+                        return Ok(());
+                    }
+
+                    worker.include_external_function_id(id).await;
+                    return Ok(());
+                }
 
                 self.register_function(
                     RegisterFunctionRequest {
@@ -664,19 +744,37 @@ impl Engine {
     }
 
     async fn cleanup_worker(&self, worker: &Worker) {
-        let worker_functions = worker
-            .function_ids
-            .read()
-            .await
-            .iter()
-            .cloned()
-            .collect::<Vec<String>>();
+        let regular_functions = worker.get_regular_function_ids().await;
+        let external_functions = worker.get_external_function_ids().await;
 
-        tracing::debug!(worker_id = %worker.id, functions = ?worker_functions, "Worker registered functions");
-        for function_id in worker_functions.iter() {
-            self.remove_function(function_id);
-            self.service_registry
-                .remove_function_from_services(function_id);
+        tracing::debug!(worker_id = %worker.id, functions = ?regular_functions, "Worker registered functions");
+        for function_id in regular_functions.iter() {
+            self.remove_function_from_engine(function_id);
+        }
+
+        if !external_functions.is_empty() {
+            if let Some(http_module) = self
+                .service_registry
+                .get_service::<HttpFunctionsModule>("http_functions")
+            {
+                for function_id in external_functions.iter() {
+                    if let Err(err) = http_module.unregister_http_function(function_id).await {
+                        tracing::error!(
+                            worker_id = %worker.id,
+                            function_id = %function_id,
+                            error = ?err,
+                            "Failed to unregister external function during worker cleanup"
+                        );
+                        self.remove_function(function_id);
+                    }
+                    self.service_registry
+                        .remove_function_from_services(function_id);
+                }
+            } else {
+                for function_id in external_functions.iter() {
+                    self.remove_function_from_engine(function_id);
+                }
+            }
         }
 
         let worker_invocations = worker.invocations.read().await;
@@ -819,5 +917,97 @@ impl EngineTrait for Engine {
 
         self.functions
             .register_function(request.function_id, function);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use tokio::sync::mpsc;
+
+    use crate::{
+        config::SecurityConfig,
+        modules::{
+            http_functions::{HttpFunctionsModule, config::HttpFunctionsConfig},
+            module::Module,
+            observability::metrics::ensure_default_meter,
+        },
+        protocol::{HttpInvocationRef, Message},
+        workers::Worker,
+    };
+
+    use super::{Engine, Outbound};
+
+    #[tokio::test]
+    async fn register_function_with_http_invocation_registers_and_cleans_up() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+
+        let http_functions_config = HttpFunctionsConfig {
+            security: SecurityConfig {
+                require_https: false,
+                block_private_ips: false,
+                url_allowlist: vec!["*".to_string()],
+            },
+        };
+
+        let http_functions_module = HttpFunctionsModule::create(
+            engine.clone(),
+            Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
+        )
+        .await
+        .expect("create module");
+        http_functions_module
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = Worker::new(tx);
+
+        let register_message = Message::RegisterFunction {
+            id: "external.my_lambda".to_string(),
+            description: Some("external lambda".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: Some(HttpInvocationRef {
+                url: "http://example.com/lambda".to_string(),
+                method: crate::invocation::method::HttpMethod::Post,
+                timeout_ms: Some(30000),
+                headers: HashMap::new(),
+                auth: None,
+            }),
+        };
+
+        engine
+            .router_msg(&worker, &register_message)
+            .await
+            .expect("register function");
+
+        assert!(engine.functions.get("external.my_lambda").is_some());
+        assert!(worker.has_external_function_id("external.my_lambda").await);
+
+        let http_module = engine
+            .service_registry
+            .get_service::<HttpFunctionsModule>("http_functions")
+            .expect("http_functions service registered");
+
+        assert!(
+            http_module
+                .http_functions()
+                .contains_key("external.my_lambda")
+        );
+
+        engine.cleanup_worker(&worker).await;
+
+        assert!(engine.functions.get("external.my_lambda").is_none());
+
+        assert!(
+            !http_module
+                .http_functions()
+                .contains_key("external.my_lambda")
+        );
     }
 }

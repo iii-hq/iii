@@ -4,18 +4,34 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{any::Any, collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
 #[derive(Default)]
 pub struct ServicesRegistry {
     pub services: Arc<DashMap<String, Service>>,
+    module_services: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 impl ServicesRegistry {
     pub fn new() -> Self {
         ServicesRegistry {
             services: Arc::new(DashMap::new()),
+            module_services: Arc::new(DashMap::new()),
         }
+    }
+
+    pub fn register_service<T: Send + Sync + 'static>(&self, name: &str, service: Arc<T>) {
+        self.module_services
+            .insert(name.to_string(), service as Arc<dyn Any + Send + Sync>);
+    }
+
+    pub fn get_service<T: Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        self.module_services
+            .get(name)?
+            .value()
+            .clone()
+            .downcast::<T>()
+            .ok()
     }
 
     pub fn remove_function_from_services(&self, function_id: &str) {
@@ -72,12 +88,12 @@ impl ServicesRegistry {
     }
 
     pub fn register_service_from_function_id(&self, function_id: &str) {
-        let parts: Vec<&str> = function_id.split(".").collect();
-        if parts.len() < 2 {
+        let Some(service_name) = Self::get_service_name_from_function_id(function_id) else {
             return;
-        }
-        let service_name = parts[0].to_string();
-        let function_name = parts[1..].join(".");
+        };
+        let Some(function_name) = Self::get_function_name_from_function_id(function_id) else {
+            return;
+        };
 
         if !self.services.contains_key(&service_name) {
             let service = Service::new(service_name.clone(), "".to_string());
@@ -92,10 +108,6 @@ impl ServicesRegistry {
             tracing::warn!(service_name = %service.name, "Service already exists");
         }
         self.services.insert(service.name.clone(), service);
-    }
-
-    pub fn _remove_service(&self, service: &Service) {
-        self.services.remove(&service.name);
     }
 
     pub fn insert_function_to_service(&self, service_name: &String, function: &str) {

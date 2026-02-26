@@ -48,7 +48,7 @@ impl QueueCoreModule {
     #[function(id = "enqueue", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
-        let data = input.data;
+        let event_data = input.data;
         let topic = input.topic;
 
         if topic.is_empty() {
@@ -63,7 +63,9 @@ impl QueueCoreModule {
         let baggage = inject_baggage_from_context(&ctx);
 
         tracing::debug!(topic = %topic, traceparent = ?traceparent, baggage = ?baggage, "Enqueuing message with trace context");
-        let _ = adapter.enqueue(&topic, data, traceparent, baggage).await;
+        let _ = adapter
+            .enqueue(&topic, event_data.clone(), traceparent, baggage)
+            .await;
         crate::modules::telemetry::collector::track_queue_emit();
 
         FunctionResult::Success(None)

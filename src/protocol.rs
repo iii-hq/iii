@@ -4,9 +4,30 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+
+use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpInvocationRef {
+    pub url: String,
+    #[serde(default = "default_http_method")]
+    pub method: HttpMethod,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub auth: Option<HttpAuthConfig>,
+}
+
+fn default_http_method() -> HttpMethod {
+    HttpMethod::Post
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -41,6 +62,8 @@ pub enum Message {
         response_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        invocation: Option<HttpInvocationRef>,
     },
     UnregisterFunction {
         id: String,
@@ -153,6 +176,10 @@ pub struct StreamChannelRef {
 #[cfg(test)]
 mod tests {
     use super::Message;
+    use crate::{
+        invocation::{auth::HttpAuthConfig, method::HttpMethod},
+        protocol::HttpInvocationRef,
+    };
 
     #[test]
     fn deserialize_unregister_trigger_without_type() {
@@ -177,6 +204,57 @@ mod tests {
             Message::UnregisterTrigger { id, trigger_type } => {
                 assert_eq!(id, "abc");
                 assert_eq!(trigger_type.as_deref(), Some("http"));
+            }
+            _ => panic!("unexpected message variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_register_function_with_http_invocation() {
+        let raw = r#"{
+            "type":"registerfunction",
+            "id":"external.my_lambda",
+            "description":"External Lambda function",
+            "invocation":{
+                "url":"https://example.com/lambda",
+                "timeout_ms":30000,
+                "headers":{"x-custom-header":"value"},
+                "auth":{"type":"bearer","token_key":"LAMBDA_TOKEN"}
+            }
+        }"#;
+        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
+
+        match message {
+            Message::RegisterFunction {
+                id,
+                description,
+                invocation,
+                ..
+            } => {
+                assert_eq!(id, "external.my_lambda");
+                assert_eq!(description.as_deref(), Some("External Lambda function"));
+
+                let HttpInvocationRef {
+                    url,
+                    method,
+                    timeout_ms,
+                    headers,
+                    auth,
+                } = invocation.expect("invocation should be present");
+
+                assert_eq!(url, "https://example.com/lambda");
+                assert!(matches!(method, HttpMethod::Post));
+                assert_eq!(timeout_ms, Some(30000));
+                assert_eq!(
+                    headers.get("x-custom-header").map(String::as_str),
+                    Some("value")
+                );
+                match auth {
+                    Some(HttpAuthConfig::Bearer { token_key }) => {
+                        assert_eq!(token_key, "LAMBDA_TOKEN");
+                    }
+                    _ => panic!("unexpected auth variant"),
+                }
             }
             _ => panic!("unexpected message variant"),
         }
