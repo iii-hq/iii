@@ -94,7 +94,7 @@ async fn handle_channel_socket(
                             total_bytes += len as u64;
                             msg_count += 1;
                             tracing::debug!(channel_id = %channel_id, msg = msg_count, bytes = len, "Read: forwarding binary chunk to WS");
-                            WsMessage::Binary(b.into())
+                            WsMessage::Binary(b)
                         }
                     };
                     if socket.send(ws_msg).await.is_err() {
@@ -135,7 +135,7 @@ async fn handle_channel_socket(
                             total_bytes += len as u64;
                             msg_count += 1;
                             tracing::debug!(channel_id = %channel_id, msg = msg_count, bytes = len, "Write: received binary chunk from WS");
-                            ChannelItem::Binary(data.into())
+                            ChannelItem::Binary(data)
                         }
                         WsMessage::Close(_) => {
                             tracing::info!(channel_id = %channel_id, "Write: received WS close frame");
