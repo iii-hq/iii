@@ -492,8 +492,7 @@ impl Engine {
                                 );
                             }
                         }
-                        self.service_registry
-                            .remove_function_from_services(id);
+                        self.service_registry.remove_function_from_services(id);
                     } else {
                         self.remove_function_from_engine(id);
                     }

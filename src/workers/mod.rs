@@ -265,7 +265,10 @@ impl Worker {
     }
 
     pub async fn has_external_function_id(&self, function_id: &str) -> bool {
-        self.external_function_ids.read().await.contains(function_id)
+        self.external_function_ids
+            .read()
+            .await
+            .contains(function_id)
     }
 
     pub async fn get_external_function_ids(&self) -> Vec<String> {
