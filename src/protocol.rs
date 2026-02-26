@@ -137,7 +137,7 @@ pub struct ErrorBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum StreamDirection {
+pub enum ChannelDirection {
     #[default]
     Read,
     Write,
@@ -147,7 +147,7 @@ pub enum StreamDirection {
 pub struct StreamChannelRef {
     pub channel_id: String,
     pub access_key: String,
-    pub direction: StreamDirection,
+    pub direction: ChannelDirection,
 }
 
 #[cfg(test)]

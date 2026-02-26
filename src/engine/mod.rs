@@ -683,6 +683,7 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
+        self.channel_manager.remove_channels_by_worker(&worker.id);
         self.worker_registry.unregister_worker(&worker.id);
 
         let workers_data = serde_json::json!({

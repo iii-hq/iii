@@ -43,8 +43,12 @@ fn apply_control_message(
         match ctrl.get("type").and_then(|t| t.as_str()) {
             Some("set_status") => {
                 if let Some(code) = ctrl.get("status_code").and_then(|v| v.as_u64()) {
-                    *status_code = code as u16;
-                    tracing::debug!(status_code = *status_code, "Response channel: received set_status");
+                    if (100..=599).contains(&code) {
+                        *status_code = code as u16;
+                        tracing::debug!(status_code = *status_code, "Response channel: received set_status");
+                    } else {
+                        tracing::warn!(code, "Response channel: ignoring out-of-range status code");
+                    }
                 }
             }
             Some("set_headers") => {
@@ -54,7 +58,6 @@ fn apply_control_message(
                             response_headers.insert(k.clone(), v_str.to_string());
                         }
                     }
-                    tracing::debug!(?response_headers, "Response channel: received set_headers");
                 }
             }
             _ => {
@@ -232,9 +235,9 @@ pub async fn dynamic_handler(
             let channel_mgr = &engine.channel_manager;
 
             // Create request body channel (worker reads from it)
-            let (req_writer_ref, req_reader_ref) = channel_mgr.create_channel(64);
+            let (req_writer_ref, req_reader_ref) = channel_mgr.create_channel(64, None);
             // Create response body channel (worker writes to it)
-            let (res_writer_ref, res_reader_ref) = channel_mgr.create_channel(64);
+            let (res_writer_ref, res_reader_ref) = channel_mgr.create_channel(64, None);
 
             let req_ch_id = req_writer_ref.channel_id.clone();
             let req_ch_key = req_writer_ref.access_key.clone();
@@ -309,15 +312,21 @@ pub async fn dynamic_handler(
                 .take_receiver(&res_ch_id, &res_ch_key)
                 .await;
 
-            // Check condition function (with metadata only, no body)
+            // Check condition function (with metadata only, no body or stream refs)
             if let Some(condition_function_id) = condition_function_id.as_ref() {
                 tracing::debug!(
                     condition_function_id = %condition_function_id,
                     "Checking trigger conditions"
                 );
 
+                let mut condition_input = serde_json::to_value(&api_request_value).unwrap_or(Value::Null);
+                if let Some(obj) = condition_input.as_object_mut() {
+                    obj.remove("request_body");
+                    obj.remove("response");
+                }
+
                 match engine
-                    .call(condition_function_id, api_request_value.clone())
+                    .call(condition_function_id, condition_input)
                     .await
                 {
                     Ok(Some(result)) => {
@@ -406,6 +415,8 @@ pub async fn dynamic_handler(
                                     let otel = if (200..300).contains(&status_code) { "OK" } else { "ERROR" };
                                     tracing::Span::current().record("otel.status_code", otel);
 
+                                    channel_mgr.remove_channel(&res_ch_id);
+                                    channel_mgr.remove_channel(&req_ch_id);
                                     return (StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK), Json(http_response.body)).into_response();
                                 }
                                 Ok(Ok(_)) => {
@@ -496,13 +507,26 @@ pub async fn dynamic_handler(
                     .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK));
 
                 for (k, v) in &response_headers {
-                    response_builder = response_builder.header(k.as_str(), v.as_str());
+                    match (
+                        axum::http::header::HeaderName::try_from(k.as_str()),
+                        axum::http::header::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        (Ok(name), Ok(value)) => {
+                            response_builder = response_builder.header(name, value);
+                        }
+                        _ => {
+                            tracing::warn!(header_name = %k, "Skipping invalid response header");
+                        }
+                    }
                 }
 
-                return response_builder
-                    .body(Body::from_stream(stream))
-                    .unwrap()
-                    .into_response();
+                return match response_builder.body(Body::from_stream(stream)) {
+                    Ok(resp) => resp.into_response(),
+                    Err(err) => {
+                        tracing::error!(error = ?err, "Failed to build streaming response");
+                        (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+                    }
+                };
             }
 
             // No response receiver available -- wait for engine.call() result

@@ -425,6 +425,9 @@ impl EngineBuilder {
             }
         }
 
+        // Start channel TTL sweep task
+        engine.channel_manager.start_sweep_task(shutdown_rx.clone());
+
         // Setup router
         let app = Router::new()
             .route("/", get(ws_handler))
@@ -470,7 +473,7 @@ impl Default for EngineBuilder {
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<Engine>,
-    pub shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    pub(crate) shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 async fn ws_handler(

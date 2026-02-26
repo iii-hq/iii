@@ -364,14 +364,18 @@ impl Module for WorkerModule {
 
 #[service(name = "engine")]
 impl WorkerModule {
-    #[function(id = "channels::create", description = "Create a streaming channel pair")]
+    #[function(id = "engine::channels::create", description = "Create a streaming channel pair")]
     pub async fn create_function(
         &self,
         input: CreateChannelInput,
     ) -> FunctionResult<CreateChannelOutput, ErrorBody> {
+        // We need to have the worker who called this function as the owner of the channel
+        // For now we can't really know what is the caller of this function, we will work
+        // On changing functions to know who is calling them.
+
         let channel_mgr = self.engine.channel_manager.clone();
-        let buffer_size = input.buffer_size.unwrap_or(64);
-        let (writer_ref, reader_ref) = channel_mgr.create_channel(buffer_size);
+        let buffer_size = input.buffer_size.unwrap_or(64).min(1024);
+        let (writer_ref, reader_ref) = channel_mgr.create_channel(buffer_size, None);
 
         let result = CreateChannelOutput {
             writer: writer_ref,

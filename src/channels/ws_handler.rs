@@ -12,18 +12,12 @@ use serde::Deserialize;
 
 use super::{ChannelItem, ChannelManager};
 use crate::modules::config::AppState;
+use crate::protocol::ChannelDirection;
 
 #[derive(Deserialize)]
 pub struct ChannelQuery {
     pub key: String,
     pub dir: ChannelDirection,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-pub enum ChannelDirection {
-    Read,
-    Write,
 }
 
 pub async fn channel_ws_upgrade(
@@ -118,7 +112,15 @@ async fn handle_channel_socket(
                 tracing::info!(channel_id = %channel_id, "Write: sender acquired, streaming WS → channel");
                 let mut total_bytes: u64 = 0;
                 let mut msg_count: u64 = 0;
-                while let Some(Ok(msg)) = socket.recv().await {
+                loop {
+                    let msg = match socket.recv().await {
+                        Some(Ok(msg)) => msg,
+                        Some(Err(err)) => {
+                            tracing::warn!(channel_id = %channel_id, error = ?err, "Write: WS receive error");
+                            break;
+                        }
+                        None => break,
+                    };
                     let item = match msg {
                         WsMessage::Text(s) => {
                             msg_count += 1;
