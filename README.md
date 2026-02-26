@@ -1,60 +1,148 @@
-# III Engine
+# iii
 
-III is a WebSocket-based process communication engine. Workers connect over WS, register
-functions and triggers, and the engine routes invocations between workers and core modules.
-Core modules add HTTP APIs, event stream, cron scheduling, and logging.
+**A WebSocket-based process communication engine.**
+
+[![License](https://img.shields.io/badge/license-ELv2-blue.svg)](LICENSE)
+[![Docker](https://img.shields.io/docker/v/iiidev/iii?label=docker)](https://hub.docker.com/r/iiidev/iii)
+
+Workers connect over WebSocket, register functions and triggers, and the engine routes invocations between them and its core modules. Core modules add HTTP APIs, queues, cron scheduling, state management, event streams, and observability.
+
+## Three Primitives
+
+| Primitive | What it does |
+|-----------|-------------|
+| **Worker** | A process that connects to the engine over WebSocket and runs your code |
+| **Function** | A unit of work registered by a worker — receives input, returns output |
+| **Trigger** | An event binding that invokes a function — HTTP route, cron schedule, queue topic, state change, or stream event |
 
 ## Quick Start
 
-Prerequisites:
+### 1. Install the engine
 
-- Rust 1.80+ (edition 2024)
-- Redis (only if you enable the event/cron/stream modules; the default config expects Redis at
-  `redis://localhost:6379`). Cron uses the built-in KV adapter by default.
-
-Install (prebuilt binary)
--------------------------
-This installer currently supports macOS and Linux (not native Windows).
-You can install the latest release binary with:
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-To install a specific version, pass it as the first argument (the leading `v` is optional):
+Specific version:
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- v0.2.1
 ```
-Or set `VERSION` explicitly:
-```bash
-VERSION=0.2.1 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-```
 
-By default, the binary is installed to `~/.local/bin`. Override with `BIN_DIR` or `PREFIX`:
+Override install directory:
 ```bash
 BIN_DIR=/usr/local/bin curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-To check that the binary is on your PATH and see the current version:
+Verify:
 ```bash
 command -v iii && iii --version
 ```
 
-Docker
-------
+### 2. Start the engine
 
-Pull the pre-built image:
 ```bash
-docker pull iiidev/iii:latest
+iii
 ```
 
-Run with a config file:
+The engine listens for workers at `ws://127.0.0.1:49134`.
+
+### 3. Connect a worker
+
+**Node.js**
 ```bash
+npm install iii-sdk
+```
+```javascript
+import { init } from 'iii-sdk'
+
+const iii = init('ws://localhost:49134')
+
+iii.registerFunction({ id: 'math.add' }, async (input) => {
+  return { sum: input.a + input.b }
+})
+
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'math.add',
+  config: { api_path: 'add', http_method: 'POST' },
+})
+```
+
+**Python**
+```bash
+pip install iii-sdk
+```
+```python
+from iii import III
+
+iii = III("ws://localhost:49134")
+
+async def add(data):
+    return {"sum": data["a"] + data["b"]}
+
+iii.register_function("math.add", add)
+
+async def main():
+    await iii.connect()
+
+    iii.register_trigger(
+        type="http",
+        function_id="math.add",
+        config={"api_path": "add", "http_method": "POST"}
+    )
+```
+
+**Rust**
+```rust
+use iii_sdk::III;
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let iii = III::new("ws://127.0.0.1:49134");
+    iii.connect().await?;
+
+    iii.register_function("math.add", |input| async move {
+        let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
+        let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
+        Ok(json!({ "sum": a + b }))
+    });
+
+    iii.register_trigger("http", "math.add", json!({
+        "api_path": "add",
+        "http_method": "POST"
+    }))?;
+
+    Ok(())
+}
+```
+
+Your function is now live at `http://localhost:3111/add`.
+
+## Modules
+
+| Module | Rust struct | What it does |
+|--------|------------|-------------|
+| HTTP | `RestApiModule` | Maps HTTP routes to functions via `http` triggers |
+| Queue | `QueueModule` | Redis-backed publish/subscribe job queue |
+| Cron | `CronModule` | Distributed cron scheduling with lock coordination |
+| Stream | `StreamModule` | Real-time state sync over WebSocket |
+| Observability | `OtelModule` | Structured logging, OpenTelemetry traces and metrics |
+| Shell | `ExecModule` | File watcher that runs commands on change |
+
+If `config.yaml` is missing, the engine loads defaults: HTTP, Queue, Cron, Stream, and Observability. Queue and Stream expect Redis at `redis://localhost:6379`.
+
+## Docker
+
+```bash
+docker pull iiidev/iii:latest
+
 docker run -p 3111:3111 -p 49134:49134 \
   -v ./config.yaml:/app/config.yaml:ro \
   iiidev/iii:latest
 ```
 
-**Production (hardened)**:
+**Production (hardened)**
 ```bash
 docker run --read-only --tmpfs /tmp \
   --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
@@ -69,37 +157,35 @@ docker run --read-only --tmpfs /tmp \
 docker compose up -d
 ```
 
-**Docker Compose with Caddy** (example):
-
-The included `docker-compose.prod.yml` runs iii behind a [Caddy](https://caddyserver.com/docs/) reverse proxy for TLS:
-
+**Docker Compose with Caddy** (TLS reverse proxy):
 ```bash
-# 1. Replace your-domain.com in Caddyfile with your actual domain
-# 2. Start the stack
 docker compose -f docker-compose.prod.yml up -d
 ```
 
 See the [Caddy documentation](https://caddyserver.com/docs/) for TLS and reverse proxy configuration.
 
+## Ports
+
 | Port | Service |
 |------|---------|
 | 49134 | WebSocket (worker connections) |
-| 3111 | REST API |
+| 3111 | HTTP API |
 | 3112 | Stream API |
 | 9464 | Prometheus metrics |
 
-Run the engine:
+## SDKs
 
-```bash
-cargo run
-# or explicitly pass a config
-cargo run -- --config config.yaml
-```
+| Language | Package | Install |
+|----------|---------|---------|
+| Node.js | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `npm install iii-sdk` |
+| Python | [`iii-sdk`](https://pypi.org/project/iii-sdk/) | `pip install iii-sdk` |
+| Rust | [`iii-sdk`](https://crates.io/crates/iii-sdk) | Add to `Cargo.toml` |
 
-The engine listens for workers at `ws://127.0.0.1:49134`.
+## Configuration
 
-If you want to run without Redis, create a minimal config that only loads modules you need:
+Config files support environment expansion: `${REDIS_URL:redis://localhost:6379}`.
 
+Minimal config (no Redis required):
 ```yaml
 modules:
   - class: modules::api::RestApiModule
@@ -113,78 +199,6 @@ modules:
       format: default
 ```
 
-Config files support environment expansion like `${REDIS_URL:redis://localhost:6379}`.
-
-## Connect a Worker
-
-Node.js:
-
-```javascript
-import { Bridge } from '@iii-dev/sdk'
-
-const bridge = new Bridge('ws://127.0.0.1:49134')
-
-bridge.registerFunction({ function_id: 'math.add' }, async (input) => {
-  return { sum: input.a + input.b }
-})
-```
-
-Rust:
-
-```rust
-use iii_sdk::Bridge;
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let bridge = Bridge::new("ws://127.0.0.1:49134");
-  bridge.connect().await?;
-
-  bridge.register_function("math.add", |input| async move {
-    let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
-    let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-    Ok(json!({ "sum": a + b }))
-  });
-
-  Ok(())
-}
-```
-
-## Expose an HTTP Endpoint (API trigger)
-
-The REST API module maps HTTP routes to functions via the `http` trigger type. Functions should
-return `{ "status_code": <int>, "body": <json> }`.
-
-```javascript
-bridge.registerFunction({ function_id: 'api.echo' }, async (req) => {
-  return { status_code: 200, body: { ok: true, input: req.body } }
-})
-
-bridge.registerTrigger({
-  type: 'http',
-  function_id: 'api.echo',
-  config: { api_path: 'echo', http_method: 'POST' },
-})
-```
-
-With the default API config, the endpoint will be available at:
-`http://127.0.0.1:3111/echo`.
-
-## Modules
-
-Available core modules (registered in `src/modules/config.rs`):
-
-- `modules::api::RestApiModule` – HTTP API trigger (`http`) on `host:port` (default `127.0.0.1:3111`).
-- `modules::queue::QueueModule` – Redis-backed queue system (`queue` trigger, `enqueue` function).
-- `modules::cron::CronModule` – Cron-based scheduling (`cron` trigger, built-in KV adapter by default).
-- `modules::stream::StreamModule` – Stream WebSocket API (default `127.0.0.1:3112`) and
-  `stream.set/get/delete/list` functions (Redis-backed by default).
-- `modules::observability::OtelModule` – Observability: `log.info/warn/error/debug`, traces, metrics, and alerts.
-- `modules::shell::ExecModule` – File watcher that runs commands (only when configured).
-
-If `config.yaml` is missing, the engine loads the default module list:
-RestApi, Queue, Logging, Cron, Stream. Queue/Stream expect Redis; Cron uses built-in KV by default.
-
 ## Protocol Summary
 
 The engine speaks JSON messages over WebSocket. Key message types:
@@ -196,38 +210,38 @@ Invocations can be fire-and-forget by omitting `invocation_id`.
 
 ## Repository Layout
 
-- `src/main.rs` – CLI entrypoint (`iii` binary).
-- `src/engine/` – Worker management, routing, and invocation lifecycle.
-- `src/protocol.rs` – WebSocket message schema.
-- `src/modules/` – Core modules (API, event, cron, stream, logging, shell).
-- `config.yaml` – Example module configuration.
-- `examples/custom_queue_adapter.rs` – Example of a custom module + adapter.
+- `src/main.rs` – CLI entrypoint (`iii` binary)
+- `src/engine/` – Worker management, routing, and invocation lifecycle
+- `src/protocol.rs` – WebSocket message schema
+- `src/modules/` – Core modules (API, queue, cron, stream, observability, shell)
+- `config.yaml` – Example module configuration
+- `examples/custom_queue_adapter.rs` – Custom module + adapter example
 
 ## Development
 
-- Format/lint: `cargo fmt && cargo clippy -- -D warnings`
-- Watch run: `make watch` (or `make watch-debug` for verbose logs)
-
-### Building Docker Images Locally
-
 ```bash
-# Production image (distroless runtime)
-docker build -t iii:local .
-
-# Debug image (Debian with shell, htop, vim)
-docker build -f Dockerfile.debug -t iii:debug .
-
-# Run locally built image
-docker run --rm iii:local --version
+cargo run                                # start engine
+cargo run -- --config config.yaml        # with config
+cargo fmt && cargo clippy -- -D warnings # lint
+make watch                               # watch mode
 ```
 
-### Security
+### Building Docker images locally
 
-The Docker images include:
-- Distroless runtime (no shell, minimal attack surface)
-- Non-root user execution
-- Trivy vulnerability scanning in CI
-- SBOM (Software Bill of Materials) attestation
-- Build provenance
+```bash
+docker build -t iii:local .                        # production (distroless)
+docker build -f Dockerfile.debug -t iii:debug .    # debug (Debian + shell)
+```
 
-For production deployments, always use the hardened runtime flags documented above.
+The Docker images include distroless runtime (no shell, minimal attack surface), non-root user execution, Trivy vulnerability scanning in CI, SBOM attestation, and build provenance.
+
+## Resources
+
+- [Documentation](https://iii.dev/docs)
+- [Examples](https://github.com/iii-hq/iii-examples)
+- [Console](https://github.com/iii-hq/console)
+- [SDKs](https://github.com/iii-hq/sdk)
+
+## License
+
+[Elastic License 2.0 (ELv2)](LICENSE)
