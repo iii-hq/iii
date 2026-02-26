@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -154,10 +160,7 @@ impl ChannelManager {
     }
 
     /// Spawns a background task that periodically sweeps stale channels.
-    pub fn start_sweep_task(
-        self: &Arc<Self>,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) {
+    pub fn start_sweep_task(self: &Arc<Self>, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
         let mgr = Arc::clone(self);
         tokio::spawn(async move {
             let interval = Duration::from_secs(60);

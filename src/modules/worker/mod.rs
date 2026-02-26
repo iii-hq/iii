@@ -364,7 +364,10 @@ impl Module for WorkerModule {
 
 #[service(name = "engine")]
 impl WorkerModule {
-    #[function(id = "engine::channels::create", description = "Create a streaming channel pair")]
+    #[function(
+        id = "engine::channels::create",
+        description = "Create a streaming channel pair"
+    )]
     pub async fn create_function(
         &self,
         input: CreateChannelInput,

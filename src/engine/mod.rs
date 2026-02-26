@@ -118,7 +118,11 @@ where
 
 #[allow(async_fn_in_trait)]
 pub trait EngineTrait: Send + Sync {
-    async fn call(&self, function_id: &str, input: impl Serialize + Send) -> Result<Option<Value>, ErrorBody>;
+    async fn call(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody>;
     async fn register_trigger_type(&self, trigger_type: TriggerType);
     fn register_function(
         &self,
@@ -698,7 +702,11 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
-    async fn call(&self, function_id: &str, input: impl Serialize + Send) -> Result<Option<Value>, ErrorBody> {
+    async fn call(
+        &self,
+        function_id: &str,
+        input: impl Serialize + Send,
+    ) -> Result<Option<Value>, ErrorBody> {
         let input = serde_json::to_value(input).map_err(|e| ErrorBody {
             code: "serialization_error".into(),
             message: e.to_string(),

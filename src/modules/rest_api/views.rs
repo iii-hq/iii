@@ -14,10 +14,13 @@ use axum::{
     response::IntoResponse,
 };
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::Instrument;
 
-use crate::{channels::ChannelItem, modules::rest_api::types::{HttpRequest, HttpResponse}};
+use crate::{
+    channels::ChannelItem,
+    modules::rest_api::types::{HttpRequest, HttpResponse},
+};
 
 fn generate_error_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,10 +31,7 @@ fn generate_error_id() -> String {
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
 }
 
-use super::{
-    RestApiCoreModule,
-    types::TriggerMetadata,
-};
+use super::{RestApiCoreModule, types::TriggerMetadata};
 use crate::engine::{Engine, EngineTrait};
 
 fn apply_control_message(
@@ -45,7 +45,10 @@ fn apply_control_message(
                 if let Some(code) = ctrl.get("status_code").and_then(|v| v.as_u64()) {
                     if (100..=599).contains(&code) {
                         *status_code = code as u16;
-                        tracing::debug!(status_code = *status_code, "Response channel: received set_status");
+                        tracing::debug!(
+                            status_code = *status_code,
+                            "Response channel: received set_status"
+                        );
                     } else {
                         tracing::warn!(code, "Response channel: ignoring out-of-range status code");
                     }
@@ -131,12 +134,7 @@ fn sanitize_query_params_for_logging(params: &HashMap<String, String>) -> Vec<St
 fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
     headers
         .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_string(),
-                v.to_str().unwrap_or("").to_string(),
-            )
-        })
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect()
 }
 

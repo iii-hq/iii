@@ -1,9 +1,15 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::sync::Arc;
 
 use axum::{
     extract::{
-        ws::{Message as WsMessage, WebSocket},
         Path, Query, State, WebSocketUpgrade,
+        ws::{Message as WsMessage, WebSocket},
     },
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -38,10 +44,7 @@ pub async fn channel_ws_upgrade(
 
     let channel_mgr = state.engine.channel_manager.clone();
 
-    if channel_mgr
-        .get_channel(&channel_id, &params.key)
-        .is_none()
-    {
+    if channel_mgr.get_channel(&channel_id, &params.key).is_none() {
         tracing::warn!(
             channel_id = %channel_id,
             dir = %dir_label,
