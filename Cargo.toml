@@ -26,7 +26,7 @@ iii-sdk = { version="0.3.0" , features=["otel"] }
 #iii-sdk = { path = "", features=["otel"] } for local development
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal" ] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
-tower-http = { version = "0.6", features = ["cors", "timeout"] }
+tower-http = { version = "0.6", features = ["cors", "timeout", "limit"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json", "registry"] }
 tracing-opentelemetry = "0.32"

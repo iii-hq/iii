@@ -31,7 +31,11 @@ fn generate_error_id() -> String {
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
 }
 
-use super::{RestApiCoreModule, types::TriggerMetadata};
+use super::{
+    RestApiCoreModule,
+    pipeline::{MiddlewarePipeline, PhaseResult},
+    types::TriggerMetadata,
+};
 use crate::engine::{Engine, EngineTrait};
 
 fn apply_control_message(
@@ -287,7 +291,7 @@ pub async fn dynamic_handler(
                 Value::Null
             };
 
-            let api_request_value = HttpRequest {
+            let mut api_request_value = HttpRequest {
                 query_params,
                 path_params: path_parameters,
                 headers: serialize_headers(&headers),
@@ -299,9 +303,145 @@ pub async fn dynamic_handler(
                     path: Some(registered_path.clone()),
                     method: Some(method.as_str().to_string()),
                 }),
+                context: None,
                 request_body: req_reader_ref,
                 response: res_writer_ref,
             };
+
+            let matched_route = super::MatchedRoute {
+                function_id: function_id.clone(),
+                path_pattern: registered_path.clone(),
+            };
+            let pipeline = MiddlewarePipeline::new(
+                engine.clone(),
+                engine.middleware_registry.clone(),
+            );
+            let mut request_value = serde_json::to_value(&api_request_value).unwrap_or(Value::Null);
+            let mut context_value = serde_json::json!({});
+
+            match pipeline
+                .run_phase(
+                    super::MiddlewarePhase::OnRequest,
+                    &request_value,
+                    &context_value,
+                    Some(&matched_route),
+                    &actual_path,
+                )
+                .await
+            {
+                Err(err) => {
+                    let error_id = generate_error_id();
+                    channel_mgr.remove_channel(&req_ch_id);
+                    channel_mgr.remove_channel(&res_ch_id);
+                    tracing::error!(
+                        error = ?err,
+                        error_id = %error_id,
+                        "onRequest middleware error"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "internal server error", "error_id": error_id})),
+                    )
+                        .into_response();
+                }
+                Ok(PhaseResult::Respond(resp)) => {
+                    channel_mgr.remove_channel(&req_ch_id);
+                    channel_mgr.remove_channel(&res_ch_id);
+                    let response_value =
+                        serde_json::json!({"status_code": resp.status_code, "body": resp.body});
+                    pipeline.run_on_response_fire_and_forget(
+                        &request_value,
+                        &context_value,
+                        &response_value,
+                        &actual_path,
+                    );
+                    let mut response_builder =
+                        axum::http::Response::builder().status(resp.status_code);
+                    for h in &resp.headers {
+                        if let Some((name, value)) = h.split_once(": ")
+                            && let (Ok(n), Ok(v)) = (
+                                axum::http::header::HeaderName::try_from(name),
+                                axum::http::header::HeaderValue::try_from(value),
+                            )
+                        {
+                            response_builder = response_builder.header(n, v);
+                        }
+                    }
+                    return response_builder
+                        .body(Body::from(
+                            serde_json::to_string(&resp.body).unwrap_or_default(),
+                        ))
+                        .unwrap()
+                        .into_response();
+                }
+                Ok(PhaseResult::Continue { request, context }) => {
+                    request_value = request;
+                    context_value = context;
+                }
+            }
+            api_request_value.context = Some(context_value.clone());
+
+            match pipeline
+                .run_phase(
+                    super::MiddlewarePhase::PreHandler,
+                    &request_value,
+                    &context_value,
+                    Some(&matched_route),
+                    &actual_path,
+                )
+                .await
+            {
+                Err(err) => {
+                    let error_id = generate_error_id();
+                    channel_mgr.remove_channel(&req_ch_id);
+                    channel_mgr.remove_channel(&res_ch_id);
+                    tracing::error!(
+                        error = ?err,
+                        error_id = %error_id,
+                        "preHandler middleware error"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "internal server error", "error_id": error_id})),
+                    )
+                        .into_response();
+                }
+                Ok(PhaseResult::Respond(resp)) => {
+                    channel_mgr.remove_channel(&req_ch_id);
+                    channel_mgr.remove_channel(&res_ch_id);
+                    let response_value =
+                        serde_json::json!({"status_code": resp.status_code, "body": resp.body});
+                    pipeline.run_on_response_fire_and_forget(
+                        &request_value,
+                        &context_value,
+                        &response_value,
+                        &actual_path,
+                    );
+                    let mut response_builder =
+                        axum::http::Response::builder().status(resp.status_code);
+                    for h in &resp.headers {
+                        if let Some((name, value)) = h.split_once(": ")
+                            && let (Ok(n), Ok(v)) = (
+                                axum::http::header::HeaderName::try_from(name),
+                                axum::http::header::HeaderValue::try_from(value),
+                            )
+                        {
+                            response_builder = response_builder.header(n, v);
+                        }
+                    }
+                    return response_builder
+                        .body(Body::from(
+                            serde_json::to_string(&resp.body).unwrap_or_default(),
+                        ))
+                        .unwrap()
+                        .into_response();
+                }
+                Ok(PhaseResult::Continue { request, context }) => {
+                    request_value = request;
+                    context_value = context;
+                }
+            }
+            api_request_value.context = Some(context_value.clone());
 
             // Take the response receiver BEFORE engine.call() so the channel
             // can drain concurrently -- the worker sends text control messages
@@ -406,7 +546,7 @@ pub async fn dynamic_handler(
                         result = &mut call_handle => {
                             match result {
                                 Ok(Ok(Some(result))) => {
-                                    let http_response = HttpResponse::from_function_return(result);
+                                    let http_response = HttpResponse::from_function_return(result.clone());
                                     let status_code = http_response.status_code;
 
                                     tracing::Span::current().record("http.response.status_code", status_code);
@@ -415,6 +555,14 @@ pub async fn dynamic_handler(
 
                                     channel_mgr.remove_channel(&res_ch_id);
                                     channel_mgr.remove_channel(&req_ch_id);
+                                    let response_value =
+                                        serde_json::json!({"status_code": status_code, "body": http_response.body});
+                                    pipeline.run_on_response_fire_and_forget(
+                                        &request_value,
+                                        &context_value,
+                                        &response_value,
+                                        &actual_path,
+                                    );
                                     return (StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK), Json(http_response.body)).into_response();
                                 }
                                 Ok(Ok(_)) => {
@@ -483,6 +631,17 @@ pub async fn dynamic_handler(
                 channel_mgr.remove_channel(&res_ch_id);
                 channel_mgr.remove_channel(&req_ch_id);
 
+                let response_value = serde_json::json!({
+                    "status_code": status_code,
+                    "body": {}
+                });
+                pipeline.run_on_response_fire_and_forget(
+                    &request_value,
+                    &context_value,
+                    &response_value,
+                    &actual_path,
+                );
+
                 let stream = futures::stream::unfold(
                     (first_binary_chunk, rx),
                     |(pending, mut rx)| async move {
@@ -535,11 +694,24 @@ pub async fn dynamic_handler(
             return match func_result {
                 Ok(Ok(result)) => {
                     let result = result.unwrap_or(json!({}));
-                    let sc = result.get("status_code").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+                    let sc = result
+                        .get("status_code")
+                        .and_then(|v| v.as_u64())
+                        .filter(|c| (100..=599).contains(c))
+                        .map(|c| c as u16)
+                        .unwrap_or(200);
                     tracing::Span::current().record("http.response.status_code", sc);
                     let otel = if (200..300).contains(&sc) { "OK" } else { "ERROR" };
                     tracing::Span::current().record("otel.status_code", otel);
                     let body = result.get("body").cloned().unwrap_or(json!({}));
+                    let response_value =
+                        serde_json::json!({"status_code": sc, "body": body});
+                    pipeline.run_on_response_fire_and_forget(
+                        &request_value,
+                        &context_value,
+                        &response_value,
+                        &actual_path,
+                    );
                     (StatusCode::from_u16(sc).unwrap_or(StatusCode::OK), Json(body)).into_response()
                 }
                 Ok(Err(err)) => {
@@ -573,6 +745,87 @@ pub async fn dynamic_handler(
                     ).into_response()
                 }
             };
+        }
+
+        if let Some(ref not_found_fn) = api_handler.config.not_found_function {
+            let (req_writer_ref, req_reader_ref) =
+                engine.channel_manager.create_channel(64, None);
+            let (res_writer_ref, res_reader_ref) =
+                engine.channel_manager.create_channel(64, None);
+            let req_ch_id = req_writer_ref.channel_id.clone();
+            let res_ch_id = res_reader_ref.channel_id.clone();
+            let req_tx = engine
+                .channel_manager
+                .take_sender(&req_ch_id, &req_writer_ref.access_key)
+                .await;
+            let parsed_body: Value = if content_type.contains("application/json") {
+                let mut buf = Vec::new();
+                let mut body = body;
+                while let Some(frame_result) = body.frame().await {
+                    if let Ok(frame) = frame_result {
+                        if let Ok(data) = frame.into_data() {
+                            buf.extend_from_slice(&data);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                serde_json::from_slice(&buf).unwrap_or(Value::Null)
+            } else if let Some(tx) = req_tx {
+                let mut body = body;
+                tokio::spawn(async move {
+                    while let Some(frame_result) = body.frame().await {
+                        if let Ok(frame) = frame_result {
+                            if let Ok(data) = frame.into_data() {
+                                let _ = tx.send(ChannelItem::Binary(data)).await;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                });
+                Value::Null
+            } else {
+                Value::Null
+            };
+            let api_request = HttpRequest {
+                query_params: query_params.clone(),
+                path_params: HashMap::new(),
+                headers: serialize_headers(&headers),
+                path: actual_path.clone(),
+                method: method.as_str().to_string(),
+                body: parsed_body,
+                trigger: Some(TriggerMetadata {
+                    trigger_type: "http".to_string(),
+                    path: Some(actual_path.clone()),
+                    method: Some(method.as_str().to_string()),
+                }),
+                context: None,
+                request_body: req_reader_ref,
+                response: res_writer_ref,
+            };
+            match engine.call(not_found_fn, api_request).await {
+                Ok(Some(result)) => {
+                    let sc = result
+                        .get("status_code")
+                        .and_then(|v| v.as_u64())
+                        .filter(|c| (100..=599).contains(c))
+                        .map(|c| c as u16)
+                        .unwrap_or(404);
+                    let body = result.get("body").cloned().unwrap_or(json!({}));
+                    engine.channel_manager.remove_channel(&req_ch_id);
+                    engine.channel_manager.remove_channel(&res_ch_id);
+                    return (
+                        StatusCode::from_u16(sc).unwrap_or(StatusCode::NOT_FOUND),
+                        Json(body),
+                    )
+                        .into_response();
+                }
+                _ => {
+                    engine.channel_manager.remove_channel(&req_ch_id);
+                    engine.channel_manager.remove_channel(&res_ch_id);
+                }
+            }
         }
 
         tracing::Span::current().record("http.response.status_code", 404u16);

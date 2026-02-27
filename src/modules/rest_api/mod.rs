@@ -7,7 +7,12 @@
 mod api_core;
 mod config;
 mod hot_router;
+mod middleware;
+mod pipeline;
 mod types;
 mod views;
 
 pub use api_core::RestApiCoreModule;
+pub use middleware::{MiddlewareEntry, MiddlewarePhase, MiddlewareRegistry, MiddlewareScope};
+pub use pipeline::MiddlewarePipeline;
+pub use types::{MatchedRoute, MiddlewareAction, MiddlewareRequest};

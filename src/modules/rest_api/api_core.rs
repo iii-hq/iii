@@ -19,6 +19,7 @@ use tokio::{net::TcpListener, sync::RwLock};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
     cors::{Any as HTTP_Any, CorsLayer},
+    limit::RequestBodyLimitLayer,
     timeout::TimeoutLayer,
 };
 
@@ -60,7 +61,7 @@ impl PathRouter {
 #[derive(Clone)]
 pub struct RestApiCoreModule {
     engine: Arc<Engine>,
-    config: RestApiConfig,
+    pub config: RestApiConfig,
     pub routers_registry: Arc<DashMap<String, PathRouter>>,
     shared_routers: Arc<RwLock<Router>>,
 }
@@ -158,6 +159,8 @@ impl RestApiCoreModule {
         );
 
         new_router = new_router.layer(cors_layer);
+
+        new_router = new_router.layer(RequestBodyLimitLayer::new(self.config.body_limit));
 
         new_router = new_router.layer(TimeoutLayer::with_status_code(
             StatusCode::GATEWAY_TIMEOUT,

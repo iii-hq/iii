@@ -31,9 +31,33 @@ pub struct HttpRequest {
     pub body: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TriggerMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<Value>,
 
     pub request_body: StreamChannelRef,
     pub response: StreamChannelRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiddlewareRequest {
+    pub phase: String,
+    pub request: Value,
+    pub context: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_route: Option<MatchedRoute>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedRoute {
+    pub function_id: String,
+    pub path_pattern: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MiddlewareAction {
+    Continue,
+    Respond,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

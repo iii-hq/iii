@@ -20,7 +20,10 @@ use crate::{
     channels::ChannelManager,
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    modules::{http_functions::HttpFunctionsModule, worker::TRIGGER_WORKERS_AVAILABLE},
+    modules::{
+        http_functions::HttpFunctionsModule, rest_api::MiddlewareRegistry,
+        worker::TRIGGER_WORKERS_AVAILABLE,
+    },
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -139,7 +142,7 @@ pub trait EngineTrait: Send + Sync {
         F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Engine {
     pub worker_registry: Arc<WorkerRegistry>,
     pub functions: Arc<FunctionsRegistry>,
@@ -147,6 +150,13 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
+    pub middleware_registry: Arc<MiddlewareRegistry>,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Engine {
@@ -158,6 +168,7 @@ impl Engine {
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
+            middleware_registry: Arc::new(MiddlewareRegistry::new()),
         }
     }
 
@@ -600,6 +611,57 @@ impl Engine {
 
                 Ok(())
             }
+            Message::RegisterMiddleware {
+                middleware_id,
+                phase,
+                scope,
+                priority,
+                function_id,
+            } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    middleware_id = %middleware_id,
+                    phase = %phase,
+                    function_id = %function_id,
+                    "RegisterMiddleware"
+                );
+                if self.functions.get(function_id).is_none() {
+                    tracing::warn!(
+                        middleware_id = %middleware_id,
+                        function_id = %function_id,
+                        "Middleware function not found, skipping registration"
+                    );
+                    return Ok(());
+                }
+                let phase_enum = crate::modules::rest_api::MiddlewarePhase::parse(phase)
+                    .unwrap_or(crate::modules::rest_api::MiddlewarePhase::PreHandler);
+                let scope_opt = scope
+                    .as_ref()
+                    .map(|s| crate::modules::rest_api::MiddlewareScope {
+                        path: s.path.clone(),
+                    });
+                let entry = crate::modules::rest_api::MiddlewareEntry {
+                    middleware_id: middleware_id.clone(),
+                    phase: phase_enum,
+                    scope: scope_opt,
+                    priority: priority.unwrap_or(100),
+                    function_id: function_id.clone(),
+                    worker_id: worker.id,
+                };
+                self.middleware_registry.register(entry);
+                Ok(())
+            }
+            Message::DeregisterMiddleware { middleware_id } => {
+                tracing::debug!(
+                    worker_id = %worker.id,
+                    middleware_id = %middleware_id,
+                    "DeregisterMiddleware"
+                );
+                self.middleware_registry.deregister(middleware_id);
+                Ok(())
+            }
+            Message::InvokeMiddleware { .. } => Ok(()),
+            Message::MiddlewareResult { .. } => Ok(()),
             Message::Ping => {
                 self.send_msg(worker, Message::Pong).await;
                 Ok(())
@@ -785,6 +847,7 @@ impl Engine {
         }
 
         self.trigger_registry.unregister_worker(&worker.id).await;
+        self.middleware_registry.deregister_by_worker(&worker.id);
         self.channel_manager.remove_channels_by_worker(&worker.id);
         self.worker_registry.unregister_worker(&worker.id);
 

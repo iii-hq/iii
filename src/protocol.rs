@@ -99,11 +99,44 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    RegisterMiddleware {
+        middleware_id: String,
+        phase: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        scope: Option<RegisterMiddlewareScope>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        priority: Option<u16>,
+        function_id: String,
+    },
+    DeregisterMiddleware {
+        middleware_id: String,
+    },
+    InvokeMiddleware {
+        invocation_id: Uuid,
+        middleware_id: String,
+        phase: String,
+        request: serde_json::Value,
+    },
+    MiddlewareResult {
+        invocation_id: Uuid,
+        action: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        response: Option<Value>,
+    },
     Ping,
     Pong,
     WorkerRegistered {
         worker_id: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterMiddlewareScope {
+    pub path: String,
 }
 
 /// Worker resource metrics for health monitoring.
@@ -255,6 +288,49 @@ mod tests {
                     }
                     _ => panic!("unexpected auth variant"),
                 }
+            }
+            _ => panic!("unexpected message variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_register_middleware() {
+        let raw = r#"{
+            "type":"registermiddleware",
+            "middleware_id":"auth-check",
+            "phase":"preHandler",
+            "scope":{"path":"/api/*"},
+            "priority":10,
+            "function_id":"my-auth-middleware"
+        }"#;
+        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
+
+        match message {
+            Message::RegisterMiddleware {
+                middleware_id,
+                phase,
+                scope,
+                priority,
+                function_id,
+            } => {
+                assert_eq!(middleware_id, "auth-check");
+                assert_eq!(phase, "preHandler");
+                assert_eq!(scope.as_ref().unwrap().path, "/api/*");
+                assert_eq!(priority, Some(10));
+                assert_eq!(function_id, "my-auth-middleware");
+            }
+            _ => panic!("unexpected message variant"),
+        }
+    }
+
+    #[test]
+    fn deserialize_deregister_middleware() {
+        let raw = r#"{"type":"deregistermiddleware","middleware_id":"auth-check"}"#;
+        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
+
+        match message {
+            Message::DeregisterMiddleware { middleware_id } => {
+                assert_eq!(middleware_id, "auth-check");
             }
             _ => panic!("unexpected message variant"),
         }
