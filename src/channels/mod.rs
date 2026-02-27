@@ -133,19 +133,23 @@ impl ChannelManager {
     /// not been fully connected (at least one of tx/rx is still untaken).
     pub async fn sweep_stale_channels(&self) -> usize {
         let now = Instant::now();
-        let mut stale_ids = Vec::new();
 
-        for entry in self.channels.iter() {
-            let ch = entry.value();
-            if now.duration_since(ch.created_at) > CHANNEL_TTL {
-                let tx_taken = ch.tx.lock().await.is_none();
-                let rx_taken = ch.rx.lock().await.is_none();
-                // If both endpoints were taken, the channel is actively in use
-                // and will be cleaned up by ws_handler or views.rs when done.
-                // Stale = at least one side never connected.
-                if !tx_taken || !rx_taken {
-                    stale_ids.push(entry.key().clone());
-                }
+        let candidates: Vec<(String, Arc<StreamChannel>)> = self
+            .channels
+            .iter()
+            .filter(|entry| now.duration_since(entry.value().created_at) > CHANNEL_TTL)
+            .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
+            .collect();
+
+        let mut stale_ids = Vec::new();
+        for (id, ch) in candidates {
+            let tx_taken = ch.tx.lock().await.is_none();
+            let rx_taken = ch.rx.lock().await.is_none();
+            // If both endpoints were taken, the channel is actively in use
+            // and will be cleaned up by ws_handler or views.rs when done.
+            // Stale = at least one side never connected.
+            if !tx_taken || !rx_taken {
+                stale_ids.push(id);
             }
         }
 
