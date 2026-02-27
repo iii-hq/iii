@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use colored::Colorize;
 use cron::Schedule;
 use tokio::{task::JoinHandle, time::sleep};
+use tracing::Instrument;
 
 use crate::engine::{Engine, EngineTrait};
 
@@ -127,63 +128,92 @@ impl CronAdapter {
 
                 // Try to acquire the distributed lock
                 if scheduler.try_acquire_lock(&job_id).await {
-                    tracing::info!(
-                        "{} Cron job {} → {}",
-                        "[TRIGGERED]".green(),
-                        job_id.purple(),
-                        function_id.cyan()
+                    let cron_span = tracing::info_span!(
+                        "cron_trigger",
+                        otel.name = %format!("call {}", function_id),
+                        otel.kind = "producer",
+                        otel.status_code = tracing::field::Empty,
+                        job_id = %job_id,
+                        function_id = %function_id,
+                        "faas.trigger" = "timer",
                     );
 
-                    // Create the cron event payload
-                    let event_data = serde_json::json!({
-                        "trigger": "cron",
-                        "job_id": job_id,
-                        "scheduled_time": next.to_rfc3339(),
-                        "actual_time": chrono::Utc::now().to_rfc3339(),
-                    });
-
-                    if let Some(condition_function_id) = condition_function_id.as_ref() {
-                        tracing::debug!(
-                            condition_function_id = %condition_function_id,
-                            "Checking trigger conditions"
+                    async {
+                        tracing::info!(
+                            "{} Cron job {} → {}",
+                            "[TRIGGERED]".green(),
+                            job_id.purple(),
+                            function_id.cyan()
                         );
 
-                        match engine.call(condition_function_id, event_data.clone()).await {
-                            Ok(Some(result)) => {
-                                if let Some(passed) = result.as_bool()
-                                    && !passed
-                                {
-                                    tracing::debug!(
-                                        function_id = %function_id,
-                                        "Condition check failed, skipping handler"
+                        // Create the cron event payload
+                        let event_data = serde_json::json!({
+                            "trigger": "cron",
+                            "job_id": job_id,
+                            "scheduled_time": next.to_rfc3339(),
+                            "actual_time": chrono::Utc::now().to_rfc3339(),
+                        });
+
+                        if let Some(condition_function_id) = condition_function_id.as_ref() {
+                            tracing::debug!(
+                                condition_function_id = %condition_function_id,
+                                "Checking trigger conditions"
+                            );
+
+                            match engine.call(condition_function_id, event_data.clone()).await {
+                                Ok(Some(result)) => {
+                                    if let Some(passed) = result.as_bool()
+                                        && !passed
+                                    {
+                                        tracing::debug!(
+                                            function_id = %function_id,
+                                            "Condition check failed, skipping handler"
+                                        );
+                                        tracing::Span::current().record("otel.status_code", "OK");
+                                        scheduler.release_lock(&job_id).await;
+                                        return;
+                                    }
+                                }
+                                Ok(None) => {
+                                    tracing::warn!(
+                                        condition_function_id = %condition_function_id,
+                                        "Condition function returned no result"
                                     );
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        condition_function_id = %condition_function_id,
+                                        error = ?err,
+                                        "Error invoking condition function"
+                                    );
+                                    tracing::Span::current().record("otel.status_code", "ERROR");
                                     scheduler.release_lock(&job_id).await;
-                                    continue;
+                                    return;
                                 }
                             }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    condition_function_id = %condition_function_id,
-                                    "Condition function returned no result"
-                                );
+                        }
+
+                        match engine.call(&function_id, event_data).await {
+                            Ok(_) => {
+                                crate::modules::telemetry::collector::track_cron_execution();
+                                tracing::Span::current().record("otel.status_code", "OK");
                             }
-                            Err(err) => {
+                            Err(e) => {
                                 tracing::error!(
-                                    condition_function_id = %condition_function_id,
-                                    error = ?err,
-                                    "Error invoking condition function"
+                                    job_id = %job_id,
+                                    function_id = %function_id,
+                                    error = ?e,
+                                    "Cron job execution failed"
                                 );
-                                scheduler.release_lock(&job_id).await;
-                                continue;
+                                tracing::Span::current().record("otel.status_code", "ERROR");
                             }
                         }
+
+                        // Release the lock regardless of success or error
+                        scheduler.release_lock(&job_id).await;
                     }
-
-                    let _ = engine.call(&function_id, event_data).await;
-                    crate::modules::telemetry::collector::track_cron_execution();
-
-                    // Release the lock
-                    scheduler.release_lock(&job_id).await;
+                    .instrument(cron_span)
+                    .await;
                 } else {
                     tracing::debug!(
                         job_id = %job_id,

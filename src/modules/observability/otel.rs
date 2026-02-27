@@ -649,6 +649,32 @@ impl SpanExporter for TeeSpanExporter {
 
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
+/// Global OTLP exporter for forwarding SDK-ingested spans to the collector.
+/// `SpanExporter::export` takes `&self`, so no Mutex is needed.
+static SDK_SPAN_FORWARDER: OnceLock<Arc<opentelemetry_otlp::SpanExporter>> = OnceLock::new();
+
+/// Build a second OTLP span exporter and store it in the global `SDK_SPAN_FORWARDER`
+/// so that SDK-ingested spans can be forwarded to the collector.
+fn init_sdk_span_forwarder(endpoint: &str) {
+    match opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+    {
+        Ok(forwarder) => {
+            if SDK_SPAN_FORWARDER.set(Arc::new(forwarder)).is_err() {
+                tracing::debug!("SDK span forwarder already initialized");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to create SDK span forwarder, SDK spans will not be exported to collector"
+            );
+        }
+    }
+}
+
 /// Initialize OpenTelemetry with the given configuration.
 ///
 /// Returns an `OpenTelemetryLayer` that can be composed with other tracing layers,
@@ -698,12 +724,21 @@ where
                 .with_endpoint(&config.endpoint)
                 .build()
             {
-                Ok(exporter) => SdkTracerProvider::builder()
-                    .with_batch_exporter(exporter)
-                    .with_sampler(sampler)
-                    .with_id_generator(RandomIdGenerator::default())
-                    .with_resource(resource)
-                    .build(),
+                Ok(exporter) => {
+                    init_sdk_span_forwarder(&config.endpoint);
+
+                    // Initialize in-memory storage for SDK span ingestion (API access)
+                    let memory_storage =
+                        Arc::new(InMemorySpanStorage::new(config.memory_max_spans));
+                    let _ = IN_MEMORY_STORAGE.set(memory_storage);
+
+                    SdkTracerProvider::builder()
+                        .with_batch_exporter(exporter)
+                        .with_sampler(sampler)
+                        .with_id_generator(RandomIdGenerator::default())
+                        .with_resource(resource)
+                        .build()
+                }
                 Err(e) => {
                     tracing::error!(
                         error = %e,
@@ -749,6 +784,8 @@ where
                 .build()
             {
                 Ok(otlp_exporter) => {
+                    init_sdk_span_forwarder(&config.endpoint);
+
                     // Create tee exporter that sends to both
                     let tee_exporter = TeeSpanExporter::new(
                         otlp_exporter,
@@ -1003,6 +1040,9 @@ struct OtlpSpan {
     #[serde(default)]
     parent_span_id: Option<String>,
     name: String,
+    /// OTLP span kind: 0=Unspecified, 1=Internal, 2=Server, 3=Client, 4=Producer, 5=Consumer
+    #[serde(default)]
+    kind: Option<u32>,
     #[serde(default)]
     start_time_unix_nano: OtlpNumericString,
     #[serde(default)]
@@ -1170,6 +1210,201 @@ fn extract_service_name(resource: &Option<OtlpResource>) -> String {
     "unknown".to_string()
 }
 
+/// Convert an OtlpKeyValue to an opentelemetry KeyValue.
+fn otlp_kv_to_key_value(kv: &OtlpKeyValue) -> Option<KeyValue> {
+    let val = kv.value.as_ref()?;
+    let value = if let Some(s) = &val.string_value {
+        opentelemetry::Value::String(s.clone().into())
+    } else if let Some(i) = val.int_value {
+        opentelemetry::Value::I64(i)
+    } else if let Some(d) = val.double_value {
+        opentelemetry::Value::F64(d)
+    } else if let Some(b) = val.bool_value {
+        opentelemetry::Value::Bool(b)
+    } else {
+        return None;
+    };
+    Some(KeyValue::new(kv.key.clone(), value))
+}
+
+/// Convert parsed OTLP spans to SpanData for export via the OTel SDK pipeline.
+fn convert_otlp_to_span_data(request: &OtlpExportTraceServiceRequest) -> Vec<SpanData> {
+    use opentelemetry::trace::{
+        Event, Link, SpanContext, SpanKind, Status, TraceFlags, TraceState,
+    };
+    use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+    use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+    use std::borrow::Cow;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let mut span_data_vec = Vec::new();
+
+    for resource_span in &request.resource_spans {
+        for scope_span in &resource_span.scope_spans {
+            let scope = scope_span
+                .scope
+                .as_ref()
+                .map(|s| {
+                    let mut builder = InstrumentationScope::builder(s.name.clone());
+                    if !s.version.is_empty() {
+                        builder = builder.with_version(s.version.clone());
+                    }
+                    builder.build()
+                })
+                .unwrap_or_else(|| InstrumentationScope::builder("unknown").build());
+
+            for span in &scope_span.spans {
+                // Parse trace and span IDs
+                let trace_id = match TraceId::from_hex(&span.trace_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let span_id = match SpanId::from_hex(&span.span_id) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+
+                let parent_span_id = span
+                    .parent_span_id
+                    .as_ref()
+                    .and_then(|p| {
+                        if p.is_empty() || p.chars().all(|c| c == '0') {
+                            None
+                        } else {
+                            SpanId::from_hex(p).ok()
+                        }
+                    })
+                    .unwrap_or(SpanId::INVALID);
+
+                // Spans arriving via ingest_otlp_json originate from an external SDK
+                // process (Node.js), so a valid parent span is always remote.
+                let parent_span_is_remote = parent_span_id != SpanId::INVALID;
+
+                // Respect incoming W3C trace flags from the OTLP span (lowest 8 bits
+                // of the u32). Fall back to SAMPLED when absent, since spans
+                // arriving via OTLP were already exported by the upstream SDK.
+                let trace_flags = span
+                    .flags
+                    .map(|f| TraceFlags::new(f as u8))
+                    .unwrap_or(TraceFlags::SAMPLED);
+
+                let span_context =
+                    SpanContext::new(trace_id, span_id, trace_flags, true, TraceState::NONE);
+
+                let start_time = UNIX_EPOCH + Duration::from_nanos(span.start_time_unix_nano.0);
+                let end_time = UNIX_EPOCH + Duration::from_nanos(span.end_time_unix_nano.0);
+
+                let attributes: Vec<KeyValue> = span
+                    .attributes
+                    .iter()
+                    .filter_map(otlp_kv_to_key_value)
+                    .collect();
+
+                // Determine span kind from the numeric `kind` field, or fall back
+                // to checking the "otel.kind" attribute string.
+                let span_kind = span
+                    .kind
+                    .and_then(|k| match k {
+                        1 => Some(SpanKind::Internal),
+                        2 => Some(SpanKind::Server),
+                        3 => Some(SpanKind::Client),
+                        4 => Some(SpanKind::Producer),
+                        5 => Some(SpanKind::Consumer),
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        attributes
+                            .iter()
+                            .find(|kv| kv.key.as_str() == "otel.kind")
+                            .and_then(|kv| match kv.value.as_str().as_ref() {
+                                "client" | "CLIENT" => Some(SpanKind::Client),
+                                "server" | "SERVER" => Some(SpanKind::Server),
+                                "producer" | "PRODUCER" => Some(SpanKind::Producer),
+                                "consumer" | "CONSUMER" => Some(SpanKind::Consumer),
+                                "internal" | "INTERNAL" => Some(SpanKind::Internal),
+                                _ => None,
+                            })
+                    })
+                    .unwrap_or(SpanKind::Internal);
+
+                let events: Vec<Event> = span
+                    .events
+                    .iter()
+                    .map(|e| {
+                        let ts = UNIX_EPOCH + Duration::from_nanos(e.time_unix_nano.0);
+                        let attrs: Vec<KeyValue> = e
+                            .attributes
+                            .iter()
+                            .filter_map(otlp_kv_to_key_value)
+                            .collect();
+                        Event::new(e.name.clone(), ts, attrs, 0)
+                    })
+                    .collect();
+
+                let links: Vec<Link> = span
+                    .links
+                    .iter()
+                    .filter_map(|l| {
+                        let lt = TraceId::from_hex(&l.trace_id).ok()?;
+                        let ls = SpanId::from_hex(&l.span_id).ok()?;
+                        let trace_state = l
+                            .trace_state
+                            .as_deref()
+                            .and_then(|ts| ts.parse::<TraceState>().ok())
+                            .unwrap_or(TraceState::NONE);
+                        // OtlpSpanLink does not expose per-link trace flags in the
+                        // current OTLP spec; default to TraceFlags::SAMPLED. If
+                        // OtlpSpanLink gains a flags field, parse it here via
+                        // TraceFlags::new() and pass to SpanContext::new instead.
+                        let lc = SpanContext::new(lt, ls, TraceFlags::SAMPLED, true, trace_state);
+                        let attrs: Vec<KeyValue> = l
+                            .attributes
+                            .iter()
+                            .filter_map(otlp_kv_to_key_value)
+                            .collect();
+                        Some(Link::new(lc, attrs, 0))
+                    })
+                    .collect();
+
+                let status = match span.status.as_ref() {
+                    Some(s) => match s.code {
+                        1 => Status::Ok,
+                        2 => Status::error(s.message.as_deref().unwrap_or("error").to_string()),
+                        _ => Status::Unset,
+                    },
+                    None => Status::Unset,
+                };
+
+                let mut span_events = SpanEvents::default();
+                span_events.events = events;
+
+                let mut span_links = SpanLinks::default();
+                span_links.links = links;
+
+                let sd = SpanData {
+                    span_context,
+                    parent_span_id,
+                    parent_span_is_remote,
+                    span_kind,
+                    name: Cow::Owned(span.name.clone()),
+                    start_time,
+                    end_time,
+                    attributes,
+                    dropped_attributes_count: 0,
+                    events: span_events,
+                    links: span_links,
+                    status,
+                    instrumentation_scope: scope.clone(),
+                };
+
+                span_data_vec.push(sd);
+            }
+        }
+    }
+
+    span_data_vec
+}
+
 /// Ingest OTLP JSON data from Node SDK and merge into in-memory storage.
 ///
 /// This function is called when the engine receives an OTLP binary frame
@@ -1179,130 +1414,142 @@ pub async fn ingest_otlp_json(json_str: &str) -> anyhow::Result<()> {
     let request: OtlpExportTraceServiceRequest = serde_json::from_str(json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse OTLP JSON: {}", e))?;
 
-    // Get the in-memory storage (if available)
-    let storage = match get_span_storage() {
-        Some(s) => s,
-        None => {
-            tracing::debug!("No in-memory span storage available, skipping OTLP ingestion");
-            return Ok(());
-        }
-    };
+    // Store in memory if available (for API access)
+    if let Some(storage) = get_span_storage() {
+        let mut stored_spans = Vec::new();
 
-    // Convert OTLP spans to StoredSpan and add to storage
-    let mut stored_spans = Vec::new();
+        for resource_span in &request.resource_spans {
+            let service_name = extract_service_name(&resource_span.resource);
 
-    for resource_span in &request.resource_spans {
-        let service_name = extract_service_name(&resource_span.resource);
+            for scope_span in &resource_span.scope_spans {
+                // Extract instrumentation scope info
+                let scope_name = scope_span
+                    .scope
+                    .as_ref()
+                    .map(|s| s.name.clone())
+                    .filter(|s| !s.is_empty());
+                let scope_version = scope_span
+                    .scope
+                    .as_ref()
+                    .map(|s| s.version.clone())
+                    .filter(|s| !s.is_empty());
 
-        for scope_span in &resource_span.scope_spans {
-            // Extract instrumentation scope info
-            let scope_name = scope_span
-                .scope
-                .as_ref()
-                .map(|s| s.name.clone())
-                .filter(|s| !s.is_empty());
-            let scope_version = scope_span
-                .scope
-                .as_ref()
-                .map(|s| s.version.clone())
-                .filter(|s| !s.is_empty());
-
-            for span in &scope_span.spans {
-                // Convert parent_span_id (skip if empty or all zeros)
-                let parent_span_id = span.parent_span_id.as_ref().and_then(|p| {
-                    if p.is_empty() || p == "0000000000000000" || p.chars().all(|c| c == '0') {
-                        None
-                    } else {
-                        Some(p.clone())
-                    }
-                });
-
-                // Convert attributes
-                let attributes: Vec<(String, String)> = span
-                    .attributes
-                    .iter()
-                    .filter_map(|kv| {
-                        kv.value
-                            .as_ref()
-                            .map(|v| (kv.key.clone(), v.to_string_value()))
-                    })
-                    .collect();
-
-                // Convert events
-                let events: Vec<StoredSpanEvent> = span
-                    .events
-                    .iter()
-                    .map(|event| {
-                        let attrs: Vec<(String, String)> = event
-                            .attributes
-                            .iter()
-                            .filter_map(|kv| {
-                                kv.value
-                                    .as_ref()
-                                    .map(|v| (kv.key.clone(), v.to_string_value()))
-                            })
-                            .collect();
-                        StoredSpanEvent {
-                            name: event.name.clone(),
-                            timestamp_unix_nano: event.time_unix_nano.0,
-                            attributes: attrs,
+                for span in &scope_span.spans {
+                    // Convert parent_span_id (skip if empty or all zeros)
+                    let parent_span_id = span.parent_span_id.as_ref().and_then(|p| {
+                        if p.is_empty() || p == "0000000000000000" || p.chars().all(|c| c == '0') {
+                            None
+                        } else {
+                            Some(p.clone())
                         }
-                    })
-                    .collect();
+                    });
 
-                // Convert links
-                let links: Vec<StoredSpanLink> = span
-                    .links
-                    .iter()
-                    .map(|link| {
-                        let attrs: Vec<(String, String)> = link
-                            .attributes
-                            .iter()
-                            .filter_map(|kv| {
-                                kv.value
-                                    .as_ref()
-                                    .map(|v| (kv.key.clone(), v.to_string_value()))
-                            })
-                            .collect();
-                        StoredSpanLink {
-                            trace_id: link.trace_id.clone(),
-                            span_id: link.span_id.clone(),
-                            trace_state: link.trace_state.clone(),
-                            attributes: attrs,
-                        }
-                    })
-                    .collect();
+                    // Convert attributes
+                    let attributes: Vec<(String, String)> = span
+                        .attributes
+                        .iter()
+                        .filter_map(|kv| {
+                            kv.value
+                                .as_ref()
+                                .map(|v| (kv.key.clone(), v.to_string_value()))
+                        })
+                        .collect();
 
-                let (status, status_description) =
-                    otlp_status_to_string_with_description(span.status.as_ref());
+                    // Convert events
+                    let events: Vec<StoredSpanEvent> = span
+                        .events
+                        .iter()
+                        .map(|event| {
+                            let attrs: Vec<(String, String)> = event
+                                .attributes
+                                .iter()
+                                .filter_map(|kv| {
+                                    kv.value
+                                        .as_ref()
+                                        .map(|v| (kv.key.clone(), v.to_string_value()))
+                                })
+                                .collect();
+                            StoredSpanEvent {
+                                name: event.name.clone(),
+                                timestamp_unix_nano: event.time_unix_nano.0,
+                                attributes: attrs,
+                            }
+                        })
+                        .collect();
 
-                let stored_span = StoredSpan {
-                    trace_id: span.trace_id.clone(),
-                    span_id: span.span_id.clone(),
-                    parent_span_id,
-                    name: span.name.clone(),
-                    start_time_unix_nano: span.start_time_unix_nano.0,
-                    end_time_unix_nano: span.end_time_unix_nano.0,
-                    status,
-                    status_description,
-                    attributes,
-                    service_name: service_name.clone(),
-                    events,
-                    links,
-                    instrumentation_scope_name: scope_name.clone(),
-                    instrumentation_scope_version: scope_version.clone(),
-                    flags: span.flags,
-                };
+                    // Convert links
+                    let links: Vec<StoredSpanLink> = span
+                        .links
+                        .iter()
+                        .map(|link| {
+                            let attrs: Vec<(String, String)> = link
+                                .attributes
+                                .iter()
+                                .filter_map(|kv| {
+                                    kv.value
+                                        .as_ref()
+                                        .map(|v| (kv.key.clone(), v.to_string_value()))
+                                })
+                                .collect();
+                            StoredSpanLink {
+                                trace_id: link.trace_id.clone(),
+                                span_id: link.span_id.clone(),
+                                trace_state: link.trace_state.clone(),
+                                attributes: attrs,
+                            }
+                        })
+                        .collect();
 
-                stored_spans.push(stored_span);
+                    let (status, status_description) =
+                        otlp_status_to_string_with_description(span.status.as_ref());
+
+                    let stored_span = StoredSpan {
+                        trace_id: span.trace_id.clone(),
+                        span_id: span.span_id.clone(),
+                        parent_span_id,
+                        name: span.name.clone(),
+                        start_time_unix_nano: span.start_time_unix_nano.0,
+                        end_time_unix_nano: span.end_time_unix_nano.0,
+                        status,
+                        status_description,
+                        attributes,
+                        service_name: service_name.clone(),
+                        events,
+                        links,
+                        instrumentation_scope_name: scope_name.clone(),
+                        instrumentation_scope_version: scope_version.clone(),
+                        flags: span.flags,
+                    };
+
+                    stored_spans.push(stored_span);
+                }
             }
+        }
+
+        let span_count = stored_spans.len();
+        if span_count > 0 {
+            storage.add_spans(stored_spans);
+            tracing::debug!(
+                span_count = span_count,
+                "Ingested OTLP spans into memory storage"
+            );
         }
     }
 
-    let span_count = stored_spans.len();
-    if span_count > 0 {
-        storage.add_spans(stored_spans);
-        tracing::debug!(span_count = span_count, "Ingested OTLP spans from Node SDK");
+    // Forward to OTLP collector if forwarder is available
+    if let Some(forwarder) = SDK_SPAN_FORWARDER.get() {
+        let span_data = convert_otlp_to_span_data(&request);
+        if !span_data.is_empty() {
+            let count = span_data.len();
+            match forwarder.export(span_data).await {
+                Ok(()) => {
+                    tracing::debug!(span_count = count, "Forwarded SDK spans to OTLP collector");
+                }
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Failed to forward SDK spans to OTLP collector");
+                }
+            }
+        }
     }
 
     Ok(())
