@@ -1,19 +1,20 @@
-# iii
-
-**A WebSocket-based process communication engine.**
+# iii: A WebSocket-based backend orchestration system
 
 [![License](https://img.shields.io/badge/license-ELv2-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/docker/v/iiidev/iii?label=docker)](https://hub.docker.com/r/iiidev/iii)
 
-Workers connect over WebSocket, register functions and triggers, and the engine routes invocations between them and its core modules. Core modules add HTTP APIs, queues, cron scheduling, state management, event streams, and observability.
+iii (pronounced "three eye") unifies your existing backend stack with a single engine and two primitives: Function, and Trigger.
 
-## Three Primitives
+No more gluing together separate tools for APIs, queues, cron, state, and real-time communication.
+iii gives you all of that out of the box.
 
-| Primitive | What it does |
-|-----------|-------------|
-| **Worker** | A process that connects to the engine over WebSocket and runs your code |
-| **Function** | A unit of work registered by a worker — receives input, returns output |
-| **Trigger** | An event binding that invokes a function — HTTP route, cron schedule, queue topic, state change, or stream event |
+## Three Concepts
+
+| Concept       | What it does                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Function**  | A function is anything that can be called to do work it receives input, and optionally returns output. It can exist anywhere be it locally, on cloud, on serverless, or even as a 3rd party HTTP endpoint. All functionality deconstructs into the same function. It can mutate state, invoke other functions, modify databases, and do anything that a typical function can do. |
+| **Trigger**   | A trigger is what causes a Function to run — either explicitly from code, or automatically from an event source. For example: HTTP route, cron schedule, queue topic, state change, or stream event                                                                                                                                                                              |
+| **Discovery** | A system for automatically registering and deregistering functions and triggers without configuration. It makes discovered functionality available across the entire backend application stack.                                                                                                                                                                                  |
 
 ## Quick Start
 
@@ -23,17 +24,20 @@ Workers connect over WebSocket, register functions and triggers, and the engine 
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-Specific version:
+It's also possible to override the installation directory:
+
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- v0.2.1
+curl -fsSL https://install.iii.dev/iii/main/install.sh | BIN_DIR=$HOME/.local/bin sh
 ```
 
-Override install directory:
+Or install a specific version:
+
 ```bash
-BIN_DIR=/usr/local/bin curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- v0.6.3
 ```
 
 Verify:
+
 ```bash
 command -v iii && iii --version
 ```
@@ -44,34 +48,36 @@ command -v iii && iii --version
 iii
 ```
 
-The engine listens for workers at `ws://127.0.0.1:49134`.
-
 ### 3. Connect a worker
 
-**Node.js**
+#### Node.js
+
 ```bash
 npm install iii-sdk
 ```
-```javascript
-import { init } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+```javascript
+import { init } from 'iii-sdk';
+
+const iii = init('ws://localhost:49134');
 
 iii.registerFunction({ id: 'math.add' }, async (input) => {
-  return { sum: input.a + input.b }
-})
+  return { sum: input.a + input.b };
+});
 
 iii.registerTrigger({
   type: 'http',
   function_id: 'math.add',
   config: { api_path: 'add', http_method: 'POST' },
-})
+});
 ```
 
-**Python**
+#### Python
+
 ```bash
 pip install iii-sdk
 ```
+
 ```python
 from iii import III
 
@@ -92,7 +98,8 @@ async def main():
     )
 ```
 
-**Rust**
+#### Rust
+
 ```rust
 use iii_sdk::III;
 use serde_json::json;
@@ -121,14 +128,14 @@ Your function is now live at `http://localhost:3111/add`.
 
 ## Modules
 
-| Module | Rust struct | What it does |
-|--------|------------|-------------|
-| HTTP | `RestApiModule` | Maps HTTP routes to functions via `http` triggers |
-| Queue | `QueueModule` | Redis-backed publish/subscribe job queue |
-| Cron | `CronModule` | Distributed cron scheduling with lock coordination |
-| Stream | `StreamModule` | Real-time state sync over WebSocket |
-| Observability | `OtelModule` | Structured logging, OpenTelemetry traces and metrics |
-| Shell | `ExecModule` | File watcher that runs commands on change |
+| Module        | Rust struct     | What it does                                         |
+| ------------- | --------------- | ---------------------------------------------------- |
+| HTTP          | `RestApiModule` | Maps HTTP routes to functions via `http` triggers    |
+| Queue         | `QueueModule`   | Redis-backed publish/subscribe job queue             |
+| Cron          | `CronModule`    | Distributed cron scheduling with lock coordination   |
+| Stream        | `StreamModule`  | Real-time state sync over WebSocket                  |
+| Observability | `OtelModule`    | Structured logging, OpenTelemetry traces and metrics |
+| Shell         | `ExecModule`    | File watcher that runs commands on change            |
 
 If `config.yaml` is missing, the engine loads defaults: HTTP, Queue, Cron, Stream, and Observability. Queue and Stream expect Redis at `redis://localhost:6379`.
 
@@ -143,6 +150,7 @@ docker run -p 3111:3111 -p 49134:49134 \
 ```
 
 **Production (hardened)**
+
 ```bash
 docker run --read-only --tmpfs /tmp \
   --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
@@ -153,11 +161,13 @@ docker run --read-only --tmpfs /tmp \
 ```
 
 **Docker Compose** (full stack with Redis + RabbitMQ):
+
 ```bash
 docker compose up -d
 ```
 
 **Docker Compose with Caddy** (TLS reverse proxy):
+
 ```bash
 docker compose -f docker-compose.prod.yml up -d
 ```
@@ -166,26 +176,27 @@ See the [Caddy documentation](https://caddyserver.com/docs/) for TLS and reverse
 
 ## Ports
 
-| Port | Service |
-|------|---------|
+| Port  | Service                        |
+| ----- | ------------------------------ |
 | 49134 | WebSocket (worker connections) |
-| 3111 | HTTP API |
-| 3112 | Stream API |
-| 9464 | Prometheus metrics |
+| 3111  | HTTP API                       |
+| 3112  | Stream API                     |
+| 9464  | Prometheus metrics             |
 
 ## SDKs
 
-| Language | Package | Install |
-|----------|---------|---------|
-| Node.js | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `npm install iii-sdk` |
-| Python | [`iii-sdk`](https://pypi.org/project/iii-sdk/) | `pip install iii-sdk` |
-| Rust | [`iii-sdk`](https://crates.io/crates/iii-sdk) | Add to `Cargo.toml` |
+| Language | Package                                            | Install               |
+| -------- | -------------------------------------------------- | --------------------- |
+| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `npm install iii-sdk` |
+| Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk` |
+| Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`   |
 
 ## Configuration
 
 Config files support environment expansion: `${REDIS_URL:redis://localhost:6379}`.
 
 Minimal config (no Redis required):
+
 ```yaml
 modules:
   - class: modules::api::RestApiModule
