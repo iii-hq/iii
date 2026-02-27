@@ -3,12 +3,14 @@ import { cron, http, queue, state, stream } from '../src/triggers'
 
 const mockRegisterFunction = jest.fn()
 const mockRegisterTrigger = jest.fn()
+const mockRegisterMiddleware = jest.fn()
 const mockCall = jest.fn()
 jest.mock('../src/new/iii', () => ({
   getInstance: () => ({
     call: mockCall,
     registerFunction: mockRegisterFunction,
     registerTrigger: mockRegisterTrigger,
+    registerMiddleware: mockRegisterMiddleware,
   }),
 }))
 
@@ -164,30 +166,63 @@ describe('Motia', () => {
     })
   })
 
-  describe('middleware composition', () => {
-    it('executes middleware around handler for http trigger', async () => {
+  describe('middleware registration', () => {
+    it('registers middleware as engine-level preHandler when http trigger has middleware', async () => {
       const motia = new Motia()
-      const order: number[] = []
-
       const middleware = async (_req: any, _ctx: any, next: () => Promise<any>) => {
-        order.push(1)
-        const result = await next()
-        order.push(3)
-        return result
-      }
-
-      const handler = async (_req: any, _ctx: any) => {
-        order.push(2)
+        await next()
         return { status: 200, body: null }
       }
+
+      const handler = async (_req: any, _ctx: any) => ({ status: 200, body: null })
 
       const config = { name: 'test', triggers: [http('GET', '/test', { middleware: [middleware] })] }
       motia.addStep(config as any, 'test.step.ts', handler, 'steps/test.step.ts')
 
-      const registeredHandler = mockRegisterFunction.mock.calls[0][1]
-      await registeredHandler({ body: {}, path_params: {}, query_params: {}, headers: {} })
+      expect(mockRegisterMiddleware).toHaveBeenCalledWith(
+        expect.objectContaining({
+          middlewareId: 'steps::test::trigger::http(GET /test)::middleware::0',
+          phase: 'preHandler',
+          scope: { path: '/test' },
+          priority: 100,
+          functionId: 'steps::test::trigger::http(GET /test)::middleware::0',
+        }),
+      )
 
-      expect(order).toEqual([1, 2, 3])
+      const mwWrapper = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0].id === 'steps::test::trigger::http(GET /test)::middleware::0',
+      )?.[1]
+      expect(mwWrapper).toBeDefined()
+
+      const engineReq = {
+        phase: 'preHandler',
+        request: { path_params: {}, query_params: {}, body: {}, headers: {} },
+        context: {},
+      }
+      const result = await mwWrapper(engineReq)
+      expect(result).toEqual({ action: 'continue' })
+    })
+
+    it('middleware short-circuit returns respond action', async () => {
+      const motia = new Motia()
+      const authMiddleware = async () => ({ status: 401, body: { error: 'Unauthorized' } })
+
+      const config = { name: 'test', triggers: [http('GET', '/admin', { middleware: [authMiddleware] })] }
+      motia.addStep(config as any, 'test.step.ts', jest.fn(), 'steps/test.step.ts')
+
+      const mwWrapper = mockRegisterFunction.mock.calls.find(
+        (c: any) => c[0].id === 'steps::test::trigger::http(GET /admin)::middleware::0',
+      )?.[1]
+      const engineReq = {
+        phase: 'preHandler',
+        request: { path_params: {}, query_params: {}, body: {}, headers: {} },
+        context: {},
+      }
+      const result = await mwWrapper(engineReq)
+      expect(result).toEqual({
+        action: 'respond',
+        response: { status_code: 401, body: { error: 'Unauthorized' }, headers: undefined },
+      })
     })
   })
 
