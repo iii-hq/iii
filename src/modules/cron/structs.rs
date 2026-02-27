@@ -193,7 +193,6 @@ impl CronAdapter {
                             }
                         }
 
-
                         match engine.call(&function_id, event_data).await {
                             Ok(_) => {
                                 crate::modules::telemetry::collector::track_cron_execution();
