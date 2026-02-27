@@ -11,10 +11,17 @@ use crate::{invocation::method::HttpAuth, protocol::ErrorBody};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HttpAuthConfig {
-    Hmac { secret_key: String },
-    Bearer { token_key: String },
+    Hmac {
+        secret_key: String,
+    },
+    Bearer {
+        token_key: String,
+    },
     #[serde(rename = "api_key")]
-    ApiKey { header: String, value_key: String },
+    ApiKey {
+        header: String,
+        value_key: String,
+    },
 }
 
 impl HttpAuthConfig {
