@@ -43,3 +43,17 @@ impl SpanExt for Span {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_ext_accepts_traceparent_and_baggage_headers() {
+        let span = tracing::info_span!("telemetry-test");
+        let _span = span.with_parent_headers(
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+            Some("user_id=123"),
+        );
+    }
+}

@@ -215,4 +215,25 @@ mod tests {
         groups.sort();
         assert_eq!(groups, vec!["group1", "group2", "group3"]);
     }
+
+    #[tokio::test]
+    async fn test_destroy_and_make_adapter() {
+        let adapter = BuiltinKvStoreAdapter::new(None);
+        adapter.destroy().await.expect("destroy should succeed");
+
+        let adapter = make_adapter(Arc::new(Engine::new()), None)
+            .await
+            .expect("make adapter should succeed");
+        adapter
+            .set("scope", "item", serde_json::json!({"value": 1}))
+            .await
+            .expect("set via trait object should succeed");
+        assert_eq!(
+            adapter
+                .get("scope", "item")
+                .await
+                .expect("get should succeed"),
+            Some(serde_json::json!({"value": 1}))
+        );
+    }
 }

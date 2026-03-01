@@ -40,7 +40,7 @@ jobs:
           import socket
           import time
           import sys
-          
+
           for i in range(30):
               try:
                   sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -60,6 +60,12 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run coverage
+        run: cargo tarpaulin --locked
 
       - name: Build check
         run: cargo build --release
@@ -102,4 +108,4 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build for target
-        run: cargo build --release --target ${{ matrix.target }} 
+        run: cargo build --release --target ${{ matrix.target }}

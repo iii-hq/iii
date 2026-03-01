@@ -611,7 +611,7 @@ impl RollupStorage {
                                     total_sum: 0.0,
                                     min: None,
                                     max: None,
-                                    bucket_counts: hist_dp.bucket_counts.clone(),
+                                    bucket_counts: vec![0; hist_dp.bucket_counts.len()],
                                     explicit_bounds: hist_dp.explicit_bounds.clone(),
                                 });
 
@@ -1790,5 +1790,1818 @@ mod tests {
         let metrics = get_engine_metrics();
         // Verify we can use the metrics (they should be functional noop counters)
         metrics.invocations_total.add(1, &[]);
+    }
+
+    // =========================================================================
+    // Helper functions for tests
+    // =========================================================================
+
+    /// Create a StoredMetric with number data points for testing.
+    fn make_number_metric(
+        name: &str,
+        service_name: &str,
+        metric_type: StoredMetricType,
+        values: &[(f64, u64)], // (value, timestamp_unix_nano)
+        attributes: Vec<(String, String)>,
+    ) -> StoredMetric {
+        let data_points = values
+            .iter()
+            .map(|(value, ts)| {
+                StoredDataPoint::Number(StoredNumberDataPoint {
+                    value: *value,
+                    attributes: attributes.clone(),
+                    timestamp_unix_nano: *ts,
+                })
+            })
+            .collect();
+        StoredMetric {
+            name: name.to_string(),
+            description: format!("Test metric {}", name),
+            unit: "1".to_string(),
+            metric_type,
+            data_points,
+            service_name: service_name.to_string(),
+            timestamp_unix_nano: values.first().map(|(_, ts)| *ts).unwrap_or(0),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        }
+    }
+
+    /// Create a StoredMetric with histogram data points for testing.
+    fn make_histogram_metric(
+        name: &str,
+        service_name: &str,
+        count: u64,
+        sum: f64,
+        bucket_counts: Vec<u64>,
+        explicit_bounds: Vec<f64>,
+        min: Option<f64>,
+        max: Option<f64>,
+        timestamp: u64,
+    ) -> StoredMetric {
+        let dp = StoredDataPoint::Histogram(StoredHistogramDataPoint {
+            count,
+            sum,
+            bucket_counts,
+            explicit_bounds,
+            min,
+            max,
+            attributes: vec![],
+            timestamp_unix_nano: timestamp,
+        });
+        StoredMetric {
+            name: name.to_string(),
+            description: format!("Test histogram {}", name),
+            unit: "ms".to_string(),
+            metric_type: StoredMetricType::Histogram,
+            data_points: vec![dp],
+            service_name: service_name.to_string(),
+            timestamp_unix_nano: timestamp,
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        }
+    }
+
+    // =========================================================================
+    // 1. InMemoryMetricStorage (TimeIndexedMetricStorage) tests
+    // =========================================================================
+
+    #[test]
+    fn test_metric_storage_store_and_get() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        let metric = make_number_metric(
+            "cpu.usage",
+            "my-service",
+            StoredMetricType::Gauge,
+            &[(75.5, 1_000_000_000)],
+            vec![],
+        );
+
+        storage.add_metrics(vec![metric]);
+
+        let all = storage.get_metrics();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "cpu.usage");
+        assert_eq!(all[0].service_name, "my-service");
+
+        if let StoredDataPoint::Number(dp) = &all[0].data_points[0] {
+            assert_eq!(dp.value, 75.5);
+        } else {
+            panic!("Expected Number data point");
+        }
+    }
+
+    #[test]
+    fn test_metric_storage_get_by_name() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        let m1 = make_number_metric(
+            "cpu.usage",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(50.0, 1_000_000_000)],
+            vec![],
+        );
+        let m2 = make_number_metric(
+            "memory.usage",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(1024.0, 2_000_000_000)],
+            vec![],
+        );
+        let m3 = make_number_metric(
+            "cpu.usage",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(60.0, 3_000_000_000)],
+            vec![],
+        );
+
+        storage.add_metrics(vec![m1, m2, m3]);
+
+        let cpu_metrics = storage.get_metrics_by_name("cpu.usage");
+        assert_eq!(cpu_metrics.len(), 2);
+        assert!(cpu_metrics.iter().all(|m| m.name == "cpu.usage"));
+
+        let mem_metrics = storage.get_metrics_by_name("memory.usage");
+        assert_eq!(mem_metrics.len(), 1);
+        assert_eq!(mem_metrics[0].name, "memory.usage");
+
+        let missing = storage.get_metrics_by_name("nonexistent.metric");
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn test_metric_storage_circular_buffer() {
+        // Create storage with max capacity of 5
+        let storage = InMemoryMetricStorage::new(5, DEFAULT_RETENTION_NS);
+
+        // Add 8 metrics with distinct timestamps so each goes into its own bucket
+        for i in 0..8u64 {
+            let metric = make_number_metric(
+                &format!("metric_{}", i),
+                "svc",
+                StoredMetricType::Gauge,
+                &[(i as f64, (i + 1) * 1_000_000_000)],
+                vec![],
+            );
+            storage.add_metrics(vec![metric]);
+        }
+
+        // Should have at most 5 metrics (oldest evicted)
+        let all = storage.get_metrics();
+        assert!(
+            all.len() <= 5,
+            "Expected at most 5 metrics, got {}",
+            all.len()
+        );
+
+        // The oldest metrics (metric_0, metric_1, metric_2) should have been evicted
+        let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            !names.contains(&"metric_0"),
+            "metric_0 should have been evicted"
+        );
+        assert!(
+            !names.contains(&"metric_1"),
+            "metric_1 should have been evicted"
+        );
+        assert!(
+            !names.contains(&"metric_2"),
+            "metric_2 should have been evicted"
+        );
+    }
+
+    #[test]
+    fn test_metric_storage_clear() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        let m1 = make_number_metric(
+            "a",
+            "svc",
+            StoredMetricType::Counter,
+            &[(1.0, 1_000_000_000)],
+            vec![],
+        );
+        let m2 = make_number_metric(
+            "b",
+            "svc",
+            StoredMetricType::Counter,
+            &[(2.0, 2_000_000_000)],
+            vec![],
+        );
+
+        storage.add_metrics(vec![m1, m2]);
+        assert_eq!(storage.len(), 2);
+        assert!(!storage.is_empty());
+
+        storage.clear();
+
+        assert_eq!(storage.len(), 0);
+        assert!(storage.is_empty());
+        assert!(storage.get_metrics().is_empty());
+        assert!(storage.get_metrics_by_name("a").is_empty());
+    }
+
+    #[test]
+    fn test_metric_storage_get_filtered() {
+        let storage = InMemoryMetricStorage::new(1000, DEFAULT_RETENTION_NS);
+
+        // Add metrics with different names, services, and timestamps
+        let m1 = make_number_metric(
+            "http.requests",
+            "web-server",
+            StoredMetricType::Counter,
+            &[(10.0, 100_000_000_000)],
+            vec![("env".to_string(), "prod".to_string())],
+        );
+        let m2 = make_number_metric(
+            "http.requests",
+            "web-server",
+            StoredMetricType::Counter,
+            &[(20.0, 200_000_000_000)],
+            vec![("env".to_string(), "prod".to_string())],
+        );
+        let m3 = make_number_metric(
+            "http.requests",
+            "api-server",
+            StoredMetricType::Counter,
+            &[(5.0, 300_000_000_000)],
+            vec![("env".to_string(), "staging".to_string())],
+        );
+        let m4 = make_number_metric(
+            "db.queries",
+            "web-server",
+            StoredMetricType::Counter,
+            &[(100.0, 150_000_000_000)],
+            vec![],
+        );
+
+        storage.add_metrics(vec![m1, m2, m3, m4]);
+
+        // Filter by name
+        let http_metrics = storage.get_metrics_by_name("http.requests");
+        assert_eq!(http_metrics.len(), 3);
+
+        // Filter by name and time range
+        let range_metrics =
+            storage.get_metrics_by_name_in_range("http.requests", 50_000_000_000, 250_000_000_000);
+        assert_eq!(range_metrics.len(), 2);
+
+        // Filter by time range only
+        let all_in_range = storage.get_metrics_in_range(100_000_000_000, 200_000_000_000);
+        assert_eq!(all_in_range.len(), 3); // m1, m4, m2
+
+        // Filter by service name - iterate and check manually since there's no direct service filter
+        let web_metrics: Vec<_> = storage
+            .get_metrics()
+            .into_iter()
+            .filter(|m| m.service_name == "web-server")
+            .collect();
+        assert_eq!(web_metrics.len(), 3);
+    }
+
+    #[test]
+    fn test_metric_storage_ttl_expiry() {
+        // Create storage with a very short retention: 1 second (1_000_000_000 ns)
+        let storage = InMemoryMetricStorage::new(1000, 1_000_000_000);
+
+        // Add a metric with a timestamp far in the past (well beyond TTL)
+        let old_metric = make_number_metric(
+            "old.metric",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(1.0, 1_000_000)], // Extremely old timestamp (1 millisecond after epoch)
+            vec![],
+        );
+
+        // Add a metric with a current timestamp
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let current_metric = make_number_metric(
+            "current.metric",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(2.0, now_ns)],
+            vec![],
+        );
+
+        storage.add_metrics(vec![old_metric, current_metric]);
+        assert_eq!(storage.len(), 2);
+
+        // Apply retention - should evict the old metric
+        storage.apply_retention();
+
+        let remaining = storage.get_metrics();
+        assert_eq!(remaining.len(), 1, "Old metric should have been evicted");
+        assert_eq!(remaining[0].name, "current.metric");
+    }
+
+    // =========================================================================
+    // 2. MetricsAccumulator tests
+    // =========================================================================
+
+    #[test]
+    fn test_accumulator_increment_function() {
+        let acc = MetricsAccumulator::default();
+
+        acc.increment_function("myFunc");
+
+        assert_eq!(acc.get_function_count("myFunc"), Some(1));
+
+        acc.increment_function("myFunc");
+        acc.increment_function("myFunc");
+
+        assert_eq!(acc.get_function_count("myFunc"), Some(3));
+    }
+
+    #[test]
+    fn test_accumulator_get_function_count() {
+        let acc = MetricsAccumulator::default();
+
+        acc.increment_function("alpha");
+        acc.increment_function("alpha");
+        acc.increment_function("beta");
+
+        assert_eq!(acc.get_function_count("alpha"), Some(2));
+        assert_eq!(acc.get_function_count("beta"), Some(1));
+    }
+
+    #[test]
+    fn test_accumulator_get_function_count_missing() {
+        let acc = MetricsAccumulator::default();
+
+        // Function that was never incremented should return None (not 0)
+        assert_eq!(acc.get_function_count("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_accumulator_get_by_function() {
+        let acc = MetricsAccumulator::default();
+
+        acc.increment_function("fn_a");
+        acc.increment_function("fn_a");
+        acc.increment_function("fn_b");
+
+        let by_func = acc.get_by_function();
+        assert_eq!(by_func.len(), 2);
+        assert_eq!(by_func.get("fn_a"), Some(&2));
+        assert_eq!(by_func.get("fn_b"), Some(&1));
+    }
+
+    #[test]
+    fn test_accumulator_iter_function_counts() {
+        let acc = MetricsAccumulator::default();
+
+        acc.increment_function("x");
+        acc.increment_function("x");
+        acc.increment_function("y");
+        acc.increment_function("z");
+        acc.increment_function("z");
+        acc.increment_function("z");
+
+        let mut counts: std::collections::HashMap<String, u64> =
+            acc.iter_function_counts().collect();
+
+        assert_eq!(counts.remove("x"), Some(2));
+        assert_eq!(counts.remove("y"), Some(1));
+        assert_eq!(counts.remove("z"), Some(3));
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_accumulator_multiple_functions() {
+        let acc = MetricsAccumulator::default();
+
+        let functions = ["login", "logout", "register", "profile", "settings"];
+        for (i, func) in functions.iter().enumerate() {
+            for _ in 0..=(i as u64) {
+                acc.increment_function(func);
+            }
+        }
+
+        assert_eq!(acc.get_function_count("login"), Some(1));
+        assert_eq!(acc.get_function_count("logout"), Some(2));
+        assert_eq!(acc.get_function_count("register"), Some(3));
+        assert_eq!(acc.get_function_count("profile"), Some(4));
+        assert_eq!(acc.get_function_count("settings"), Some(5));
+
+        let by_func = acc.get_by_function();
+        assert_eq!(by_func.len(), 5);
+    }
+
+    // =========================================================================
+    // 3. StoredMetric / StoredDataPoint tests
+    // =========================================================================
+
+    #[test]
+    fn test_stored_metric_gauge() {
+        let dp1 = StoredDataPoint::Number(StoredNumberDataPoint {
+            value: 42.0,
+            attributes: vec![("host".to_string(), "server-1".to_string())],
+            timestamp_unix_nano: 1_000_000_000,
+        });
+        let dp2 = StoredDataPoint::Number(StoredNumberDataPoint {
+            value: 43.5,
+            attributes: vec![("host".to_string(), "server-2".to_string())],
+            timestamp_unix_nano: 2_000_000_000,
+        });
+
+        let metric = StoredMetric {
+            name: "system.cpu.usage".to_string(),
+            description: "CPU usage percentage".to_string(),
+            unit: "%".to_string(),
+            metric_type: StoredMetricType::Gauge,
+            data_points: vec![dp1, dp2],
+            service_name: "monitoring".to_string(),
+            timestamp_unix_nano: 1_000_000_000,
+            instrumentation_scope_name: Some("cpu-monitor".to_string()),
+            instrumentation_scope_version: Some("1.0.0".to_string()),
+        };
+
+        assert_eq!(metric.name, "system.cpu.usage");
+        assert!(matches!(metric.metric_type, StoredMetricType::Gauge));
+        assert_eq!(metric.data_points.len(), 2);
+        assert_eq!(metric.service_name, "monitoring");
+        assert_eq!(
+            metric.instrumentation_scope_name.as_deref(),
+            Some("cpu-monitor")
+        );
+        assert_eq!(
+            metric.instrumentation_scope_version.as_deref(),
+            Some("1.0.0")
+        );
+
+        // Verify data point values
+        if let StoredDataPoint::Number(dp) = &metric.data_points[0] {
+            assert_eq!(dp.value, 42.0);
+            assert_eq!(
+                dp.attributes[0],
+                ("host".to_string(), "server-1".to_string())
+            );
+        } else {
+            panic!("Expected Number data point");
+        }
+
+        if let StoredDataPoint::Number(dp) = &metric.data_points[1] {
+            assert_eq!(dp.value, 43.5);
+        } else {
+            panic!("Expected Number data point");
+        }
+    }
+
+    #[test]
+    fn test_stored_metric_counter() {
+        let dp = StoredDataPoint::Number(StoredNumberDataPoint {
+            value: 1234.0,
+            attributes: vec![
+                ("method".to_string(), "GET".to_string()),
+                ("status".to_string(), "200".to_string()),
+            ],
+            timestamp_unix_nano: 5_000_000_000,
+        });
+
+        let metric = StoredMetric {
+            name: "http.requests.total".to_string(),
+            description: "Total HTTP requests".to_string(),
+            unit: "1".to_string(),
+            metric_type: StoredMetricType::Counter,
+            data_points: vec![dp],
+            service_name: "api-gateway".to_string(),
+            timestamp_unix_nano: 5_000_000_000,
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+
+        assert!(matches!(metric.metric_type, StoredMetricType::Counter));
+        assert_eq!(metric.data_points.len(), 1);
+
+        if let StoredDataPoint::Number(dp) = &metric.data_points[0] {
+            assert_eq!(dp.value, 1234.0);
+            assert_eq!(dp.attributes.len(), 2);
+            assert_eq!(dp.attributes[0].0, "method");
+            assert_eq!(dp.attributes[0].1, "GET");
+            assert_eq!(dp.attributes[1].0, "status");
+            assert_eq!(dp.attributes[1].1, "200");
+        } else {
+            panic!("Expected Number data point");
+        }
+    }
+
+    #[test]
+    fn test_stored_metric_histogram() {
+        let metric = make_histogram_metric(
+            "http.request.duration",
+            "web-app",
+            500,
+            2345.67,
+            vec![50, 150, 200, 80, 20],
+            vec![10.0, 50.0, 100.0, 500.0],
+            Some(0.5),
+            Some(980.3),
+            10_000_000_000,
+        );
+
+        assert!(matches!(metric.metric_type, StoredMetricType::Histogram));
+        assert_eq!(metric.name, "http.request.duration");
+        assert_eq!(metric.service_name, "web-app");
+        assert_eq!(metric.unit, "ms");
+
+        if let StoredDataPoint::Histogram(dp) = &metric.data_points[0] {
+            assert_eq!(dp.count, 500);
+            assert_eq!(dp.sum, 2345.67);
+            assert_eq!(dp.bucket_counts.len(), 5);
+            assert_eq!(dp.explicit_bounds.len(), 4);
+            assert_eq!(dp.min, Some(0.5));
+            assert_eq!(dp.max, Some(980.3));
+            // Verify bucket counts sum up to the total count
+            let total: u64 = dp.bucket_counts.iter().sum();
+            assert_eq!(total, dp.count);
+        } else {
+            panic!("Expected Histogram data point");
+        }
+
+        // Also verify histogram storage works via TimeIndexedMetricStorage
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        storage.add_metrics(vec![metric]);
+        let retrieved = storage.get_metrics_by_name("http.request.duration");
+        assert_eq!(retrieved.len(), 1);
+        assert!(matches!(
+            retrieved[0].metric_type,
+            StoredMetricType::Histogram
+        ));
+    }
+
+    #[test]
+    fn test_stored_metric_summary() {
+        // The codebase uses UpDownCounter as the closest analogue to summary-style metrics.
+        // Verify UpDownCounter construction and serialization.
+        let dp = StoredDataPoint::Number(StoredNumberDataPoint {
+            value: -5.0, // UpDownCounter can go negative
+            attributes: vec![("queue".to_string(), "jobs".to_string())],
+            timestamp_unix_nano: 7_000_000_000,
+        });
+
+        let metric = StoredMetric {
+            name: "queue.depth".to_string(),
+            description: "Current queue depth".to_string(),
+            unit: "1".to_string(),
+            metric_type: StoredMetricType::UpDownCounter,
+            data_points: vec![dp],
+            service_name: "worker-pool".to_string(),
+            timestamp_unix_nano: 7_000_000_000,
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+        };
+
+        assert!(matches!(
+            metric.metric_type,
+            StoredMetricType::UpDownCounter
+        ));
+
+        if let StoredDataPoint::Number(dp) = &metric.data_points[0] {
+            assert_eq!(dp.value, -5.0);
+        } else {
+            panic!("Expected Number data point");
+        }
+
+        // Verify it serializes correctly
+        let json = serde_json::to_string(&metric).unwrap();
+        assert!(json.contains("\"updowncounter\""));
+        assert!(json.contains("queue.depth"));
+    }
+
+    // =========================================================================
+    // 4. OTLP metrics ingestion edge cases
+    //    These tests use ingest_otlp_metrics from the otel module and require
+    //    global metric storage, so they need #[serial].
+    // =========================================================================
+
+    use serial_test::serial;
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_metrics_multiple_resources() {
+        init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = get_metric_storage() {
+            storage.clear();
+        }
+
+        let otlp_json = r#"{
+            "resourceMetrics": [
+                {
+                    "resource": {
+                        "attributes": [{
+                            "key": "service.name",
+                            "value": {"stringValue": "service-alpha"}
+                        }]
+                    },
+                    "scopeMetrics": [{
+                        "metrics": [{
+                            "name": "alpha.requests",
+                            "description": "Alpha requests",
+                            "unit": "1",
+                            "sum": {
+                                "dataPoints": [{
+                                    "timeUnixNano": "1704067200000000000",
+                                    "asDouble": 100.0
+                                }],
+                                "isMonotonic": true
+                            }
+                        }]
+                    }]
+                },
+                {
+                    "resource": {
+                        "attributes": [{
+                            "key": "service.name",
+                            "value": {"stringValue": "service-beta"}
+                        }]
+                    },
+                    "scopeMetrics": [{
+                        "metrics": [{
+                            "name": "beta.requests",
+                            "description": "Beta requests",
+                            "unit": "1",
+                            "sum": {
+                                "dataPoints": [{
+                                    "timeUnixNano": "1704067200000000000",
+                                    "asDouble": 200.0
+                                }],
+                                "isMonotonic": true
+                            }
+                        }]
+                    }]
+                }
+            ]
+        }"#;
+
+        let result = crate::modules::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        assert!(result.is_ok());
+
+        let storage = get_metric_storage().unwrap();
+        let all = storage.get_metrics();
+        assert_eq!(all.len(), 2);
+
+        let alpha: Vec<_> = all.iter().filter(|m| m.name == "alpha.requests").collect();
+        let beta: Vec<_> = all.iter().filter(|m| m.name == "beta.requests").collect();
+
+        assert_eq!(alpha.len(), 1);
+        assert_eq!(alpha[0].service_name, "service-alpha");
+
+        assert_eq!(beta.len(), 1);
+        assert_eq!(beta[0].service_name, "service-beta");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_metrics_multiple_scopes() {
+        init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = get_metric_storage() {
+            storage.clear();
+        }
+
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "multi-scope-svc"}
+                    }]
+                },
+                "scopeMetrics": [
+                    {
+                        "scope": {
+                            "name": "@opentelemetry/instrumentation-http",
+                            "version": "0.52.0"
+                        },
+                        "metrics": [{
+                            "name": "http.client.duration",
+                            "description": "HTTP client duration",
+                            "unit": "ms",
+                            "gauge": {
+                                "dataPoints": [{
+                                    "timeUnixNano": "1704067200000000000",
+                                    "asDouble": 150.0
+                                }]
+                            }
+                        }]
+                    },
+                    {
+                        "scope": {
+                            "name": "@opentelemetry/instrumentation-express",
+                            "version": "0.40.0"
+                        },
+                        "metrics": [{
+                            "name": "express.request.count",
+                            "description": "Express request count",
+                            "unit": "1",
+                            "sum": {
+                                "dataPoints": [{
+                                    "timeUnixNano": "1704067200000000000",
+                                    "asDouble": 42.0
+                                }],
+                                "isMonotonic": true
+                            }
+                        }]
+                    }
+                ]
+            }]
+        }"#;
+
+        let result = crate::modules::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        assert!(result.is_ok());
+
+        let storage = get_metric_storage().unwrap();
+        let all = storage.get_metrics();
+        assert_eq!(all.len(), 2);
+
+        let http_metrics: Vec<_> = all
+            .iter()
+            .filter(|m| m.name == "http.client.duration")
+            .collect();
+        assert_eq!(http_metrics.len(), 1);
+        assert_eq!(
+            http_metrics[0].instrumentation_scope_name.as_deref(),
+            Some("@opentelemetry/instrumentation-http")
+        );
+        assert_eq!(
+            http_metrics[0].instrumentation_scope_version.as_deref(),
+            Some("0.52.0")
+        );
+
+        let express_metrics: Vec<_> = all
+            .iter()
+            .filter(|m| m.name == "express.request.count")
+            .collect();
+        assert_eq!(express_metrics.len(), 1);
+        assert_eq!(
+            express_metrics[0].instrumentation_scope_name.as_deref(),
+            Some("@opentelemetry/instrumentation-express")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_metrics_missing_service_name() {
+        init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = get_metric_storage() {
+            storage.clear();
+        }
+
+        // Resource with no service.name attribute at all
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "host.name",
+                        "value": {"stringValue": "my-host"}
+                    }]
+                },
+                "scopeMetrics": [{
+                    "metrics": [{
+                        "name": "no.service.metric",
+                        "description": "Metric without service.name",
+                        "unit": "1",
+                        "gauge": {
+                            "dataPoints": [{
+                                "timeUnixNano": "1704067200000000000",
+                                "asDouble": 99.0
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = crate::modules::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        assert!(result.is_ok());
+
+        let storage = get_metric_storage().unwrap();
+        let metrics = storage.get_metrics_by_name("no.service.metric");
+        assert_eq!(metrics.len(), 1);
+        // When service.name is missing, it should default to "unknown"
+        assert_eq!(metrics[0].service_name, "unknown");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_metrics_with_attributes() {
+        init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = get_metric_storage() {
+            storage.clear();
+        }
+
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "attr-service"}
+                    }]
+                },
+                "scopeMetrics": [{
+                    "metrics": [{
+                        "name": "http.server.duration",
+                        "description": "Duration with attributes",
+                        "unit": "ms",
+                        "gauge": {
+                            "dataPoints": [{
+                                "attributes": [
+                                    {
+                                        "key": "http.method",
+                                        "value": {"stringValue": "POST"}
+                                    },
+                                    {
+                                        "key": "http.status_code",
+                                        "value": {"intValue": 201}
+                                    },
+                                    {
+                                        "key": "http.response_time",
+                                        "value": {"doubleValue": 0.456}
+                                    }
+                                ],
+                                "timeUnixNano": "1704067200000000000",
+                                "asDouble": 123.45
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = crate::modules::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        assert!(result.is_ok());
+
+        let storage = get_metric_storage().unwrap();
+        let metrics = storage.get_metrics_by_name("http.server.duration");
+        assert_eq!(metrics.len(), 1);
+
+        if let StoredDataPoint::Number(dp) = &metrics[0].data_points[0] {
+            assert_eq!(dp.value, 123.45);
+            assert_eq!(dp.attributes.len(), 3);
+
+            // Verify all attributes are present
+            let attrs: std::collections::HashMap<&str, &str> = dp
+                .attributes
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            assert_eq!(attrs.get("http.method"), Some(&"POST"));
+            assert_eq!(attrs.get("http.status_code"), Some(&"201"));
+            assert_eq!(attrs.get("http.response_time"), Some(&"0.456"));
+        } else {
+            panic!("Expected Number data point");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_metrics_gauge_with_int() {
+        init_metric_storage(Some(100), Some(3600));
+        if let Some(storage) = get_metric_storage() {
+            storage.clear();
+        }
+
+        // Use asInt instead of asDouble for the gauge data point
+        let otlp_json = r#"{
+            "resourceMetrics": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "int-service"}
+                    }]
+                },
+                "scopeMetrics": [{
+                    "metrics": [{
+                        "name": "active.connections",
+                        "description": "Active connections as integer",
+                        "unit": "1",
+                        "gauge": {
+                            "dataPoints": [{
+                                "timeUnixNano": "1704067200000000000",
+                                "asInt": 42
+                            }]
+                        }
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = crate::modules::observability::otel::ingest_otlp_metrics(otlp_json).await;
+        assert!(result.is_ok());
+
+        let storage = get_metric_storage().unwrap();
+        let metrics = storage.get_metrics_by_name("active.connections");
+        assert_eq!(metrics.len(), 1);
+        assert!(matches!(metrics[0].metric_type, StoredMetricType::Gauge));
+
+        if let StoredDataPoint::Number(dp) = &metrics[0].data_points[0] {
+            // asInt: 42 should be converted to f64 value 42.0
+            assert_eq!(dp.value, 42.0);
+        } else {
+            panic!("Expected Number data point");
+        }
+    }
+
+    // =========================================================================
+    // get_metrics_in_range tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_metrics_in_range_basic() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![
+            make_number_metric(
+                "cpu.usage",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(50.0, 1000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu.usage",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(60.0, 2000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu.usage",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(70.0, 3000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu.usage",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(80.0, 4000)],
+                vec![],
+            ),
+        ]);
+
+        let range_metrics = storage.get_metrics_in_range(2000, 3000);
+        assert_eq!(range_metrics.len(), 2);
+        // Should include timestamps 2000 and 3000
+        let timestamps: Vec<u64> = range_metrics
+            .iter()
+            .map(|m| m.timestamp_unix_nano)
+            .collect();
+        assert!(timestamps.contains(&2000));
+        assert!(timestamps.contains(&3000));
+    }
+
+    #[test]
+    fn test_get_metrics_in_range_empty_result() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![make_number_metric(
+            "mem",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(100.0, 1000)],
+            vec![],
+        )]);
+
+        let range_metrics = storage.get_metrics_in_range(5000, 9000);
+        assert!(range_metrics.is_empty());
+    }
+
+    #[test]
+    fn test_get_metrics_in_range_single_point() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![make_number_metric(
+            "disk",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(42.0, 5000)],
+            vec![],
+        )]);
+
+        // Exact match on boundaries
+        let range_metrics = storage.get_metrics_in_range(5000, 5000);
+        assert_eq!(range_metrics.len(), 1);
+    }
+
+    // =========================================================================
+    // get_metrics_by_name_in_range tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_metrics_by_name_in_range_basic() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(10.0, 1000)],
+                vec![],
+            ),
+            make_number_metric(
+                "mem",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(20.0, 2000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(30.0, 3000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(40.0, 4000)],
+                vec![],
+            ),
+        ]);
+
+        let result = storage.get_metrics_by_name_in_range("cpu", 1000, 3000);
+        assert_eq!(result.len(), 2);
+        for m in &result {
+            assert_eq!(m.name, "cpu");
+        }
+    }
+
+    #[test]
+    fn test_get_metrics_by_name_in_range_nonexistent_name() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![make_number_metric(
+            "cpu",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(10.0, 1000)],
+            vec![],
+        )]);
+
+        let result = storage.get_metrics_by_name_in_range("nonexistent", 0, 9999);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_metrics_by_name_in_range_out_of_range() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![make_number_metric(
+            "cpu",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(10.0, 1000)],
+            vec![],
+        )]);
+
+        let result = storage.get_metrics_by_name_in_range("cpu", 5000, 9000);
+        assert!(result.is_empty());
+    }
+
+    // =========================================================================
+    // apply_retention tests
+    // =========================================================================
+
+    #[test]
+    fn test_apply_retention_removes_old_metrics() {
+        // Use a very short retention (1 second in nanoseconds)
+        let retention_ns = 1_000_000_000u64;
+        let storage = InMemoryMetricStorage::new(100, retention_ns);
+
+        // Add a metric with a very old timestamp (well before any retention cutoff)
+        let old_ts = 1_000_000_000u64; // 1 second since epoch - ancient
+        storage.add_metrics(vec![make_number_metric(
+            "old.metric",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(42.0, old_ts)],
+            vec![],
+        )]);
+
+        assert_eq!(storage.len(), 1);
+
+        // Apply retention - this uses current time as reference
+        // Since the metric timestamp is ~50 years old, it should be removed
+        storage.apply_retention();
+
+        assert_eq!(storage.len(), 0);
+    }
+
+    #[test]
+    fn test_apply_retention_keeps_recent_metrics() {
+        // Use a large retention (1 hour)
+        let retention_ns = 3600_000_000_000u64;
+        let storage = InMemoryMetricStorage::new(100, retention_ns);
+
+        // Use a current-ish timestamp
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        storage.add_metrics(vec![make_number_metric(
+            "recent.metric",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(42.0, now_ns)],
+            vec![],
+        )]);
+
+        assert_eq!(storage.len(), 1);
+
+        storage.apply_retention();
+
+        // Recent metric should still be present
+        assert_eq!(storage.len(), 1);
+    }
+
+    // =========================================================================
+    // get_aggregated_metrics tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_aggregated_metrics_single_bucket() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        // All metrics within the same bucket (interval_ns = 10000)
+        storage.add_metrics(vec![
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(10.0, 1000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(20.0, 2000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(30.0, 3000)],
+                vec![],
+            ),
+        ]);
+
+        let aggregated = storage.get_aggregated_metrics(0, 10000, 10000);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].name, "cpu");
+        assert_eq!(aggregated[0].count, 3);
+        assert_eq!(aggregated[0].sum, 60.0);
+        assert_eq!(aggregated[0].min, 10.0);
+        assert_eq!(aggregated[0].max, 30.0);
+        assert_eq!(aggregated[0].avg, 20.0);
+    }
+
+    #[test]
+    fn test_get_aggregated_metrics_multiple_buckets() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        // Metrics across two buckets (interval_ns = 5)
+        storage.add_metrics(vec![
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(10.0, 1)], vec![]),
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(20.0, 3)], vec![]),
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(30.0, 6)], vec![]),
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(40.0, 8)], vec![]),
+        ]);
+
+        let aggregated = storage.get_aggregated_metrics(0, 10, 5);
+
+        assert_eq!(aggregated.len(), 2);
+        // First bucket (0-4): values 10, 20
+        // Second bucket (5-9): values 30, 40
+        // Sorted by name then bucket_start
+        let first = &aggregated[0];
+        assert_eq!(first.count, 2);
+        assert_eq!(first.sum, 30.0);
+
+        let second = &aggregated[1];
+        assert_eq!(second.count, 2);
+        assert_eq!(second.sum, 70.0);
+    }
+
+    #[test]
+    fn test_get_aggregated_metrics_with_percentiles() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        // Need at least 5 data points for percentiles
+        for i in 0..10 {
+            storage.add_metrics(vec![make_number_metric(
+                "latency",
+                "svc",
+                StoredMetricType::Gauge,
+                &[((i as f64 + 1.0) * 10.0, i)],
+                vec![],
+            )]);
+        }
+
+        let aggregated = storage.get_aggregated_metrics(0, 100, 100);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].count, 10);
+        assert!(aggregated[0].percentiles.is_some());
+        let p = aggregated[0].percentiles.as_ref().unwrap();
+        // Values are 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+        assert!(p.p50 > 0.0);
+        assert!(p.p95 > p.p50);
+        assert!(p.p99 >= p.p95);
+    }
+
+    #[test]
+    fn test_get_aggregated_metrics_no_percentiles_for_small_sets() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        // Only 3 data points - not enough for percentiles
+        storage.add_metrics(vec![
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(10.0, 1)], vec![]),
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(20.0, 2)], vec![]),
+            make_number_metric("cpu", "svc", StoredMetricType::Gauge, &[(30.0, 3)], vec![]),
+        ]);
+
+        let aggregated = storage.get_aggregated_metrics(0, 100, 100);
+
+        assert_eq!(aggregated.len(), 1);
+        assert!(aggregated[0].percentiles.is_none());
+    }
+
+    // =========================================================================
+    // get_aggregated_histograms tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_aggregated_histograms_basic() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![
+            make_histogram_metric(
+                "request.duration",
+                "svc",
+                50,
+                250.0,
+                vec![10, 20, 15, 5],
+                vec![10.0, 50.0, 100.0],
+                Some(1.0),
+                Some(95.0),
+                1000,
+            ),
+            make_histogram_metric(
+                "request.duration",
+                "svc",
+                30,
+                150.0,
+                vec![5, 15, 8, 2],
+                vec![10.0, 50.0, 100.0],
+                Some(2.0),
+                Some(88.0),
+                2000,
+            ),
+        ]);
+
+        let aggregated = storage.get_aggregated_histograms(0, 10000, 10000);
+
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].name, "request.duration");
+        assert_eq!(aggregated[0].total_count, 80); // 50 + 30
+        assert_eq!(aggregated[0].total_sum, 400.0); // 250 + 150
+        assert_eq!(aggregated[0].min, Some(1.0));
+        assert_eq!(aggregated[0].max, Some(95.0));
+        // Merged bucket counts: [10+5, 20+15, 15+8, 5+2]
+        assert_eq!(aggregated[0].bucket_counts, vec![15, 35, 23, 7]);
+    }
+
+    #[test]
+    fn test_get_aggregated_histograms_ignores_non_histogram_metrics() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+
+        storage.add_metrics(vec![
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(42.0, 1000)],
+                vec![],
+            ),
+            make_histogram_metric(
+                "latency",
+                "svc",
+                10,
+                50.0,
+                vec![5, 5],
+                vec![10.0],
+                Some(1.0),
+                Some(20.0),
+                1000,
+            ),
+        ]);
+
+        let aggregated = storage.get_aggregated_histograms(0, 10000, 10000);
+
+        // Only the histogram metric should appear
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].name, "latency");
+    }
+
+    // =========================================================================
+    // PercentileValues tests
+    // =========================================================================
+
+    #[test]
+    fn test_percentile_values_empty_input() {
+        let p = PercentileValues::from_sorted_values(&[]);
+        assert_eq!(p.p50, 0.0);
+        assert_eq!(p.p75, 0.0);
+        assert_eq!(p.p90, 0.0);
+        assert_eq!(p.p95, 0.0);
+        assert_eq!(p.p99, 0.0);
+    }
+
+    #[test]
+    fn test_percentile_values_single_element() {
+        let p = PercentileValues::from_sorted_values(&[42.0]);
+        assert_eq!(p.p50, 42.0);
+        assert_eq!(p.p75, 42.0);
+        assert_eq!(p.p90, 42.0);
+        assert_eq!(p.p95, 42.0);
+        assert_eq!(p.p99, 42.0);
+    }
+
+    #[test]
+    fn test_percentile_values_sorted_data() {
+        let values: Vec<f64> = (1..=100).map(|i| i as f64).collect();
+        let p = PercentileValues::from_sorted_values(&values);
+
+        // With 100 elements: p50 = values[50], p75 = values[75], etc.
+        assert!(p.p50 > 0.0);
+        assert!(p.p75 > p.p50);
+        assert!(p.p90 > p.p75);
+        assert!(p.p95 > p.p90);
+        assert!(p.p99 > p.p95);
+    }
+
+    // =========================================================================
+    // RollupStorage tests
+    // =========================================================================
+
+    #[test]
+    fn test_rollup_storage_process_number_metrics() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,    // 1 minute
+            retention_ns: 3600_000_000_000, // 1 hour
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        let metrics = vec![
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(10.0, 1_000_000_000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(20.0, 2_000_000_000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(30.0, 3_000_000_000)],
+                vec![],
+            ),
+        ];
+
+        rollup.process_metrics(&metrics);
+
+        // All three metrics should be in the same bucket (0-59s bucket = bucket 0)
+        let results = rollup.get_rollups(0, 0, 60_000_000_000, Some("cpu"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].count, 3);
+        assert_eq!(results[0].sum, 60.0);
+        assert_eq!(results[0].min, 10.0);
+        assert_eq!(results[0].max, 30.0);
+        assert_eq!(results[0].avg, 20.0);
+    }
+
+    #[test]
+    fn test_rollup_storage_process_histogram_metrics() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,
+            retention_ns: 3600_000_000_000,
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        let metrics = vec![make_histogram_metric(
+            "duration",
+            "svc",
+            100,
+            500.0,
+            vec![20, 40, 30, 10],
+            vec![10.0, 50.0, 100.0],
+            Some(1.0),
+            Some(200.0),
+            5_000_000_000,
+        )];
+
+        rollup.process_metrics(&metrics);
+
+        let results = rollup.get_histogram_rollups(0, 0, 60_000_000_000, Some("duration"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].total_count, 100);
+        assert_eq!(results[0].total_sum, 500.0);
+        assert_eq!(results[0].min, Some(1.0));
+        assert_eq!(results[0].max, Some(200.0));
+    }
+
+    #[test]
+    fn test_rollup_storage_single_histogram_preserves_bucket_counts() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,
+            retention_ns: 3600_000_000_000,
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        let metrics = vec![make_histogram_metric(
+            "duration",
+            "svc",
+            3,
+            60.0,
+            vec![1, 1, 1],
+            vec![10.0, 50.0],
+            None,
+            None,
+            5_000_000_000,
+        )];
+
+        rollup.process_metrics(&metrics);
+
+        let results = rollup.get_histogram_rollups(0, 0, 60_000_000_000, Some("duration"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].bucket_counts, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn test_rollup_storage_get_rollups_out_of_range() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,
+            retention_ns: 3600_000_000_000,
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        let metrics = vec![make_number_metric(
+            "cpu",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(42.0, 1_000_000_000)],
+            vec![],
+        )];
+        rollup.process_metrics(&metrics);
+
+        // Query a time range that doesn't contain the bucket
+        let results = rollup.get_rollups(0, 120_000_000_000, 180_000_000_000, None);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_rollup_storage_get_rollups_invalid_level() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,
+            retention_ns: 3600_000_000_000,
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        // Level 5 doesn't exist (only level 0)
+        let results = rollup.get_rollups(5, 0, u64::MAX, None);
+        assert!(results.is_empty());
+
+        let hist_results = rollup.get_histogram_rollups(5, 0, u64::MAX, None);
+        assert!(hist_results.is_empty());
+    }
+
+    #[test]
+    fn test_rollup_storage_get_rollups_filter_by_name() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,
+            retention_ns: 3600_000_000_000,
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        let metrics = vec![
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(42.0, 1_000_000_000)],
+                vec![],
+            ),
+            make_number_metric(
+                "mem",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(1024.0, 1_000_000_000)],
+                vec![],
+            ),
+        ];
+        rollup.process_metrics(&metrics);
+
+        let cpu_results = rollup.get_rollups(0, 0, 60_000_000_000, Some("cpu"));
+        assert_eq!(cpu_results.len(), 1);
+        assert_eq!(cpu_results[0].name, "cpu");
+
+        let all_results = rollup.get_rollups(0, 0, 60_000_000_000, None);
+        assert_eq!(all_results.len(), 2);
+    }
+
+    #[test]
+    fn test_rollup_storage_apply_retention() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000, // 1 minute
+            retention_ns: 1_000_000_000, // 1 second retention (very short)
+        }];
+        let rollup = RollupStorage::new(levels);
+
+        // Add a metric from a very old timestamp
+        let metrics = vec![make_number_metric(
+            "old.metric",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(42.0, 1_000_000_000)], // 1 second since epoch
+            vec![],
+        )];
+        rollup.process_metrics(&metrics);
+
+        // Before retention
+        let all = rollup.get_rollups(0, 0, u64::MAX, None);
+        assert!(!all.is_empty());
+
+        // Apply retention - the metric's bucket_start is ancient, should be removed
+        rollup.apply_retention();
+
+        let remaining = rollup.get_rollups(0, 0, u64::MAX, None);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_rollup_storage_multiple_levels() {
+        let levels = vec![
+            RollupLevel {
+                interval_ns: 10_000_000_000,    // 10 seconds
+                retention_ns: 3600_000_000_000, // 1 hour
+            },
+            RollupLevel {
+                interval_ns: 60_000_000_000,     // 1 minute
+                retention_ns: 86400_000_000_000, // 1 day
+            },
+        ];
+        let rollup = RollupStorage::new(levels);
+
+        let metrics = vec![
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(10.0, 5_000_000_000)],
+                vec![],
+            ),
+            make_number_metric(
+                "cpu",
+                "svc",
+                StoredMetricType::Gauge,
+                &[(20.0, 15_000_000_000)],
+                vec![],
+            ),
+        ];
+        rollup.process_metrics(&metrics);
+
+        // Level 0 (10s interval): both metrics in different buckets
+        let level0 = rollup.get_rollups(0, 0, 60_000_000_000, None);
+        assert_eq!(level0.len(), 2);
+
+        // Level 1 (60s interval): both metrics in the same bucket
+        let level1 = rollup.get_rollups(1, 0, 60_000_000_000, None);
+        assert_eq!(level1.len(), 1);
+        assert_eq!(level1[0].count, 2);
+    }
+
+    #[test]
+    fn test_rollup_storage_debug() {
+        let levels = vec![RollupLevel {
+            interval_ns: 60_000_000_000,
+            retention_ns: 3600_000_000_000,
+        }];
+        let rollup = RollupStorage::new(levels);
+        let debug_str = format!("{:?}", rollup);
+        assert!(debug_str.contains("RollupStorage"));
+        assert!(debug_str.contains("levels"));
+    }
+
+    // =========================================================================
+    // MetricsAccumulator tests
+    // =========================================================================
+
+    #[test]
+    fn test_metrics_accumulator_get_function_count() {
+        let acc = MetricsAccumulator::default();
+        assert!(acc.get_function_count("unknown").is_none());
+
+        acc.increment_function("func_a");
+        acc.increment_function("func_a");
+        acc.increment_function("func_b");
+
+        assert_eq!(acc.get_function_count("func_a"), Some(2));
+        assert_eq!(acc.get_function_count("func_b"), Some(1));
+        assert!(acc.get_function_count("func_c").is_none());
+    }
+
+    #[test]
+    fn test_metrics_accumulator_iter_function_counts() {
+        let acc = MetricsAccumulator::default();
+
+        acc.increment_function("func_x");
+        acc.increment_function("func_x");
+        acc.increment_function("func_y");
+
+        let counts: std::collections::HashMap<String, u64> = acc.iter_function_counts().collect();
+
+        assert_eq!(counts.get("func_x"), Some(&2));
+        assert_eq!(counts.get("func_y"), Some(&1));
+    }
+
+    // =========================================================================
+    // TimeIndexedMetricStorage len / is_empty
+    // =========================================================================
+
+    #[test]
+    fn test_metric_storage_len_and_is_empty() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        assert!(storage.is_empty());
+        assert_eq!(storage.len(), 0);
+
+        storage.add_metrics(vec![make_number_metric(
+            "cpu",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(10.0, 1000)],
+            vec![],
+        )]);
+        assert!(!storage.is_empty());
+        assert_eq!(storage.len(), 1);
+
+        storage.clear();
+        assert!(storage.is_empty());
+        assert_eq!(storage.len(), 0);
+    }
+
+    // =========================================================================
+    // TimeIndexedMetricStorage Debug impl
+    // =========================================================================
+
+    #[test]
+    fn test_metric_storage_debug() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        let debug_str = format!("{:?}", storage);
+        assert!(debug_str.contains("TimeIndexedMetricStorage"));
+        assert!(debug_str.contains("max_age_ns"));
+        assert!(debug_str.contains("max_metrics"));
+    }
+
+    // =========================================================================
+    // AggregatedMetric struct validation
+    // =========================================================================
+
+    #[test]
+    fn test_aggregated_metric_serialization() {
+        let am = AggregatedMetric {
+            name: "test".to_string(),
+            bucket_start_ns: 1000,
+            bucket_end_ns: 2000,
+            count: 5,
+            sum: 100.0,
+            min: 10.0,
+            max: 30.0,
+            avg: 20.0,
+            percentiles: Some(PercentileValues {
+                p50: 15.0,
+                p75: 22.0,
+                p90: 27.0,
+                p95: 29.0,
+                p99: 30.0,
+            }),
+        };
+
+        let json = serde_json::to_string(&am).expect("serialize");
+        assert!(json.contains("\"name\":\"test\""));
+        assert!(json.contains("\"percentiles\""));
+    }
+
+    #[test]
+    fn test_aggregated_metric_without_percentiles_serialization() {
+        let am = AggregatedMetric {
+            name: "test".to_string(),
+            bucket_start_ns: 1000,
+            bucket_end_ns: 2000,
+            count: 2,
+            sum: 30.0,
+            min: 10.0,
+            max: 20.0,
+            avg: 15.0,
+            percentiles: None,
+        };
+
+        let json = serde_json::to_string(&am).expect("serialize");
+        assert!(json.contains("\"name\":\"test\""));
+        // percentiles should be omitted when None
+        assert!(!json.contains("percentiles"));
+    }
+
+    #[test]
+    fn test_shutdown_metrics_is_safe_after_default_meter_init() {
+        ensure_default_meter();
+        shutdown_metrics();
+        assert!(get_meter().is_some());
+    }
+
+    #[test]
+    fn test_rollup_storage_get_rollups_empty_for_unknown_metric_name() {
+        let storage = RollupStorage::new(default_rollup_levels());
+        let metrics = vec![make_number_metric(
+            "cpu",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(42.0, 1_000_000_000)],
+            vec![],
+        )];
+
+        storage.process_metrics(&metrics);
+
+        let results = storage.get_rollups(0, 0, u64::MAX, Some("missing"));
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_worker_metrics_from_storage_returns_none_for_unknown_worker() {
+        init_metric_storage(Some(100), Some(3600));
+        let storage = get_metric_storage().expect("metric storage should be initialized");
+        storage.clear();
+
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+
+        storage.add_metrics(vec![make_number_metric(
+            "iii.worker.cpu.percent",
+            "svc",
+            StoredMetricType::Gauge,
+            &[(7.5, now_ns)],
+            vec![("worker.id".to_string(), "worker-a".to_string())],
+        )]);
+
+        assert!(get_worker_metrics_from_storage("worker-b").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_alert_manager_no_rules_emits_no_events() {
+        let manager = AlertManager::new(Vec::new());
+        let events = manager.evaluate().await;
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_get_aggregated_metrics_ignores_histogram_datapoints() {
+        let storage = InMemoryMetricStorage::new(100, DEFAULT_RETENTION_NS);
+        storage.add_metrics(vec![make_histogram_metric(
+            "request.duration",
+            "svc",
+            3,
+            12.0,
+            vec![1, 2],
+            vec![5.0, 10.0],
+            Some(1.0),
+            Some(10.0),
+            1_000_000_000,
+        )]);
+
+        let aggregated = storage.get_aggregated_metrics(0, u64::MAX, 60_000_000_000);
+        assert!(aggregated.is_empty());
     }
 }

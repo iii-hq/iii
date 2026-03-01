@@ -154,12 +154,18 @@ If a hook fails, fix the issues and try committing again.
 # Run all tests
 cargo test --all-features
 
+# Run coverage locally (fails below 70%)
+cargo tarpaulin
+
 # Run specific test
 cargo test test_name
 
 # Run tests with output
 cargo test -- --nocapture
 ```
+
+The tarpaulin gate excludes infrastructure-specific adapters (`redis`, `rabbitmq`, `bridge`)
+and `src/main.rs`, so the threshold reflects the unit-tested engine core.
 
 ### Writing Tests
 
@@ -211,6 +217,7 @@ All PRs must pass:
 - **Formatting** - `cargo fmt` check
 - **Linting** - `cargo clippy` with no warnings
 - **Tests** - All tests must pass
+- **Coverage** - `cargo tarpaulin` with minimum 70%
 - **License Headers** - Hawkeye validation
 - **Multi-platform builds** - macOS, Windows, Linux
 

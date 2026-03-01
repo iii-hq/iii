@@ -626,4 +626,745 @@ mod tests {
         let output = EngineConfig::expand_env_vars(input);
         assert_eq!(output, expected);
     }
+
+    // =========================================================================
+    // 1. expand_env_vars tests
+    // =========================================================================
+
+    #[test]
+    fn test_expand_env_vars_simple() {
+        // Expand a simple env var like ${HOME}
+        unsafe {
+            env::set_var("TEST_SIMPLE_HOME", "/home/user");
+        }
+        let input = "path: ${TEST_SIMPLE_HOME}";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "path: /home/user");
+    }
+
+    #[test]
+    fn test_expand_env_vars_with_default() {
+        // Expand ${NONEXISTENT:-default_value} should use default
+        // The regex uses `:` as separator, so `:-default_value` means default = `-default_value`
+        // Actually, re-examining the regex: r"\$\{([^}:]+)(?::([^}]*))?\}"
+        // Group 1 = var name (everything up to : or })
+        // Group 2 = everything after : up to }
+        // So ${NONEXISTENT:-default_value} => var_name="NONEXISTENT", default="-default_value"
+        unsafe {
+            env::remove_var("TEST_EXPAND_NONEXISTENT_DEFAULT");
+        }
+        let input = "value: ${TEST_EXPAND_NONEXISTENT_DEFAULT:default_value}";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "value: default_value");
+    }
+
+    #[test]
+    #[should_panic(expected = "not set and no default provided")]
+    fn test_expand_env_vars_missing_no_default() {
+        // Expand ${NONEXISTENT} without default panics
+        unsafe {
+            env::remove_var("TEST_EXPAND_MISSING_NODEF");
+        }
+        let input = "key: ${TEST_EXPAND_MISSING_NODEF}";
+        EngineConfig::expand_env_vars(input);
+    }
+
+    #[test]
+    fn test_expand_env_vars_multiple() {
+        // Expand multiple different vars in one string
+        unsafe {
+            env::set_var("TEST_MULTI_A", "alpha");
+            env::set_var("TEST_MULTI_B", "beta");
+            env::set_var("TEST_MULTI_C", "gamma");
+        }
+        let input = "${TEST_MULTI_A}/${TEST_MULTI_B}/${TEST_MULTI_C}";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "alpha/beta/gamma");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_vars() {
+        // String without vars returns unchanged
+        let input = "just a plain string with no variables at all";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_expand_env_vars_nested_in_yaml() {
+        // Expand env vars in a YAML value string
+        unsafe {
+            env::set_var("TEST_YAML_DB_HOST", "db.example.com");
+            env::set_var("TEST_YAML_DB_PORT", "5432");
+        }
+        let yaml_input = r#"database:
+  host: ${TEST_YAML_DB_HOST}
+  port: ${TEST_YAML_DB_PORT}
+  name: ${TEST_YAML_DB_NAME:mydb}
+  pool_size: 10"#;
+        let output = EngineConfig::expand_env_vars(yaml_input);
+        let expected = r#"database:
+  host: db.example.com
+  port: 5432
+  name: mydb
+  pool_size: 10"#;
+        assert_eq!(output, expected);
+
+        // Also verify the expanded YAML is actually parseable
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&output).unwrap();
+        let db = &parsed["database"];
+        assert_eq!(db["host"].as_str().unwrap(), "db.example.com");
+        assert_eq!(db["port"].as_u64().unwrap(), 5432);
+        assert_eq!(db["name"].as_str().unwrap(), "mydb");
+        assert_eq!(db["pool_size"].as_u64().unwrap(), 10);
+    }
+
+    // =========================================================================
+    // 2. default_modules tests
+    // =========================================================================
+
+    #[test]
+    fn test_default_modules_returns_entries() {
+        // Verify default_module_entries returns a Vec of ModuleEntry
+        let entries = default_module_entries();
+        // Each entry should have a non-empty class name
+        for entry in &entries {
+            assert!(
+                !entry.class.is_empty(),
+                "Module entry class should not be empty"
+            );
+            // Default entries have no config
+            assert!(
+                entry.config.is_none(),
+                "Default module entries should have no config"
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_modules_keys() {
+        // Verify the module type keys are present (collected from inventory)
+        let entries = default_module_entries();
+        let class_names: Vec<&str> = entries.iter().map(|e| e.class.as_str()).collect();
+
+        // We cannot know exact modules at compile time since they come from inventory,
+        // but we can verify the structure is sound: no duplicates in class names
+        let unique_names: HashSet<&str> = class_names.iter().copied().collect();
+        assert_eq!(
+            class_names.len(),
+            unique_names.len(),
+            "Default module entries should have unique class names"
+        );
+    }
+
+    // =========================================================================
+    // 3. Config parsing tests
+    // =========================================================================
+
+    #[test]
+    fn test_config_yaml_parsing() {
+        // Parse a minimal valid YAML config string
+        let yaml = r#"
+port: 8080
+modules: []
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, 8080);
+        assert!(config.modules.is_empty());
+    }
+
+    #[test]
+    fn test_config_yaml_with_modules() {
+        // Parse config with modules section
+        let yaml = r#"
+port: 3000
+modules:
+  - class: "my::TestModule"
+    config:
+      key: "value"
+      count: 42
+  - class: "my::OtherModule"
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, 3000);
+        assert_eq!(config.modules.len(), 2);
+
+        // First module has class and config
+        assert_eq!(config.modules[0].class, "my::TestModule");
+        let cfg = config.modules[0].config.as_ref().unwrap();
+        assert_eq!(cfg["key"], "value");
+        assert_eq!(cfg["count"], 42);
+
+        // Second module has class but no config
+        assert_eq!(config.modules[1].class, "my::OtherModule");
+        assert!(config.modules[1].config.is_none());
+    }
+
+    #[test]
+    fn test_config_yaml_empty() {
+        // Parse empty/minimal YAML -- should use defaults
+        let yaml = "{}";
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, DEFAULT_PORT);
+        assert!(config.modules.is_empty());
+    }
+
+    #[test]
+    fn test_config_yaml_only_port() {
+        // Parse YAML with only port, modules should default to empty vec
+        let yaml = "port: 9999";
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, 9999);
+        assert!(config.modules.is_empty());
+    }
+
+    #[test]
+    fn test_config_yaml_only_modules() {
+        // Parse YAML with only modules, port should default
+        let yaml = r#"
+modules:
+  - class: "test::Module"
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, DEFAULT_PORT);
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].class, "test::Module");
+    }
+
+    // =========================================================================
+    // 4. ModuleRegistry tests
+    // =========================================================================
+
+    #[test]
+    fn test_module_registry_new_is_empty() {
+        // A freshly created registry (without inventory) should be empty
+        let registry = ModuleRegistry::new();
+        let factories = registry.module_factories.read().expect("RwLock poisoned");
+        assert!(
+            factories.is_empty(),
+            "New ModuleRegistry should have no registered modules"
+        );
+    }
+
+    #[test]
+    fn test_module_registry_register() {
+        // Register a module type and verify it exists in the registry
+        use async_trait::async_trait;
+
+        struct DummyModule;
+
+        #[async_trait]
+        impl Module for DummyModule {
+            fn name(&self) -> &'static str {
+                "dummy"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(DummyModule))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let registry = ModuleRegistry::new();
+        registry.register::<DummyModule>("test::DummyModule");
+
+        let factories = registry.module_factories.read().expect("RwLock poisoned");
+        assert!(
+            factories.contains_key("test::DummyModule"),
+            "Registry should contain the registered module"
+        );
+    }
+
+    #[test]
+    fn test_module_registry_contains() {
+        // Check if a registered type exists and an unregistered one does not
+        use async_trait::async_trait;
+
+        struct AnotherDummy;
+
+        #[async_trait]
+        impl Module for AnotherDummy {
+            fn name(&self) -> &'static str {
+                "another_dummy"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(AnotherDummy))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let registry = ModuleRegistry::new();
+        registry.register::<AnotherDummy>("test::AnotherDummy");
+
+        let factories = registry.module_factories.read().expect("RwLock poisoned");
+        assert!(
+            factories.contains_key("test::AnotherDummy"),
+            "Registry should contain 'test::AnotherDummy'"
+        );
+        assert!(
+            !factories.contains_key("test::NonExistent"),
+            "Registry should not contain unregistered module"
+        );
+    }
+
+    #[test]
+    fn test_module_registry_register_multiple() {
+        // Register multiple modules and verify all are present
+        use async_trait::async_trait;
+
+        struct ModA;
+        struct ModB;
+
+        #[async_trait]
+        impl Module for ModA {
+            fn name(&self) -> &'static str {
+                "mod_a"
+            }
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(ModA))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        #[async_trait]
+        impl Module for ModB {
+            fn name(&self) -> &'static str {
+                "mod_b"
+            }
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(ModB))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let registry = ModuleRegistry::new();
+        registry.register::<ModA>("test::ModA");
+        registry.register::<ModB>("test::ModB");
+
+        let factories = registry.module_factories.read().expect("RwLock poisoned");
+        assert_eq!(factories.len(), 2);
+        assert!(factories.contains_key("test::ModA"));
+        assert!(factories.contains_key("test::ModB"));
+    }
+
+    // =========================================================================
+    // EngineConfig::default_modules
+    // =========================================================================
+
+    #[test]
+    fn test_engine_config_default_modules_resets_port() {
+        let config = EngineConfig {
+            port: 9999,
+            modules: vec![],
+        };
+        let with_defaults = config.default_modules();
+        assert_eq!(with_defaults.port, DEFAULT_PORT);
+    }
+
+    // =========================================================================
+    // EngineConfig::config_file_or_default
+    // =========================================================================
+
+    #[test]
+    fn test_config_file_or_default_missing_file() {
+        let result = EngineConfig::config_file_or_default("/nonexistent/path/config.yaml");
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.port, DEFAULT_PORT);
+    }
+
+    #[test]
+    fn test_config_file_or_default_valid_yaml_file() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_config_valid.yaml");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(file, "port: 7777\nmodules: []").unwrap();
+        drop(file);
+
+        let result = EngineConfig::config_file_or_default(path.to_str().unwrap());
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.port, 7777);
+        assert!(config.modules.is_empty());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_config_file_or_default_invalid_yaml() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("test_config_invalid.yaml");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(file, "{{{{ not valid yaml at all }}}}}}").unwrap();
+        drop(file);
+
+        let result = EngineConfig::config_file_or_default(path.to_str().unwrap());
+        assert!(result.is_err());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    // =========================================================================
+    // ModuleEntry
+    // =========================================================================
+
+    #[test]
+    fn test_module_entry_deserialize() {
+        let yaml = r#"
+class: "my::Module"
+config:
+  key: "value"
+"#;
+        let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.class, "my::Module");
+        assert!(entry.config.is_some());
+    }
+
+    #[test]
+    fn test_module_entry_deserialize_no_config() {
+        let yaml = r#"class: "my::Module""#;
+        let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.class, "my::Module");
+        assert!(entry.config.is_none());
+    }
+
+    // =========================================================================
+    // EngineBuilder
+    // =========================================================================
+
+    #[test]
+    fn test_engine_builder_default() {
+        let builder = EngineBuilder::default();
+        assert_eq!(
+            builder.address,
+            format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT)
+        );
+        assert!(builder.config.is_none());
+        assert!(builder.modules.is_empty());
+    }
+
+    #[test]
+    fn test_engine_builder_new() {
+        let builder = EngineBuilder::new();
+        assert_eq!(
+            builder.address,
+            format!("{}:{}", DEFAULT_HOST, DEFAULT_PORT)
+        );
+    }
+
+    #[test]
+    fn test_engine_builder_address() {
+        let builder = EngineBuilder::new().address("127.0.0.1:8080");
+        assert_eq!(builder.address, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_engine_builder_add_module_without_config() {
+        let builder = EngineBuilder::new().add_module("test::Module", None);
+        assert!(builder.config.is_some());
+        let config = builder.config.unwrap();
+        assert_eq!(config.modules.len(), 1);
+        assert_eq!(config.modules[0].class, "test::Module");
+        assert!(config.modules[0].config.is_none());
+    }
+
+    #[test]
+    fn test_engine_builder_add_module_with_config() {
+        let builder = EngineBuilder::new()
+            .add_module("test::Module", Some(serde_json::json!({"key": "value"})));
+        let config = builder.config.unwrap();
+        assert_eq!(config.modules[0].config.as_ref().unwrap()["key"], "value");
+    }
+
+    #[test]
+    fn test_engine_builder_add_multiple_modules() {
+        let builder = EngineBuilder::new()
+            .add_module("test::ModA", None)
+            .add_module("test::ModB", Some(serde_json::json!({"port": 3000})));
+        let config = builder.config.unwrap();
+        assert_eq!(config.modules.len(), 2);
+        assert_eq!(config.modules[0].class, "test::ModA");
+        assert_eq!(config.modules[1].class, "test::ModB");
+    }
+
+    #[test]
+    fn test_engine_builder_config_file_or_default_missing() {
+        let result = EngineBuilder::new().config_file_or_default("/nonexistent.yaml");
+        assert!(result.is_ok());
+        let builder = result.unwrap();
+        assert!(builder.config.is_some());
+    }
+
+    // =========================================================================
+    // create_module with unknown class
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_create_module_unknown_class_fails() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let engine = Arc::new(Engine::new());
+        let result = registry
+            .create_module("nonexistent::Module", engine, None)
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(err_msg.contains("Unknown module class"));
+    }
+
+    #[tokio::test]
+    async fn test_create_module_registered_class() {
+        use async_trait::async_trait;
+
+        struct TestMod;
+
+        #[async_trait]
+        impl Module for TestMod {
+            fn name(&self) -> &'static str {
+                "test_mod"
+            }
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(TestMod))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register::<TestMod>("test::TestMod");
+
+        let engine = Arc::new(Engine::new());
+        let result = registry.create_module("test::TestMod", engine, None).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "test_mod");
+    }
+
+    // =========================================================================
+    // ModuleEntry::create_module
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_module_entry_create_unknown_fails() {
+        let entry = ModuleEntry {
+            class: "unknown::Module".to_string(),
+            config: None,
+        };
+        let registry = Arc::new(ModuleRegistry::new());
+        let engine = Arc::new(Engine::new());
+        let result = entry.create_module(engine, &registry).await;
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(err_msg.contains("Failed to create unknown::Module"));
+    }
+
+    // =========================================================================
+    // EngineConfig YAML parsing edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_config_yaml_large_port() {
+        let yaml = "port: 65535\nmodules: []";
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, 65535);
+    }
+
+    #[test]
+    fn test_config_yaml_port_zero() {
+        let yaml = "port: 0\nmodules: []";
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.port, 0);
+    }
+
+    #[test]
+    fn test_config_yaml_module_with_complex_config() {
+        let yaml = r#"
+port: 3000
+modules:
+  - class: "my::Module"
+    config:
+      nested:
+        deep: true
+        items:
+          - "a"
+          - "b"
+      number: 42
+"#;
+        let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.modules.len(), 1);
+        let cfg = config.modules[0].config.as_ref().unwrap();
+        assert_eq!(cfg["nested"]["deep"], true);
+        assert_eq!(cfg["nested"]["items"][0], "a");
+        assert_eq!(cfg["number"], 42);
+    }
+
+    // =========================================================================
+    // expand_env_vars edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_expand_env_vars_empty_string() {
+        let output = EngineConfig::expand_env_vars("");
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_expand_env_vars_dollar_sign_without_brace() {
+        let input = "price is $100";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "price is $100");
+    }
+
+    #[test]
+    fn test_expand_env_vars_incomplete_syntax() {
+        // ${unclosed should not match the regex
+        let input = "value: ${UNCLOSED";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "value: ${UNCLOSED");
+    }
+
+    #[test]
+    fn test_expand_env_vars_special_characters_in_value() {
+        unsafe {
+            env::set_var("TEST_SPECIAL_CHARS_VAL", "hello world!@#$%^&*()");
+        }
+        let input = "val: ${TEST_SPECIAL_CHARS_VAL}";
+        let output = EngineConfig::expand_env_vars(input);
+        assert_eq!(output, "val: hello world!@#$%^&*()");
+    }
+
+    // =========================================================================
+    // ModuleRegistry register overwrites
+    // =========================================================================
+
+    #[test]
+    fn test_module_registry_register_overwrite() {
+        use async_trait::async_trait;
+
+        struct ModV1;
+        struct ModV2;
+
+        #[async_trait]
+        impl Module for ModV1 {
+            fn name(&self) -> &'static str {
+                "v1"
+            }
+            async fn create(_: Arc<Engine>, _: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(ModV1))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        #[async_trait]
+        impl Module for ModV2 {
+            fn name(&self) -> &'static str {
+                "v2"
+            }
+            async fn create(_: Arc<Engine>, _: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(ModV2))
+            }
+            async fn initialize(&self) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let registry = ModuleRegistry::new();
+        registry.register::<ModV1>("test::Overwrite");
+        registry.register::<ModV2>("test::Overwrite");
+
+        let factories = registry.module_factories.read().expect("RwLock poisoned");
+        assert_eq!(factories.len(), 1);
+        assert!(factories.contains_key("test::Overwrite"));
+    }
+
+    #[tokio::test]
+    async fn test_engine_builder_build_and_destroy_run_module_lifecycle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use async_trait::async_trait;
+
+        static INITIALIZED: AtomicUsize = AtomicUsize::new(0);
+        static REGISTERED: AtomicUsize = AtomicUsize::new(0);
+        static DESTROYED: AtomicUsize = AtomicUsize::new(0);
+
+        struct LifecycleModule;
+
+        #[async_trait]
+        impl Module for LifecycleModule {
+            fn name(&self) -> &'static str {
+                "LifecycleModule"
+            }
+
+            async fn create(
+                _engine: Arc<Engine>,
+                _config: Option<Value>,
+            ) -> anyhow::Result<Box<dyn Module>> {
+                Ok(Box::new(LifecycleModule))
+            }
+
+            async fn initialize(&self) -> anyhow::Result<()> {
+                INITIALIZED.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn destroy(&self) -> anyhow::Result<()> {
+                DESTROYED.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn register_functions(&self, _engine: Arc<Engine>) {
+                REGISTERED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        INITIALIZED.store(0, Ordering::SeqCst);
+        REGISTERED.store(0, Ordering::SeqCst);
+        DESTROYED.store(0, Ordering::SeqCst);
+
+        let builder = EngineBuilder::new()
+            .register_module::<LifecycleModule>("test::Lifecycle")
+            .add_module(
+                "test::Lifecycle",
+                Some(serde_json::json!({"enabled": true})),
+            )
+            .build()
+            .await
+            .expect("build engine");
+
+        assert_eq!(INITIALIZED.load(Ordering::SeqCst), 1);
+        assert_eq!(REGISTERED.load(Ordering::SeqCst), 1);
+        assert!(builder.modules.len() >= 1);
+
+        builder.destroy().await.expect("destroy engine");
+        assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
+    }
 }

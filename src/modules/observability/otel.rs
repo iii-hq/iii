@@ -989,8 +989,20 @@ pub fn extract_context(traceparent: Option<&str>, baggage: Option<&str>) -> Cont
         carrier.insert("baggage".to_string(), bg.to_string());
     }
 
-    // Use the global composite propagator to extract both
-    global::get_text_map_propagator(|propagator| propagator.extract(&carrier))
+    let trace_propagator = TraceContextPropagator::new();
+    let baggage_propagator = BaggagePropagator::new();
+
+    let ctx = if traceparent.is_some() {
+        trace_propagator.extract(&carrier)
+    } else {
+        Context::current()
+    };
+
+    if baggage.is_some() {
+        baggage_propagator.extract_with_context(&ctx, &carrier)
+    } else {
+        ctx
+    }
 }
 
 // =============================================================================
@@ -1212,6 +1224,10 @@ fn extract_service_name(resource: &Option<OtlpResource>) -> String {
 
 /// Convert an OtlpKeyValue to an opentelemetry KeyValue.
 fn otlp_kv_to_key_value(kv: &OtlpKeyValue) -> Option<KeyValue> {
+    if kv.key.is_empty() {
+        return None;
+    }
+
     let val = kv.value.as_ref()?;
     let value = if let Some(s) = &val.string_value {
         opentelemetry::Value::String(s.clone().into())
@@ -3121,5 +3137,1854 @@ mod tests {
         // The context should exist
         let _span_ref = ctx.span();
         // Just verify no panic
+    }
+
+    // ==========================================================================
+    // InMemorySpanStorage Tests
+    // ==========================================================================
+
+    /// Helper to create a StoredSpan with custom fields for testing.
+    fn make_stored_span(
+        trace_id: &str,
+        span_id: &str,
+        name: &str,
+        start_ns: u64,
+        end_ns: u64,
+    ) -> StoredSpan {
+        StoredSpan {
+            trace_id: trace_id.to_string(),
+            span_id: span_id.to_string(),
+            parent_span_id: None,
+            name: name.to_string(),
+            start_time_unix_nano: start_ns,
+            end_time_unix_nano: end_ns,
+            status: "ok".to_string(),
+            status_description: None,
+            attributes: vec![],
+            service_name: "test-service".to_string(),
+            events: vec![],
+            links: vec![],
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+            flags: None,
+        }
+    }
+
+    #[test]
+    fn test_span_storage_add_and_get() {
+        let storage = InMemorySpanStorage::new(10);
+        assert!(storage.get_spans().is_empty());
+
+        let span1 = make_stored_span("trace1", "span1", "op-a", 1_000_000_000, 2_000_000_000);
+        let span2 = make_stored_span("trace2", "span2", "op-b", 3_000_000_000, 4_000_000_000);
+
+        storage.add_spans(vec![span1, span2]);
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].span_id, "span1");
+        assert_eq!(spans[1].span_id, "span2");
+    }
+
+    #[test]
+    fn test_span_storage_get_by_trace_id() {
+        let storage = InMemorySpanStorage::new(10);
+
+        let s1 = make_stored_span("trace-a", "s1", "op1", 1_000_000_000, 2_000_000_000);
+        let s2 = make_stored_span("trace-b", "s2", "op2", 3_000_000_000, 4_000_000_000);
+        let s3 = make_stored_span("trace-a", "s3", "op3", 5_000_000_000, 6_000_000_000);
+        let s4 = make_stored_span("trace-c", "s4", "op4", 7_000_000_000, 8_000_000_000);
+
+        storage.add_spans(vec![s1, s2, s3, s4]);
+
+        let trace_a_spans = storage.get_spans_by_trace_id("trace-a");
+        assert_eq!(trace_a_spans.len(), 2);
+        let span_ids: Vec<&str> = trace_a_spans.iter().map(|s| s.span_id.as_str()).collect();
+        assert!(span_ids.contains(&"s1"));
+        assert!(span_ids.contains(&"s3"));
+
+        let trace_b_spans = storage.get_spans_by_trace_id("trace-b");
+        assert_eq!(trace_b_spans.len(), 1);
+        assert_eq!(trace_b_spans[0].span_id, "s2");
+
+        let trace_x_spans = storage.get_spans_by_trace_id("trace-nonexistent");
+        assert!(trace_x_spans.is_empty());
+    }
+
+    #[test]
+    fn test_span_storage_circular_buffer_eviction() {
+        let storage = InMemorySpanStorage::new(3);
+
+        // Add 5 spans to a storage that only holds 3
+        for i in 0..5u64 {
+            storage.add_spans(vec![make_stored_span(
+                &format!("trace{}", i),
+                &format!("span{}", i),
+                &format!("op{}", i),
+                i * 1_000_000_000,
+                (i + 1) * 1_000_000_000,
+            )]);
+        }
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 3);
+
+        // Oldest two (span0, span1) should be evicted; remaining are span2, span3, span4
+        assert_eq!(spans[0].span_id, "span2");
+        assert_eq!(spans[1].span_id, "span3");
+        assert_eq!(spans[2].span_id, "span4");
+
+        // The evicted trace IDs should not be found
+        assert!(storage.get_spans_by_trace_id("trace0").is_empty());
+        assert!(storage.get_spans_by_trace_id("trace1").is_empty());
+
+        // The remaining trace IDs should be found
+        assert_eq!(storage.get_spans_by_trace_id("trace2").len(), 1);
+        assert_eq!(storage.get_spans_by_trace_id("trace3").len(), 1);
+        assert_eq!(storage.get_spans_by_trace_id("trace4").len(), 1);
+    }
+
+    #[test]
+    fn test_span_storage_clear() {
+        let storage = InMemorySpanStorage::new(10);
+
+        storage.add_spans(vec![
+            make_stored_span("t1", "s1", "op1", 1_000_000_000, 2_000_000_000),
+            make_stored_span("t2", "s2", "op2", 3_000_000_000, 4_000_000_000),
+        ]);
+        assert_eq!(storage.len(), 2);
+
+        storage.clear();
+
+        assert_eq!(storage.len(), 0);
+        assert!(storage.get_spans().is_empty());
+        assert!(storage.get_spans_by_trace_id("t1").is_empty());
+        assert!(storage.get_spans_by_trace_id("t2").is_empty());
+    }
+
+    #[test]
+    fn test_span_storage_len_and_is_empty() {
+        let storage = InMemorySpanStorage::new(10);
+
+        assert!(storage.is_empty());
+        assert_eq!(storage.len(), 0);
+
+        storage.add_spans(vec![make_stored_span(
+            "t1",
+            "s1",
+            "op1",
+            1_000_000_000,
+            2_000_000_000,
+        )]);
+        assert!(!storage.is_empty());
+        assert_eq!(storage.len(), 1);
+
+        storage.add_spans(vec![
+            make_stored_span("t2", "s2", "op2", 3_000_000_000, 4_000_000_000),
+            make_stored_span("t3", "s3", "op3", 5_000_000_000, 6_000_000_000),
+        ]);
+        assert_eq!(storage.len(), 3);
+    }
+
+    #[test]
+    fn test_span_storage_calculate_performance_metrics() {
+        let storage = InMemorySpanStorage::new(10);
+
+        // Create spans with known durations (in nanoseconds):
+        // span1: 10ms  (10_000_000 ns)
+        // span2: 20ms  (20_000_000 ns)
+        // span3: 30ms  (30_000_000 ns)
+        // span4: 40ms  (40_000_000 ns)
+        // span5: 100ms (100_000_000 ns)
+        let base = 1_000_000_000u64;
+        storage.add_spans(vec![
+            make_stored_span("t1", "s1", "op1", base, base + 10_000_000),
+            make_stored_span("t2", "s2", "op2", base, base + 20_000_000),
+            make_stored_span("t3", "s3", "op3", base, base + 30_000_000),
+            make_stored_span("t4", "s4", "op4", base, base + 40_000_000),
+            make_stored_span("t5", "s5", "op5", base, base + 100_000_000),
+        ]);
+
+        let (avg, p50, p95, p99, min, max) = storage.calculate_performance_metrics();
+
+        // avg = (10 + 20 + 30 + 40 + 100) / 5 = 40.0
+        assert!((avg - 40.0).abs() < 0.001);
+        assert!((min - 10.0).abs() < 0.001);
+        assert!((max - 100.0).abs() < 0.001);
+
+        // p50: index = floor(5 * 0.50) = 2 => sorted[2] = 30.0
+        assert!((p50 - 30.0).abs() < 0.001);
+        // p95: index = floor(5 * 0.95) = 4 => sorted[4] = 100.0
+        assert!((p95 - 100.0).abs() < 0.001);
+        // p99: index = floor(5 * 0.99) = 4 => sorted[4] = 100.0
+        assert!((p99 - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_span_storage_calculate_performance_metrics_empty() {
+        let storage = InMemorySpanStorage::new(10);
+
+        let (avg, p50, p95, p99, min, max) = storage.calculate_performance_metrics();
+        assert_eq!(avg, 0.0);
+        assert_eq!(p50, 0.0);
+        assert_eq!(p95, 0.0);
+        assert_eq!(p99, 0.0);
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 0.0);
+    }
+
+    // ==========================================================================
+    // build_sampler Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_build_sampler_always_on() {
+        let config = OtelConfig {
+            enabled: true,
+            service_name: "test".to_string(),
+            service_version: "0.1.0".to_string(),
+            service_namespace: None,
+            exporter: ExporterType::Memory,
+            endpoint: "http://localhost:4317".to_string(),
+            sampling_ratio: 1.0,
+            memory_max_spans: 100,
+        };
+
+        let sampler = build_sampler(&config);
+        // Sampler::AlwaysOn debug representation
+        assert_eq!(format!("{:?}", sampler), "AlwaysOn");
+    }
+
+    #[test]
+    fn test_build_sampler_always_off() {
+        let config = OtelConfig {
+            enabled: true,
+            service_name: "test".to_string(),
+            service_version: "0.1.0".to_string(),
+            service_namespace: None,
+            exporter: ExporterType::Memory,
+            endpoint: "http://localhost:4317".to_string(),
+            sampling_ratio: 0.0,
+            memory_max_spans: 100,
+        };
+
+        let sampler = build_sampler(&config);
+        assert_eq!(format!("{:?}", sampler), "AlwaysOff");
+    }
+
+    #[test]
+    fn test_build_sampler_ratio() {
+        let config = OtelConfig {
+            enabled: true,
+            service_name: "test".to_string(),
+            service_version: "0.1.0".to_string(),
+            service_namespace: None,
+            exporter: ExporterType::Memory,
+            endpoint: "http://localhost:4317".to_string(),
+            sampling_ratio: 0.5,
+            memory_max_spans: 100,
+        };
+
+        let sampler = build_sampler(&config);
+        let dbg = format!("{:?}", sampler);
+        assert!(
+            dbg.contains("TraceIdRatioBased"),
+            "Expected TraceIdRatioBased, got: {}",
+            dbg
+        );
+    }
+
+    // ==========================================================================
+    // OTLP Helper Function Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_extract_service_name_found() {
+        let resource = Some(OtlpResource {
+            attributes: vec![OtlpKeyValue {
+                key: "service.name".to_string(),
+                value: Some(OtlpAnyValue {
+                    string_value: Some("my-service".to_string()),
+                    int_value: None,
+                    double_value: None,
+                    bool_value: None,
+                }),
+            }],
+        });
+
+        assert_eq!(extract_service_name(&resource), "my-service");
+    }
+
+    #[test]
+    fn test_extract_service_name_missing() {
+        let resource = Some(OtlpResource {
+            attributes: vec![OtlpKeyValue {
+                key: "other.attr".to_string(),
+                value: Some(OtlpAnyValue {
+                    string_value: Some("val".to_string()),
+                    int_value: None,
+                    double_value: None,
+                    bool_value: None,
+                }),
+            }],
+        });
+
+        assert_eq!(extract_service_name(&resource), "unknown");
+    }
+
+    #[test]
+    fn test_extract_service_name_none_resource() {
+        assert_eq!(extract_service_name(&None), "unknown");
+    }
+
+    #[test]
+    fn test_otlp_status_to_string_with_description() {
+        // code 0 -> "unset"
+        let status_unset = OtlpStatus {
+            code: 0,
+            message: None,
+        };
+        let (code, desc) = otlp_status_to_string_with_description(Some(&status_unset));
+        assert_eq!(code, "unset");
+        assert!(desc.is_none());
+
+        // code 1 -> "ok"
+        let status_ok = OtlpStatus {
+            code: 1,
+            message: None,
+        };
+        let (code, desc) = otlp_status_to_string_with_description(Some(&status_ok));
+        assert_eq!(code, "ok");
+        assert!(desc.is_none());
+
+        // code 2 -> "error" with description
+        let status_error = OtlpStatus {
+            code: 2,
+            message: Some("something went wrong".to_string()),
+        };
+        let (code, desc) = otlp_status_to_string_with_description(Some(&status_error));
+        assert_eq!(code, "error");
+        assert_eq!(desc, Some("something went wrong".to_string()));
+
+        // unknown code -> "unset"
+        let status_unknown = OtlpStatus {
+            code: 99,
+            message: None,
+        };
+        let (code, _) = otlp_status_to_string_with_description(Some(&status_unknown));
+        assert_eq!(code, "unset");
+    }
+
+    #[test]
+    fn test_otlp_status_none() {
+        let (code, desc) = otlp_status_to_string_with_description(None);
+        assert_eq!(code, "unset");
+        assert!(desc.is_none());
+    }
+
+    #[test]
+    fn test_otlp_kv_to_key_value_string() {
+        let kv = OtlpKeyValue {
+            key: "my.key".to_string(),
+            value: Some(OtlpAnyValue {
+                string_value: Some("hello".to_string()),
+                int_value: None,
+                double_value: None,
+                bool_value: None,
+            }),
+        };
+
+        let result = otlp_kv_to_key_value(&kv);
+        assert!(result.is_some());
+        let kv_out = result.unwrap();
+        assert_eq!(kv_out.key.as_str(), "my.key");
+        assert_eq!(kv_out.value.as_str().as_ref(), "hello");
+    }
+
+    #[test]
+    fn test_otlp_kv_to_key_value_int() {
+        let kv = OtlpKeyValue {
+            key: "count".to_string(),
+            value: Some(OtlpAnyValue {
+                string_value: None,
+                int_value: Some(42),
+                double_value: None,
+                bool_value: None,
+            }),
+        };
+
+        let result = otlp_kv_to_key_value(&kv);
+        assert!(result.is_some());
+        let kv_out = result.unwrap();
+        assert_eq!(kv_out.key.as_str(), "count");
+        // I64 value
+        assert_eq!(format!("{}", kv_out.value), "42");
+    }
+
+    #[test]
+    fn test_otlp_kv_to_key_value_double() {
+        let kv = OtlpKeyValue {
+            key: "ratio".to_string(),
+            value: Some(OtlpAnyValue {
+                string_value: None,
+                int_value: None,
+                double_value: Some(3.14),
+                bool_value: None,
+            }),
+        };
+
+        let result = otlp_kv_to_key_value(&kv);
+        assert!(result.is_some());
+        let kv_out = result.unwrap();
+        assert_eq!(kv_out.key.as_str(), "ratio");
+        assert_eq!(format!("{}", kv_out.value), "3.14");
+    }
+
+    #[test]
+    fn test_otlp_kv_to_key_value_bool() {
+        let kv = OtlpKeyValue {
+            key: "enabled".to_string(),
+            value: Some(OtlpAnyValue {
+                string_value: None,
+                int_value: None,
+                double_value: None,
+                bool_value: Some(true),
+            }),
+        };
+
+        let result = otlp_kv_to_key_value(&kv);
+        assert!(result.is_some());
+        let kv_out = result.unwrap();
+        assert_eq!(kv_out.key.as_str(), "enabled");
+        assert_eq!(format!("{}", kv_out.value), "true");
+    }
+
+    #[test]
+    fn test_otlp_kv_to_key_value_none() {
+        let kv = OtlpKeyValue {
+            key: "empty".to_string(),
+            value: None,
+        };
+
+        let result = otlp_kv_to_key_value(&kv);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_otlp_kv_to_key_value_empty_key_is_skipped() {
+        let kv = OtlpKeyValue {
+            key: String::new(),
+            value: Some(OtlpAnyValue {
+                string_value: Some("hello".to_string()),
+                int_value: None,
+                double_value: None,
+                bool_value: None,
+            }),
+        };
+
+        let result = otlp_kv_to_key_value(&kv);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_otlp_any_value_to_string_value() {
+        // String branch
+        let v = OtlpAnyValue {
+            string_value: Some("hello".to_string()),
+            int_value: None,
+            double_value: None,
+            bool_value: None,
+        };
+        assert_eq!(v.to_string_value(), "hello");
+
+        // Int branch
+        let v = OtlpAnyValue {
+            string_value: None,
+            int_value: Some(99),
+            double_value: None,
+            bool_value: None,
+        };
+        assert_eq!(v.to_string_value(), "99");
+
+        // Double branch
+        let v = OtlpAnyValue {
+            string_value: None,
+            int_value: None,
+            double_value: Some(1.5),
+            bool_value: None,
+        };
+        assert_eq!(v.to_string_value(), "1.5");
+
+        // Bool branch
+        let v = OtlpAnyValue {
+            string_value: None,
+            int_value: None,
+            double_value: None,
+            bool_value: Some(false),
+        };
+        assert_eq!(v.to_string_value(), "false");
+
+        // Empty (all None) branch
+        let v = OtlpAnyValue {
+            string_value: None,
+            int_value: None,
+            double_value: None,
+            bool_value: None,
+        };
+        assert_eq!(v.to_string_value(), "");
+    }
+
+    // ==========================================================================
+    // OtlpNumericString Deserializer Tests
+    // ==========================================================================
+
+    #[test]
+    fn test_otlp_numeric_string_from_string() {
+        let json = r#""12345""#;
+        let result: OtlpNumericString = serde_json::from_str(json).unwrap();
+        assert_eq!(result.0, 12345);
+    }
+
+    #[test]
+    fn test_otlp_numeric_string_from_u64() {
+        let json = r#"12345"#;
+        let result: OtlpNumericString = serde_json::from_str(json).unwrap();
+        assert_eq!(result.0, 12345);
+    }
+
+    #[test]
+    fn test_otlp_numeric_string_from_negative() {
+        let json = r#"-1"#;
+        let result: Result<OtlpNumericString, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    // ==========================================================================
+    // OTLP JSON Span Ingestion Tests
+    // ==========================================================================
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_basic_span() {
+        // Initialize in-memory span storage via the global OnceLock.
+        // Because OnceLock can only be set once per process, we rely on
+        // InMemorySpanExporter::new (or a previous test) having called set.
+        // If the global storage is already initialised we just clear it.
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                // Force-initialise the global storage
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let otlp_json = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "my-node-service"}
+                    }]
+                },
+                "scopeSpans": [{
+                    "scope": {
+                        "name": "@opentelemetry/instrumentation-http",
+                        "version": "0.40.0"
+                    },
+                    "spans": [{
+                        "traceId": "abcdef1234567890abcdef1234567890",
+                        "spanId": "1234567890abcdef",
+                        "name": "GET /api/users",
+                        "kind": 2,
+                        "startTimeUnixNano": "1704067200000000000",
+                        "endTimeUnixNano": "1704067200100000000",
+                        "status": {"code": 1},
+                        "attributes": [{
+                            "key": "http.method",
+                            "value": {"stringValue": "GET"}
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_json(otlp_json).await;
+        assert!(result.is_ok(), "ingest_otlp_json failed: {:?}", result);
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        assert_eq!(span.trace_id, "abcdef1234567890abcdef1234567890");
+        assert_eq!(span.span_id, "1234567890abcdef");
+        assert_eq!(span.name, "GET /api/users");
+        assert_eq!(span.start_time_unix_nano, 1704067200000000000);
+        assert_eq!(span.end_time_unix_nano, 1704067200100000000);
+        assert_eq!(span.status, "ok");
+        assert_eq!(span.service_name, "my-node-service");
+        assert_eq!(
+            span.instrumentation_scope_name.as_deref(),
+            Some("@opentelemetry/instrumentation-http")
+        );
+        assert_eq!(
+            span.instrumentation_scope_version.as_deref(),
+            Some("0.40.0")
+        );
+        assert!(
+            span.attributes
+                .contains(&("http.method".to_string(), "GET".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_with_events_and_links() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let otlp_json = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "event-service"}
+                    }]
+                },
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+                        "spanId": "bbbbbbbbbbbbbb01",
+                        "name": "span-with-events",
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "events": [{
+                            "name": "exception",
+                            "timeUnixNano": "1500000000",
+                            "attributes": [{
+                                "key": "exception.message",
+                                "value": {"stringValue": "NullPointer"}
+                            }]
+                        }],
+                        "links": [{
+                            "traceId": "cccccccccccccccccccccccccccccc01",
+                            "spanId": "dddddddddddddd01",
+                            "attributes": [{
+                                "key": "link.reason",
+                                "value": {"stringValue": "follows-from"}
+                            }]
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_json(otlp_json).await;
+        assert!(result.is_ok(), "ingest_otlp_json failed: {:?}", result);
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(span.name, "span-with-events");
+
+        // Check events
+        assert_eq!(span.events.len(), 1);
+        assert_eq!(span.events[0].name, "exception");
+        assert_eq!(span.events[0].timestamp_unix_nano, 1500000000);
+        assert!(
+            span.events[0]
+                .attributes
+                .contains(&("exception.message".to_string(), "NullPointer".to_string()))
+        );
+
+        // Check links
+        assert_eq!(span.links.len(), 1);
+        assert_eq!(span.links[0].trace_id, "cccccccccccccccccccccccccccccc01");
+        assert_eq!(span.links[0].span_id, "dddddddddddddd01");
+        assert!(
+            span.links[0]
+                .attributes
+                .contains(&("link.reason".to_string(), "follows-from".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_span_kinds() {
+        // This test verifies that different OTLP span kind numeric values are
+        // accepted and stored correctly.  The `ingest_otlp_json` function
+        // stores spans as StoredSpan which does not carry `kind` directly, but
+        // we verify that the ingestion does not fail for each kind value.
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        // kind 2=Server, 3=Client, 4=Producer, 5=Consumer, 1=Internal
+        let kinds = [
+            (1, "internal-span"),
+            (2, "server-span"),
+            (3, "client-span"),
+            (4, "producer-span"),
+            (5, "consumer-span"),
+        ];
+
+        for (kind, name) in &kinds {
+            let otlp_json = format!(
+                r#"{{
+                    "resourceSpans": [{{
+                        "resource": {{
+                            "attributes": [{{
+                                "key": "service.name",
+                                "value": {{"stringValue": "kind-test"}}
+                            }}]
+                        }},
+                        "scopeSpans": [{{
+                            "spans": [{{
+                                "traceId": "abcdef1234567890abcdef1234567890",
+                                "spanId": "1234567890abcdef",
+                                "name": "{}",
+                                "kind": {},
+                                "startTimeUnixNano": "1000000000",
+                                "endTimeUnixNano": "2000000000"
+                            }}]
+                        }}]
+                    }}]
+                }}"#,
+                name, kind
+            );
+
+            let result = ingest_otlp_json(&otlp_json).await;
+            assert!(
+                result.is_ok(),
+                "ingest_otlp_json failed for kind {}: {:?}",
+                kind,
+                result
+            );
+        }
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 5);
+
+        let names: Vec<&str> = spans.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"server-span"));
+        assert!(names.contains(&"client-span"));
+        assert!(names.contains(&"producer-span"));
+        assert!(names.contains(&"consumer-span"));
+        assert!(names.contains(&"internal-span"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_invalid() {
+        let invalid_json = r#"{"not valid json"#;
+        let result = ingest_otlp_json(invalid_json).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_empty() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let empty_json = r#"{"resourceSpans": []}"#;
+        let result = ingest_otlp_json(empty_json).await;
+        assert!(result.is_ok());
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 0);
+    }
+
+    // =========================================================================
+    // convert_otlp_to_span_data tests
+    // =========================================================================
+
+    #[test]
+    fn test_convert_otlp_to_span_data_basic() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{
+                        "key": "service.name",
+                        "value": {"stringValue": "convert-test"}
+                    }]
+                },
+                "scopeSpans": [{
+                    "scope": {"name": "test-scope", "version": "1.0.0"},
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "basic-span",
+                        "kind": 2,
+                        "startTimeUnixNano": "1704067200000000000",
+                        "endTimeUnixNano": "1704067201000000000",
+                        "status": {"code": 1, "message": ""},
+                        "attributes": [{
+                            "key": "http.method",
+                            "value": {"stringValue": "GET"}
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 1);
+        let sd = &span_data[0];
+        assert_eq!(sd.name.as_ref(), "basic-span");
+        assert!(matches!(
+            sd.span_kind,
+            opentelemetry::trace::SpanKind::Server
+        ));
+        assert!(matches!(sd.status, opentelemetry::trace::Status::Ok));
+        assert_eq!(sd.attributes.len(), 1);
+        assert_eq!(sd.attributes[0].key.as_str(), "http.method");
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_with_events_and_links() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "scope": {"name": "events-scope", "version": ""},
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "span-with-events",
+                        "kind": 1,
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "events": [{
+                            "name": "exception",
+                            "timeUnixNano": "1500000000",
+                            "attributes": [{
+                                "key": "exception.message",
+                                "value": {"stringValue": "something failed"}
+                            }]
+                        }],
+                        "links": [{
+                            "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+                            "spanId": "bbbbbbbbbbbbbb01",
+                            "attributes": [{
+                                "key": "link.type",
+                                "value": {"stringValue": "follows_from"}
+                            }]
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 1);
+        let sd = &span_data[0];
+        assert_eq!(sd.events.events.len(), 1);
+        assert_eq!(sd.events.events[0].name.as_ref(), "exception");
+        assert_eq!(sd.links.links.len(), 1);
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_error_status() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "error-span",
+                        "kind": 3,
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "status": {"code": 2, "message": "timeout occurred"}
+                    }]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 1);
+        let sd = &span_data[0];
+        assert!(matches!(
+            &sd.status,
+            opentelemetry::trace::Status::Error { description } if description.as_ref() == "timeout occurred"
+        ));
+        assert!(matches!(
+            sd.span_kind,
+            opentelemetry::trace::SpanKind::Client
+        ));
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_invalid_trace_id_skipped() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [
+                        {
+                            "traceId": "invalid_hex",
+                            "spanId": "b7ad6b7169203331",
+                            "name": "bad-trace-id",
+                            "startTimeUnixNano": "1000000000",
+                            "endTimeUnixNano": "2000000000"
+                        },
+                        {
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "invalid_hex",
+                            "name": "bad-span-id",
+                            "startTimeUnixNano": "1000000000",
+                            "endTimeUnixNano": "2000000000"
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        // Both spans should be skipped due to invalid IDs
+        assert_eq!(span_data.len(), 0);
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_parent_span_handling() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [
+                        {
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "b7ad6b7169203331",
+                            "parentSpanId": "a1a2a3a4a5a6a7a8",
+                            "name": "child-span",
+                            "startTimeUnixNano": "1000000000",
+                            "endTimeUnixNano": "2000000000"
+                        },
+                        {
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "c1c2c3c4c5c6c7c8",
+                            "parentSpanId": "0000000000000000",
+                            "name": "root-span",
+                            "startTimeUnixNano": "1000000000",
+                            "endTimeUnixNano": "2000000000"
+                        }
+                    ]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 2);
+
+        // First span has a real parent
+        let child = &span_data[0];
+        assert_eq!(child.name.as_ref(), "child-span");
+        assert!(child.parent_span_is_remote);
+        assert_ne!(child.parent_span_id.to_string(), "0000000000000000");
+
+        // Second span has all-zero parent (treated as root)
+        let root = &span_data[1];
+        assert_eq!(root.name.as_ref(), "root-span");
+        assert!(!root.parent_span_is_remote);
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_multiple_resource_and_scope_spans() {
+        let json_str = r#"{
+            "resourceSpans": [
+                {
+                    "resource": {
+                        "attributes": [{"key": "service.name", "value": {"stringValue": "svc-a"}}]
+                    },
+                    "scopeSpans": [
+                        {
+                            "scope": {"name": "scope-1", "version": "1.0"},
+                            "spans": [{
+                                "traceId": "0af7651916cd43dd8448eb211c80319c",
+                                "spanId": "aaaaaaaaaaaaaaaa",
+                                "name": "span-a1",
+                                "startTimeUnixNano": "1000000000",
+                                "endTimeUnixNano": "2000000000"
+                            }]
+                        },
+                        {
+                            "scope": {"name": "scope-2", "version": "2.0"},
+                            "spans": [{
+                                "traceId": "0af7651916cd43dd8448eb211c80319c",
+                                "spanId": "bbbbbbbbbbbbbbbb",
+                                "name": "span-a2",
+                                "startTimeUnixNano": "1000000000",
+                                "endTimeUnixNano": "2000000000"
+                            }]
+                        }
+                    ]
+                },
+                {
+                    "resource": {
+                        "attributes": [{"key": "service.name", "value": {"stringValue": "svc-b"}}]
+                    },
+                    "scopeSpans": [{
+                        "spans": [{
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "cccccccccccccccc",
+                            "name": "span-b1",
+                            "startTimeUnixNano": "1000000000",
+                            "endTimeUnixNano": "2000000000"
+                        }]
+                    }]
+                }
+            ]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 3);
+        let names: Vec<&str> = span_data.iter().map(|s| s.name.as_ref()).collect();
+        assert!(names.contains(&"span-a1"));
+        assert!(names.contains(&"span-a2"));
+        assert!(names.contains(&"span-b1"));
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_otel_kind_attribute_fallback() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "attr-kind-span",
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "attributes": [{
+                            "key": "otel.kind",
+                            "value": {"stringValue": "PRODUCER"}
+                        }]
+                    }]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 1);
+        assert!(matches!(
+            span_data[0].span_kind,
+            opentelemetry::trace::SpanKind::Producer
+        ));
+    }
+
+    #[test]
+    fn test_convert_otlp_to_span_data_trace_flags() {
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "flags-span",
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "flags": 1
+                    }]
+                }]
+            }]
+        }"#;
+
+        let request: OtlpExportTraceServiceRequest =
+            serde_json::from_str(json_str).expect("parse JSON");
+        let span_data = convert_otlp_to_span_data(&request);
+
+        assert_eq!(span_data.len(), 1);
+        assert_eq!(
+            span_data[0].span_context.trace_flags(),
+            opentelemetry::trace::TraceFlags::SAMPLED
+        );
+    }
+
+    // =========================================================================
+    // InMemorySpanExporter::export direct test
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_in_memory_span_exporter_export_directly() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let storage = Arc::new(InMemorySpanStorage::new(100));
+        let exporter =
+            InMemorySpanExporter::with_storage(storage.clone(), "export-test".to_string());
+
+        let trace_id = TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap();
+        let span_id = SpanId::from_hex("b7ad6b7169203331").unwrap();
+        let span_context = SpanContext::new(
+            trace_id,
+            span_id,
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::NONE,
+        );
+
+        let sd = SpanData {
+            span_context,
+            parent_span_id: SpanId::INVALID,
+            parent_span_is_remote: false,
+            span_kind: SpanKind::Internal,
+            name: Cow::Borrowed("export-test-span"),
+            start_time: UNIX_EPOCH + Duration::from_secs(1000),
+            end_time: UNIX_EPOCH + Duration::from_secs(1001),
+            attributes: vec![opentelemetry::KeyValue::new("key", "value")],
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::Ok,
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+
+        let result = exporter.export(vec![sd]).await;
+        assert!(result.is_ok());
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "export-test-span");
+        assert_eq!(spans[0].service_name, "export-test");
+        assert_eq!(spans[0].status, "ok");
+        assert_eq!(spans[0].attributes.len(), 1);
+        assert_eq!(spans[0].attributes[0].0, "key");
+    }
+
+    // =========================================================================
+    // current_trace_id / current_span_id (no active span)
+    // =========================================================================
+
+    #[test]
+    fn test_current_trace_id_no_active_span() {
+        // Without an active span, current_trace_id should return None
+        let trace_id = current_trace_id();
+        assert!(trace_id.is_none());
+    }
+
+    #[test]
+    fn test_current_span_id_no_active_span() {
+        let span_id = current_span_id();
+        assert!(span_id.is_none());
+    }
+
+    // =========================================================================
+    // inject_traceparent / inject_baggage (no active span)
+    // =========================================================================
+
+    #[test]
+    fn test_inject_traceparent_no_active_span() {
+        let traceparent = inject_traceparent();
+        assert!(traceparent.is_none());
+    }
+
+    #[test]
+    fn test_inject_baggage_no_active_context() {
+        let baggage = inject_baggage();
+        // Without any baggage in the context, should return None
+        assert!(baggage.is_none());
+    }
+
+    // =========================================================================
+    // inject/extract from explicit context
+    // =========================================================================
+
+    #[test]
+    fn test_inject_traceparent_from_invalid_context() {
+        let ctx = Context::current();
+        let traceparent = inject_traceparent_from_context(&ctx);
+        assert!(traceparent.is_none());
+    }
+
+    #[test]
+    fn test_inject_baggage_from_empty_context() {
+        let ctx = Context::current();
+        let baggage = inject_baggage_from_context(&ctx);
+        assert!(baggage.is_none());
+    }
+
+    #[test]
+    fn test_extract_traceparent_and_reinject() {
+        let tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let ctx = extract_traceparent(tp);
+
+        // The context should have a valid span context
+        let span_ref = ctx.span();
+        let sc = span_ref.span_context();
+        assert!(sc.is_valid());
+        assert_eq!(
+            sc.trace_id().to_string(),
+            "0af7651916cd43dd8448eb211c80319c"
+        );
+        assert_eq!(sc.span_id().to_string(), "b7ad6b7169203331");
+    }
+
+    // =========================================================================
+    // StoredSpan::from_span_data tests
+    // =========================================================================
+
+    #[test]
+    fn test_stored_span_from_span_data_with_error_status() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let trace_id = TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap();
+        let span_id = SpanId::from_hex("b7ad6b7169203331").unwrap();
+        let parent_id = SpanId::from_hex("a1a2a3a4a5a6a7a8").unwrap();
+        let span_context = SpanContext::new(
+            trace_id,
+            span_id,
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::NONE,
+        );
+
+        let sd = SpanData {
+            span_context,
+            parent_span_id: parent_id,
+            parent_span_is_remote: true,
+            span_kind: SpanKind::Server,
+            name: Cow::Borrowed("error-test"),
+            start_time: UNIX_EPOCH + Duration::from_secs(100),
+            end_time: UNIX_EPOCH + Duration::from_secs(200),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::error("connection refused".to_string()),
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+
+        let stored = StoredSpan::from_span_data(&sd, "my-service");
+        assert_eq!(stored.status, "error");
+        assert_eq!(
+            stored.status_description,
+            Some("connection refused".to_string())
+        );
+        assert_eq!(stored.parent_span_id, Some("a1a2a3a4a5a6a7a8".to_string()));
+        assert_eq!(stored.service_name, "my-service");
+        assert!(stored.flags.is_some());
+    }
+
+    #[test]
+    fn test_stored_span_from_span_data_unset_status() {
+        use opentelemetry::trace::{SpanContext, SpanKind, Status, TraceFlags, TraceState};
+        use opentelemetry::{InstrumentationScope, SpanId, TraceId};
+        use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+        use std::borrow::Cow;
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let trace_id = TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap();
+        let span_id = SpanId::from_hex("b7ad6b7169203331").unwrap();
+        let span_context = SpanContext::new(
+            trace_id,
+            span_id,
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::NONE,
+        );
+
+        let sd = SpanData {
+            span_context,
+            parent_span_id: SpanId::INVALID,
+            parent_span_is_remote: false,
+            span_kind: SpanKind::Internal,
+            name: Cow::Borrowed("unset-status"),
+            start_time: UNIX_EPOCH + Duration::from_secs(1),
+            end_time: UNIX_EPOCH + Duration::from_secs(2),
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: SpanEvents::default(),
+            links: SpanLinks::default(),
+            status: Status::Unset,
+            instrumentation_scope: InstrumentationScope::builder("test").build(),
+        };
+
+        let stored = StoredSpan::from_span_data(&sd, "svc");
+        assert_eq!(stored.status, "unset");
+        assert!(stored.status_description.is_none());
+        // Parent span id should be None for invalid parent
+        assert!(stored.parent_span_id.is_none());
+    }
+
+    // =========================================================================
+    // otlp_status_to_string_with_description coverage
+    // =========================================================================
+
+    #[test]
+    fn test_otlp_status_to_string_with_description_unknown_code() {
+        let status = OtlpStatus {
+            code: 99,
+            message: Some("some message".to_string()),
+        };
+        let (code, desc) = otlp_status_to_string_with_description(Some(&status));
+        assert_eq!(code, "unset");
+        // For unknown status code, message is still extracted
+        assert_eq!(desc, Some("some message".to_string()));
+    }
+
+    #[test]
+    fn test_otlp_status_to_string_with_description_empty_message() {
+        let status = OtlpStatus {
+            code: 2,
+            message: Some("".to_string()),
+        };
+        let (code, desc) = otlp_status_to_string_with_description(Some(&status));
+        assert_eq!(code, "error");
+        assert!(desc.is_none()); // Empty message should be filtered out
+    }
+
+    // =========================================================================
+    // InMemorySpanExporter::with_storage test
+    // =========================================================================
+
+    #[test]
+    fn test_in_memory_span_exporter_with_storage_does_not_set_global() {
+        let storage = Arc::new(InMemorySpanStorage::new(50));
+        let exporter =
+            InMemorySpanExporter::with_storage(storage.clone(), "local-test".to_string());
+
+        // Verify the exporter uses the provided storage
+        assert_eq!(exporter.service_name, "local-test");
+        assert!(storage.is_empty());
+    }
+
+    // =========================================================================
+    // InMemorySpanStorage::is_empty test
+    // =========================================================================
+
+    #[test]
+    fn test_span_storage_is_empty() {
+        let storage = InMemorySpanStorage::new(10);
+        assert!(storage.is_empty());
+
+        storage.add_spans(vec![make_stored_span("t1", "s1", "span1", 100, 200)]);
+        assert!(!storage.is_empty());
+
+        storage.clear();
+        assert!(storage.is_empty());
+    }
+
+    // =========================================================================
+    // InMemorySpanStorage Debug impl
+    // =========================================================================
+
+    #[test]
+    fn test_span_storage_debug() {
+        let storage = InMemorySpanStorage::new(5);
+        let debug_str = format!("{:?}", storage);
+        assert!(debug_str.contains("InMemorySpanStorage"));
+        assert!(debug_str.contains("max_spans"));
+    }
+
+    // =========================================================================
+    // Ingest OTLP JSON: multiple resource spans and multiple scope spans
+    // =========================================================================
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_multiple_resource_spans() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let json_str = r#"{
+            "resourceSpans": [
+                {
+                    "resource": {
+                        "attributes": [{"key": "service.name", "value": {"stringValue": "svc-alpha"}}]
+                    },
+                    "scopeSpans": [{
+                        "scope": {"name": "alpha-scope", "version": "1.0"},
+                        "spans": [{
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "aaaaaaaaaaaaaaaa",
+                            "name": "alpha-span",
+                            "startTimeUnixNano": "1704067200000000000",
+                            "endTimeUnixNano": "1704067201000000000"
+                        }]
+                    }]
+                },
+                {
+                    "resource": {
+                        "attributes": [{"key": "service.name", "value": {"stringValue": "svc-beta"}}]
+                    },
+                    "scopeSpans": [{
+                        "scope": {"name": "beta-scope", "version": "2.0"},
+                        "spans": [{
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "bbbbbbbbbbbbbbbb",
+                            "name": "beta-span",
+                            "startTimeUnixNano": "1704067202000000000",
+                            "endTimeUnixNano": "1704067203000000000"
+                        }]
+                    }]
+                }
+            ]
+        }"#;
+
+        let result = ingest_otlp_json(json_str).await;
+        assert!(result.is_ok());
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2);
+
+        let names: Vec<&str> = spans.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"alpha-span"));
+        assert!(names.contains(&"beta-span"));
+
+        // Verify service names
+        let alpha = spans.iter().find(|s| s.name == "alpha-span").unwrap();
+        assert_eq!(alpha.service_name, "svc-alpha");
+        assert_eq!(
+            alpha.instrumentation_scope_name,
+            Some("alpha-scope".to_string())
+        );
+
+        let beta = spans.iter().find(|s| s.name == "beta-span").unwrap();
+        assert_eq!(beta.service_name, "svc-beta");
+        assert_eq!(
+            beta.instrumentation_scope_name,
+            Some("beta-scope".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_multiple_scope_spans() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{"key": "service.name", "value": {"stringValue": "multi-scope"}}]
+                },
+                "scopeSpans": [
+                    {
+                        "scope": {"name": "@opentelemetry/instrumentation-http", "version": "0.52.0"},
+                        "spans": [{
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "1111111111111111",
+                            "name": "HTTP GET",
+                            "kind": 2,
+                            "startTimeUnixNano": "1000000000",
+                            "endTimeUnixNano": "2000000000"
+                        }]
+                    },
+                    {
+                        "scope": {"name": "@opentelemetry/instrumentation-express", "version": "0.40.0"},
+                        "spans": [{
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "2222222222222222",
+                            "name": "middleware - jsonParser",
+                            "kind": 1,
+                            "startTimeUnixNano": "1100000000",
+                            "endTimeUnixNano": "1200000000"
+                        }]
+                    }
+                ]
+            }]
+        }"#;
+
+        let result = ingest_otlp_json(json_str).await;
+        assert!(result.is_ok());
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2);
+
+        let http_span = spans.iter().find(|s| s.name == "HTTP GET").unwrap();
+        assert_eq!(
+            http_span.instrumentation_scope_name,
+            Some("@opentelemetry/instrumentation-http".to_string())
+        );
+        assert_eq!(
+            http_span.instrumentation_scope_version,
+            Some("0.52.0".to_string())
+        );
+
+        let express_span = spans
+            .iter()
+            .find(|s| s.name == "middleware - jsonParser")
+            .unwrap();
+        assert_eq!(
+            express_span.instrumentation_scope_name,
+            Some("@opentelemetry/instrumentation-express".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_with_status_description() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "errored-span",
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "status": {"code": 2, "message": "Connection refused"}
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_json(json_str).await;
+        assert!(result.is_ok());
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].status, "error");
+        assert_eq!(
+            spans[0].status_description,
+            Some("Connection refused".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_with_flags() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let json_str = r#"{
+            "resourceSpans": [{
+                "resource": {},
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "0af7651916cd43dd8448eb211c80319c",
+                        "spanId": "b7ad6b7169203331",
+                        "name": "flagged-span",
+                        "startTimeUnixNano": "1000000000",
+                        "endTimeUnixNano": "2000000000",
+                        "flags": 1
+                    }]
+                }]
+            }]
+        }"#;
+
+        let result = ingest_otlp_json(json_str).await;
+        assert!(result.is_ok());
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].flags, Some(1));
+    }
+
+    #[test]
+    fn test_extract_context_ignores_invalid_traceparent_and_keeps_baggage() {
+        let ctx = extract_context(Some("00-invalid"), Some("user.id=123"));
+        let baggage = inject_baggage_from_context(&ctx).expect("baggage should be preserved");
+        assert!(baggage.contains("user.id=123"));
+    }
+
+    #[test]
+    fn test_extract_log_helpers_cover_empty_and_typed_values() {
+        let attrs = extract_log_attributes(&[
+            OtlpKeyValue {
+                key: "message".to_string(),
+                value: Some(OtlpAnyValue {
+                    string_value: Some("hello".to_string()),
+                    int_value: None,
+                    double_value: None,
+                    bool_value: None,
+                }),
+            },
+            OtlpKeyValue {
+                key: "count".to_string(),
+                value: Some(OtlpAnyValue {
+                    string_value: None,
+                    int_value: Some(3),
+                    double_value: None,
+                    bool_value: None,
+                }),
+            },
+            OtlpKeyValue {
+                key: "ratio".to_string(),
+                value: Some(OtlpAnyValue {
+                    string_value: None,
+                    int_value: None,
+                    double_value: Some(1.5),
+                    bool_value: None,
+                }),
+            },
+            OtlpKeyValue {
+                key: "enabled".to_string(),
+                value: Some(OtlpAnyValue {
+                    string_value: None,
+                    int_value: None,
+                    double_value: None,
+                    bool_value: Some(true),
+                }),
+            },
+            OtlpKeyValue {
+                key: "ignored".to_string(),
+                value: None,
+            },
+        ]);
+
+        assert_eq!(
+            extract_log_body(&None),
+            "",
+            "missing body should become an empty string"
+        );
+        assert_eq!(
+            attrs.get("message"),
+            Some(&serde_json::Value::String("hello".to_string()))
+        );
+        assert_eq!(
+            attrs.get("count"),
+            Some(&serde_json::Value::Number(serde_json::Number::from(3)))
+        );
+        assert_eq!(attrs.get("ratio"), Some(&serde_json::json!(1.5)));
+        assert_eq!(attrs.get("enabled"), Some(&serde_json::Value::Bool(true)));
+        assert!(!attrs.contains_key("ignored"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_logs_handles_empty_body_and_resource_attributes() {
+        init_log_storage(Some(8));
+        if let Some(storage) = get_log_storage() {
+            storage.clear();
+        }
+
+        let payload = serde_json::json!({
+            "resourceLogs": [{
+                "resource": {
+                    "attributes": [
+                        { "key": "service.name", "value": { "stringValue": "svc-empty-body" } },
+                        { "key": "deployment.environment", "value": { "stringValue": "test" } }
+                    ]
+                },
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "timeUnixNano": "1",
+                        "severityText": "INFO"
+                    }]
+                }]
+            }]
+        });
+
+        ingest_otlp_logs(&payload.to_string()).await.unwrap();
+
+        let logs = get_log_storage().unwrap().get_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].body, "");
+        assert_eq!(logs[0].service_name, "svc-empty-body");
+        assert_eq!(
+            logs[0].resource.get("deployment.environment"),
+            Some(&"test".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_ingest_otlp_json_skips_spans_with_invalid_identifiers() {
+        let storage = match get_span_storage() {
+            Some(s) => {
+                s.clear();
+                s
+            }
+            None => {
+                let _ = InMemorySpanExporter::new(1000, "test".to_string());
+                get_span_storage().expect("span storage should be initialised")
+            }
+        };
+
+        let payload = serde_json::json!({
+            "resourceSpans": [{
+                "resource": {
+                    "attributes": [{ "key": "service.name", "value": { "stringValue": "svc" } }]
+                },
+                "scopeSpans": [{
+                    "spans": [
+                        {
+                            "traceId": "not-hex",
+                            "spanId": "also-bad",
+                            "name": "broken-span",
+                            "startTimeUnixNano": "1",
+                            "endTimeUnixNano": "2"
+                        },
+                        {
+                            "traceId": "0af7651916cd43dd8448eb211c80319c",
+                            "spanId": "b7ad6b7169203331",
+                            "name": "valid-span",
+                            "startTimeUnixNano": "3",
+                            "endTimeUnixNano": "4"
+                        }
+                    ]
+                }]
+            }]
+        });
+
+        ingest_otlp_json(&payload.to_string()).await.unwrap();
+
+        let spans = storage.get_spans();
+        assert_eq!(spans.len(), 2, "memory storage retains both parsed spans");
+
+        let exported = convert_otlp_to_span_data(
+            &serde_json::from_str::<OtlpExportTraceServiceRequest>(&payload.to_string()).unwrap(),
+        );
+        assert_eq!(
+            exported.len(),
+            1,
+            "forwarding skips invalid span identifiers"
+        );
+        assert_eq!(exported[0].name.as_ref(), "valid-span");
+    }
+
+    // =========================================================================
+    // ExporterType / OtelConfig Default trait tests
+    // =========================================================================
+
+    #[test]
+    fn test_exporter_type_default() {
+        let et = ExporterType::default();
+        assert_eq!(et, ExporterType::Otlp);
+    }
+
+    #[test]
+    fn test_exporter_type_equality() {
+        assert_eq!(ExporterType::Memory, ExporterType::Memory);
+        assert_eq!(ExporterType::Otlp, ExporterType::Otlp);
+        assert_eq!(ExporterType::Both, ExporterType::Both);
+        assert_ne!(ExporterType::Memory, ExporterType::Otlp);
+    }
+
+    // =========================================================================
+    // Span storage: trace_id lookup returns empty for unknown trace
+    // =========================================================================
+
+    #[test]
+    fn test_span_storage_get_by_unknown_trace_id() {
+        let storage = InMemorySpanStorage::new(10);
+        storage.add_spans(vec![make_stored_span("t1", "s1", "span1", 100, 200)]);
+
+        let result = storage.get_spans_by_trace_id("nonexistent-trace");
+        assert!(result.is_empty());
+    }
+
+    // =========================================================================
+    // Span storage: eviction with multiple trace IDs
+    // =========================================================================
+
+    #[test]
+    fn test_span_storage_eviction_updates_trace_index() {
+        let storage = InMemorySpanStorage::new(3);
+
+        storage.add_spans(vec![
+            make_stored_span("t1", "s1", "span-1", 100, 200),
+            make_stored_span("t2", "s2", "span-2", 300, 400),
+            make_stored_span("t3", "s3", "span-3", 500, 600),
+        ]);
+
+        assert_eq!(storage.len(), 3);
+        assert_eq!(storage.get_spans_by_trace_id("t1").len(), 1);
+
+        // Adding a 4th span should evict the oldest (t1/s1)
+        storage.add_spans(vec![make_stored_span("t4", "s4", "span-4", 700, 800)]);
+
+        assert_eq!(storage.len(), 3);
+        // t1 should have been evicted
+        assert_eq!(storage.get_spans_by_trace_id("t1").len(), 0);
+        // t2, t3, t4 should still be present
+        assert_eq!(storage.get_spans_by_trace_id("t2").len(), 1);
+        assert_eq!(storage.get_spans_by_trace_id("t3").len(), 1);
+        assert_eq!(storage.get_spans_by_trace_id("t4").len(), 1);
     }
 }

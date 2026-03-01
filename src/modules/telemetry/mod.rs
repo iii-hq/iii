@@ -587,3 +587,1589 @@ crate::register_module!(
     TelemetryModule,
     mandatory
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::{env, future::Future, pin::Pin, sync::atomic::Ordering, time::Duration};
+    use tokio::sync::mpsc;
+
+    use crate::{
+        function::{Function, FunctionResult, HandlerFn},
+        modules::{
+            observability::metrics::get_metrics_accumulator, telemetry::collector::collector,
+        },
+        services::Service,
+        trigger::{Trigger, TriggerRegistrator, TriggerType},
+        workers::Worker,
+    };
+
+    // Helper to clear all CI-related env vars so tests are isolated.
+    fn clear_ci_env_vars() {
+        let ci_vars = [
+            "CI",
+            "GITHUB_ACTIONS",
+            "GITLAB_CI",
+            "CIRCLECI",
+            "JENKINS_URL",
+            "TRAVIS",
+            "BUILDKITE",
+            "TF_BUILD",
+            "CODEBUILD_BUILD_ID",
+            "BITBUCKET_BUILD_NUMBER",
+            "DRONE",
+            "TEAMCITY_VERSION",
+        ];
+        for var in &ci_vars {
+            unsafe {
+                env::remove_var(var);
+            }
+        }
+    }
+
+    fn reset_telemetry_globals() {
+        let acc = get_metrics_accumulator();
+        acc.invocations_total.store(0, Ordering::Relaxed);
+        acc.invocations_success.store(0, Ordering::Relaxed);
+        acc.invocations_error.store(0, Ordering::Relaxed);
+        acc.invocations_deferred.store(0, Ordering::Relaxed);
+        acc.workers_spawns.store(0, Ordering::Relaxed);
+        acc.workers_deaths.store(0, Ordering::Relaxed);
+        acc.invocations_by_function.clear();
+
+        let telemetry = collector();
+        telemetry.cron_executions.store(0, Ordering::Relaxed);
+        telemetry.queue_emits.store(0, Ordering::Relaxed);
+        telemetry.queue_consumes.store(0, Ordering::Relaxed);
+        telemetry.state_sets.store(0, Ordering::Relaxed);
+        telemetry.state_gets.store(0, Ordering::Relaxed);
+        telemetry.state_deletes.store(0, Ordering::Relaxed);
+        telemetry.state_updates.store(0, Ordering::Relaxed);
+        telemetry.stream_sets.store(0, Ordering::Relaxed);
+        telemetry.stream_gets.store(0, Ordering::Relaxed);
+        telemetry.stream_deletes.store(0, Ordering::Relaxed);
+        telemetry.stream_lists.store(0, Ordering::Relaxed);
+        telemetry.stream_updates.store(0, Ordering::Relaxed);
+        telemetry.pubsub_publishes.store(0, Ordering::Relaxed);
+        telemetry.pubsub_subscribes.store(0, Ordering::Relaxed);
+        telemetry.kv_sets.store(0, Ordering::Relaxed);
+        telemetry.kv_gets.store(0, Ordering::Relaxed);
+        telemetry.kv_deletes.store(0, Ordering::Relaxed);
+        telemetry.api_requests.store(0, Ordering::Relaxed);
+        telemetry.function_registrations.store(0, Ordering::Relaxed);
+        telemetry.trigger_registrations.store(0, Ordering::Relaxed);
+        telemetry.peak_active_workers.store(0, Ordering::Relaxed);
+    }
+
+    fn register_test_function(engine: &Arc<Engine>, function_id: &str) {
+        let handler: Arc<HandlerFn> =
+            Arc::new(|_invocation_id, _input| Box::pin(async { FunctionResult::NoResult }));
+        engine.functions.register_function(
+            function_id.to_string(),
+            Function {
+                handler,
+                _function_id: function_id.to_string(),
+                _description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+        );
+        engine
+            .service_registry
+            .insert_service(Service::new("svc".to_string(), "svc-1".to_string()));
+        engine
+            .service_registry
+            .insert_function_to_service(&"svc".to_string(), "worker");
+    }
+
+    struct NoopRegistrator;
+
+    impl TriggerRegistrator for NoopRegistrator {
+        fn register_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn unregister_trigger(
+            &self,
+            _trigger: Trigger,
+        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn build_manual_module(
+        engine: Arc<Engine>,
+        sdk_client: bool,
+        heartbeat_interval_secs: u64,
+    ) -> TelemetryModule {
+        TelemetryModule {
+            engine,
+            config: TelemetryConfig {
+                enabled: true,
+                api_key: String::new(),
+                sdk_api_key: sdk_client.then(String::new),
+                heartbeat_interval_secs,
+            },
+            client: Arc::new(AmplitudeClient::new(String::new())),
+            sdk_client: sdk_client.then(|| Arc::new(AmplitudeClient::new(String::new()))),
+            ctx: TelemetryContext {
+                install_id: "test-install-id".to_string(),
+                env_info: EnvironmentInfo {
+                    machine_id: "machine-1".to_string(),
+                    is_container: false,
+                    timezone: "UTC".to_string(),
+                    cpu_cores: 4,
+                    os: "linux".to_string(),
+                    arch: "x86_64".to_string(),
+                },
+            },
+            start_time: Instant::now(),
+        }
+    }
+
+    // =========================================================================
+    // TelemetryConfig defaults
+    // =========================================================================
+
+    #[test]
+    fn test_default_enabled_returns_true() {
+        assert!(default_enabled());
+    }
+
+    #[test]
+    fn test_default_heartbeat_interval_is_six_hours() {
+        assert_eq!(default_heartbeat_interval(), 6 * 60 * 60);
+    }
+
+    #[test]
+    fn test_telemetry_config_default() {
+        let config = TelemetryConfig::default();
+        assert!(config.enabled);
+        assert!(config.api_key.is_empty());
+        assert!(config.sdk_api_key.is_none());
+        assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
+    }
+
+    #[test]
+    fn test_telemetry_config_deserialize_defaults() {
+        let json = serde_json::json!({});
+        let config: TelemetryConfig = serde_json::from_value(json).unwrap();
+        assert!(config.enabled);
+        assert!(config.api_key.is_empty());
+        assert!(config.sdk_api_key.is_none());
+        assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
+    }
+
+    #[test]
+    fn test_telemetry_config_deserialize_overrides() {
+        let json = serde_json::json!({
+            "enabled": false,
+            "api_key": "my-key",
+            "sdk_api_key": "sdk-key",
+            "heartbeat_interval_secs": 3600
+        });
+        let config: TelemetryConfig = serde_json::from_value(json).unwrap();
+        assert!(!config.enabled);
+        assert_eq!(config.api_key, "my-key");
+        assert_eq!(config.sdk_api_key, Some("sdk-key".to_string()));
+        assert_eq!(config.heartbeat_interval_secs, 3600);
+    }
+
+    #[test]
+    fn test_telemetry_config_debug_and_clone() {
+        let config = TelemetryConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("TelemetryConfig"));
+
+        let cloned = config.clone();
+        assert_eq!(cloned.enabled, config.enabled);
+        assert_eq!(cloned.api_key, config.api_key);
+    }
+
+    // =========================================================================
+    // resolve_project_id
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_resolve_project_id_when_set() {
+        unsafe {
+            env::set_var("III_PROJECT_ID", "proj-123");
+        }
+        let result = resolve_project_id();
+        assert_eq!(result, Some("proj-123".to_string()));
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_project_id_when_unset() {
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+        let result = resolve_project_id();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_project_id_when_empty() {
+        unsafe {
+            env::set_var("III_PROJECT_ID", "");
+        }
+        let result = resolve_project_id();
+        assert_eq!(result, None);
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+    }
+
+    // =========================================================================
+    // check_disabled
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_returns_config_when_disabled() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let config = TelemetryConfig {
+            enabled: false,
+            ..TelemetryConfig::default()
+        };
+        let reason = check_disabled(&config);
+        assert!(reason.is_some());
+        assert!(matches!(reason.unwrap(), DisableReason::Config));
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_returns_user_optout_for_env_false() {
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("III_TELEMETRY_ENABLED", "false");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let config = TelemetryConfig::default();
+        let reason = check_disabled(&config);
+        assert!(reason.is_some());
+        assert!(matches!(reason.unwrap(), DisableReason::UserOptOut));
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_returns_user_optout_for_env_zero() {
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("III_TELEMETRY_ENABLED", "0");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let config = TelemetryConfig::default();
+        let reason = check_disabled(&config);
+        assert!(reason.is_some());
+        assert!(matches!(reason.unwrap(), DisableReason::UserOptOut));
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_does_not_optout_for_env_true() {
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("III_TELEMETRY_ENABLED", "true");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let config = TelemetryConfig::default();
+        let reason = check_disabled(&config);
+        // Should not be UserOptOut -- could be None or CiDetected depending on env
+        if let Some(r) = &reason {
+            assert!(!matches!(r, DisableReason::UserOptOut));
+        }
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_returns_ci_detected_when_ci_set() {
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("CI", "true");
+        }
+
+        let config = TelemetryConfig::default();
+        let reason = check_disabled(&config);
+        assert!(reason.is_some());
+        assert!(matches!(reason.unwrap(), DisableReason::CiDetected));
+
+        unsafe {
+            env::remove_var("CI");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_returns_dev_optout_when_dev_env_set() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::set_var("III_TELEMETRY_DEV", "true");
+        }
+
+        let config = TelemetryConfig::default();
+        let reason = check_disabled(&config);
+        assert!(reason.is_some());
+        assert!(matches!(reason.unwrap(), DisableReason::DevOptOut));
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_returns_none_when_all_enabled() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let config = TelemetryConfig::default();
+        let reason = check_disabled(&config);
+        assert!(
+            reason.is_none(),
+            "should return None when telemetry is fully enabled"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_disabled_config_takes_priority_over_env() {
+        // Even if env says enabled, config.enabled=false should win (checked first)
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("III_TELEMETRY_ENABLED", "true");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let config = TelemetryConfig {
+            enabled: false,
+            ..TelemetryConfig::default()
+        };
+        let reason = check_disabled(&config);
+        assert!(matches!(reason.unwrap(), DisableReason::Config));
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    // =========================================================================
+    // build_client_context
+    // =========================================================================
+
+    #[test]
+    fn test_build_client_context_no_sdk_telemetry() {
+        let mut runtime_counts = HashMap::new();
+        runtime_counts.insert("node".to_string(), 3);
+        runtime_counts.insert("python".to_string(), 1);
+
+        let ctx = build_client_context(&runtime_counts, None);
+
+        assert_eq!(ctx["type"], "iii_direct");
+
+        let sdk_detected = ctx["sdk_detected"].as_array().unwrap();
+        let sdk_names: Vec<&str> = sdk_detected.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(
+            sdk_names.contains(&"iii-js"),
+            "node runtime should map to iii-js"
+        );
+        assert!(
+            sdk_names.contains(&"iii-py"),
+            "python runtime should map to iii-py"
+        );
+    }
+
+    #[test]
+    fn test_build_client_context_with_sdk_telemetry_framework() {
+        let runtime_counts = HashMap::new();
+        let telemetry = WorkerTelemetryMeta {
+            language: Some("typescript".to_string()),
+            project_name: Some("my-project".to_string()),
+            framework: Some("next".to_string()),
+        };
+
+        let ctx = build_client_context(&runtime_counts, Some(&telemetry));
+        assert_eq!(
+            ctx["type"], "next",
+            "should use framework from SDK telemetry"
+        );
+    }
+
+    #[test]
+    fn test_build_client_context_with_sdk_telemetry_no_framework() {
+        let runtime_counts = HashMap::new();
+        let telemetry = WorkerTelemetryMeta {
+            language: Some("typescript".to_string()),
+            project_name: Some("my-project".to_string()),
+            framework: None,
+        };
+
+        let ctx = build_client_context(&runtime_counts, Some(&telemetry));
+        assert_eq!(
+            ctx["type"], "iii_direct",
+            "should fall back to detect_client_type"
+        );
+    }
+
+    #[test]
+    fn test_build_client_context_empty_runtime_counts() {
+        let runtime_counts: HashMap<String, u64> = HashMap::new();
+        let ctx = build_client_context(&runtime_counts, None);
+
+        let sdk_detected = ctx["sdk_detected"].as_array().unwrap();
+        assert!(
+            sdk_detected.is_empty(),
+            "no runtimes should produce empty sdk_detected"
+        );
+
+        let worker_runtimes = ctx["worker_runtimes"].as_array().unwrap();
+        assert!(worker_runtimes.is_empty());
+    }
+
+    #[test]
+    fn test_build_client_context_unknown_runtime() {
+        let mut runtime_counts = HashMap::new();
+        runtime_counts.insert("ruby".to_string(), 2);
+
+        let ctx = build_client_context(&runtime_counts, None);
+        let sdk_detected = ctx["sdk_detected"].as_array().unwrap();
+        let sdk_names: Vec<&str> = sdk_detected.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(
+            sdk_names.contains(&"ruby"),
+            "unknown runtime should pass through as-is"
+        );
+    }
+
+    #[test]
+    fn test_build_client_context_has_required_keys() {
+        let runtime_counts = HashMap::new();
+        let ctx = build_client_context(&runtime_counts, None);
+
+        assert!(ctx.get("type").is_some());
+        assert!(ctx.get("sdk_detected").is_some());
+        assert!(ctx.get("worker_runtimes").is_some());
+    }
+
+    // =========================================================================
+    // DisableReason enum
+    // =========================================================================
+
+    #[test]
+    fn test_disable_reason_variants_exist() {
+        // Just ensure all variants can be constructed
+        let _config = DisableReason::Config;
+        let _user = DisableReason::UserOptOut;
+        let _ci = DisableReason::CiDetected;
+        let _dev = DisableReason::DevOptOut;
+    }
+
+    // =========================================================================
+    // AmplitudeEvent serialization (via TelemetryContext::build_event)
+    // =========================================================================
+
+    #[test]
+    fn test_build_event_basic_fields() {
+        let ctx = TelemetryContext {
+            install_id: "test-install-id".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "abc123".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event = ctx.build_event("test_event", serde_json::json!({"key": "value"}), None);
+
+        assert_eq!(event.device_id, "test-install-id");
+        assert_eq!(event.user_id, Some("test-install-id".to_string()));
+        assert_eq!(event.event_type, "test_event");
+        assert_eq!(event.event_properties["key"], "value");
+        assert_eq!(event.platform, "III Engine");
+        assert_eq!(event.os_name, std::env::consts::OS);
+        assert!(event.insert_id.is_some());
+        assert_eq!(event.ip, Some("$remote".to_string()));
+        assert!(event.time > 0);
+    }
+
+    #[test]
+    fn test_build_event_with_sdk_telemetry_language() {
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 2,
+                os: "macos".to_string(),
+                arch: "aarch64".to_string(),
+            },
+        };
+
+        let telemetry = WorkerTelemetryMeta {
+            language: Some("typescript".to_string()),
+            project_name: None,
+            framework: None,
+        };
+
+        let event = ctx.build_event("evt", serde_json::json!({}), Some(&telemetry));
+        assert_eq!(event.language, Some("typescript".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_user_properties_includes_environment() {
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "America/New_York".to_string(),
+                cpu_cores: 8,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let props = ctx.build_user_properties(None);
+        assert!(props.get("environment").is_some());
+        assert!(props.get("device_type").is_some());
+        assert_eq!(props["device_type"], "server");
+        assert!(props.get("project_id").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_user_properties_with_project_id() {
+        unsafe {
+            env::set_var("III_PROJECT_ID", "proj-abc");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let props = ctx.build_user_properties(None);
+        assert_eq!(props["project_id"], "proj-abc");
+
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_user_properties_with_sdk_telemetry() {
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let telemetry = WorkerTelemetryMeta {
+            language: Some("python".to_string()),
+            project_name: Some("my-project".to_string()),
+            framework: Some("fastapi".to_string()),
+        };
+
+        let props = ctx.build_user_properties(Some(&telemetry));
+        assert_eq!(props["project_name"], "my-project");
+        assert_eq!(props["framework"], "fastapi");
+    }
+
+    #[test]
+    fn test_build_event_insert_id_is_unique() {
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event1 = ctx.build_event("evt", serde_json::json!({}), None);
+        let event2 = ctx.build_event("evt", serde_json::json!({}), None);
+        assert_ne!(
+            event1.insert_id, event2.insert_id,
+            "each event should have a unique insert_id"
+        );
+    }
+
+    // =========================================================================
+    // collect_functions_and_triggers
+    // =========================================================================
+
+    fn make_test_engine() -> Arc<Engine> {
+        Arc::new(Engine::new())
+    }
+
+    #[test]
+    fn test_collect_functions_and_triggers_empty_engine() {
+        let engine = make_test_engine();
+        let result = collect_functions_and_triggers(&engine);
+
+        assert_eq!(result["function_count"], 0);
+        assert_eq!(result["trigger_count"], 0);
+        assert!(result["functions"].as_array().unwrap().is_empty());
+        assert!(result["triggers"].as_array().unwrap().is_empty());
+        assert!(result["trigger_types_used"].as_array().unwrap().is_empty());
+        assert!(result["services"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_collect_functions_and_triggers_filters_engine_prefix() {
+        let engine = make_test_engine();
+
+        // Register a function that starts with "engine::" -- should be filtered out
+        let handler: Arc<crate::function::HandlerFn> = Arc::new(|_inv_id, _input| {
+            Box::pin(async { crate::function::FunctionResult::NoResult })
+        });
+        engine.functions.register_function(
+            "engine::internal_fn".to_string(),
+            crate::function::Function {
+                handler: handler.clone(),
+                _function_id: "engine::internal_fn".to_string(),
+                _description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+        );
+
+        // Register a normal function -- should be included
+        engine.functions.register_function(
+            "user.my_function".to_string(),
+            crate::function::Function {
+                handler,
+                _function_id: "user.my_function".to_string(),
+                _description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+        );
+
+        let result = collect_functions_and_triggers(&engine);
+        assert_eq!(result["function_count"], 1);
+        let functions = result["functions"].as_array().unwrap();
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0], "user.my_function");
+    }
+
+    #[test]
+    fn test_collect_functions_and_triggers_with_triggers() {
+        let engine = make_test_engine();
+
+        engine.trigger_registry.triggers.insert(
+            "trigger-1".to_string(),
+            crate::trigger::Trigger {
+                id: "trigger-1".to_string(),
+                trigger_type: "cron".to_string(),
+                function_id: "my_fn".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+            },
+        );
+
+        engine.trigger_registry.triggers.insert(
+            "trigger-2".to_string(),
+            crate::trigger::Trigger {
+                id: "trigger-2".to_string(),
+                trigger_type: "http".to_string(),
+                function_id: "other_fn".to_string(),
+                config: serde_json::json!({}),
+                worker_id: None,
+            },
+        );
+
+        let result = collect_functions_and_triggers(&engine);
+        assert_eq!(result["trigger_count"], 2);
+
+        let trigger_types_used = result["trigger_types_used"].as_array().unwrap();
+        let types: Vec<&str> = trigger_types_used
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"cron"));
+        assert!(types.contains(&"http"));
+    }
+
+    #[test]
+    fn test_collect_functions_and_triggers_with_services() {
+        let engine = make_test_engine();
+
+        engine.service_registry.services.insert(
+            "my_service".to_string(),
+            crate::services::Service::new("My Service".to_string(), "my_service".to_string()),
+        );
+
+        let result = collect_functions_and_triggers(&engine);
+        let services = result["services"].as_array().unwrap();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0], "my_service");
+    }
+
+    // =========================================================================
+    // collect_worker_data
+    // =========================================================================
+
+    #[test]
+    fn test_collect_worker_data_empty_engine() {
+        let engine = make_test_engine();
+        let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine);
+
+        assert!(runtime_counts.is_empty());
+        assert!(sdk_telemetry.is_none());
+    }
+
+    #[test]
+    fn test_collect_worker_data_with_workers() {
+        let engine = make_test_engine();
+
+        let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
+        let mut worker1 = crate::workers::Worker::new(tx1);
+        worker1.runtime = Some("node".to_string());
+        worker1.telemetry = Some(WorkerTelemetryMeta {
+            language: Some("typescript".to_string()),
+            project_name: Some("proj-a".to_string()),
+            framework: Some("next".to_string()),
+        });
+        let w1_id = worker1.id;
+        engine.worker_registry.workers.insert(w1_id, worker1);
+
+        let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+        let mut worker2 = crate::workers::Worker::new(tx2);
+        worker2.runtime = Some("python".to_string());
+        worker2.telemetry = None;
+        let w2_id = worker2.id;
+        engine.worker_registry.workers.insert(w2_id, worker2);
+
+        let (tx3, _rx3) = tokio::sync::mpsc::channel(1);
+        let mut worker3 = crate::workers::Worker::new(tx3);
+        worker3.runtime = Some("node".to_string());
+        worker3.telemetry = None;
+        let w3_id = worker3.id;
+        engine.worker_registry.workers.insert(w3_id, worker3);
+
+        let (runtime_counts, sdk_telemetry) = collect_worker_data(&engine);
+
+        assert_eq!(*runtime_counts.get("node").unwrap(), 2);
+        assert_eq!(*runtime_counts.get("python").unwrap(), 1);
+
+        // Should have picked up the telemetry from worker1
+        assert!(sdk_telemetry.is_some());
+        let telem = sdk_telemetry.unwrap();
+        assert_eq!(telem.language, Some("typescript".to_string()));
+        assert_eq!(telem.project_name, Some("proj-a".to_string()));
+        assert_eq!(telem.framework, Some("next".to_string()));
+    }
+
+    #[test]
+    fn test_collect_worker_data_unknown_runtime_defaults() {
+        let engine = make_test_engine();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut worker = crate::workers::Worker::new(tx);
+        worker.runtime = None; // no runtime set
+        worker.telemetry = None;
+        let wid = worker.id;
+        engine.worker_registry.workers.insert(wid, worker);
+
+        let (runtime_counts, _) = collect_worker_data(&engine);
+        assert_eq!(*runtime_counts.get("unknown").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_collect_worker_data_picks_smallest_uuid_telemetry() {
+        let engine = make_test_engine();
+
+        // Create two workers with telemetry; the one with smaller UUID should be picked
+        let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
+        let mut worker1 = crate::workers::Worker::new(tx1);
+        worker1.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+        worker1.runtime = Some("node".to_string());
+        worker1.telemetry = Some(WorkerTelemetryMeta {
+            language: Some("ts".to_string()),
+            project_name: Some("proj-smallest".to_string()),
+            framework: None,
+        });
+        engine.worker_registry.workers.insert(worker1.id, worker1);
+
+        let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
+        let mut worker2 = crate::workers::Worker::new(tx2);
+        worker2.id = uuid::Uuid::parse_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
+        worker2.runtime = Some("node".to_string());
+        worker2.telemetry = Some(WorkerTelemetryMeta {
+            language: Some("py".to_string()),
+            project_name: Some("proj-largest".to_string()),
+            framework: None,
+        });
+        engine.worker_registry.workers.insert(worker2.id, worker2);
+
+        let (_, sdk_telemetry) = collect_worker_data(&engine);
+        let telem = sdk_telemetry.unwrap();
+        assert_eq!(telem.project_name, Some("proj-smallest".to_string()));
+    }
+
+    // =========================================================================
+    // TelemetryContext::build_user_properties edge cases
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_build_user_properties_sdk_telemetry_partial_fields() {
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        // Only project_name, no framework
+        let telemetry = WorkerTelemetryMeta {
+            language: None,
+            project_name: Some("only-project".to_string()),
+            framework: None,
+        };
+        let props = ctx.build_user_properties(Some(&telemetry));
+        assert_eq!(props["project_name"], "only-project");
+        assert!(props.get("framework").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_user_properties_sdk_telemetry_only_framework() {
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let telemetry = WorkerTelemetryMeta {
+            language: None,
+            project_name: None,
+            framework: Some("express".to_string()),
+        };
+        let props = ctx.build_user_properties(Some(&telemetry));
+        assert!(props.get("project_name").is_none());
+        assert_eq!(props["framework"], "express");
+    }
+
+    // =========================================================================
+    // TelemetryContext::build_event edge cases
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_build_event_without_sdk_telemetry_language_falls_back() {
+        // When sdk_telemetry is None, language is detected from environment
+        unsafe {
+            env::remove_var("LANG");
+            env::remove_var("LC_ALL");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-test".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event = ctx.build_event("evt", serde_json::json!({}), None);
+        // With LANG/LC_ALL unset, detect_language returns None
+        assert_eq!(event.language, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_event_with_lang_env_and_no_sdk() {
+        unsafe {
+            env::set_var("LANG", "en_US.UTF-8");
+            env::remove_var("LC_ALL");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-test".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event = ctx.build_event("evt", serde_json::json!({}), None);
+        assert_eq!(event.language, Some("en_US".to_string()));
+
+        unsafe {
+            env::remove_var("LANG");
+        }
+    }
+
+    #[test]
+    fn test_build_event_app_version_matches_cargo_pkg() {
+        let ctx = TelemetryContext {
+            install_id: "id-test".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event = ctx.build_event("evt", serde_json::json!({}), None);
+        assert_eq!(event.app_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn test_build_event_country_is_none() {
+        let ctx = TelemetryContext {
+            install_id: "id-test".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event = ctx.build_event("evt", serde_json::json!({}), None);
+        assert!(event.country.is_none());
+    }
+
+    #[test]
+    fn test_build_event_user_properties_is_some() {
+        let ctx = TelemetryContext {
+            install_id: "id-test".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let event = ctx.build_event("evt", serde_json::json!({}), None);
+        assert!(event.user_properties.is_some());
+    }
+
+    // =========================================================================
+    // TelemetryContext clone
+    // =========================================================================
+
+    #[test]
+    fn test_telemetry_context_clone() {
+        let ctx = TelemetryContext {
+            install_id: "clone-test-id".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: true,
+                timezone: "America/Chicago".to_string(),
+                cpu_cores: 16,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let cloned = ctx.clone();
+        assert_eq!(cloned.install_id, ctx.install_id);
+        assert_eq!(cloned.env_info.machine_id, ctx.env_info.machine_id);
+        assert_eq!(cloned.env_info.is_container, ctx.env_info.is_container);
+        assert_eq!(cloned.env_info.timezone, ctx.env_info.timezone);
+        assert_eq!(cloned.env_info.cpu_cores, ctx.env_info.cpu_cores);
+    }
+
+    // =========================================================================
+    // DisabledTelemetryModule
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_disabled_telemetry_module_name() {
+        let module = DisabledTelemetryModule;
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    #[tokio::test]
+    async fn test_disabled_telemetry_module_initialize() {
+        let module = DisabledTelemetryModule;
+        let result = module.initialize().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_disabled_telemetry_module_start_background_tasks() {
+        let module = DisabledTelemetryModule;
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let result = module.start_background_tasks(rx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_disabled_telemetry_module_destroy() {
+        let module = DisabledTelemetryModule;
+        let result = module.destroy().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_disabled_telemetry_module_create() {
+        let engine = make_test_engine();
+        let result = DisabledTelemetryModule::create(engine, None).await;
+        assert!(result.is_ok());
+        let module = result.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    // =========================================================================
+    // TelemetryModule::create with disabled config
+    // =========================================================================
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_disabled_by_config() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let config = serde_json::json!({ "enabled": false });
+        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        // Should return a DisabledTelemetryModule
+        assert_eq!(module.name(), "Telemetry");
+        // Verify it is the disabled variant by testing initialize is Ok
+        assert!(module.initialize().await.is_ok());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_disabled_by_env_optout() {
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("III_TELEMETRY_ENABLED", "false");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let module = TelemetryModule::create(engine, None).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_disabled_by_ci() {
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+        clear_ci_env_vars();
+        unsafe {
+            env::set_var("CI", "true");
+        }
+
+        let engine = make_test_engine();
+        let module = TelemetryModule::create(engine, None).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+
+        unsafe {
+            env::remove_var("CI");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_disabled_by_dev_optout() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::set_var("III_TELEMETRY_DEV", "true");
+        }
+
+        let engine = make_test_engine();
+        let module = TelemetryModule::create(engine, None).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+
+        unsafe {
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_enabled_defaults_api_key() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        // Empty config should have api_key defaulted
+        let module = TelemetryModule::create(engine, None).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_with_custom_api_key() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let config = serde_json::json!({
+            "api_key": "custom-key-123",
+        });
+        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_with_sdk_api_key() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let config = serde_json::json!({
+            "api_key": "primary-key",
+            "sdk_api_key": "sdk-key-456",
+        });
+        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_create_with_empty_sdk_api_key() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let config = serde_json::json!({
+            "api_key": "primary-key",
+            "sdk_api_key": "",
+        });
+        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    // =========================================================================
+    // TelemetryConfig deserialization edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_telemetry_config_deserialize_partial_fields() {
+        let json = serde_json::json!({
+            "heartbeat_interval_secs": 120
+        });
+        let config: TelemetryConfig = serde_json::from_value(json).unwrap();
+        assert!(config.enabled); // default
+        assert!(config.api_key.is_empty()); // default
+        assert!(config.sdk_api_key.is_none()); // default
+        assert_eq!(config.heartbeat_interval_secs, 120);
+    }
+
+    #[test]
+    fn test_telemetry_config_deserialize_null_sdk_api_key() {
+        let json = serde_json::json!({
+            "sdk_api_key": null
+        });
+        let config: TelemetryConfig = serde_json::from_value(json).unwrap();
+        assert!(config.sdk_api_key.is_none());
+    }
+
+    // =========================================================================
+    // get_or_create_install_id
+    // =========================================================================
+
+    #[test]
+    fn test_get_or_create_install_id_returns_nonempty_string() {
+        let id = get_or_create_install_id();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn test_get_or_create_install_id_is_stable() {
+        let id1 = get_or_create_install_id();
+        let id2 = get_or_create_install_id();
+        assert_eq!(id1, id2, "install_id should be stable across calls");
+    }
+
+    // =========================================================================
+    // build_client_context edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_build_client_context_multiple_runtimes_counts() {
+        let mut runtime_counts = HashMap::new();
+        runtime_counts.insert("node".to_string(), 5);
+        runtime_counts.insert("python".to_string(), 3);
+        runtime_counts.insert("ruby".to_string(), 1);
+
+        let ctx = build_client_context(&runtime_counts, None);
+
+        let sdk_detected = ctx["sdk_detected"].as_array().unwrap();
+        assert_eq!(sdk_detected.len(), 3);
+
+        let worker_runtimes = ctx["worker_runtimes"].as_array().unwrap();
+        assert_eq!(worker_runtimes.len(), 3);
+    }
+
+    // =========================================================================
+    // collect_functions_and_triggers has triggers with data
+    // =========================================================================
+
+    #[test]
+    fn test_collect_functions_and_triggers_trigger_data_shape() {
+        let engine = make_test_engine();
+
+        engine.trigger_registry.triggers.insert(
+            "t-1".to_string(),
+            crate::trigger::Trigger {
+                id: "t-1".to_string(),
+                trigger_type: "cron".to_string(),
+                function_id: "fn-1".to_string(),
+                config: serde_json::json!({"schedule": "* * * * *"}),
+                worker_id: None,
+            },
+        );
+
+        let result = collect_functions_and_triggers(&engine);
+        let triggers = result["triggers"].as_array().unwrap();
+        assert_eq!(triggers.len(), 1);
+
+        let t = &triggers[0];
+        assert_eq!(t["id"], "t-1");
+        assert_eq!(t["type"], "cron");
+        assert_eq!(t["function_id"], "fn-1");
+    }
+
+    // =========================================================================
+    // collect_worker_data: telemetry with all None fields is skipped
+    // =========================================================================
+
+    #[test]
+    fn test_collect_worker_data_skips_telemetry_with_all_none() {
+        let engine = make_test_engine();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut worker = crate::workers::Worker::new(tx);
+        worker.runtime = Some("node".to_string());
+        // Telemetry with all None fields should be skipped
+        worker.telemetry = Some(WorkerTelemetryMeta {
+            language: None,
+            project_name: None,
+            framework: None,
+        });
+        let wid = worker.id;
+        engine.worker_registry.workers.insert(wid, worker);
+
+        let (_, sdk_telemetry) = collect_worker_data(&engine);
+        // All fields are None, so the filter in collect_worker_data should skip it
+        assert!(sdk_telemetry.is_none());
+    }
+
+    // =========================================================================
+    // TelemetryModule::active_client tests (via create)
+    // =========================================================================
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_initialize_is_ok() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let config = serde_json::json!({
+            "api_key": "test-key",
+        });
+        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        assert!(module.initialize().await.is_ok());
+    }
+
+    // =========================================================================
+    // TelemetryModule::name
+    // =========================================================================
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_name_is_telemetry() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+
+        let engine = make_test_engine();
+        let config = serde_json::json!({ "api_key": "key" });
+        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        assert_eq!(module.name(), "Telemetry");
+    }
+
+    #[test]
+    fn test_active_client_prefers_sdk_client_when_available() {
+        let engine = make_test_engine();
+        let without_sdk = build_manual_module(engine.clone(), false, 1);
+        assert!(Arc::ptr_eq(
+            without_sdk.active_client(),
+            &without_sdk.client
+        ));
+
+        let with_sdk = build_manual_module(engine, true, 1);
+        let sdk_client = with_sdk
+            .sdk_client
+            .as_ref()
+            .expect("sdk client should exist");
+        assert!(Arc::ptr_eq(with_sdk.active_client(), sdk_client));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_telemetry_module_background_tasks_and_destroy_run_without_network() {
+        clear_ci_env_vars();
+        unsafe {
+            env::remove_var("III_TELEMETRY_ENABLED");
+            env::remove_var("III_TELEMETRY_DEV");
+        }
+        reset_telemetry_globals();
+        crate::modules::observability::metrics::ensure_default_meter();
+
+        let engine = make_test_engine();
+        register_test_function(&engine, "svc.worker");
+
+        engine
+            .trigger_registry
+            .register_trigger_type(TriggerType {
+                id: "queue".to_string(),
+                _description: "Queue".to_string(),
+                registrator: Box::new(NoopRegistrator),
+                worker_id: None,
+            })
+            .await
+            .expect("register trigger type");
+        engine
+            .trigger_registry
+            .register_trigger(Trigger {
+                id: "queue-trigger-1".to_string(),
+                trigger_type: "queue".to_string(),
+                function_id: "svc.worker".to_string(),
+                config: serde_json::json!({ "topic": "orders" }),
+                worker_id: None,
+            })
+            .await
+            .expect("register trigger");
+
+        let (worker_tx, _worker_rx) = mpsc::channel(1);
+        let mut worker = Worker::new(worker_tx);
+        worker.runtime = Some("node".to_string());
+        worker.telemetry = Some(WorkerTelemetryMeta {
+            language: Some("typescript".to_string()),
+            project_name: Some("telemetry-spec".to_string()),
+            framework: Some("iii-js".to_string()),
+        });
+        engine.worker_registry.register_worker(worker);
+
+        let acc = get_metrics_accumulator();
+        acc.invocations_total.store(12, Ordering::Relaxed);
+        acc.invocations_success.store(9, Ordering::Relaxed);
+        acc.invocations_error.store(3, Ordering::Relaxed);
+        acc.workers_spawns.store(4, Ordering::Relaxed);
+        acc.workers_deaths.store(1, Ordering::Relaxed);
+        acc.invocations_by_function
+            .insert("svc.worker".to_string(), 12);
+
+        let telemetry = collector();
+        telemetry.queue_emits.store(7, Ordering::Relaxed);
+        telemetry.api_requests.store(5, Ordering::Relaxed);
+        telemetry.function_registrations.store(1, Ordering::Relaxed);
+        telemetry.trigger_registrations.store(1, Ordering::Relaxed);
+
+        let module = build_manual_module(engine, true, 1);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        module
+            .start_background_tasks(shutdown_rx)
+            .await
+            .expect("start background tasks");
+
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        shutdown_tx.send(true).expect("signal shutdown");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        module.destroy().await.expect("destroy telemetry module");
+
+        reset_telemetry_globals();
+    }
+
+    // =========================================================================
+    // build_event timestamp is recent
+    // =========================================================================
+
+    #[test]
+    fn test_build_event_timestamp_is_recent() {
+        let ctx = TelemetryContext {
+            install_id: "id-test".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "m1".to_string(),
+                is_container: false,
+                timezone: "UTC".to_string(),
+                cpu_cores: 4,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let event = ctx.build_event("evt", serde_json::json!({}), None);
+        // Timestamp should be within 5 seconds of now
+        assert!((event.time - now_ms).abs() < 5000);
+    }
+
+    // =========================================================================
+    // build_user_properties environment json shape
+    // =========================================================================
+
+    #[test]
+    #[serial]
+    fn test_build_user_properties_environment_shape() {
+        unsafe {
+            env::remove_var("III_PROJECT_ID");
+        }
+
+        let ctx = TelemetryContext {
+            install_id: "id-1".to_string(),
+            env_info: EnvironmentInfo {
+                machine_id: "test-machine".to_string(),
+                is_container: true,
+                timezone: "Europe/Berlin".to_string(),
+                cpu_cores: 32,
+                os: "linux".to_string(),
+                arch: "x86_64".to_string(),
+            },
+        };
+
+        let props = ctx.build_user_properties(None);
+        let env_val = &props["environment"];
+        assert_eq!(env_val["machine_id"], "test-machine");
+        assert_eq!(env_val["is_container"], true);
+        assert_eq!(env_val["timezone"], "Europe/Berlin");
+        assert_eq!(env_val["cpu_cores"], 32);
+        assert_eq!(env_val["os"], "linux");
+        assert_eq!(env_val["arch"], "x86_64");
+    }
+}

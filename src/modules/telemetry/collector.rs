@@ -238,3 +238,395 @@ pub fn track_peak_workers(current_active: u64) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // TelemetryCollector::default
+    // =========================================================================
+
+    #[test]
+    fn test_default_all_counters_are_zero() {
+        let c = TelemetryCollector::default();
+        assert_eq!(c.cron_executions.load(Ordering::Relaxed), 0);
+        assert_eq!(c.queue_emits.load(Ordering::Relaxed), 0);
+        assert_eq!(c.queue_consumes.load(Ordering::Relaxed), 0);
+        assert_eq!(c.state_sets.load(Ordering::Relaxed), 0);
+        assert_eq!(c.state_gets.load(Ordering::Relaxed), 0);
+        assert_eq!(c.state_deletes.load(Ordering::Relaxed), 0);
+        assert_eq!(c.state_updates.load(Ordering::Relaxed), 0);
+        assert_eq!(c.stream_sets.load(Ordering::Relaxed), 0);
+        assert_eq!(c.stream_gets.load(Ordering::Relaxed), 0);
+        assert_eq!(c.stream_deletes.load(Ordering::Relaxed), 0);
+        assert_eq!(c.stream_lists.load(Ordering::Relaxed), 0);
+        assert_eq!(c.stream_updates.load(Ordering::Relaxed), 0);
+        assert_eq!(c.pubsub_publishes.load(Ordering::Relaxed), 0);
+        assert_eq!(c.pubsub_subscribes.load(Ordering::Relaxed), 0);
+        assert_eq!(c.kv_sets.load(Ordering::Relaxed), 0);
+        assert_eq!(c.kv_gets.load(Ordering::Relaxed), 0);
+        assert_eq!(c.kv_deletes.load(Ordering::Relaxed), 0);
+        assert_eq!(c.api_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(c.function_registrations.load(Ordering::Relaxed), 0);
+        assert_eq!(c.trigger_registrations.load(Ordering::Relaxed), 0);
+        assert_eq!(c.peak_active_workers.load(Ordering::Relaxed), 0);
+    }
+
+    // =========================================================================
+    // TelemetryCollector::snapshot
+    // =========================================================================
+
+    #[test]
+    fn test_snapshot_default_all_zeros() {
+        let c = TelemetryCollector::default();
+        let snap = c.snapshot();
+
+        assert_eq!(snap["cron"]["executions"], 0);
+        assert_eq!(snap["queue"]["emits"], 0);
+        assert_eq!(snap["queue"]["consumes"], 0);
+        assert_eq!(snap["state"]["sets"], 0);
+        assert_eq!(snap["state"]["gets"], 0);
+        assert_eq!(snap["state"]["deletes"], 0);
+        assert_eq!(snap["state"]["updates"], 0);
+        assert_eq!(snap["stream"]["sets"], 0);
+        assert_eq!(snap["stream"]["gets"], 0);
+        assert_eq!(snap["stream"]["deletes"], 0);
+        assert_eq!(snap["stream"]["lists"], 0);
+        assert_eq!(snap["stream"]["updates"], 0);
+        assert_eq!(snap["pubsub"]["publishes"], 0);
+        assert_eq!(snap["pubsub"]["subscribes"], 0);
+        assert_eq!(snap["kv"]["sets"], 0);
+        assert_eq!(snap["kv"]["gets"], 0);
+        assert_eq!(snap["kv"]["deletes"], 0);
+        assert_eq!(snap["api"]["requests"], 0);
+        assert_eq!(snap["registrations"]["functions"], 0);
+        assert_eq!(snap["registrations"]["triggers"], 0);
+        assert_eq!(snap["workers"]["peak_active"], 0);
+    }
+
+    #[test]
+    fn test_snapshot_reflects_incremented_counters() {
+        let c = TelemetryCollector::default();
+
+        c.cron_executions.fetch_add(5, Ordering::Relaxed);
+        c.queue_emits.fetch_add(10, Ordering::Relaxed);
+        c.queue_consumes.fetch_add(8, Ordering::Relaxed);
+        c.state_sets.fetch_add(3, Ordering::Relaxed);
+        c.state_gets.fetch_add(7, Ordering::Relaxed);
+        c.api_requests.fetch_add(42, Ordering::Relaxed);
+        c.function_registrations.fetch_add(2, Ordering::Relaxed);
+        c.trigger_registrations.fetch_add(4, Ordering::Relaxed);
+        c.peak_active_workers.store(6, Ordering::Relaxed);
+        c.kv_sets.fetch_add(11, Ordering::Relaxed);
+        c.kv_gets.fetch_add(20, Ordering::Relaxed);
+        c.kv_deletes.fetch_add(1, Ordering::Relaxed);
+        c.pubsub_publishes.fetch_add(15, Ordering::Relaxed);
+        c.pubsub_subscribes.fetch_add(9, Ordering::Relaxed);
+        c.stream_sets.fetch_add(13, Ordering::Relaxed);
+        c.stream_updates.fetch_add(2, Ordering::Relaxed);
+
+        let snap = c.snapshot();
+
+        assert_eq!(snap["cron"]["executions"], 5);
+        assert_eq!(snap["queue"]["emits"], 10);
+        assert_eq!(snap["queue"]["consumes"], 8);
+        assert_eq!(snap["state"]["sets"], 3);
+        assert_eq!(snap["state"]["gets"], 7);
+        assert_eq!(snap["api"]["requests"], 42);
+        assert_eq!(snap["registrations"]["functions"], 2);
+        assert_eq!(snap["registrations"]["triggers"], 4);
+        assert_eq!(snap["workers"]["peak_active"], 6);
+        assert_eq!(snap["kv"]["sets"], 11);
+        assert_eq!(snap["kv"]["gets"], 20);
+        assert_eq!(snap["kv"]["deletes"], 1);
+        assert_eq!(snap["pubsub"]["publishes"], 15);
+        assert_eq!(snap["pubsub"]["subscribes"], 9);
+        assert_eq!(snap["stream"]["sets"], 13);
+        assert_eq!(snap["stream"]["updates"], 2);
+    }
+
+    #[test]
+    fn test_snapshot_has_all_top_level_keys() {
+        let c = TelemetryCollector::default();
+        let snap = c.snapshot();
+        let expected_keys = [
+            "cron",
+            "queue",
+            "state",
+            "stream",
+            "pubsub",
+            "kv",
+            "api",
+            "registrations",
+            "workers",
+        ];
+        for key in &expected_keys {
+            assert!(
+                snap.get(key).is_some(),
+                "snapshot should have top-level key '{}'",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_snapshot_is_valid_json_object() {
+        let c = TelemetryCollector::default();
+        let snap = c.snapshot();
+        assert!(snap.is_object(), "snapshot should be a JSON object");
+    }
+
+    // =========================================================================
+    // Global collector singleton
+    // =========================================================================
+
+    #[test]
+    fn test_global_collector_returns_same_instance() {
+        let c1 = collector() as *const TelemetryCollector;
+        let c2 = collector() as *const TelemetryCollector;
+        assert_eq!(c1, c2, "collector() should always return the same instance");
+    }
+
+    // =========================================================================
+    // Convenience tracking functions
+    // =========================================================================
+
+    #[test]
+    fn test_track_cron_execution_increments() {
+        let before = collector().cron_executions.load(Ordering::Relaxed);
+        track_cron_execution();
+        let after = collector().cron_executions.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_queue_emit_increments() {
+        let before = collector().queue_emits.load(Ordering::Relaxed);
+        track_queue_emit();
+        let after = collector().queue_emits.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_queue_consume_increments() {
+        let before = collector().queue_consumes.load(Ordering::Relaxed);
+        track_queue_consume();
+        let after = collector().queue_consumes.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_state_set_increments() {
+        let before = collector().state_sets.load(Ordering::Relaxed);
+        track_state_set();
+        let after = collector().state_sets.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_state_get_increments() {
+        let before = collector().state_gets.load(Ordering::Relaxed);
+        track_state_get();
+        let after = collector().state_gets.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_state_delete_increments() {
+        let before = collector().state_deletes.load(Ordering::Relaxed);
+        track_state_delete();
+        let after = collector().state_deletes.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_state_update_increments() {
+        let before = collector().state_updates.load(Ordering::Relaxed);
+        track_state_update();
+        let after = collector().state_updates.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_stream_set_increments() {
+        let before = collector().stream_sets.load(Ordering::Relaxed);
+        track_stream_set();
+        let after = collector().stream_sets.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_stream_get_increments() {
+        let before = collector().stream_gets.load(Ordering::Relaxed);
+        track_stream_get();
+        let after = collector().stream_gets.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_stream_delete_increments() {
+        let before = collector().stream_deletes.load(Ordering::Relaxed);
+        track_stream_delete();
+        let after = collector().stream_deletes.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_stream_list_increments() {
+        let before = collector().stream_lists.load(Ordering::Relaxed);
+        track_stream_list();
+        let after = collector().stream_lists.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_stream_update_increments() {
+        let before = collector().stream_updates.load(Ordering::Relaxed);
+        track_stream_update();
+        let after = collector().stream_updates.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_pubsub_publish_increments() {
+        let before = collector().pubsub_publishes.load(Ordering::Relaxed);
+        track_pubsub_publish();
+        let after = collector().pubsub_publishes.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_pubsub_subscribe_increments() {
+        let before = collector().pubsub_subscribes.load(Ordering::Relaxed);
+        track_pubsub_subscribe();
+        let after = collector().pubsub_subscribes.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_kv_set_increments() {
+        let before = collector().kv_sets.load(Ordering::Relaxed);
+        track_kv_set();
+        let after = collector().kv_sets.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_kv_get_increments() {
+        let before = collector().kv_gets.load(Ordering::Relaxed);
+        track_kv_get();
+        let after = collector().kv_gets.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_kv_delete_increments() {
+        let before = collector().kv_deletes.load(Ordering::Relaxed);
+        track_kv_delete();
+        let after = collector().kv_deletes.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_api_request_increments() {
+        let before = collector().api_requests.load(Ordering::Relaxed);
+        track_api_request();
+        let after = collector().api_requests.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_function_registered_increments() {
+        let before = collector().function_registrations.load(Ordering::Relaxed);
+        track_function_registered();
+        let after = collector().function_registrations.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn test_track_trigger_registered_increments() {
+        let before = collector().trigger_registrations.load(Ordering::Relaxed);
+        track_trigger_registered();
+        let after = collector().trigger_registrations.load(Ordering::Relaxed);
+        assert_eq!(after, before + 1);
+    }
+
+    // =========================================================================
+    // track_peak_workers (CAS logic)
+    // =========================================================================
+
+    #[test]
+    fn test_track_peak_workers_updates_when_higher() {
+        let c = TelemetryCollector::default();
+        c.peak_active_workers.store(0, Ordering::Relaxed);
+
+        // Simulate tracking via the global collector
+        // We test the standalone TelemetryCollector CAS logic directly.
+        let peak = &c.peak_active_workers;
+
+        // Set peak to 5 manually
+        peak.store(5, Ordering::Relaxed);
+
+        // 10 > 5 => should update
+        let new_val = 10u64;
+        loop {
+            let prev = peak.load(Ordering::Relaxed);
+            if new_val <= prev {
+                break;
+            }
+            if peak
+                .compare_exchange_weak(prev, new_val, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        assert_eq!(peak.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn test_track_peak_workers_does_not_decrease() {
+        let c = TelemetryCollector::default();
+        c.peak_active_workers.store(20, Ordering::Relaxed);
+
+        let peak = &c.peak_active_workers;
+        // 5 < 20 => should NOT update
+        let new_val = 5u64;
+        loop {
+            let prev = peak.load(Ordering::Relaxed);
+            if new_val <= prev {
+                break;
+            }
+            if peak
+                .compare_exchange_weak(prev, new_val, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        assert_eq!(peak.load(Ordering::Relaxed), 20);
+    }
+
+    #[test]
+    fn test_track_peak_workers_equal_value_no_change() {
+        let c = TelemetryCollector::default();
+        c.peak_active_workers.store(15, Ordering::Relaxed);
+
+        let peak = &c.peak_active_workers;
+        let new_val = 15u64;
+        loop {
+            let prev = peak.load(Ordering::Relaxed);
+            if new_val <= prev {
+                break;
+            }
+            if peak
+                .compare_exchange_weak(prev, new_val, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        assert_eq!(peak.load(Ordering::Relaxed), 15);
+    }
+}

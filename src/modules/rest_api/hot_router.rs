@@ -77,3 +77,94 @@ impl<'a, L: axum::serve::Listener> tower::Service<IncomingStream<'a, L>> for Mak
         Box::pin(async move { Ok(router) })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::{
+        Extension,
+        body::Body,
+        http::{Request, StatusCode},
+        response::IntoResponse,
+        routing::get,
+    };
+    use futures::task::noop_waker_ref;
+    use http_body_util::BodyExt;
+    use tokio::sync::{RwLock, oneshot};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn hot_router_routes_requests_and_injects_engine() {
+        async fn handler(Extension(engine): Extension<Arc<Engine>>) -> impl IntoResponse {
+            assert!(engine.functions.get("missing").is_none());
+            "hot-router-ok"
+        }
+
+        let engine = Arc::new(Engine::new());
+        let mut service = HotRouter {
+            inner: Arc::new(RwLock::new(Router::new().route("/", get(handler)))),
+            engine,
+        };
+
+        let waker = noop_waker_ref();
+        let mut cx = Context::from_waker(waker);
+        assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+
+        let response = service
+            .call(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .expect("call hot router");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        assert_eq!(&body[..], b"hot-router-ok");
+    }
+
+    #[tokio::test]
+    async fn make_hot_router_service_serves_requests() {
+        let engine = Arc::new(Engine::new());
+        let router = HotRouter {
+            inner: Arc::new(RwLock::new(
+                Router::new().route("/", get(|| async { "make-service-ok" })),
+            )),
+            engine,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, MakeHotRouterService { router })
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("serve router");
+        });
+
+        let response = reqwest::get(format!("http://{addr}/"))
+            .await
+            .expect("request response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.text().await.expect("response text"),
+            "make-service-ok"
+        );
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server shutdown timeout")
+            .expect("server join");
+    }
+}

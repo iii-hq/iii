@@ -51,3 +51,87 @@ impl From<SecurityConfig> for UrlValidatorConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn security_config_default() {
+        let config = SecurityConfig::default();
+        assert_eq!(config.url_allowlist, vec!["*".to_string()]);
+        assert!(config.block_private_ips);
+        assert!(config.require_https);
+    }
+
+    #[test]
+    fn security_config_deserialize_empty() {
+        let config: SecurityConfig = serde_json::from_str("{}").unwrap();
+        // url_allowlist defaults to empty Vec (serde default), block_private_ips/require_https default to true
+        assert!(config.url_allowlist.is_empty());
+        assert!(config.block_private_ips);
+        assert!(config.require_https);
+    }
+
+    #[test]
+    fn security_config_deserialize_custom() {
+        let json = r#"{
+            "url_allowlist": ["https://example.com", "https://api.example.com"],
+            "block_private_ips": false,
+            "require_https": false
+        }"#;
+        let config: SecurityConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.url_allowlist.len(), 2);
+        assert!(!config.block_private_ips);
+        assert!(!config.require_https);
+    }
+
+    #[test]
+    fn security_config_serialize_roundtrip() {
+        let config = SecurityConfig {
+            url_allowlist: vec!["https://foo.com".to_string()],
+            block_private_ips: false,
+            require_https: true,
+        };
+        let json_str = serde_json::to_string(&config).unwrap();
+        let deserialized: SecurityConfig = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.url_allowlist, vec!["https://foo.com"]);
+        assert!(!deserialized.block_private_ips);
+        assert!(deserialized.require_https);
+    }
+
+    #[test]
+    fn security_config_into_url_validator_with_allowlist() {
+        let config = SecurityConfig {
+            url_allowlist: vec!["https://example.com".to_string()],
+            block_private_ips: true,
+            require_https: true,
+        };
+        let validator_config: UrlValidatorConfig = config.into();
+        assert_eq!(validator_config.allowlist, vec!["https://example.com"]);
+        assert!(validator_config.block_private_ips);
+        assert!(validator_config.require_https);
+    }
+
+    #[test]
+    fn security_config_into_url_validator_empty_allowlist_becomes_wildcard() {
+        let config = SecurityConfig {
+            url_allowlist: vec![],
+            block_private_ips: false,
+            require_https: false,
+        };
+        let validator_config: UrlValidatorConfig = config.into();
+        assert_eq!(validator_config.allowlist, vec!["*".to_string()]);
+        assert!(!validator_config.block_private_ips);
+        assert!(!validator_config.require_https);
+    }
+
+    #[test]
+    fn security_config_into_url_validator_default() {
+        let config = SecurityConfig::default();
+        let validator_config: UrlValidatorConfig = config.into();
+        assert_eq!(validator_config.allowlist, vec!["*".to_string()]);
+        assert!(validator_config.block_private_ips);
+        assert!(validator_config.require_https);
+    }
+}

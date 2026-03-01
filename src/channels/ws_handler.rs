@@ -156,3 +156,196 @@ async fn handle_channel_socket(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{Router, routing::get};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::{net::TcpListener, sync::watch};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Error as WsError, Message},
+    };
+
+    use super::*;
+    use crate::engine::Engine;
+
+    async fn spawn_app() -> (Arc<Engine>, String, watch::Sender<bool>) {
+        let engine = Arc::new(Engine::new());
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let app = Router::new()
+            .route("/channels/{id}", get(channel_ws_upgrade))
+            .with_state(AppState {
+                engine: Arc::clone(&engine),
+                shutdown_rx,
+            });
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind websocket test server");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve websocket app");
+        });
+
+        (engine, format!("ws://{addr}"), shutdown_tx)
+    }
+
+    #[tokio::test]
+    async fn channel_ws_upgrade_returns_404_for_missing_channel() {
+        let (_engine, base_url, _shutdown_tx) = spawn_app().await;
+        let url = format!("{base_url}/channels/missing?key=bad&dir=read");
+
+        let error = connect_async(url)
+            .await
+            .expect_err("missing channel should reject upgrade");
+        match error {
+            WsError::Http(response) => assert_eq!(response.status(), StatusCode::NOT_FOUND),
+            other => panic!("expected http error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_socket_streams_channel_messages_and_closes() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+        let sender = engine
+            .channel_manager
+            .take_sender(&writer_ref.channel_id, &writer_ref.access_key)
+            .await
+            .expect("take sender");
+
+        let url = format!(
+            "{base_url}/channels/{}?key={}&dir=read",
+            reader_ref.channel_id, reader_ref.access_key
+        );
+        let (mut socket, _) = connect_async(url).await.expect("connect read socket");
+
+        sender
+            .send(ChannelItem::Text("hello".to_string()))
+            .await
+            .expect("send text");
+        sender
+            .send(ChannelItem::Binary(axum::body::Bytes::from_static(
+                b"\x01\x02",
+            )))
+            .await
+            .expect("send binary");
+        drop(sender);
+
+        assert!(matches!(
+            socket.next().await.expect("text frame").expect("text message"),
+            Message::Text(text) if text == "hello"
+        ));
+        assert!(matches!(
+            socket.next().await.expect("binary frame").expect("binary message"),
+            Message::Binary(bytes) if bytes.as_ref() == b"\x01\x02"
+        ));
+        assert!(matches!(
+            socket
+                .next()
+                .await
+                .expect("close frame")
+                .expect("close message"),
+            Message::Close(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_socket_closes_when_receiver_was_already_taken() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (_writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+        let _receiver = engine
+            .channel_manager
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .expect("take receiver first");
+
+        let url = format!(
+            "{base_url}/channels/{}?key={}&dir=read",
+            reader_ref.channel_id, reader_ref.access_key
+        );
+        let (mut socket, _) = connect_async(url).await.expect("connect read socket");
+
+        assert!(matches!(
+            socket
+                .next()
+                .await
+                .expect("close frame")
+                .expect("close message"),
+            Message::Close(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn write_socket_forwards_messages_into_channel() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+        let mut receiver = engine
+            .channel_manager
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .expect("take receiver");
+
+        let url = format!(
+            "{base_url}/channels/{}?key={}&dir=write",
+            writer_ref.channel_id, writer_ref.access_key
+        );
+        let (mut socket, _) = connect_async(url).await.expect("connect write socket");
+
+        socket
+            .send(Message::Text("hello".into()))
+            .await
+            .expect("send text");
+        socket
+            .send(Message::Binary(vec![1, 2, 3].into()))
+            .await
+            .expect("send binary");
+        socket.send(Message::Close(None)).await.expect("send close");
+
+        match receiver.recv().await.expect("receive text") {
+            ChannelItem::Text(text) => assert_eq!(text, "hello"),
+            _ => panic!("expected text item"),
+        }
+        match receiver.recv().await.expect("receive binary") {
+            ChannelItem::Binary(bytes) => assert_eq!(bytes.as_ref(), &[1, 2, 3]),
+            _ => panic!("expected binary item"),
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .expect("channel close timeout")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn write_socket_closes_when_sender_was_already_taken() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, _reader_ref) = engine.channel_manager.create_channel(8, None);
+        let _sender = engine
+            .channel_manager
+            .take_sender(&writer_ref.channel_id, &writer_ref.access_key)
+            .await
+            .expect("take sender first");
+
+        let url = format!(
+            "{base_url}/channels/{}?key={}&dir=write",
+            writer_ref.channel_id, writer_ref.access_key
+        );
+        let (mut socket, _) = connect_async(url).await.expect("connect write socket");
+
+        assert!(matches!(
+            socket
+                .next()
+                .await
+                .expect("close frame")
+                .expect("close message"),
+            Message::Close(_)
+        ));
+    }
+}

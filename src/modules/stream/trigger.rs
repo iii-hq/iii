@@ -163,3 +163,320 @@ impl TriggerRegistrator for StreamCoreModule {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::{
+        module::ConfigurableModule,
+        observability::metrics::ensure_default_meter,
+        stream::{adapters::kv_store::BuiltinKvStoreAdapter, config::StreamModuleConfig},
+    };
+
+    fn setup() -> StreamCoreModule {
+        ensure_default_meter();
+        let engine = Arc::new(crate::engine::Engine::new());
+        let adapter: Arc<dyn crate::modules::stream::adapters::StreamAdapter> =
+            Arc::new(BuiltinKvStoreAdapter::new(None));
+        StreamCoreModule::build(engine, StreamModuleConfig::default(), adapter)
+    }
+
+    fn make_trigger(
+        id: &str,
+        trigger_type: &str,
+        function_id: &str,
+        config: serde_json::Value,
+    ) -> Trigger {
+        Trigger {
+            id: id.to_string(),
+            trigger_type: trigger_type.to_string(),
+            function_id: function_id.to_string(),
+            config,
+            worker_id: None,
+        }
+    }
+
+    // ---- StreamTriggerConfig parsing ----
+
+    #[test]
+    fn test_stream_trigger_config_full_deserialization() {
+        let json = serde_json::json!({
+            "stream_name": "chat-messages",
+            "group_id": "room-42",
+            "item_id": "msg-100",
+            "condition_function_id": "check::condition"
+        });
+        let config: StreamTriggerConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.stream_name.as_deref(), Some("chat-messages"));
+        assert_eq!(config.group_id.as_deref(), Some("room-42"));
+        assert_eq!(config.item_id.as_deref(), Some("msg-100"));
+        assert_eq!(
+            config.condition_function_id.as_deref(),
+            Some("check::condition")
+        );
+    }
+
+    #[test]
+    fn test_stream_trigger_config_minimal_deserialization() {
+        let json = serde_json::json!({});
+        let config: StreamTriggerConfig = serde_json::from_value(json).unwrap();
+        assert!(config.stream_name.is_none());
+        assert!(config.group_id.is_none());
+        assert!(config.item_id.is_none());
+        assert!(config.condition_function_id.is_none());
+    }
+
+    #[test]
+    fn test_stream_trigger_config_partial_deserialization() {
+        let json = serde_json::json!({"stream_name": "events"});
+        let config: StreamTriggerConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.stream_name.as_deref(), Some("events"));
+        assert!(config.group_id.is_none());
+    }
+
+    #[test]
+    fn test_stream_trigger_config_serialization_roundtrip() {
+        let config = StreamTriggerConfig {
+            stream_name: Some("test-stream".to_string()),
+            group_id: Some("grp-1".to_string()),
+            item_id: None,
+            condition_function_id: None,
+        };
+        let json = serde_json::to_value(&config).unwrap();
+        let deserialized: StreamTriggerConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.stream_name, config.stream_name);
+        assert_eq!(deserialized.group_id, config.group_id);
+    }
+
+    // ---- StreamTriggers default ----
+
+    #[test]
+    fn test_stream_triggers_default() {
+        let triggers = StreamTriggers::default();
+        // Should create empty collections
+        assert!(std::sync::Arc::strong_count(&triggers.join_triggers) >= 1);
+        assert!(std::sync::Arc::strong_count(&triggers.stream_triggers) >= 1);
+    }
+
+    // ---- register_trigger for join type ----
+
+    #[tokio::test]
+    async fn test_register_join_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "join-1",
+            JOIN_TRIGGER_TYPE,
+            "fn::on_join",
+            serde_json::json!({}),
+        );
+
+        let result = module.register_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        let joins = module.triggers.join_triggers.read().await;
+        assert_eq!(joins.len(), 1);
+        assert!(joins.contains(&trigger));
+    }
+
+    // ---- register_trigger for leave type ----
+
+    #[tokio::test]
+    async fn test_register_leave_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "leave-1",
+            LEAVE_TRIGGER_TYPE,
+            "fn::on_leave",
+            serde_json::json!({}),
+        );
+
+        let result = module.register_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        let leaves = module.triggers.leave_triggers.read().await;
+        assert_eq!(leaves.len(), 1);
+        assert!(leaves.contains(&trigger));
+    }
+
+    // ---- register_trigger for stream type ----
+
+    #[tokio::test]
+    async fn test_register_stream_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "stream-1",
+            STREAM_TRIGGER_TYPE,
+            "fn::on_stream_event",
+            serde_json::json!({
+                "stream_name": "my-stream",
+                "group_id": "grp-1"
+            }),
+        );
+
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_ok());
+
+        let stream_triggers = module.triggers.stream_triggers.read().await;
+        assert_eq!(stream_triggers.len(), 1);
+        assert!(stream_triggers.contains_key("stream-1"));
+
+        let by_name = module.triggers.stream_triggers_by_name.read().await;
+        let ids = by_name
+            .get("my-stream")
+            .expect("should have stream name entry");
+        assert_eq!(ids, &vec!["stream-1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_register_stream_trigger_invalid_config() {
+        let module = setup();
+        // Pass a config that is not valid JSON for StreamTriggerConfig
+        // Actually StreamTriggerConfig has all optional fields, so any object works.
+        // Let's use a non-object value to trigger deserialization failure
+        let trigger = make_trigger(
+            "stream-bad",
+            STREAM_TRIGGER_TYPE,
+            "fn::handler",
+            serde_json::json!("not-an-object"),
+        );
+
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to deserialize stream trigger")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_register_multiple_stream_triggers_same_stream_name() {
+        let module = setup();
+
+        for i in 0..3 {
+            let trigger = make_trigger(
+                &format!("stream-{}", i),
+                STREAM_TRIGGER_TYPE,
+                &format!("fn::handler_{}", i),
+                serde_json::json!({"stream_name": "shared-stream"}),
+            );
+            module.register_trigger(trigger).await.unwrap();
+        }
+
+        let by_name = module.triggers.stream_triggers_by_name.read().await;
+        let ids = by_name
+            .get("shared-stream")
+            .expect("should have stream name entry");
+        assert_eq!(ids.len(), 3);
+
+        let stream_triggers = module.triggers.stream_triggers.read().await;
+        assert_eq!(stream_triggers.len(), 3);
+    }
+
+    // ---- unregister_trigger ----
+
+    #[tokio::test]
+    async fn test_unregister_join_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "join-1",
+            JOIN_TRIGGER_TYPE,
+            "fn::handler",
+            serde_json::json!({}),
+        );
+        module.register_trigger(trigger.clone()).await.unwrap();
+
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_ok());
+
+        let joins = module.triggers.join_triggers.read().await;
+        assert!(joins.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_unregister_leave_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "leave-1",
+            LEAVE_TRIGGER_TYPE,
+            "fn::handler",
+            serde_json::json!({}),
+        );
+        module.register_trigger(trigger.clone()).await.unwrap();
+
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_ok());
+
+        let leaves = module.triggers.leave_triggers.read().await;
+        assert!(leaves.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_unregister_stream_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "stream-1",
+            STREAM_TRIGGER_TYPE,
+            "fn::handler",
+            serde_json::json!({"stream_name": "test-stream"}),
+        );
+        module.register_trigger(trigger.clone()).await.unwrap();
+
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_ok());
+
+        let stream_triggers = module.triggers.stream_triggers.read().await;
+        assert!(stream_triggers.is_empty());
+
+        let by_name = module.triggers.stream_triggers_by_name.read().await;
+        assert!(by_name.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_unregister_one_of_multiple_stream_triggers() {
+        let module = setup();
+
+        let trigger1 = make_trigger(
+            "stream-1",
+            STREAM_TRIGGER_TYPE,
+            "fn::handler_1",
+            serde_json::json!({"stream_name": "shared"}),
+        );
+        let trigger2 = make_trigger(
+            "stream-2",
+            STREAM_TRIGGER_TYPE,
+            "fn::handler_2",
+            serde_json::json!({"stream_name": "shared"}),
+        );
+
+        module.register_trigger(trigger1.clone()).await.unwrap();
+        module.register_trigger(trigger2).await.unwrap();
+
+        // Unregister only trigger1
+        module.unregister_trigger(trigger1).await.unwrap();
+
+        let stream_triggers = module.triggers.stream_triggers.read().await;
+        assert_eq!(stream_triggers.len(), 1);
+        assert!(stream_triggers.contains_key("stream-2"));
+
+        let by_name = module.triggers.stream_triggers_by_name.read().await;
+        let ids = by_name.get("shared").expect("should still have entry");
+        assert_eq!(ids, &vec!["stream-2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_stream_trigger() {
+        let module = setup();
+        let trigger = make_trigger(
+            "does-not-exist",
+            STREAM_TRIGGER_TYPE,
+            "fn::handler",
+            serde_json::json!({"stream_name": "test"}),
+        );
+
+        // Should succeed without error (no-op)
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_ok());
+    }
+}

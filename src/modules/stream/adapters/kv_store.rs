@@ -199,3 +199,139 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::KvStore", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use serde_json::json;
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, sleep, timeout},
+    };
+
+    use super::*;
+    use crate::{builtins::pubsub_lite::Subscriber, modules::stream::StreamOutboundMessage};
+
+    struct RecordingConnection {
+        tx: mpsc::UnboundedSender<StreamWrapperMessage>,
+    }
+
+    #[async_trait]
+    impl StreamConnection for RecordingConnection {
+        async fn cleanup(&self) {}
+
+        async fn handle_stream_message(&self, msg: &StreamWrapperMessage) -> anyhow::Result<()> {
+            let _ = self.tx.send(msg.clone());
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl Subscriber for RecordingConnection {
+        async fn handle_message(&self, message: Arc<Value>) -> anyhow::Result<()> {
+            let msg = serde_json::from_value::<StreamWrapperMessage>((*message).clone())?;
+            let _ = self.tx.send(msg);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn list_groups_and_list_all_stream_return_sorted_results() {
+        let adapter = BuiltinKvStoreAdapter::new(None);
+        adapter
+            .set("orders", "beta", "item-2", json!({ "value": 2 }))
+            .await
+            .unwrap();
+        adapter
+            .set("orders", "alpha", "item-1", json!({ "value": 1 }))
+            .await
+            .unwrap();
+        adapter
+            .set("users", "default", "item-3", json!({ "value": 3 }))
+            .await
+            .unwrap();
+
+        let mut groups = adapter.list_groups("orders").await.unwrap();
+        groups.sort();
+        assert_eq!(groups, vec!["alpha".to_string(), "beta".to_string()]);
+
+        let metadata = adapter.list_all_stream().await.unwrap();
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0].id, "orders");
+        assert_eq!(
+            metadata[0].groups,
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+        assert_eq!(metadata[1].id, "users");
+        assert_eq!(metadata[1].groups, vec!["default".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn subscribe_emit_event_and_unsubscribe_round_trip() {
+        let adapter = Arc::new(BuiltinKvStoreAdapter::new(None));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let connection: Arc<dyn StreamConnection> = Arc::new(RecordingConnection { tx });
+        let watcher = Arc::clone(&adapter);
+        let task = tokio::spawn(async move {
+            let _ = watcher.watch_events().await;
+        });
+        sleep(Duration::from_millis(50)).await;
+
+        adapter
+            .subscribe("subscription-1".to_string(), Arc::clone(&connection))
+            .await
+            .unwrap();
+
+        let message = StreamWrapperMessage {
+            event_type: "event".to_string(),
+            timestamp: 42,
+            stream_name: "orders".to_string(),
+            group_id: "alpha".to_string(),
+            id: Some("item-1".to_string()),
+            event: StreamOutboundMessage::Sync {
+                data: json!({ "id": 1 }),
+            },
+        };
+
+        adapter.emit_event(message.clone()).await.unwrap();
+        let received = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("receive should complete")
+            .expect("message should be delivered");
+        assert_eq!(received.stream_name, "orders");
+        assert_eq!(received.group_id, "alpha");
+
+        adapter
+            .unsubscribe("subscription-1".to_string())
+            .await
+            .unwrap();
+        adapter.emit_event(message).await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err()
+        );
+
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn destroy_and_make_adapter_succeed() {
+        let adapter = BuiltinKvStoreAdapter::new(None);
+        adapter.destroy().await.unwrap();
+
+        let adapter = make_adapter(Arc::new(Engine::new()), None)
+            .await
+            .expect("make adapter should succeed");
+        adapter
+            .set("orders", "alpha", "item-1", json!({ "value": 1 }))
+            .await
+            .unwrap();
+        assert_eq!(
+            adapter.get("orders", "alpha", "item-1").await.unwrap(),
+            Some(json!({ "value": 1 }))
+        );
+    }
+}

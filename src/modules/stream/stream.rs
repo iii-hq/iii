@@ -845,19 +845,30 @@ crate::register_module!(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use async_trait::async_trait;
+    use iii_sdk::{
+        UpdateOp, UpdateResult,
+        types::{DeleteResult, SetResult},
+    };
     use serde_json::Value;
     use tokio::sync::mpsc;
 
     use crate::{
         builtins::pubsub_lite::Subscriber,
-        engine::Engine,
+        engine::{Engine, EngineTrait},
         modules::stream::{
+            StreamMetadata,
             adapters::{StreamAdapter, StreamConnection},
             config::StreamModuleConfig,
+            trigger::StreamTriggerConfig,
         },
+        protocol::ErrorBody,
+        trigger::Trigger,
     };
 
     use super::*;
@@ -892,6 +903,7 @@ mod tests {
     }
 
     fn create_test_module() -> StreamCoreModule {
+        crate::modules::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let config = StreamModuleConfig {
             port: 0, // Use 0 for testing (OS will assign port)
@@ -906,6 +918,179 @@ mod tests {
         // Create adapter directly using kv_store adapter
         let adapter: Arc<dyn StreamAdapter> =
             Arc::new(crate::modules::stream::adapters::kv_store::BuiltinKvStoreAdapter::new(None));
+
+        StreamCoreModule::build(engine, config, adapter)
+    }
+
+    struct FakeStreamAdapter {
+        set_result: Mutex<Result<SetResult, String>>,
+        get_result: Mutex<Result<Option<Value>, String>>,
+        delete_result: Mutex<Result<DeleteResult, String>>,
+        get_group_result: Mutex<Result<Vec<Value>, String>>,
+        list_groups_result: Mutex<Result<Vec<String>, String>>,
+        list_all_result: Mutex<Result<Vec<StreamMetadata>, String>>,
+        emit_event_result: Mutex<Result<(), String>>,
+        update_result: Mutex<Result<UpdateResult, String>>,
+        emitted_messages: Mutex<Vec<StreamWrapperMessage>>,
+        destroy_called: AtomicBool,
+        watch_events_called: AtomicBool,
+    }
+
+    impl Default for FakeStreamAdapter {
+        fn default() -> Self {
+            Self {
+                set_result: Mutex::new(Ok(SetResult {
+                    old_value: None,
+                    new_value: serde_json::json!({}),
+                })),
+                get_result: Mutex::new(Ok(None)),
+                delete_result: Mutex::new(Ok(DeleteResult { old_value: None })),
+                get_group_result: Mutex::new(Ok(Vec::new())),
+                list_groups_result: Mutex::new(Ok(Vec::new())),
+                list_all_result: Mutex::new(Ok(Vec::new())),
+                emit_event_result: Mutex::new(Ok(())),
+                update_result: Mutex::new(Ok(UpdateResult {
+                    old_value: None,
+                    new_value: serde_json::json!({}),
+                })),
+                emitted_messages: Mutex::new(Vec::new()),
+                destroy_called: AtomicBool::new(false),
+                watch_events_called: AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StreamAdapter for FakeStreamAdapter {
+        async fn set(
+            &self,
+            _stream_name: &str,
+            _group_id: &str,
+            _item_id: &str,
+            _data: Value,
+        ) -> anyhow::Result<SetResult> {
+            self.set_result
+                .lock()
+                .expect("lock set_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn get(
+            &self,
+            _stream_name: &str,
+            _group_id: &str,
+            _item_id: &str,
+        ) -> anyhow::Result<Option<Value>> {
+            self.get_result
+                .lock()
+                .expect("lock get_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn delete(
+            &self,
+            _stream_name: &str,
+            _group_id: &str,
+            _item_id: &str,
+        ) -> anyhow::Result<DeleteResult> {
+            self.delete_result
+                .lock()
+                .expect("lock delete_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn get_group(
+            &self,
+            _stream_name: &str,
+            _group_id: &str,
+        ) -> anyhow::Result<Vec<Value>> {
+            self.get_group_result
+                .lock()
+                .expect("lock get_group_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn list_groups(&self, _stream_name: &str) -> anyhow::Result<Vec<String>> {
+            self.list_groups_result
+                .lock()
+                .expect("lock list_groups_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn list_all_stream(&self) -> anyhow::Result<Vec<StreamMetadata>> {
+            self.list_all_result
+                .lock()
+                .expect("lock list_all_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn emit_event(&self, message: StreamWrapperMessage) -> anyhow::Result<()> {
+            self.emitted_messages
+                .lock()
+                .expect("lock emitted_messages")
+                .push(message);
+            self.emit_event_result
+                .lock()
+                .expect("lock emit_event_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+
+        async fn subscribe(
+            &self,
+            _id: String,
+            _connection: Arc<dyn StreamConnection>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn unsubscribe(&self, _id: String) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn watch_events(&self) -> anyhow::Result<()> {
+            self.watch_events_called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn destroy(&self) -> anyhow::Result<()> {
+            self.destroy_called.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn update(
+            &self,
+            _stream_name: &str,
+            _group_id: &str,
+            _item_id: &str,
+            _ops: Vec<UpdateOp>,
+        ) -> anyhow::Result<UpdateResult> {
+            self.update_result
+                .lock()
+                .expect("lock update_result")
+                .clone()
+                .map_err(anyhow::Error::msg)
+        }
+    }
+
+    fn create_module_with_adapter(adapter: Arc<dyn StreamAdapter>) -> StreamCoreModule {
+        crate::modules::observability::metrics::ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let config = StreamModuleConfig {
+            port: 0,
+            host: "127.0.0.1".to_string(),
+            auth_function: None,
+            adapter: Some(crate::modules::module::AdapterEntry {
+                class: "test-adapter".to_string(),
+                config: None,
+            }),
+        };
 
         StreamCoreModule::build(engine, config, adapter)
     }
@@ -1188,5 +1373,594 @@ mod tests {
         }
 
         watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn test_stream_list_groups_list_all_and_send_with_adapter() {
+        let adapter = Arc::new(FakeStreamAdapter::default());
+        *adapter
+            .get_group_result
+            .lock()
+            .expect("lock get_group_result") = Ok(vec![
+            serde_json::json!({ "item": 1 }),
+            serde_json::json!({ "item": 2 }),
+        ]);
+        *adapter
+            .list_groups_result
+            .lock()
+            .expect("lock list_groups_result") =
+            Ok(vec!["group-a".to_string(), "group-b".to_string()]);
+        *adapter
+            .list_all_result
+            .lock()
+            .expect("lock list_all_result") = Ok(vec![
+            StreamMetadata {
+                id: "stream-a".to_string(),
+                groups: vec!["group-a".to_string()],
+            },
+            StreamMetadata {
+                id: "stream-b".to_string(),
+                groups: vec!["group-b".to_string(), "group-c".to_string()],
+            },
+        ]);
+
+        let module = create_module_with_adapter(adapter.clone());
+
+        match module
+            .list(StreamListInput {
+                stream_name: "stream-a".to_string(),
+                group_id: "group-a".to_string(),
+            })
+            .await
+        {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value, serde_json::json!([{ "item": 1 }, { "item": 2 }]));
+            }
+            _ => panic!("expected list success"),
+        }
+
+        match module
+            .list_groups(StreamListGroupsInput {
+                stream_name: "stream-a".to_string(),
+            })
+            .await
+        {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value, serde_json::json!(["group-a", "group-b"]));
+            }
+            _ => panic!("expected list_groups success"),
+        }
+
+        match module.list_all(StreamListAllInput {}).await {
+            FunctionResult::Success(Some(value)) => {
+                assert_eq!(value["count"], 2);
+                assert_eq!(value["stream"][0]["id"], "stream-a");
+                assert_eq!(
+                    value["stream"][1]["groups"],
+                    serde_json::json!(["group-b", "group-c"])
+                );
+            }
+            _ => panic!("expected list_all success"),
+        }
+
+        let send_result = module
+            .send(StreamSendInput {
+                stream_name: "stream-a".to_string(),
+                group_id: "group-a".to_string(),
+                id: Some("item-1".to_string()),
+                event_type: "custom".to_string(),
+                data: serde_json::json!({ "message": "hello" }),
+            })
+            .await;
+        assert!(matches!(send_result, FunctionResult::Success(())));
+
+        let messages = adapter
+            .emitted_messages
+            .lock()
+            .expect("lock emitted_messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].stream_name, "stream-a");
+        assert_eq!(messages[0].group_id, "group-a");
+        assert_eq!(messages[0].id.as_deref(), Some("item-1"));
+        assert!(matches!(
+            messages[0].event,
+            StreamOutboundMessage::Event {
+                event: EventData {
+                    ref event_type,
+                    ..
+                }
+            } if event_type == "custom"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_methods_return_adapter_failures() {
+        let adapter = Arc::new(FakeStreamAdapter::default());
+        *adapter.set_result.lock().expect("lock set_result") = Err("set failed".to_string());
+        *adapter.get_result.lock().expect("lock get_result") = Err("get failed".to_string());
+        *adapter.delete_result.lock().expect("lock delete_result") =
+            Err("delete failed".to_string());
+        *adapter
+            .get_group_result
+            .lock()
+            .expect("lock get_group_result") = Err("group failed".to_string());
+        *adapter
+            .list_groups_result
+            .lock()
+            .expect("lock list_groups_result") = Err("list groups failed".to_string());
+        *adapter
+            .list_all_result
+            .lock()
+            .expect("lock list_all_result") = Err("list all failed".to_string());
+        *adapter
+            .emit_event_result
+            .lock()
+            .expect("lock emit_event_result") = Err("emit failed".to_string());
+        *adapter.update_result.lock().expect("lock update_result") =
+            Err("update failed".to_string());
+
+        let module = create_module_with_adapter(adapter);
+
+        assert!(matches!(
+            module
+                .set(StreamSetInput {
+                    stream_name: "stream".to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                    data: serde_json::json!({ "k": "v" }),
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_SET_ERROR"
+        ));
+        assert!(matches!(
+            module
+                .get(StreamGetInput {
+                    stream_name: "stream".to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_GET_ERROR"
+        ));
+        assert!(matches!(
+            module
+                .delete(StreamDeleteInput {
+                    stream_name: "stream".to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_DELETE_ERROR"
+        ));
+        assert!(matches!(
+            module
+                .list(StreamListInput {
+                    stream_name: "stream".to_string(),
+                    group_id: "group".to_string(),
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_GET_GROUP_ERROR"
+        ));
+        assert!(matches!(
+            module
+                .list_groups(StreamListGroupsInput {
+                    stream_name: "stream".to_string(),
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_LIST_GROUPS_ERROR"
+        ));
+        assert!(matches!(
+            module.list_all(StreamListAllInput {}).await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_LIST_ALL_ERROR"
+        ));
+        assert!(matches!(
+            module
+                .send(StreamSendInput {
+                    stream_name: "stream".to_string(),
+                    group_id: "group".to_string(),
+                    id: None,
+                    event_type: "boom".to_string(),
+                    data: serde_json::json!({}),
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_SEND_ERROR"
+        ));
+        assert!(matches!(
+            module
+                .update(StreamUpdateInput {
+                    stream_name: "stream".to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                    ops: vec![UpdateOp::set("", serde_json::json!({ "count": 1 }))],
+                })
+                .await,
+            FunctionResult::Failure(ErrorBody { code, .. }) if code == "STREAM_SET_ERROR"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_custom_functions_override_adapter() {
+        let module = create_test_module();
+        let stream_name = "custom_stream";
+
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::get({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!({ "from": "custom-get" })))
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::list({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!([{ "from": "custom-list" }])))
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::list_groups({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!(["alpha", "beta"])))
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::set({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!({
+                    "old_value": null,
+                    "new_value": { "from": "custom-set" }
+                })))
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::delete({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!({
+                    "old_value": { "from": "custom-delete" }
+                })))
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: format!("stream::update({stream_name})"),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!({
+                    "old_value": { "count": 1 },
+                    "new_value": { "count": 2 }
+                })))
+            }),
+        );
+
+        assert!(matches!(
+            module
+                .get(StreamGetInput {
+                    stream_name: stream_name.to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                })
+                .await,
+            FunctionResult::Success(Some(value)) if value == serde_json::json!({ "from": "custom-get" })
+        ));
+        assert!(matches!(
+            module
+                .list(StreamListInput {
+                    stream_name: stream_name.to_string(),
+                    group_id: "group".to_string(),
+                })
+                .await,
+            FunctionResult::Success(Some(value)) if value == serde_json::json!([{ "from": "custom-list" }])
+        ));
+        assert!(matches!(
+            module
+                .list_groups(StreamListGroupsInput {
+                    stream_name: stream_name.to_string(),
+                })
+                .await,
+            FunctionResult::Success(Some(value)) if value == serde_json::json!(["alpha", "beta"])
+        ));
+        assert!(matches!(
+            module
+                .set(StreamSetInput {
+                    stream_name: stream_name.to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                    data: serde_json::json!({ "ignored": true }),
+                })
+                .await,
+            FunctionResult::Success(SetResult { new_value, .. }) if new_value == serde_json::json!({ "from": "custom-set" })
+        ));
+        assert!(matches!(
+            module
+                .delete(StreamDeleteInput {
+                    stream_name: stream_name.to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                })
+                .await,
+            FunctionResult::Success(DeleteResult { old_value: Some(value) }) if value == serde_json::json!({ "from": "custom-delete" })
+        ));
+        assert!(matches!(
+            module
+                .update(StreamUpdateInput {
+                    stream_name: stream_name.to_string(),
+                    group_id: "group".to_string(),
+                    item_id: "item".to_string(),
+                    ops: vec![UpdateOp::set("", serde_json::json!({ "count": 2 }))],
+                })
+                .await,
+            FunctionResult::Success(UpdateResult { new_value, .. }) if new_value == serde_json::json!({ "count": 2 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_stream_invoke_triggers_covers_conditions_and_errors() {
+        let module = create_test_module();
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls_clone = handler_calls.clone();
+
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::stream_handler".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input| {
+                let handler_calls_clone = handler_calls_clone.clone();
+                async move {
+                    handler_calls_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(None)
+                }
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::stream_handler_fail".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Failure(ErrorBody {
+                    code: "HANDLER".to_string(),
+                    message: "handler failed".to_string(),
+                })
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::cond_false".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Success(Some(serde_json::json!(false)))
+            }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::cond_none".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move { FunctionResult::Success(None) }),
+        );
+        module.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::cond_error".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input| async move {
+                FunctionResult::Failure(ErrorBody {
+                    code: "COND".to_string(),
+                    message: "condition failed".to_string(),
+                })
+            }),
+        );
+
+        let mut stream_triggers = module.triggers.stream_triggers.write().await;
+        stream_triggers.insert(
+            "ok".to_string(),
+            StreamTrigger {
+                trigger: Trigger {
+                    id: "ok".to_string(),
+                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
+                    function_id: "test::stream_handler".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: None,
+                },
+                config: StreamTriggerConfig {
+                    stream_name: Some("events".to_string()),
+                    group_id: None,
+                    item_id: None,
+                    condition_function_id: None,
+                },
+            },
+        );
+        stream_triggers.insert(
+            "skip-false".to_string(),
+            StreamTrigger {
+                trigger: Trigger {
+                    id: "skip-false".to_string(),
+                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
+                    function_id: "test::stream_handler".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: None,
+                },
+                config: StreamTriggerConfig {
+                    stream_name: Some("events".to_string()),
+                    group_id: None,
+                    item_id: None,
+                    condition_function_id: Some("test::cond_false".to_string()),
+                },
+            },
+        );
+        stream_triggers.insert(
+            "skip-none".to_string(),
+            StreamTrigger {
+                trigger: Trigger {
+                    id: "skip-none".to_string(),
+                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
+                    function_id: "test::stream_handler".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: None,
+                },
+                config: StreamTriggerConfig {
+                    stream_name: Some("events".to_string()),
+                    group_id: None,
+                    item_id: None,
+                    condition_function_id: Some("test::cond_none".to_string()),
+                },
+            },
+        );
+        stream_triggers.insert(
+            "skip-error".to_string(),
+            StreamTrigger {
+                trigger: Trigger {
+                    id: "skip-error".to_string(),
+                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
+                    function_id: "test::stream_handler".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: None,
+                },
+                config: StreamTriggerConfig {
+                    stream_name: Some("events".to_string()),
+                    group_id: None,
+                    item_id: None,
+                    condition_function_id: Some("test::cond_error".to_string()),
+                },
+            },
+        );
+        stream_triggers.insert(
+            "handler-error".to_string(),
+            StreamTrigger {
+                trigger: Trigger {
+                    id: "handler-error".to_string(),
+                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
+                    function_id: "test::stream_handler_fail".to_string(),
+                    config: serde_json::json!({}),
+                    worker_id: None,
+                },
+                config: StreamTriggerConfig {
+                    stream_name: Some("events".to_string()),
+                    group_id: None,
+                    item_id: None,
+                    condition_function_id: None,
+                },
+            },
+        );
+        drop(stream_triggers);
+
+        module
+            .triggers
+            .stream_triggers_by_name
+            .write()
+            .await
+            .insert(
+                "events".to_string(),
+                vec![
+                    "ok".to_string(),
+                    "skip-false".to_string(),
+                    "skip-none".to_string(),
+                    "skip-error".to_string(),
+                    "handler-error".to_string(),
+                ],
+            );
+
+        module
+            .invoke_triggers(StreamWrapperMessage {
+                event_type: "stream".to_string(),
+                timestamp: Utc::now().timestamp_millis(),
+                stream_name: "events".to_string(),
+                group_id: "group".to_string(),
+                id: Some("item-1".to_string()),
+                event: StreamOutboundMessage::Create {
+                    data: serde_json::json!({ "x": 1 }),
+                },
+            })
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_stream_initialize_registers_trigger_types_and_destroy_calls_adapter() {
+        let adapter = Arc::new(FakeStreamAdapter::default());
+        let module = create_module_with_adapter(adapter.clone());
+
+        module
+            .initialize()
+            .await
+            .expect("stream initialize should work");
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            module
+                .engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(JOIN_TRIGGER_TYPE)
+        );
+        assert!(
+            module
+                .engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(LEAVE_TRIGGER_TYPE)
+        );
+        assert!(
+            module
+                .engine
+                .trigger_registry
+                .trigger_types
+                .contains_key(STREAM_TRIGGER_TYPE)
+        );
+        assert!(adapter.watch_events_called.load(Ordering::SeqCst));
+
+        module.destroy().await.expect("stream destroy should work");
+        assert!(adapter.destroy_called.load(Ordering::SeqCst));
     }
 }

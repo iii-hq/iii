@@ -324,6 +324,15 @@ impl CronAdapter {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::Value;
+
+    use crate::{
+        engine::{EngineTrait, Handler, RegisterFunctionRequest},
+        function::FunctionResult,
+    };
+
     use super::*;
 
     struct NoopSchedulerAdapter;
@@ -338,6 +347,7 @@ mod tests {
     }
 
     fn test_engine() -> Arc<Engine> {
+        crate::modules::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     }
 
@@ -418,5 +428,391 @@ mod tests {
         // Verify all tasks are finished and map is drained
         let jobs = adapter.jobs.read().await;
         assert!(jobs.is_empty(), "All jobs should be drained after shutdown");
+    }
+
+    struct CountingSchedulerAdapter {
+        acquire_calls: Arc<AtomicUsize>,
+        release_calls: Arc<AtomicUsize>,
+        allow_lock: bool,
+    }
+
+    #[async_trait]
+    impl CronSchedulerAdapter for CountingSchedulerAdapter {
+        async fn try_acquire_lock(&self, _job_id: &str) -> bool {
+            self.acquire_calls.fetch_add(1, Ordering::SeqCst);
+            self.allow_lock
+        }
+
+        async fn release_lock(&self, _job_id: &str) {
+            self.release_calls.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn parse_cron_expression_rejects_invalid_input() {
+        let error = CronAdapter::parse_cron_expression("not a cron")
+            .expect_err("invalid cron expression should fail");
+        assert!(error.to_string().contains("Invalid cron expression"));
+    }
+
+    #[tokio::test]
+    async fn register_rejects_duplicates_and_unregister_missing_job() {
+        let engine = test_engine();
+        let adapter = CronAdapter::new(Arc::new(NoopSchedulerAdapter), engine);
+
+        adapter
+            .register("dup-job", "0 0 * * * *", "fn-1", None)
+            .await
+            .expect("first registration");
+
+        let duplicate = adapter
+            .register("dup-job", "0 0 * * * *", "fn-1", None)
+            .await
+            .expect_err("duplicate registration should fail");
+        assert!(duplicate.to_string().contains("already registered"));
+
+        let missing = adapter
+            .unregister("missing-job")
+            .await
+            .expect_err("missing job should fail");
+        assert!(missing.to_string().contains("not found"));
+
+        adapter.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cron_job_executes_handler_and_releases_lock() {
+        let acquire_calls = Arc::new(AtomicUsize::new(0));
+        let release_calls = Arc::new(AtomicUsize::new(0));
+        let executions = Arc::new(AtomicUsize::new(0));
+
+        let engine = test_engine();
+        let executions_clone = executions.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.handler".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |input: Value| {
+                let executions_clone = executions_clone.clone();
+                async move {
+                    assert_eq!(input["trigger"], "cron");
+                    executions_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                }
+            }),
+        );
+
+        let adapter = CronAdapter::new(
+            Arc::new(CountingSchedulerAdapter {
+                acquire_calls: acquire_calls.clone(),
+                release_calls: release_calls.clone(),
+                allow_lock: true,
+            }),
+            engine,
+        );
+
+        adapter
+            .register("tick-job", "* * * * * *", "cron.handler", None)
+            .await
+            .expect("register cron job");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        adapter.shutdown().await;
+
+        assert!(acquire_calls.load(Ordering::SeqCst) >= 1);
+        assert!(release_calls.load(Ordering::SeqCst) >= 1);
+        assert!(executions.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn cron_job_skips_handler_when_condition_returns_false() {
+        let release_calls = Arc::new(AtomicUsize::new(0));
+        let executions = Arc::new(AtomicUsize::new(0));
+
+        let engine = test_engine();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.condition".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input: Value| async move {
+                FunctionResult::Success(Some(serde_json::json!(false)))
+            }),
+        );
+
+        let executions_clone = executions.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.handler.false".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let executions_clone = executions_clone.clone();
+                async move {
+                    executions_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                }
+            }),
+        );
+
+        let adapter = CronAdapter::new(
+            Arc::new(CountingSchedulerAdapter {
+                acquire_calls: Arc::new(AtomicUsize::new(0)),
+                release_calls: release_calls.clone(),
+                allow_lock: true,
+            }),
+            engine,
+        );
+
+        adapter
+            .register(
+                "cond-job",
+                "* * * * * *",
+                "cron.handler.false",
+                Some("cron.condition".to_string()),
+            )
+            .await
+            .expect("register conditional cron job");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        adapter.shutdown().await;
+
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(release_calls.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn cron_job_runs_handler_when_condition_returns_none() {
+        let release_calls = Arc::new(AtomicUsize::new(0));
+        let executions = Arc::new(AtomicUsize::new(0));
+
+        let engine = test_engine();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.condition.none".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input: Value| async move { FunctionResult::Success(None) }),
+        );
+
+        let executions_clone = executions.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.handler.none".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let executions_clone = executions_clone.clone();
+                async move {
+                    executions_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                }
+            }),
+        );
+
+        let adapter = CronAdapter::new(
+            Arc::new(CountingSchedulerAdapter {
+                acquire_calls: Arc::new(AtomicUsize::new(0)),
+                release_calls: release_calls.clone(),
+                allow_lock: true,
+            }),
+            engine,
+        );
+
+        adapter
+            .register(
+                "cond-none-job",
+                "* * * * * *",
+                "cron.handler.none",
+                Some("cron.condition.none".to_string()),
+            )
+            .await
+            .expect("register conditional cron job");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        adapter.shutdown().await;
+
+        assert!(executions.load(Ordering::SeqCst) >= 1);
+        assert!(release_calls.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn cron_job_releases_lock_when_condition_errors() {
+        let release_calls = Arc::new(AtomicUsize::new(0));
+        let executions = Arc::new(AtomicUsize::new(0));
+
+        let engine = test_engine();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.condition.err".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_input: Value| async move {
+                FunctionResult::Failure(crate::protocol::ErrorBody {
+                    code: "COND".to_string(),
+                    message: "condition failed".to_string(),
+                })
+            }),
+        );
+
+        let executions_clone = executions.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.handler.err".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let executions_clone = executions_clone.clone();
+                async move {
+                    executions_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                }
+            }),
+        );
+
+        let adapter = CronAdapter::new(
+            Arc::new(CountingSchedulerAdapter {
+                acquire_calls: Arc::new(AtomicUsize::new(0)),
+                release_calls: release_calls.clone(),
+                allow_lock: true,
+            }),
+            engine,
+        );
+
+        adapter
+            .register(
+                "cond-err-job",
+                "* * * * * *",
+                "cron.handler.err",
+                Some("cron.condition.err".to_string()),
+            )
+            .await
+            .expect("register conditional cron job");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        adapter.shutdown().await;
+
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(release_calls.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn cron_job_releases_lock_when_handler_errors() {
+        let release_calls = Arc::new(AtomicUsize::new(0));
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let engine = test_engine();
+        let attempts_clone = attempts.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.handler.failure".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let attempts_clone = attempts_clone.clone();
+                async move {
+                    attempts_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Failure(crate::protocol::ErrorBody {
+                        code: "HANDLER".to_string(),
+                        message: "handler failed".to_string(),
+                    })
+                }
+            }),
+        );
+
+        let adapter = CronAdapter::new(
+            Arc::new(CountingSchedulerAdapter {
+                acquire_calls: Arc::new(AtomicUsize::new(0)),
+                release_calls: release_calls.clone(),
+                allow_lock: true,
+            }),
+            engine,
+        );
+
+        adapter
+            .register(
+                "handler-err-job",
+                "* * * * * *",
+                "cron.handler.failure",
+                None,
+            )
+            .await
+            .expect("register cron job");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        adapter.shutdown().await;
+
+        assert!(attempts.load(Ordering::SeqCst) >= 1);
+        assert!(release_calls.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[tokio::test]
+    async fn cron_job_skips_execution_when_lock_is_not_acquired() {
+        let acquire_calls = Arc::new(AtomicUsize::new(0));
+        let executions = Arc::new(AtomicUsize::new(0));
+
+        let engine = test_engine();
+        let executions_clone = executions.clone();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "cron.handler.locked".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let executions_clone = executions_clone.clone();
+                async move {
+                    executions_clone.fetch_add(1, Ordering::SeqCst);
+                    FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                }
+            }),
+        );
+
+        let adapter = CronAdapter::new(
+            Arc::new(CountingSchedulerAdapter {
+                acquire_calls: acquire_calls.clone(),
+                release_calls: Arc::new(AtomicUsize::new(0)),
+                allow_lock: false,
+            }),
+            engine,
+        );
+
+        adapter
+            .register("locked-job", "* * * * * *", "cron.handler.locked", None)
+            .await
+            .expect("register cron job");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        adapter.shutdown().await;
+
+        assert!(acquire_calls.load(Ordering::SeqCst) >= 1);
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
     }
 }

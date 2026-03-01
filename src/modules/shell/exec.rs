@@ -328,7 +328,15 @@ impl Exec {
 #[cfg(test)]
 #[cfg(not(windows))]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use super::*;
+
+    fn temp_repo_dir(name: &str) -> PathBuf {
+        std::env::current_dir()
+            .expect("current dir")
+            .join(format!(".tmp-{name}-{}", uuid::Uuid::new_v4()))
+    }
 
     /// Spawns `sh -c "sleep 300 & sleep 300 & wait"` via Exec,
     /// calls stop_process(), and asserts all processes in the group are dead.
@@ -452,6 +460,157 @@ mod tests {
         exec.shutdown().await;
         // Second shutdown — must not panic
         exec.shutdown().await;
+    }
+
+    #[test]
+    fn should_restart_uses_notify_event_kind_and_watch_patterns() {
+        let root = temp_repo_dir("shell-exec-should-restart");
+        fs::create_dir_all(root.join("nested")).expect("create temp directory");
+
+        let exec = Exec::new(ExecConfig {
+            watch: Some(vec![format!(
+                "{}/**/*.txt",
+                root.file_name().expect("temp dir name").to_string_lossy()
+            )]),
+            exec: vec![],
+        });
+
+        let matching = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(root.join("nested").join("file.txt"));
+        assert!(exec.should_restart(&matching));
+
+        let wrong_extension = Event::new(EventKind::Create(CreateKind::File))
+            .add_path(root.join("nested").join("file.rs"));
+        assert!(!exec.should_restart(&wrong_extension));
+
+        let wrong_kind =
+            Event::new(EventKind::Create(CreateKind::Folder)).add_path(root.join("nested"));
+        assert!(!exec.should_restart(&wrong_kind));
+
+        fs::remove_dir_all(root).expect("remove temp directory");
+    }
+
+    #[tokio::test]
+    async fn run_returns_after_shutdown_without_watchers() {
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec![],
+        });
+
+        let runner = tokio::spawn({
+            let exec = exec.clone();
+            async move { exec.run().await }
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        exec.shutdown().await;
+
+        let result = runner.await.expect("join run task");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_pipeline_stops_when_shutdown_interrupts_intermediate_step() {
+        let output_dir = temp_repo_dir("shell-exec-pipeline");
+        fs::create_dir_all(&output_dir).expect("create temp directory");
+        let output_file = output_dir.join("should-not-exist.txt");
+
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec![
+                "sleep 30".to_string(),
+                format!("printf done > {}", output_file.display()),
+            ],
+        });
+
+        let pipeline = tokio::spawn({
+            let exec = exec.clone();
+            async move { exec.run_pipeline().await }
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        exec.shutdown().await;
+
+        let result = pipeline.await.expect("join pipeline task");
+        assert!(result.is_ok());
+        assert!(
+            !output_file.exists(),
+            "shutdown should abort later pipeline steps"
+        );
+
+        fs::remove_dir_all(output_dir).expect("remove temp directory");
+    }
+
+    #[tokio::test]
+    async fn run_pipeline_aborts_after_failed_step() {
+        let output_dir = temp_repo_dir("shell-exec-failure");
+        fs::create_dir_all(&output_dir).expect("create temp directory");
+        let output_file = output_dir.join("should-not-exist.txt");
+
+        let exec = Exec::new(ExecConfig {
+            watch: None,
+            exec: vec![
+                "false".to_string(),
+                format!("printf done > {}", output_file.display()),
+            ],
+        });
+
+        exec.run_pipeline().await.expect("run pipeline");
+        assert!(
+            !output_file.exists(),
+            "pipeline should stop after a failed step"
+        );
+
+        fs::remove_dir_all(output_dir).expect("remove temp directory");
+    }
+
+    #[tokio::test]
+    async fn run_restarts_pipeline_when_watched_file_changes() {
+        let root = temp_repo_dir("shell-exec-run");
+        let watch_dir = root.join("watch");
+        fs::create_dir_all(&watch_dir).expect("create watch directory");
+        let watched_file = watch_dir.join("input.txt");
+        let output_file = root.join("output.txt");
+        fs::write(&watched_file, "initial").expect("seed watched file");
+
+        let pattern = format!(
+            "{}/**/*.txt",
+            root.file_name().expect("temp dir name").to_string_lossy()
+        );
+        let exec = Exec::new(ExecConfig {
+            watch: Some(vec![pattern]),
+            exec: vec![format!("printf x >> {}; sleep 5", output_file.display())],
+        });
+
+        let runner = tokio::spawn({
+            let exec = exec.clone();
+            async move { exec.run().await }
+        });
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        fs::write(&watched_file, "changed").expect("update watched file");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let len = fs::read_to_string(&output_file)
+                .unwrap_or_default()
+                .chars()
+                .count();
+            if len >= 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "pipeline did not restart after file change"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        exec.shutdown().await;
+        let result = runner.await.expect("join run task");
+        assert!(result.is_ok());
+
+        fs::remove_dir_all(root).expect("remove temp directory");
     }
 
     /// Returns PIDs of all alive processes whose PGID matches the given group id.

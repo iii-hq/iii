@@ -18,3 +18,51 @@ pub struct QueueModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config() {
+        let config = QueueModuleConfig::default();
+        assert!(config.adapter.is_none());
+    }
+
+    #[test]
+    fn deserialize_empty_json() {
+        let config: QueueModuleConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.adapter.is_none());
+    }
+
+    #[test]
+    fn deserialize_with_adapter() {
+        let json =
+            r#"{"adapter": {"class": "my::QueueAdapter", "config": {"url": "redis://localhost"}}}"#;
+        let config: QueueModuleConfig = serde_json::from_str(json).unwrap();
+        let adapter = config.adapter.unwrap();
+        assert_eq!(adapter.class, "my::QueueAdapter");
+        assert!(adapter.config.is_some());
+    }
+
+    #[test]
+    fn deserialize_adapter_no_config() {
+        let json = r#"{"adapter": {"class": "my::QueueAdapter"}}"#;
+        let config: QueueModuleConfig = serde_json::from_str(json).unwrap();
+        let adapter = config.adapter.unwrap();
+        assert_eq!(adapter.class, "my::QueueAdapter");
+        assert!(adapter.config.is_none());
+    }
+
+    #[test]
+    fn deny_unknown_fields() {
+        let json = r#"{"adapter": null, "extra_field": true}"#;
+        let result: Result<QueueModuleConfig, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_redis_url_value() {
+        assert_eq!(default_redis_url(), "redis://localhost:6379");
+    }
+}

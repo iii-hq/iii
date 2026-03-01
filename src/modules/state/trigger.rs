@@ -99,3 +99,133 @@ impl TriggerRegistrator for StateCoreModule {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use iii_sdk::{UpdateOp, UpdateResult, types::SetResult};
+    use serde_json::json;
+
+    use super::*;
+    use crate::modules::{
+        module::ConfigurableModule,
+        state::{StateCoreModule, adapters::StateAdapter, config::StateModuleConfig},
+    };
+
+    struct NoopStateAdapter;
+
+    #[async_trait::async_trait]
+    impl StateAdapter for NoopStateAdapter {
+        async fn set(
+            &self,
+            _scope: &str,
+            _key: &str,
+            _value: serde_json::Value,
+        ) -> anyhow::Result<SetResult> {
+            Ok(SetResult {
+                old_value: None,
+                new_value: serde_json::Value::Null,
+            })
+        }
+
+        async fn get(&self, _scope: &str, _key: &str) -> anyhow::Result<Option<serde_json::Value>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _scope: &str, _key: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn update(
+            &self,
+            _scope: &str,
+            _key: &str,
+            _ops: Vec<UpdateOp>,
+        ) -> anyhow::Result<UpdateResult> {
+            Ok(UpdateResult {
+                old_value: None,
+                new_value: serde_json::Value::Null,
+            })
+        }
+
+        async fn list(&self, _scope: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn destroy(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_module() -> StateCoreModule {
+        <StateCoreModule as ConfigurableModule>::build(
+            Arc::new(crate::engine::Engine::new()),
+            StateModuleConfig::default(),
+            Arc::new(NoopStateAdapter),
+        )
+    }
+
+    #[tokio::test]
+    async fn register_and_unregister_state_trigger_updates_registry() {
+        assert_eq!(TRIGGER_TYPE, "state");
+        let empty = StateTriggers::new();
+        assert!(empty.list.read().await.is_empty());
+
+        let module = test_module();
+        let trigger = Trigger {
+            id: "trigger-1".to_string(),
+            trigger_type: TRIGGER_TYPE.to_string(),
+            function_id: "state.handler".to_string(),
+            config: json!({
+                "scope": "users",
+                "key": "abc",
+                "condition_function_id": "state.condition"
+            }),
+            worker_id: None,
+        };
+
+        module
+            .register_trigger(trigger.clone())
+            .await
+            .expect("register trigger");
+        {
+            let stored = module.triggers.list.read().await;
+            let stored = stored.get("trigger-1").expect("stored trigger");
+            assert_eq!(stored.config.scope.as_deref(), Some("users"));
+            assert_eq!(stored.config.key.as_deref(), Some("abc"));
+            assert_eq!(
+                stored.config.condition_function_id.as_deref(),
+                Some("state.condition")
+            );
+        }
+
+        module
+            .unregister_trigger(trigger)
+            .await
+            .expect("unregister trigger");
+        assert!(module.triggers.list.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn register_trigger_rejects_invalid_config() {
+        let module = test_module();
+        let trigger = Trigger {
+            id: "trigger-invalid".to_string(),
+            trigger_type: TRIGGER_TYPE.to_string(),
+            function_id: "state.handler".to_string(),
+            config: json!({
+                "scope": 123
+            }),
+            worker_id: None,
+        };
+
+        let error = module
+            .register_trigger(trigger)
+            .await
+            .expect_err("invalid config should fail");
+        assert!(error.to_string().contains("Failed to parse trigger config"));
+    }
+}

@@ -261,3 +261,131 @@ impl InvocationHandler {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_invocation_handler_new() {
+        let handler = InvocationHandler::new();
+        assert!(handler.invocations.is_empty());
+    }
+
+    #[test]
+    fn test_invocation_handler_default() {
+        let handler = InvocationHandler::default();
+        assert!(handler.invocations.is_empty());
+    }
+
+    #[test]
+    fn test_invocation_handler_remove_nonexistent() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let result = handler.remove(&id);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_invocation_handler_remove_existing() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let (sender, _receiver) = oneshot::channel();
+
+        let invocation = Invocation {
+            id,
+            function_id: "test_fn".to_string(),
+            worker_id: None,
+            sender,
+            traceparent: None,
+            baggage: None,
+        };
+        handler.invocations.insert(id, invocation);
+
+        let removed = handler.remove(&id);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().id, id);
+        assert!(handler.invocations.is_empty());
+    }
+
+    #[test]
+    fn test_invocation_handler_halt_invocation_sends_error() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let (sender, mut receiver) = oneshot::channel();
+
+        let invocation = Invocation {
+            id,
+            function_id: "test_fn".to_string(),
+            worker_id: None,
+            sender,
+            traceparent: None,
+            baggage: None,
+        };
+        handler.invocations.insert(id, invocation);
+
+        handler.halt_invocation(&id);
+
+        // The invocation should have been removed.
+        assert!(handler.invocations.is_empty());
+
+        // The receiver should get an error result.
+        let result = (&mut receiver).try_recv();
+        assert!(result.is_ok());
+        let inner = result.unwrap();
+        assert!(inner.is_err());
+        let error = inner.unwrap_err();
+        assert_eq!(error.code, "invocation_stopped");
+        assert_eq!(error.message, "Invocation stopped");
+    }
+
+    #[test]
+    fn test_invocation_handler_halt_nonexistent_is_noop() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        // Should not panic.
+        handler.halt_invocation(&id);
+    }
+
+    #[test]
+    fn test_invocation_handler_multiple_invocations() {
+        let handler = InvocationHandler::new();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let (sender1, _rx1) = oneshot::channel();
+        let (sender2, _rx2) = oneshot::channel();
+
+        handler.invocations.insert(
+            id1,
+            Invocation {
+                id: id1,
+                function_id: "fn1".to_string(),
+                worker_id: None,
+                sender: sender1,
+                traceparent: None,
+                baggage: None,
+            },
+        );
+        handler.invocations.insert(
+            id2,
+            Invocation {
+                id: id2,
+                function_id: "fn2".to_string(),
+                worker_id: Some(Uuid::new_v4()),
+                sender: sender2,
+                traceparent: Some("00-trace-id".to_string()),
+                baggage: Some("key=value".to_string()),
+            },
+        );
+
+        assert_eq!(handler.invocations.len(), 2);
+
+        let removed = handler.remove(&id1);
+        assert!(removed.is_some());
+        assert_eq!(handler.invocations.len(), 1);
+
+        let removed = handler.remove(&id2);
+        assert!(removed.is_some());
+        assert!(handler.invocations.is_empty());
+    }
+}

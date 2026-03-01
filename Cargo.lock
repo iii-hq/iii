@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1533,6 +1533,7 @@ dependencies = [
  "sha2",
  "subtle",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-http",
  "tracing",

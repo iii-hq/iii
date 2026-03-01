@@ -288,3 +288,131 @@ impl Worker {
         self.invocations.write().await.remove(invocation_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn make_worker() -> Worker {
+        let (tx, _rx) = mpsc::channel(8);
+        Worker::new(tx)
+    }
+
+    #[test]
+    fn worker_telemetry_meta_debug_includes_all_fields() {
+        let telemetry = WorkerTelemetryMeta {
+            language: Some("rust".to_string()),
+            project_name: Some("iii".to_string()),
+            framework: Some("axum".to_string()),
+        };
+
+        let debug = format!("{telemetry:?}");
+        assert!(debug.contains("rust"));
+        assert!(debug.contains("iii"));
+        assert!(debug.contains("axum"));
+    }
+
+    #[test]
+    fn worker_status_as_str_and_from_str_cover_all_variants() {
+        assert_eq!(WorkerStatus::Connected.as_str(), "connected");
+        assert_eq!(WorkerStatus::Available.as_str(), "available");
+        assert_eq!(WorkerStatus::Busy.as_str(), "busy");
+        assert_eq!(WorkerStatus::Disconnected.as_str(), "disconnected");
+
+        assert_eq!(
+            WorkerStatus::from_str("available").unwrap(),
+            WorkerStatus::Available
+        );
+        assert_eq!(WorkerStatus::from_str("BUSY").unwrap(), WorkerStatus::Busy);
+        assert_eq!(
+            WorkerStatus::from_str("disconnected").unwrap(),
+            WorkerStatus::Disconnected
+        );
+        assert_eq!(
+            WorkerStatus::from_str("unknown").unwrap(),
+            WorkerStatus::Connected
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_with_ip_tracks_functions_external_ids_and_invocations() {
+        let (tx, _rx) = mpsc::channel(8);
+        let worker = Worker::with_ip(tx, "127.0.0.1".to_string());
+        assert_eq!(worker.ip_address.as_deref(), Some("127.0.0.1"));
+
+        worker.include_function_id("fn.local").await;
+        worker.include_external_function_id("fn.remote").await;
+        assert!(worker.has_external_function_id("fn.remote").await);
+        assert_eq!(worker.function_count().await, 2);
+
+        let mut function_ids = worker.get_function_ids().await;
+        function_ids.sort();
+        assert_eq!(
+            function_ids,
+            vec!["fn.local".to_string(), "fn.remote".to_string()]
+        );
+        assert_eq!(
+            worker.get_regular_function_ids().await,
+            vec!["fn.local".to_string()]
+        );
+        assert_eq!(
+            worker.get_external_function_ids().await,
+            vec!["fn.remote".to_string()]
+        );
+
+        assert!(worker.remove_function_id("fn.local").await);
+        assert!(worker.remove_external_function_id("fn.remote").await);
+        assert_eq!(worker.function_count().await, 0);
+
+        let invocation_id = Uuid::new_v4();
+        worker.add_invocation(invocation_id).await;
+        assert_eq!(worker.invocation_count().await, 1);
+        worker.remove_invocation(&invocation_id).await;
+        assert_eq!(worker.invocation_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn worker_registry_registers_updates_and_unregisters_workers() {
+        crate::modules::observability::metrics::ensure_default_meter();
+
+        let registry = WorkerRegistry::new();
+        let worker = make_worker();
+        let worker_id = worker.id;
+        registry.register_worker(worker);
+
+        let telemetry = WorkerTelemetryMeta {
+            language: Some("rust".to_string()),
+            project_name: Some("iii".to_string()),
+            framework: Some("tokio".to_string()),
+        };
+
+        registry.update_worker_metadata(
+            &worker_id,
+            "node".to_string(),
+            Some("1.0.0".to_string()),
+            Some("worker-a".to_string()),
+            Some("linux".to_string()),
+            Some(telemetry.clone()),
+        );
+        registry.update_worker_status(&worker_id, WorkerStatus::Busy);
+        registry.update_worker_status(&Uuid::new_v4(), WorkerStatus::Available);
+
+        let stored = registry.get_worker(&worker_id).expect("registered worker");
+        assert_eq!(stored.runtime.as_deref(), Some("node"));
+        assert_eq!(stored.version.as_deref(), Some("1.0.0"));
+        assert_eq!(stored.name.as_deref(), Some("worker-a"));
+        assert_eq!(stored.os.as_deref(), Some("linux"));
+        assert_eq!(stored.status, WorkerStatus::Busy);
+        assert_eq!(
+            serde_json::to_value(stored.telemetry).expect("serialize telemetry"),
+            json!(telemetry)
+        );
+
+        assert_eq!(registry.list_workers().len(), 1);
+        registry.unregister_worker(&worker_id);
+        assert!(registry.get_worker(&worker_id).is_none());
+        assert!(registry.list_workers().is_empty());
+    }
+}

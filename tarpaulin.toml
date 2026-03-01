@@ -1,0 +1,18 @@
+[coverage]
+all-features = true
+fail-under = 70
+# Keep the gate focused on unit-testable engine code.
+# External integration adapters and the binary entrypoint are better covered by
+# dedicated integration/e2e checks than by the default tarpaulin run.
+exclude-files = [
+  "src/main.rs",
+  "src/modules/cron/adapters/redis_adapter.rs",
+  "src/modules/pubsub/adapters/redis_adapter.rs",
+  "src/modules/queue/adapters/bridge.rs",
+  "src/modules/queue/adapters/rabbitmq/*.rs",
+  "src/modules/queue/adapters/redis_adapter.rs",
+  "src/modules/state/adapters/bridge.rs",
+  "src/modules/state/adapters/redis_adapter.rs",
+  "src/modules/stream/adapters/bridge.rs",
+  "src/modules/stream/adapters/redis_adapter.rs",
+]

@@ -154,3 +154,115 @@ crate::register_module!(
     KvServer,
     enabled_by_default = true
 );
+
+#[cfg(test)]
+mod tests {
+    use iii_sdk::UpdateOp;
+    use serde_json::json;
+
+    use super::*;
+
+    fn test_server() -> KvServer {
+        KvServer {
+            storage: Arc::new(BuiltinKvStore::new(None)),
+        }
+    }
+
+    #[tokio::test]
+    async fn kv_server_module_and_crud_methods_work() {
+        let engine = Arc::new(Engine::new());
+        let created = KvServer::create(engine.clone(), None)
+            .await
+            .expect("create kv server");
+        assert_eq!(created.name(), "KV Server");
+
+        let server = test_server();
+        assert_eq!(server.name(), "KV Server");
+        server.initialize().await.expect("initialize");
+        <KvServer as Module>::register_functions(&server, engine.clone());
+        assert!(engine.functions.get("kv_server::get").is_some());
+        assert!(engine.functions.get("kv_server::set").is_some());
+        assert!(engine.functions.get("kv_server::delete").is_some());
+
+        let set_result = match server
+            .set(KvSetInput {
+                index: "users".to_string(),
+                key: "user-1".to_string(),
+                value: json!({ "name": "Ada", "count": 1 }),
+            })
+            .await
+        {
+            FunctionResult::Success(Some(result)) => result,
+            _ => panic!("set should succeed"),
+        };
+        assert_eq!(set_result.new_value, json!({ "name": "Ada", "count": 1 }));
+
+        let get_result = match server
+            .get(KvGetInput {
+                index: "users".to_string(),
+                key: "user-1".to_string(),
+            })
+            .await
+        {
+            FunctionResult::Success(result) => result,
+            _ => panic!("get should succeed"),
+        };
+        assert_eq!(get_result, Some(json!({ "name": "Ada", "count": 1 })));
+
+        let update_result = match server
+            .update(KvUpdateInput {
+                index: "users".to_string(),
+                key: "user-1".to_string(),
+                ops: vec![
+                    UpdateOp::set("name", json!("Grace")),
+                    UpdateOp::increment("count", 2),
+                ],
+            })
+            .await
+        {
+            FunctionResult::Success(result) => result,
+            _ => panic!("update should succeed"),
+        };
+        assert_eq!(
+            update_result.new_value,
+            json!({ "name": "Grace", "count": 3 })
+        );
+
+        let list_keys = match server
+            .list_keys_with_prefix(KvListKeysWithPrefixInput {
+                prefix: "use".to_string(),
+            })
+            .await
+        {
+            FunctionResult::Success(Some(value)) => value,
+            _ => panic!("list keys should succeed"),
+        };
+        assert_eq!(list_keys, json!(["users"]));
+
+        let list_values = match server
+            .list(KvListInput {
+                index: "users".to_string(),
+            })
+            .await
+        {
+            FunctionResult::Success(Some(value)) => value,
+            _ => panic!("list should succeed"),
+        };
+        assert_eq!(list_values, json!([{ "name": "Grace", "count": 3 }]));
+
+        let delete_result = match server
+            .delete(KvDeleteInput {
+                index: "users".to_string(),
+                key: "user-1".to_string(),
+            })
+            .await
+        {
+            FunctionResult::Success(result) => result,
+            _ => panic!("delete should succeed"),
+        };
+        assert_eq!(
+            delete_result.old_value,
+            Some(json!({ "name": "Grace", "count": 3 }))
+        );
+    }
+}

@@ -280,3 +280,59 @@ fn default_logs_sampling_ratio() -> f64 {
 fn default_logs_console_output() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alert_operator_evaluates_all_variants() {
+        assert!(AlertOperator::GreaterThan.evaluate(2.0, 1.0));
+        assert!(AlertOperator::GreaterThanOrEqual.evaluate(2.0, 2.0));
+        assert!(AlertOperator::LessThan.evaluate(1.0, 2.0));
+        assert!(AlertOperator::LessThanOrEqual.evaluate(2.0, 2.0));
+        assert!(AlertOperator::Equal.evaluate(1.0 + f64::EPSILON / 2.0, 1.0));
+        assert!(AlertOperator::NotEqual.evaluate(2.0, 1.0));
+    }
+
+    #[test]
+    fn alert_rule_and_otel_config_apply_defaults() {
+        let rule: AlertRule = serde_json::from_value(serde_json::json!({
+            "name": "high-errors",
+            "metric": "iii.invocations.error",
+            "threshold": 5.0
+        }))
+        .expect("deserialize alert rule");
+        assert_eq!(rule.operator, AlertOperator::GreaterThan);
+        assert_eq!(rule.window_seconds, 60);
+        assert!(matches!(rule.action, AlertAction::Log));
+        assert!(rule.enabled);
+        assert_eq!(rule.cooldown_seconds, 60);
+
+        let config: OtelModuleConfig = serde_json::from_value(serde_json::json!({
+            "exporter": "both",
+            "metrics_exporter": "otlp",
+            "logs_exporter": "both",
+            "alerts": [
+                {
+                    "name": "alert",
+                    "metric": "iii.latency",
+                    "threshold": 10.0,
+                    "action": { "type": "function", "path": "alerts.notify" }
+                }
+            ]
+        }))
+        .expect("deserialize otel config");
+
+        assert_eq!(config.exporter, Some(OtelExporterType::Both));
+        assert_eq!(config.metrics_exporter, Some(MetricsExporterType::Otlp));
+        assert_eq!(config.logs_exporter, Some(LogsExporterType::Both));
+        assert_eq!(config.logs_sampling_ratio, 1.0);
+        assert!(config.logs_console_output);
+        assert_eq!(config.alerts.len(), 1);
+        assert!(matches!(
+            config.alerts[0].action,
+            AlertAction::Function { ref path } if path == "alerts.notify"
+        ));
+    }
+}

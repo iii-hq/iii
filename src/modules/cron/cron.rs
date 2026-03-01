@@ -170,3 +170,348 @@ crate::register_module!(
     CronCoreModule,
     enabled_by_default = true
 );
+
+#[cfg(test)]
+mod tests {
+    use super::super::structs::CronSchedulerAdapter;
+    use super::*;
+    use crate::modules::observability::metrics::ensure_default_meter;
+    use serde_json::json;
+
+    // =========================================================================
+    // ConfigurableModule trait constants
+    // =========================================================================
+
+    #[test]
+    fn default_adapter_class() {
+        assert_eq!(
+            CronCoreModule::DEFAULT_ADAPTER_CLASS,
+            "modules::cron::KvCronAdapter"
+        );
+    }
+
+    // =========================================================================
+    // Mock scheduler adapter
+    // =========================================================================
+
+    struct MockCronSchedulerAdapter;
+
+    #[async_trait]
+    impl CronSchedulerAdapter for MockCronSchedulerAdapter {
+        async fn try_acquire_lock(&self, _job_id: &str) -> bool {
+            true
+        }
+        async fn release_lock(&self, _job_id: &str) {}
+    }
+
+    fn setup_cron_module() -> (Arc<Engine>, CronCoreModule) {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let scheduler: Arc<dyn CronSchedulerAdapter> = Arc::new(MockCronSchedulerAdapter);
+        let cron_adapter = super::super::structs::CronAdapter::new(scheduler, engine.clone());
+        let config = super::super::config::CronModuleConfig::default();
+        let module = CronCoreModule {
+            adapter: Arc::new(cron_adapter),
+            engine: engine.clone(),
+            _config: config,
+        };
+        (engine, module)
+    }
+
+    // =========================================================================
+    // CronCoreModule::name
+    // =========================================================================
+
+    #[test]
+    fn cron_module_name() {
+        let (_engine, module) = setup_cron_module();
+        assert_eq!(Module::name(&module), "CronModule");
+    }
+
+    // =========================================================================
+    // Module::initialize test
+    // =========================================================================
+
+    #[tokio::test]
+    async fn initialize_registers_cron_trigger_type() {
+        let (engine, module) = setup_cron_module();
+        let result = module.initialize().await;
+        assert!(result.is_ok());
+        assert!(engine.trigger_registry.trigger_types.contains_key("cron"));
+    }
+
+    // =========================================================================
+    // Module::destroy test
+    // =========================================================================
+
+    #[tokio::test]
+    async fn destroy_calls_shutdown() {
+        let (_engine, module) = setup_cron_module();
+        let result = module.destroy().await;
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // Module::start_background_tasks test
+    // =========================================================================
+
+    #[tokio::test]
+    async fn start_background_tasks_spawns_shutdown_listener() {
+        let (_engine, module) = setup_cron_module();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let result = module.start_background_tasks(rx).await;
+        assert!(result.is_ok());
+        // Send shutdown signal
+        let _ = tx.send(true);
+        // Give the spawned task time to process
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // =========================================================================
+    // TriggerRegistrator tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn register_trigger_with_valid_cron_expression() {
+        let (_engine, module) = setup_cron_module();
+        let trigger = crate::trigger::Trigger {
+            id: "cron-trig-1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({
+                "expression": "0 0 * * * *"
+            }),
+            worker_id: None,
+        };
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn register_trigger_with_empty_expression_fails() {
+        let (_engine, module) = setup_cron_module();
+        let trigger = crate::trigger::Trigger {
+            id: "cron-trig-empty".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({
+                "expression": ""
+            }),
+            worker_id: None,
+        };
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Cron expression is required")
+        );
+    }
+
+    #[tokio::test]
+    async fn register_trigger_with_missing_expression_fails() {
+        let (_engine, module) = setup_cron_module();
+        let trigger = crate::trigger::Trigger {
+            id: "cron-trig-missing".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn register_trigger_with_condition_path() {
+        let (_engine, module) = setup_cron_module();
+        let trigger = crate::trigger::Trigger {
+            id: "cron-trig-cond".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({
+                "expression": "0 30 * * * *",
+                "_condition_path": "test::condition_fn"
+            }),
+            worker_id: None,
+        };
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_calls_adapter() {
+        let (_engine, module) = setup_cron_module();
+
+        // First register a trigger
+        let trigger = crate::trigger::Trigger {
+            id: "cron-trig-unreg".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({
+                "expression": "0 0 * * * *"
+            }),
+            worker_id: None,
+        };
+        let _ = module.register_trigger(trigger.clone()).await;
+
+        // Now unregister it
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn unregister_trigger_nonexistent_returns_error() {
+        let (_engine, module) = setup_cron_module();
+        let trigger = crate::trigger::Trigger {
+            id: "nonexistent-cron".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({}),
+            worker_id: None,
+        };
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // ConfigurableModule trait tests
+    // =========================================================================
+
+    #[test]
+    fn adapter_class_from_config_none() {
+        let config = super::super::config::CronModuleConfig::default();
+        assert!(CronCoreModule::adapter_class_from_config(&config).is_none());
+    }
+
+    #[test]
+    fn adapter_class_from_config_some() {
+        let config = super::super::config::CronModuleConfig {
+            adapter: Some(crate::modules::module::AdapterEntry {
+                class: "my::CronAdapter".to_string(),
+                config: None,
+            }),
+        };
+        assert_eq!(
+            CronCoreModule::adapter_class_from_config(&config),
+            Some("my::CronAdapter".to_string())
+        );
+    }
+
+    #[test]
+    fn adapter_config_from_config_none() {
+        let config = super::super::config::CronModuleConfig::default();
+        assert!(CronCoreModule::adapter_config_from_config(&config).is_none());
+    }
+
+    #[test]
+    fn adapter_config_from_config_some() {
+        let config = super::super::config::CronModuleConfig {
+            adapter: Some(crate::modules::module::AdapterEntry {
+                class: "my::Adapter".to_string(),
+                config: Some(json!({"interval": 60})),
+            }),
+        };
+        assert_eq!(
+            CronCoreModule::adapter_config_from_config(&config),
+            Some(json!({"interval": 60}))
+        );
+    }
+
+    #[test]
+    fn adapter_config_from_config_adapter_without_config() {
+        let config = super::super::config::CronModuleConfig {
+            adapter: Some(crate::modules::module::AdapterEntry {
+                class: "my::Adapter".to_string(),
+                config: None,
+            }),
+        };
+        assert!(CronCoreModule::adapter_config_from_config(&config).is_none());
+    }
+
+    // =========================================================================
+    // build helper test
+    // =========================================================================
+
+    #[test]
+    fn build_creates_module() {
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let scheduler: Arc<dyn CronSchedulerAdapter> = Arc::new(MockCronSchedulerAdapter);
+        let config = super::super::config::CronModuleConfig::default();
+        let module = CronCoreModule::build(engine.clone(), config, scheduler);
+        assert_eq!(Module::name(&module), "CronModule");
+    }
+
+    // =========================================================================
+    // Module::register_functions (noop) test
+    // =========================================================================
+
+    #[test]
+    fn register_functions_does_nothing() {
+        let (_engine, module) = setup_cron_module();
+        let engine = Arc::new(Engine::new());
+        // Should not panic
+        module.register_functions(engine);
+    }
+
+    // =========================================================================
+    // Multiple register/unregister cycle
+    // =========================================================================
+
+    #[tokio::test]
+    async fn register_unregister_cycle() {
+        let (_engine, module) = setup_cron_module();
+
+        let trigger = crate::trigger::Trigger {
+            id: "cycle-trig".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({"expression": "0 0 * * * *"}),
+            worker_id: None,
+        };
+
+        // Register
+        let result = module.register_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        // Unregister
+        let result = module.unregister_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        // Unregister again should fail (already removed)
+        let result = module.unregister_trigger(trigger).await;
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Duplicate registration fails
+    // =========================================================================
+
+    #[tokio::test]
+    async fn register_duplicate_trigger_fails() {
+        let (_engine, module) = setup_cron_module();
+
+        let trigger = crate::trigger::Trigger {
+            id: "dup-trig".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "test::handler".to_string(),
+            config: json!({"expression": "0 0 * * * *"}),
+            worker_id: None,
+        };
+
+        let result = module.register_trigger(trigger.clone()).await;
+        assert!(result.is_ok());
+
+        // Registering again with the same ID should fail
+        let result = module.register_trigger(trigger).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("already registered")
+        );
+    }
+}

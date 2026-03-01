@@ -208,9 +208,49 @@ crate::register_adapter!(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
     use super::*;
-    use crate::builtins::queue::QueueMode;
     use crate::modules::queue::SubscriberQueueConfig;
+    use crate::{
+        builtins::queue::{Job, QueueMode},
+        function::{Function, FunctionResult},
+        protocol::ErrorBody,
+    };
+
+    fn make_adapter(engine: Arc<Engine>) -> BuiltinQueueAdapter {
+        let base_kv = Arc::new(BuiltinKvStore::new(None));
+        let kv_store = Arc::new(QueueKvStore::new(base_kv, None));
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        BuiltinQueueAdapter::new(kv_store, pubsub, engine, QueueConfig::default())
+    }
+
+    fn register_test_function(engine: &Arc<Engine>, function_id: &str, success: bool) {
+        let function = Function {
+            handler: Arc::new(move |_invocation_id, _input| {
+                Box::pin(async move {
+                    if success {
+                        FunctionResult::Success(Some(json!({ "ok": true })))
+                    } else {
+                        FunctionResult::Failure(ErrorBody {
+                            code: "QUEUE_FAIL".to_string(),
+                            message: "job failed".to_string(),
+                        })
+                    }
+                })
+            }),
+            _function_id: function_id.to_string(),
+            _description: Some("test queue handler".to_string()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function(function_id.to_string(), function);
+    }
 
     #[test]
     fn test_subscriber_queue_config_mode_mapping_fifo() {
@@ -321,5 +361,104 @@ mod tests {
         assert_eq!(sub_config.mode, None);
         assert_eq!(sub_config.concurrency, Some(10));
         assert_eq!(sub_config.max_attempts, Some(5));
+    }
+
+    #[tokio::test]
+    async fn function_handler_maps_engine_results_to_queue_worker_results() {
+        let engine = Arc::new(Engine::new());
+        register_test_function(&engine, "queue.success", true);
+        register_test_function(&engine, "queue.failure", false);
+
+        let job = Job::new(
+            "jobs",
+            json!({ "hello": "world" }),
+            3,
+            100,
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string()),
+            Some("queue=jobs".to_string()),
+        );
+
+        let success = FunctionHandler {
+            engine: Arc::clone(&engine),
+            function_id: "queue.success".to_string(),
+        };
+        success
+            .handle(&job)
+            .await
+            .expect("success handler should succeed");
+
+        let failure = FunctionHandler {
+            engine,
+            function_id: "queue.failure".to_string(),
+        };
+        let err = failure
+            .handle(&job)
+            .await
+            .expect_err("failure handler should bubble up error");
+        assert!(err.contains("QUEUE_FAIL"));
+        assert!(err.contains("job failed"));
+    }
+
+    #[tokio::test]
+    async fn builtin_queue_adapter_clone_subscribe_unsubscribe_and_make_adapter_work() {
+        let engine = Arc::new(Engine::new());
+        let adapter = make_adapter(Arc::clone(&engine));
+        let cloned = adapter.clone();
+        assert!(Arc::ptr_eq(&adapter.queue, &cloned.queue));
+        assert!(Arc::ptr_eq(&adapter.engine, &cloned.engine));
+
+        let fifo_config = SubscriberQueueConfig {
+            queue_mode: Some("fifo".to_string()),
+            max_retries: Some(3),
+            concurrency: Some(2),
+            visibility_timeout: None,
+            delay_seconds: None,
+            backoff_type: None,
+            backoff_delay_ms: Some(25),
+        };
+        adapter
+            .subscribe("jobs", "sub-fifo", "queue.success", None, Some(fifo_config))
+            .await;
+
+        let standard_config = SubscriberQueueConfig {
+            queue_mode: Some("standard".to_string()),
+            max_retries: Some(2),
+            concurrency: Some(1),
+            visibility_timeout: None,
+            delay_seconds: None,
+            backoff_type: None,
+            backoff_delay_ms: Some(10),
+        };
+        adapter
+            .subscribe(
+                "jobs",
+                "sub-standard",
+                "queue.success",
+                None,
+                Some(standard_config),
+            )
+            .await;
+
+        {
+            let subs = adapter.subscriptions.read().await;
+            assert!(subs.contains_key("jobs:sub-fifo"));
+            assert!(subs.contains_key("jobs:sub-standard"));
+        }
+
+        adapter.unsubscribe("jobs", "sub-fifo").await;
+        adapter.unsubscribe("jobs", "sub-standard").await;
+        adapter.unsubscribe("jobs", "missing").await;
+        assert!(adapter.subscriptions.read().await.is_empty());
+
+        assert_eq!(adapter.redrive_dlq("jobs").await.unwrap(), 0);
+        assert_eq!(adapter.dlq_count("jobs").await.unwrap(), 0);
+
+        let adapter = super::make_adapter(Arc::clone(&engine), Some(json!({ "max_attempts": 5 })))
+            .await
+            .expect("trait object adapter should build");
+        adapter
+            .enqueue("jobs", json!({ "task": "queued" }), None, None)
+            .await;
+        assert_eq!(adapter.dlq_count("jobs").await.unwrap(), 0);
     }
 }

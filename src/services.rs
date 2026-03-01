@@ -151,3 +151,238 @@ impl Service {
         self.functions.remove(function);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // Service struct tests
+    // =========================================================================
+
+    #[test]
+    fn service_new() {
+        let svc = Service::new("my_svc".to_string(), "id1".to_string());
+        assert_eq!(svc.name, "my_svc");
+        assert!(svc.functions.is_empty());
+    }
+
+    #[test]
+    fn service_insert_function() {
+        let mut svc = Service::new("svc".to_string(), "".to_string());
+        svc.insert_function("func_a".to_string());
+        assert!(svc.functions.contains("func_a"));
+    }
+
+    #[test]
+    fn service_insert_empty_function_name_is_ignored() {
+        let mut svc = Service::new("svc".to_string(), "".to_string());
+        svc.insert_function("".to_string());
+        assert!(svc.functions.is_empty());
+    }
+
+    #[test]
+    fn service_insert_duplicate_function_still_exists() {
+        let mut svc = Service::new("svc".to_string(), "".to_string());
+        svc.insert_function("func_a".to_string());
+        svc.insert_function("func_a".to_string()); // duplicate, should not panic
+        assert!(svc.functions.contains("func_a"));
+        assert_eq!(svc.functions.len(), 1);
+    }
+
+    #[test]
+    fn service_remove_function() {
+        let mut svc = Service::new("svc".to_string(), "".to_string());
+        svc.insert_function("func_a".to_string());
+        svc.remove_function_from_service("func_a");
+        assert!(!svc.functions.contains("func_a"));
+    }
+
+    #[test]
+    fn service_remove_nonexistent_function_does_not_panic() {
+        let mut svc = Service::new("svc".to_string(), "".to_string());
+        svc.remove_function_from_service("nonexistent");
+    }
+
+    // =========================================================================
+    // ServicesRegistry tests
+    // =========================================================================
+
+    #[test]
+    fn registry_new_is_empty() {
+        let reg = ServicesRegistry::new();
+        assert!(reg.services.is_empty());
+    }
+
+    #[test]
+    fn registry_default_is_empty() {
+        let reg = ServicesRegistry::default();
+        assert!(reg.services.is_empty());
+    }
+
+    #[test]
+    fn registry_register_and_get_module_service() {
+        let reg = ServicesRegistry::new();
+        let service_data = Arc::new(42u32);
+        reg.register_service("my_svc", service_data);
+        let retrieved: Option<Arc<u32>> = reg.get_service("my_svc");
+        assert_eq!(*retrieved.unwrap(), 42);
+    }
+
+    #[test]
+    fn registry_get_nonexistent_module_service_returns_none() {
+        let reg = ServicesRegistry::new();
+        let result: Option<Arc<u32>> = reg.get_service("nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn registry_get_service_wrong_type_returns_none() {
+        let reg = ServicesRegistry::new();
+        let service_data = Arc::new(42u32);
+        reg.register_service("my_svc", service_data);
+        // Try to get as a different type
+        let result: Option<Arc<String>> = reg.get_service("my_svc");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn registry_insert_service() {
+        let reg = ServicesRegistry::new();
+        let svc = Service::new("svc_a".to_string(), "id_a".to_string());
+        reg.insert_service(svc);
+        assert!(reg.services.contains_key("svc_a"));
+    }
+
+    #[test]
+    fn registry_insert_service_duplicate_overwrites() {
+        let reg = ServicesRegistry::new();
+        let svc1 = Service::new("svc_a".to_string(), "id_1".to_string());
+        let svc2 = Service::new("svc_a".to_string(), "id_2".to_string());
+        reg.insert_service(svc1);
+        reg.insert_service(svc2); // should overwrite without panic
+        assert!(reg.services.contains_key("svc_a"));
+    }
+
+    #[test]
+    fn registry_insert_function_to_service() {
+        let reg = ServicesRegistry::new();
+        let svc = Service::new("svc".to_string(), "".to_string());
+        reg.insert_service(svc);
+        reg.insert_function_to_service(&"svc".to_string(), "func");
+        let entry = reg.services.get("svc").unwrap();
+        assert!(entry.functions.contains("func"));
+    }
+
+    #[test]
+    fn registry_insert_function_to_nonexistent_service() {
+        let reg = ServicesRegistry::new();
+        // Should not panic
+        reg.insert_function_to_service(&"nonexistent".to_string(), "func");
+    }
+
+    // =========================================================================
+    // get_service_name_from_function_id / get_function_name_from_function_id
+    // =========================================================================
+
+    #[test]
+    fn get_service_name_valid() {
+        let result = ServicesRegistry::get_service_name_from_function_id("service.function");
+        assert_eq!(result, Some("service".to_string()));
+    }
+
+    #[test]
+    fn get_service_name_deep_path() {
+        let result = ServicesRegistry::get_service_name_from_function_id("service.sub.function");
+        assert_eq!(result, Some("service".to_string()));
+    }
+
+    #[test]
+    fn get_service_name_no_dot() {
+        let result = ServicesRegistry::get_service_name_from_function_id("noDot");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn get_function_name_valid() {
+        let result = ServicesRegistry::get_function_name_from_function_id("service.function");
+        assert_eq!(result, Some("function".to_string()));
+    }
+
+    #[test]
+    fn get_function_name_deep_path() {
+        let result = ServicesRegistry::get_function_name_from_function_id("service.sub.function");
+        assert_eq!(result, Some("sub.function".to_string()));
+    }
+
+    #[test]
+    fn get_function_name_no_dot() {
+        let result = ServicesRegistry::get_function_name_from_function_id("noDot");
+        assert_eq!(result, None);
+    }
+
+    // =========================================================================
+    // register_service_from_function_id
+    // =========================================================================
+
+    #[test]
+    fn register_service_from_function_id_creates_service_and_function() {
+        let reg = ServicesRegistry::new();
+        reg.register_service_from_function_id("my_svc.my_func");
+        assert!(reg.services.contains_key("my_svc"));
+        let entry = reg.services.get("my_svc").unwrap();
+        assert!(entry.functions.contains("my_func"));
+    }
+
+    #[test]
+    fn register_service_from_function_id_adds_to_existing_service() {
+        let reg = ServicesRegistry::new();
+        reg.register_service_from_function_id("svc.func_a");
+        reg.register_service_from_function_id("svc.func_b");
+        let entry = reg.services.get("svc").unwrap();
+        assert!(entry.functions.contains("func_a"));
+        assert!(entry.functions.contains("func_b"));
+    }
+
+    #[test]
+    fn register_service_from_function_id_invalid_id_no_panic() {
+        let reg = ServicesRegistry::new();
+        reg.register_service_from_function_id("no_dot");
+        assert!(reg.services.is_empty());
+    }
+
+    // =========================================================================
+    // remove_function_from_services
+    // =========================================================================
+
+    #[test]
+    fn remove_function_removes_function_from_service() {
+        let reg = ServicesRegistry::new();
+        reg.register_service_from_function_id("svc.func_a");
+        reg.register_service_from_function_id("svc.func_b");
+        reg.remove_function_from_services("svc.func_a");
+        let entry = reg.services.get("svc").unwrap();
+        assert!(!entry.functions.contains("func_a"));
+        assert!(entry.functions.contains("func_b"));
+    }
+
+    #[test]
+    fn remove_function_removes_service_when_empty() {
+        let reg = ServicesRegistry::new();
+        reg.register_service_from_function_id("svc.func_a");
+        reg.remove_function_from_services("svc.func_a");
+        assert!(!reg.services.contains_key("svc"));
+    }
+
+    #[test]
+    fn remove_function_invalid_id_no_panic() {
+        let reg = ServicesRegistry::new();
+        reg.remove_function_from_services("no_dot");
+    }
+
+    #[test]
+    fn remove_function_nonexistent_service_no_panic() {
+        let reg = ServicesRegistry::new();
+        reg.remove_function_from_services("nonexistent.func");
+    }
+}

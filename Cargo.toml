@@ -76,3 +76,4 @@ subtle = "2.6"
 [dev-dependencies]
 mockall = "0.13"
 serial_test = "3"
+tokio-tungstenite = "0.28"

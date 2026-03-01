@@ -184,3 +184,315 @@ impl ChannelManager {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_channel_manager_new() {
+        let mgr = ChannelManager::new();
+        assert!(mgr.channels.is_empty());
+    }
+
+    #[test]
+    fn test_channel_manager_default() {
+        let mgr = ChannelManager::default();
+        assert!(mgr.channels.is_empty());
+    }
+
+    #[test]
+    fn test_create_channel_returns_writer_and_reader_refs() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, reader_ref) = mgr.create_channel(16, None);
+
+        // Both refs share the same channel id and access key.
+        assert_eq!(writer_ref.channel_id, reader_ref.channel_id);
+        assert_eq!(writer_ref.access_key, reader_ref.access_key);
+
+        // Directions are correct.
+        assert!(matches!(writer_ref.direction, ChannelDirection::Write));
+        assert!(matches!(reader_ref.direction, ChannelDirection::Read));
+
+        // Channel was inserted into the manager.
+        assert_eq!(mgr.channels.len(), 1);
+    }
+
+    #[test]
+    fn test_create_channel_buffer_size_at_least_one() {
+        let mgr = ChannelManager::new();
+        // buffer_size 0 should be clamped to 1 (max(1)).
+        let (writer_ref, _reader_ref) = mgr.create_channel(0, None);
+        // Channel should still be created successfully.
+        assert!(mgr.channels.contains_key(&writer_ref.channel_id));
+    }
+
+    #[test]
+    fn test_get_channel_correct_key() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, _) = mgr.create_channel(8, None);
+
+        let channel = mgr.get_channel(&writer_ref.channel_id, &writer_ref.access_key);
+        assert!(channel.is_some());
+    }
+
+    #[test]
+    fn test_get_channel_wrong_key() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, _) = mgr.create_channel(8, None);
+
+        let channel = mgr.get_channel(&writer_ref.channel_id, "wrong-key");
+        assert!(channel.is_none());
+    }
+
+    #[test]
+    fn test_get_channel_nonexistent_id() {
+        let mgr = ChannelManager::new();
+        let channel = mgr.get_channel("nonexistent", "any-key");
+        assert!(channel.is_none());
+    }
+
+    #[test]
+    fn test_remove_channel() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, _) = mgr.create_channel(8, None);
+        assert_eq!(mgr.channels.len(), 1);
+
+        mgr.remove_channel(&writer_ref.channel_id);
+        assert!(mgr.channels.is_empty());
+    }
+
+    #[test]
+    fn test_remove_channel_nonexistent_is_noop() {
+        let mgr = ChannelManager::new();
+        mgr.remove_channel("nonexistent");
+        assert!(mgr.channels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_take_sender() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, _) = mgr.create_channel(8, None);
+
+        // First take should succeed.
+        let sender = mgr
+            .take_sender(&writer_ref.channel_id, &writer_ref.access_key)
+            .await;
+        assert!(sender.is_some());
+
+        // Second take should return None (already taken).
+        let sender2 = mgr
+            .take_sender(&writer_ref.channel_id, &writer_ref.access_key)
+            .await;
+        assert!(sender2.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_take_receiver() {
+        let mgr = ChannelManager::new();
+        let (_, reader_ref) = mgr.create_channel(8, None);
+
+        // First take should succeed.
+        let receiver = mgr
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await;
+        assert!(receiver.is_some());
+
+        // Second take should return None (already taken).
+        let receiver2 = mgr
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await;
+        assert!(receiver2.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_take_sender_wrong_key() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, _) = mgr.create_channel(8, None);
+
+        let sender = mgr.take_sender(&writer_ref.channel_id, "bad-key").await;
+        assert!(sender.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_take_receiver_wrong_key() {
+        let mgr = ChannelManager::new();
+        let (_, reader_ref) = mgr.create_channel(8, None);
+
+        let receiver = mgr.take_receiver(&reader_ref.channel_id, "bad-key").await;
+        assert!(receiver.is_none());
+    }
+
+    #[test]
+    fn test_remove_channels_by_worker() {
+        let mgr = ChannelManager::new();
+        let worker_a = Uuid::new_v4();
+        let worker_b = Uuid::new_v4();
+
+        mgr.create_channel(8, Some(worker_a));
+        mgr.create_channel(8, Some(worker_a));
+        mgr.create_channel(8, Some(worker_b));
+        mgr.create_channel(8, None);
+
+        assert_eq!(mgr.channels.len(), 4);
+
+        mgr.remove_channels_by_worker(&worker_a);
+
+        // Only the two channels owned by worker_a should be removed.
+        assert_eq!(mgr.channels.len(), 2);
+
+        // worker_b and unowned channels should remain.
+        let remaining_owners: Vec<Option<Uuid>> = mgr
+            .channels
+            .iter()
+            .map(|e| e.value().owner_worker_id)
+            .collect();
+        assert!(remaining_owners.contains(&Some(worker_b)));
+        assert!(remaining_owners.contains(&None));
+    }
+
+    #[test]
+    fn test_remove_channels_by_worker_no_matches() {
+        let mgr = ChannelManager::new();
+        mgr.create_channel(8, None);
+        mgr.create_channel(8, None);
+
+        let random_worker = Uuid::new_v4();
+        mgr.remove_channels_by_worker(&random_worker);
+
+        // Nothing should be removed.
+        assert_eq!(mgr.channels.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_sweep_stale_channels_removes_nothing_when_fresh() {
+        let mgr = ChannelManager::new();
+        mgr.create_channel(8, None);
+        mgr.create_channel(8, None);
+
+        // Channels are freshly created, so none should be stale.
+        let removed = mgr.sweep_stale_channels().await;
+        assert_eq!(removed, 0);
+        assert_eq!(mgr.channels.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_sweep_stale_channels_removes_orphaned_old_channels() {
+        let mgr = ChannelManager::new();
+        let (tx, rx) = mpsc::channel(1);
+        let channel = Arc::new(StreamChannel {
+            id: "stale-channel".to_string(),
+            access_key: "stale-key".to_string(),
+            tx: tokio::sync::Mutex::new(Some(tx)),
+            rx: tokio::sync::Mutex::new(Some(rx)),
+            owner_worker_id: None,
+            created_at: Instant::now() - CHANNEL_TTL - Duration::from_secs(1),
+        });
+        mgr.channels.insert(channel.id.clone(), channel);
+
+        let removed = mgr.sweep_stale_channels().await;
+        assert_eq!(removed, 1);
+        assert!(mgr.channels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sweep_stale_channels_keeps_fully_connected_old_channels() {
+        let mgr = ChannelManager::new();
+        let channel = Arc::new(StreamChannel {
+            id: "active-channel".to_string(),
+            access_key: "active-key".to_string(),
+            tx: tokio::sync::Mutex::new(None),
+            rx: tokio::sync::Mutex::new(None),
+            owner_worker_id: None,
+            created_at: Instant::now() - CHANNEL_TTL - Duration::from_secs(1),
+        });
+        mgr.channels.insert(channel.id.clone(), channel);
+
+        let removed = mgr.sweep_stale_channels().await;
+        assert_eq!(removed, 0);
+        assert_eq!(mgr.channels.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_start_sweep_task_stops_on_shutdown() {
+        let mgr = Arc::new(ChannelManager::new());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        mgr.start_sweep_task(shutdown_rx);
+        shutdown_tx.send(true).expect("signal shutdown");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    #[tokio::test]
+    async fn test_channel_send_receive_text() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, reader_ref) = mgr.create_channel(8, None);
+
+        let sender = mgr
+            .take_sender(&writer_ref.channel_id, &writer_ref.access_key)
+            .await
+            .unwrap();
+        let mut receiver = mgr
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .unwrap();
+
+        sender
+            .send(ChannelItem::Text("hello".to_string()))
+            .await
+            .unwrap();
+        drop(sender);
+
+        let item = receiver.recv().await.unwrap();
+        match item {
+            ChannelItem::Text(s) => assert_eq!(s, "hello"),
+            _ => panic!("Expected Text item"),
+        }
+
+        // After sender is dropped and all messages consumed, recv returns None.
+        let next = receiver.recv().await;
+        assert!(next.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_channel_send_receive_binary() {
+        let mgr = ChannelManager::new();
+        let (writer_ref, reader_ref) = mgr.create_channel(8, None);
+
+        let sender = mgr
+            .take_sender(&writer_ref.channel_id, &writer_ref.access_key)
+            .await
+            .unwrap();
+        let mut receiver = mgr
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .unwrap();
+
+        let data = Bytes::from_static(b"\x00\x01\x02\x03");
+        sender
+            .send(ChannelItem::Binary(data.clone()))
+            .await
+            .unwrap();
+        drop(sender);
+
+        let item = receiver.recv().await.unwrap();
+        match item {
+            ChannelItem::Binary(b) => assert_eq!(b, data),
+            _ => panic!("Expected Binary item"),
+        }
+    }
+
+    #[test]
+    fn test_create_multiple_channels_unique_ids() {
+        let mgr = ChannelManager::new();
+        let (w1, _) = mgr.create_channel(8, None);
+        let (w2, _) = mgr.create_channel(8, None);
+        let (w3, _) = mgr.create_channel(8, None);
+
+        // All channel ids should be unique.
+        assert_ne!(w1.channel_id, w2.channel_id);
+        assert_ne!(w2.channel_id, w3.channel_id);
+        assert_ne!(w1.channel_id, w3.channel_id);
+        assert_eq!(mgr.channels.len(), 3);
+    }
+}
