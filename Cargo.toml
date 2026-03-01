@@ -16,6 +16,74 @@ path = "src/main.rs"
 name = "custom_queue_adapter"
 path = "examples/custom_queue_adapter.rs"
 
+[[bench]]
+name = "startup_bench"
+harness = false
+
+[[bench]]
+name = "core_runtime_bench"
+harness = false
+
+[[bench]]
+name = "invoke_function_payload_sizes_bench"
+harness = false
+
+[[bench]]
+name = "concurrent_invocation_bench"
+harness = false
+
+[[bench]]
+name = "trigger_fanout_bench"
+harness = false
+
+[[bench]]
+name = "control_plane_churn_bench"
+harness = false
+
+[[bench]]
+name = "http_single_route_loopback_bench"
+harness = false
+
+[[bench]]
+name = "http_many_routes_loopback_bench"
+harness = false
+
+[[bench]]
+name = "http_concurrency_loopback_bench"
+harness = false
+
+[[bench]]
+name = "protocol_serde_bench"
+harness = false
+
+[[bench]]
+name = "kv_store_bench"
+harness = false
+
+[[bench]]
+name = "worker_cleanup_bench"
+harness = false
+
+[[bench]]
+name = "pubsub_fanout_bench"
+harness = false
+
+[[bench]]
+name = "ws_roundtrip_bench"
+harness = false
+
+[[bench]]
+name = "queue_enqueue_bench"
+harness = false
+
+[[bench]]
+name = "state_adapter_bench"
+harness = false
+
+[[bench]]
+name = "worker_invocation_tracking_bench"
+harness = false
+
 [features]
 default = []
 rabbitmq = ["lapin"]
@@ -76,3 +144,7 @@ subtle = "2.6"
 [dev-dependencies]
 mockall = "0.13"
 serial_test = "3"
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+tempfile = "3"
+tokio-tungstenite = "0.24"
+iii-sdk = { version = "0.2.0" }

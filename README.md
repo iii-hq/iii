@@ -237,6 +237,32 @@ cargo fmt && cargo clippy -- -D warnings # lint
 make watch                               # watch mode
 ```
 
+## Performance Benchmarks (HTTP Black-Box)
+
+Run the HTTP benchmark suite:
+
+```bash
+cargo bench --bench http_single_route_loopback_bench \
+  --bench http_many_routes_loopback_bench \
+  --bench http_concurrency_loopback_bench
+```
+
+Save a local HTTP baseline:
+
+```bash
+cargo bench --bench http_single_route_loopback_bench \
+  --bench http_many_routes_loopback_bench \
+  --bench http_concurrency_loopback_bench -- --save-baseline http-blackbox-local
+```
+
+Compare against a saved baseline:
+
+```bash
+cargo bench --bench http_single_route_loopback_bench \
+  --bench http_many_routes_loopback_bench \
+  --bench http_concurrency_loopback_bench -- --baseline http-blackbox-local
+```
+
 ### Building Docker images locally
 
 ```bash
