@@ -22,6 +22,7 @@
   "types": "./dist/index.d.mts",
   "scripts": {
     "build": "tsdown",
+    "prepare": "pnpm build",
     "test": "jest --selectProjects unit",
     "test:unit": "jest --selectProjects unit",
     "test:coverage": "jest --selectProjects unit --coverage --coverageReporters=text",
