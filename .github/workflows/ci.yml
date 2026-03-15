@@ -17,11 +17,85 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
+  # Change Detection — skip jobs when their paths are untouched
+  # ──────────────────────────────────────────────────────────────
+
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      engine: ${{ steps.filter.outputs.engine || 'true' }}
+      sdk_node: ${{ steps.filter.outputs.sdk_node || 'true' }}
+      sdk_python: ${{ steps.filter.outputs.sdk_python || 'true' }}
+      sdk_rust: ${{ steps.filter.outputs.sdk_rust || 'true' }}
+      motia_js: ${{ steps.filter.outputs.motia_js || 'true' }}
+      motia_py: ${{ steps.filter.outputs.motia_py || 'true' }}
+      console: ${{ steps.filter.outputs.console || 'true' }}
+      needs_engine: ${{ steps.filter.outputs.needs_engine || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            engine:
+              - 'engine/**'
+              - 'cli/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            sdk_node:
+              - 'sdk/packages/node/**'
+              - 'sdk/fixtures/**'
+              - 'scripts/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            sdk_python:
+              - 'sdk/packages/python/**'
+              - 'sdk/fixtures/**'
+              - 'scripts/**'
+              - '.github/workflows/ci.yml'
+            sdk_rust:
+              - 'sdk/packages/rust/**'
+              - 'sdk/fixtures/**'
+              - 'scripts/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            motia_js:
+              - 'frameworks/motia/motia-js/**'
+              - 'sdk/packages/node/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            motia_py:
+              - 'frameworks/motia/motia-py/**'
+              - 'sdk/packages/python/**'
+              - '.github/workflows/ci.yml'
+            console:
+              - 'console/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            needs_engine:
+              - 'engine/**'
+              - 'cli/**'
+              - 'sdk/**'
+              - 'frameworks/motia/**'
+              - 'scripts/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+
+  # ──────────────────────────────────────────────────────────────
   # Engine (test + build + upload artifact for downstream jobs)
   # ──────────────────────────────────────────────────────────────
 
   build-engine:
     name: Build Engine
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.needs_engine == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,8 +105,13 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-always: true
 
       - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
       - name: Build and run coverage
         run: |
@@ -43,17 +122,12 @@ jobs:
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      # - name: Run clippy
-      #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
-
       - uses: actions/upload-artifact@v4
         with:
           name: iii-binary
           path: target/debug/iii
           retention-days: 1
+          compression-level: 0
 
   # ──────────────────────────────────────────────────────────────
   # Engine RabbitMQ Integration Tests
@@ -61,6 +135,8 @@ jobs:
 
   engine-rabbitmq-tests:
     name: Engine RabbitMQ Integration Tests
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     services:
       rabbitmq:
@@ -79,6 +155,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-always: true
 
       - name: Run RabbitMQ integration tests
         env:
@@ -86,8 +164,14 @@ jobs:
           RUST_LOG: info
         run: cargo test -p iii --test rabbitmq_queue_integration -- --nocapture
 
+  # ──────────────────────────────────────────────────────────────
+  # Engine Cross-Platform Builds (main push only)
+  # ──────────────────────────────────────────────────────────────
+
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.engine == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -110,6 +194,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          save-always: true
 
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -129,7 +214,8 @@ jobs:
 
   sdk-node-ci:
     name: SDK Node Tests
-    needs: build-engine
+    needs: [changes, build-engine]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.sdk_node == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -193,12 +279,13 @@ jobs:
 
   sdk-python-ci:
     name: SDK Python (${{ matrix.python-version }})
-    needs: build-engine
+    needs: [changes, build-engine]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.sdk_python == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.10", "3.11", "3.12"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -253,7 +340,8 @@ jobs:
 
   sdk-rust-ci:
     name: SDK Rust Tests
-    needs: build-engine
+    needs: [changes, build-engine]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.sdk_rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -263,6 +351,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-always: true
 
       - name: Check formatting
         run: cargo fmt -p iii-sdk -- --check
@@ -293,12 +383,13 @@ jobs:
         run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
 
   # ──────────────────────────────────────────────────────────────
-  # Motia JS (depends on engine + SDK Node)
+  # Motia JS (runs in parallel with SDK Node)
   # ──────────────────────────────────────────────────────────────
 
   motia-js-ci:
     name: Motia JS Tests
-    needs: [build-engine, sdk-node-ci]
+    needs: [changes, build-engine]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.motia_js == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -347,17 +438,18 @@ jobs:
         run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
 
   # ──────────────────────────────────────────────────────────────
-  # Motia Python (depends on engine + SDK Python)
+  # Motia Python (runs in parallel with SDK Python)
   # ──────────────────────────────────────────────────────────────
 
   motia-py-ci:
     name: Motia Python (${{ matrix.python-version }})
-    needs: [build-engine, sdk-python-ci]
+    needs: [changes, build-engine]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.motia_py == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12', '3.13']
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11", "3.12", "3.13"]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -409,6 +501,8 @@ jobs:
 
   console-ci:
     name: Console Build
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.console == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -434,6 +528,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-always: true
 
       - name: Build console binary
         run: cargo build -p iii-console --release
