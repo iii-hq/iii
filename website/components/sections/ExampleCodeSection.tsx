@@ -21,7 +21,7 @@ const enableCategories = [
   { id: "feature-flags", label: "Feature Flags" },
   { id: "multiplayer", label: "Multiplayer" },
   { id: "etl", label: "ETL" },
-  { id: "reactive", label: "Reactive" },
+  { id: "reactive", label: "Reactive State" },
   { id: "remote", label: "Remote Invoke" },
 ];
 
@@ -439,63 +439,24 @@ export function ExampleCodeSection({
         </div>
 
         {/* Category Pills */}
-        <div className="mb-4 md:mb-6 space-y-3">
-          <div>
-            <div
-              className={`text-[10px] uppercase tracking-widest mb-2 text-center ${isDarkMode ? "text-iii-light/40" : "text-iii-black/40"}`}
+        <div className="mb-4 md:mb-6 flex flex-wrap gap-1.5 sm:gap-2 justify-center px-2">
+          {[...replaceCategories, ...enableCategories].map((category) => (
+            <button
+              key={category.id}
+              onClick={() => setActiveCategory(category.id)}
+              className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm transition-all whitespace-nowrap font-medium ${
+                activeCategory === category.id
+                  ? isDarkMode
+                    ? "bg-iii-accent text-iii-black border border-iii-accent"
+                    : "bg-iii-accent-light text-iii-light border border-iii-accent-light"
+                  : isDarkMode
+                    ? "text-iii-light/50 hover:text-iii-light hover:bg-iii-dark/50 border border-iii-light/30"
+                    : "text-iii-medium/60 hover:text-iii-black hover:bg-iii-medium/10 border border-iii-dark/30"
+              }`}
             >
-              Replaces
-            </div>
-            <div className="flex pb-1 justify-center">
-              <div className="flex gap-1.5 sm:gap-2 flex-wrap justify-center px-2">
-                {replaceCategories.map((category) => (
-                  <button
-                    key={category.id}
-                    onClick={() => setActiveCategory(category.id)}
-                    className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm transition-all whitespace-nowrap font-medium ${
-                      activeCategory === category.id
-                        ? isDarkMode
-                          ? "bg-iii-accent text-iii-black border border-iii-accent"
-                          : "bg-iii-accent-light text-iii-light border border-iii-accent-light"
-                        : isDarkMode
-                          ? "text-iii-light/50 hover:text-iii-light hover:bg-iii-dark/50 border border-iii-light/30"
-                          : "text-iii-medium/60 hover:text-iii-black hover:bg-iii-medium/10 border border-iii-dark/30"
-                    }`}
-                  >
-                    {category.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div>
-            <div
-              className={`text-[10px] uppercase tracking-widest mb-2 text-center ${isDarkMode ? "text-iii-light/40" : "text-iii-black/40"}`}
-            >
-              Enables
-            </div>
-            <div className="flex pb-1 justify-center">
-              <div className="flex gap-1.5 sm:gap-2 flex-wrap justify-center px-2">
-                {enableCategories.map((category) => (
-                  <button
-                    key={category.id}
-                    onClick={() => setActiveCategory(category.id)}
-                    className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm transition-all whitespace-nowrap font-medium ${
-                      activeCategory === category.id
-                        ? isDarkMode
-                          ? "bg-iii-accent text-iii-black border border-iii-accent"
-                          : "bg-iii-accent-light text-iii-light border border-iii-accent-light"
-                        : isDarkMode
-                          ? "text-iii-light/50 hover:text-iii-light hover:bg-iii-dark/50 border border-iii-light/30"
-                          : "text-iii-medium/60 hover:text-iii-black hover:bg-iii-medium/10 border border-iii-dark/30"
-                    }`}
-                  >
-                    {category.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+              {category.label}
+            </button>
+          ))}
         </div>
 
         {/* Description */}
