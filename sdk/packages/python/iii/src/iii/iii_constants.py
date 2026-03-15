@@ -45,7 +45,14 @@ class FunctionRef:
 
 @dataclass
 class TelemetryOptions:
-    """Telemetry metadata to be reported to the engine."""
+    """Telemetry metadata to be reported to the engine.
+
+    Attributes:
+        language: Programming language of the worker (e.g. ``python``).
+        project_name: Name of the project this worker belongs to.
+        framework: Framework name (e.g. ``motia``) if applicable.
+        amplitude_api_key: Amplitude API key for product analytics.
+    """
 
     language: str | None = None
     project_name: str | None = None

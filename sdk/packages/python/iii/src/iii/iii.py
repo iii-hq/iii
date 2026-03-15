@@ -581,8 +581,14 @@ class III:
         """Register a custom trigger type with the engine.
 
         Args:
-            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and ``description``.
-            handler: Handler implementing ``register_trigger`` and ``unregister_trigger``.
+            trigger_type: A ``RegisterTriggerTypeInput`` or dict with
+                ``id`` and ``description``.
+            handler: A ``TriggerHandler`` instance.  Must implement both
+                ``register_trigger(config)`` and
+                ``unregister_trigger(trigger)`` async methods.
+                ``register_trigger`` is called when a trigger of this
+                type is bound to a function, and ``unregister_trigger``
+                is called when the binding is removed.
 
         Examples:
             >>> iii.register_trigger_type({"id": "webhook", "description": "Webhook trigger"}, handler)
@@ -617,10 +623,13 @@ class III:
         """Bind a trigger configuration to a registered function.
 
         Args:
-            trigger: A ``RegisterTriggerInput`` or dict with ``type``, ``function_id``, and optional ``config``.
+            trigger: A ``RegisterTriggerInput`` or dict with ``type``,
+                ``function_id``, and optional ``config``.
 
         Returns:
-            A Trigger handle with an ``unregister()`` method.
+            A ``Trigger`` object with an ``unregister()`` method.  The
+            trigger ID is auto-generated (UUID) by the SDK and sent to
+            the engine as part of the registration message.
 
         Examples:
             >>> trigger = iii.register_trigger({
@@ -662,22 +671,43 @@ class III:
         Pass a handler for local execution, or an ``HttpInvocationConfig``
         for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
 
+        Handlers can be synchronous or asynchronous.  Sync handlers are
+        automatically wrapped with ``run_in_executor`` so they do not
+        block the event loop.  Each handler receives a single ``data``
+        argument containing the trigger payload.
+
         Args:
-            func: A ``RegisterFunctionInput`` or dict with ``id`` and optional
-                ``description``, ``metadata``, ``request_format``, ``response_format``.
-            handler_or_invocation: Handler callable or ``HttpInvocationConfig``.
+            func: A ``RegisterFunctionInput`` or dict with ``id`` and
+                optional ``description``, ``metadata``,
+                ``request_format``, ``response_format``.
+            handler_or_invocation: A callable handler or
+                ``HttpInvocationConfig``.  Callable handlers receive one
+                positional argument (``data`` -- the trigger payload) and
+                may return a value.
 
         Returns:
-            A FunctionRef with ``id`` and ``unregister()`` method.
+            A ``FunctionRef`` with an ``id`` attribute and an
+            ``unregister()`` method.  Call ``unregister()`` to remove
+            the function from the engine.
 
         Raises:
             ValueError: If ``id`` is empty or already registered.
-            TypeError: If ``handler_or_invocation`` is not callable or HttpInvocationConfig.
+            TypeError: If ``handler_or_invocation`` is not callable or
+                ``HttpInvocationConfig``.
 
         Examples:
             >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
             >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
+            >>> fn.id
+            'greet'
+            >>> fn.unregister()
+
+            Async handlers work the same way:
+
+            >>> async def greet_async(data):
+            ...     return {'message': f"Hello, {data['name']}!"}
+            >>> fn = iii.register_function({"id": "greet"}, greet_async)
         """
         if isinstance(func, dict):
             func = RegisterFunctionInput(**func)
@@ -738,6 +768,10 @@ class III:
         service can optionally reference a ``parent_service_id`` to form
         a tree visible in the engine dashboard.
 
+        Note:
+            Services are organizational groupings visible in the engine
+            dashboard.  They do not affect function invocation behavior.
+
         Args:
             service: A ``RegisterServiceInput`` or dict with ``id`` and
                 optional ``name``, ``description``, ``parent_service_id``.
@@ -771,11 +805,13 @@ class III:
         - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
 
         Args:
-            request: A ``TriggerRequest`` or dict with ``function_id``, ``payload``,
-                and optional ``action`` / ``timeout_ms``.
+            request: A ``TriggerRequest`` or dict with ``function_id``,
+                ``payload``, and optional ``action`` / ``timeout_ms``.
 
         Returns:
-            The result of the function invocation, or ``None`` for void calls.
+            The function's return value for synchronous (no-action) calls,
+            an ``EnqueueResult`` for enqueue actions, or ``None`` for void
+            actions.
 
         Raises:
             TimeoutError: If the invocation times out.
@@ -911,8 +947,12 @@ class III:
             buffer_size: Buffer capacity for the channel. Defaults to ``64``.
 
         Returns:
-            A ``Channel`` with ``writer``, ``reader``, ``writer_ref``, and
-            ``reader_ref`` attributes.
+            A ``Channel`` object with ``writer``, ``reader``,
+            ``writer_ref``, and ``reader_ref`` attributes.  Pass
+            ``writer_ref`` or ``reader_ref`` in trigger payloads to
+            share channels across functions -- the receiving function
+            can reconstruct a ``ChannelWriter`` or ``ChannelReader``
+            from the ref.
 
         Examples:
             >>> ch = iii.create_channel()
