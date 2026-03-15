@@ -699,15 +699,7 @@ class III:
             >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
             >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
-            >>> fn.id
-            'greet'
             >>> fn.unregister()
-
-            Async handlers work the same way:
-
-            >>> async def greet_async(data):
-            ...     return {'message': f"Hello, {data['name']}!"}
-            >>> fn = iii.register_function({"id": "greet"}, greet_async)
         """
         if isinstance(func, dict):
             func = RegisterFunctionInput(**func)

@@ -214,13 +214,7 @@ register_function(func: RegisterFunctionInput | dict[str, Any], handler_or_invoc
 def greet(data):
     return {'message': f"Hello, {data['name']}!"}
 fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
-fn.id
-'greet'
 fn.unregister()
-Async handlers work the same way:
-async def greet_async(data):
-    return {'message': f"Hello, {data['name']}!"}
-fn = iii.register_function({"id": "greet"}, greet_async)
 ```
 
 ### register_service
