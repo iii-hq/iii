@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "iii",
-  "theme": "quill",
+  "theme": "mint",
   "colors": {
     "primary": "#6366f1"
   },
