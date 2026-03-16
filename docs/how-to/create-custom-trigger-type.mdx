@@ -1,0 +1,291 @@
+---
+title: 'Create a Custom Trigger Type'
+description: 'Register a custom trigger type so functions can be fired by events that iii does not handle natively.'
+---
+
+{/* TODO: Hold off until we have clarity from the devs on proper usecases. Then adjust and test. */}
+
+## Goal
+
+Create a custom trigger type that fires functions in response to events iii doesn't handle out of the box — for example incoming webhooks, file-system changes, or third-party service callbacks.
+
+## Steps
+
+### 1. Implement the trigger handler
+
+A trigger handler is an object (Node) or class/trait (Python, Rust) with two callbacks:
+
+- `registerTrigger` — called when a function binds to your trigger type. Set up whatever listener or subscription is needed.
+- `unregisterTrigger` — called when the binding is removed. Tear down the listener.
+
+Both callbacks receive a `TriggerConfig` containing the trigger `id`, the bound `function_id`, and the caller-supplied `config`.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="webhook-trigger-type.ts"
+import { registerWorker, TriggerHandler } from 'iii-sdk'
+import express from 'express'
+
+type WebhookConfig = { path: string }
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+const app = express()
+app.use(express.json())
+
+const routes = new Map<string, string>()
+
+const webhookHandler: TriggerHandler<WebhookConfig> = {
+  registerTrigger: async ({ function_id, config }) => {
+    routes.set(config.path, function_id)
+    app.post(config.path, async (req, res) => {
+      const result = await iii.trigger({ function_id, payload: req.body })
+      res.json(result)
+    })
+  },
+  unregisterTrigger: async ({ config }) => {
+    routes.delete(config.path)
+  },
+}
+```
+</Tab>
+<Tab title="Python">
+```python title="webhook_trigger_type.py"
+import os
+
+from aiohttp import web
+
+from iii import register_worker, TriggerConfig, TriggerHandler
+
+iii_client = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+routes: dict[str, str] = {}
+aiohttp_app = web.Application()
+
+
+class WebhookHandler(TriggerHandler):
+    async def register_trigger(self, trigger: TriggerConfig) -> None:
+        path = trigger.config["path"]
+        function_id = trigger.function_id
+        routes[path] = function_id
+
+        async def handle(request: web.Request) -> web.Response:
+            body = await request.json()
+            result = iii_client.trigger({
+                "function_id": function_id,
+                "payload": body,
+            })
+            return web.json_response(result)
+
+        aiohttp_app.router.add_post(path, handle)
+
+    async def unregister_trigger(self, trigger: TriggerConfig) -> None:
+        routes.pop(trigger.config["path"], None)
+```
+</Tab>
+<Tab title="Rust">
+```rust title="webhook_trigger_type.rs"
+use async_trait::async_trait;
+use iii_sdk::{TriggerConfig, TriggerHandler, IIIError};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+struct WebhookHandler {
+    routes: Arc<Mutex<HashMap<String, String>>>,
+}
+
+#[async_trait]
+impl TriggerHandler for WebhookHandler {
+    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+        let path = config.config["path"].as_str().unwrap_or("/").to_string();
+        self.routes.lock().await.insert(path, config.function_id);
+        Ok(())
+    }
+
+    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), IIIError> {
+        let path = config.config["path"].as_str().unwrap_or("/");
+        self.routes.lock().await.remove(path);
+        Ok(())
+    }
+}
+```
+</Tab>
+</Tabs>
+
+### 2. Register the trigger type
+
+Call `registerTriggerType` with an `id`, a `description`, and the handler from above. The `id` is the string other workers will reference when they call `registerTrigger`.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="webhook-trigger-type.ts"
+iii.registerTriggerType(
+  { id: 'webhook', description: 'External webhook trigger' },
+  webhookHandler,
+)
+
+app.listen(4000)
+```
+</Tab>
+<Tab title="Python">
+```python title="webhook_trigger_type.py"
+import asyncio
+
+iii_client.register_trigger_type({"id": "webhook", "description": "External webhook trigger"}, WebhookHandler())
+
+
+async def main():
+    runner = web.AppRunner(aiohttp_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "localhost", 4000)
+    await site.start()
+
+    await asyncio.Event().wait()
+
+
+asyncio.run(main())
+```
+</Tab>
+<Tab title="Rust">
+```rust title="webhook_trigger_type.rs"
+use iii_sdk::{register_worker, InitOptions};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
+    let iii = register_worker(&url, InitOptions::default());
+
+    let handler = WebhookHandler {
+        routes: Arc::new(Mutex::new(HashMap::new())),
+    };
+
+    iii.register_trigger_type("webhook", "External webhook trigger", handler);
+
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
+```
+</Tab>
+</Tabs>
+
+### 3. Bind functions to the custom trigger
+
+From any worker — including one written in a different language — functions can now bind to the `webhook` trigger type with `registerTrigger`. The config you pass in `config` is forwarded directly to your handler's `registerTrigger` callback.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="github-webhook.ts"
+import { registerWorker, Logger } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+iii.registerFunction({ id: 'github::push' }, async (payload) => {
+  const logger = new Logger()
+  logger.info('Push event received', { repo: payload.repository?.full_name })
+  return { ok: true }
+})
+
+iii.registerTrigger({
+  type: 'webhook',
+  function_id: 'github::push',
+  config: { path: '/hooks/github' },
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="github_webhook.py"
+import os
+
+from iii import register_worker, Logger
+
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+def handle_push(payload):
+    logger = Logger()
+    logger.info("Push event received", {"repo": payload.get("repository", {}).get("full_name")})
+    return {"ok": True}
+
+
+iii.register_function({"id": "github::push"}, handle_push)
+
+iii.register_trigger({
+    "type": "webhook",
+    "function_id": "github::push",
+    "config": {"path": "/hooks/github"},
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust title="github_webhook.rs"
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
+    let iii = register_worker(&url, InitOptions::default());
+
+    iii.register_function(
+        RegisterFunctionMessage {
+            id: "github::push".into(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        |payload| async move {
+            let logger = Logger::new();
+            let repo = payload["repository"]["full_name"].as_str().unwrap_or("unknown");
+            logger.info("Push event received", Some(json!({ "repo": repo })));
+            Ok(json!({ "ok": true }))
+        },
+    );
+
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "webhook".into(),
+        function_id: "github::push".into(),
+        config: json!({ "path": "/hooks/github" }),
+    })?;
+
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
+```
+</Tab>
+</Tabs>
+
+### 4. Unregister the trigger type
+
+When the worker that owns the trigger type shuts down, call `unregisterTriggerType` to remove it from the engine. Any triggers still bound to the type will stop firing.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="teardown.ts"
+iii.unregisterTriggerType({ id: 'webhook', description: 'External webhook trigger' })
+```
+</Tab>
+<Tab title="Python">
+```python title="teardown.py"
+iii_client.unregister_trigger_type({"id": "webhook", "description": "External webhook trigger"})
+```
+</Tab>
+<Tab title="Rust">
+```rust title="teardown.rs"
+iii.unregister_trigger_type("webhook");
+```
+</Tab>
+</Tabs>
+
+## Result
+
+Your custom `webhook` trigger type is registered with the engine. Any function in any worker can bind to it with `registerTrigger({ type: 'webhook', ... })`, and the engine routes registration and teardown calls to your handler. The same pattern works for any event source — file watchers, message brokers, hardware signals, or anything else you can subscribe to in code.
+
+<Info title="Built-in trigger types">
+Before creating a custom type, check the [built-in trigger types](/how-to/use-functions-and-triggers#trigger-types) — `http`, `cron`, `queue`, `subscribe`, `state`, and `stream` cover the most common event sources.
+</Info>

@@ -1,0 +1,55 @@
+---
+title: 'Examples'
+description: 'Real-world code examples for every trigger type and pattern — shown in TypeScript, Python, and Rust.'
+---
+
+Each example uses the **iii SDK** directly. Every page shows the same pattern in three languages so you can pick whichever fits your stack.
+
+<Cards>
+  <Card title="Hello World" href="/examples/hello-world">
+    An HTTP endpoint that publishes an event and a background handler that processes it. The simplest end-to-end flow.
+  </Card>
+  <Card title="Todo App" href="/examples/todo-app">
+    Full CRUD (create, update, delete) backed by a custom stream implementation, showing `iii.createStream`.
+  </Card>
+  <Card title="Multi-Trigger" href="/examples/multi-trigger">
+    One function registered with multiple triggers — HTTP, queue, and cron — with per-trigger dispatch logic.
+  </Card>
+  <Card title="Conditions" href="/examples/conditions">
+    Pre-handler functions the engine evaluates before a trigger fires — if the condition returns false, the handler is not called.
+  </Card>
+  <Card title="State Management" href="/examples/state-management">
+    Read and write distributed key-value state via `state::get` / `state::set` and react to changes.
+  </Card>
+  <Card title="Cron Jobs" href="/examples/cron">
+    Schedule recurring tasks with cron expressions and fan out work through the queue.
+  </Card>
+  <Card title="Observability" href="/examples/observability">
+    Structured logging, trace ID propagation, and OpenTelemetry across a multi-step workflow.
+  </Card>
+</Cards>
+
+## SDK model
+
+All three SDKs share the same concepts with language-idiomatic initialization:
+
+- **TypeScript**: `registerWorker(url)` — named function, connection is automatic
+- **Python**: `register_worker(address=url, options?)` — creates the client and auto-starts connection
+- **Rust**: `register_worker(url, InitOptions::default())?` — creates the client and auto-starts connection
+
+| Concept | TypeScript | Python | Rust |
+|---|---|---|---|
+| Init | `registerWorker(url)` | `register_worker(url, options?)` | `register_worker(url, InitOptions::default())?` |
+| Connect | Auto on `registerWorker()` | Auto on `register_worker()` | Auto on `register_worker()` |
+| Register function | `iii.registerFunction({ id }, handler)` | `iii.register_function({"id": ...}, handler)` | `iii.register_function(RegisterFunctionMessage { id, .. }, \|input\| ...)` |
+| Register trigger | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(RegisterTriggerInput { type_, function_id, config, .. })?` |
+| Context | `new Logger()` | `Logger()` | `iii_sdk::Logger()` |
+| Trigger (sync) | `await iii.trigger({ function_id, payload })` | `iii.trigger({'function_id': id, 'payload': data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` |
+| Trigger (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | `iii.trigger({'function_id': id, 'payload': data, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new(id, data).action(TriggerAction::void())).await?` |
+| Publish event | `iii.trigger({ function_id: 'enqueue', payload: { topic, data }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'enqueue', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new("enqueue", json!({...})).action(TriggerAction::void())).await?` |
+| State write | `iii.trigger({ function_id: 'state::set', payload: { scope, key, value }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'state::set', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new("state::set", json!({...})).action(TriggerAction::void())).await?` |
+| Stream write | `iii.trigger({ function_id: 'stream::set', payload: {...} })` | `iii.trigger({'function_id': 'stream::set', 'payload': {...}})` | `streams.update(key, ops).await?` |
+
+<Info title="No framework required">
+  These examples use the iii SDK directly, with no Motia framework layer. There are no auto-discovered step files. Each worker is a plain application that connects, registers its functions and triggers, then enters an event loop.
+</Info>

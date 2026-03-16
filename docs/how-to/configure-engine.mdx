@@ -1,0 +1,762 @@
+---
+title: 'Configure the Engine'
+description: 'Complete reference for iii-config.yaml with all modules, adapters, and options.'
+---
+
+## Goal
+
+Configure iii functionality through its config file to enable modules, functionality,
+set up adapters, and customize behavior.
+
+## Overview
+
+The config file controls:
+
+- **Engine settings** - WebSocket port for SDK connections
+- **Modules** - Features like HTTP endpoints, queues, state, cron, observability
+- **Adapters** - Storage backends (file, memory, Redis, RabbitMQ, etc.)
+
+## Specifying the config file
+
+Configs can be specified to iii at startup with either the `-c` or `--config` flag:
+
+```bash
+iii -c iii-config.yaml
+```
+
+## Environment Variables
+
+Configuration values can use environment variables with optional defaults:
+
+```yaml
+port: ${III_PORT:49134}
+endpoint: ${OTEL_ENDPOINT:http://localhost:4317}
+redis_url: ${REDIS_URL}  # No default - must be set
+```
+
+Syntax: `${VAR_NAME:default_value}` or `${VAR_NAME}` (required).
+
+## Common Configurations
+
+### Development
+
+When doing development it is common to use built-in adapters with persistent `file_based` storage,
+and non-persistent `in_memory` storage. 
+
+```yaml title="iii-config.yaml"
+port: 49134
+modules:
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::KvStore
+        config:
+          store_method: file_based # or in_memory
+          file_path: ./data/state_store
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 5
+          type: standard
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
+        config:
+          store_method: file_based # or in_memory
+          file_path: ./data/queue_store
+```
+
+### Production 
+
+While iii's built-in `file_based` adapters can be used in production it's common to swap them out for other
+adapters that are built for purpose such as Redis, or RabbitMQ. 
+
+<Warning title="Don't use in_memory in production">
+  Do not use in_memory storage in production. in_memory storage does not persist between engine restarts
+  if used can cause irrecoverable data loss.
+</Warning>
+
+{/* TODO: Add callout here that users can write their own adapters */}
+
+```yaml title="iii-config.yaml"
+port: ${III_PORT:49134}
+modules:
+  - class: modules::api::RestApiModule
+    config:
+      port: ${HTTP_PORT:3111}
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::RedisAdapter
+        config:
+          redis_url: ${REDIS_URL}
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 5
+          type: standard
+      adapter:
+        class: modules::queue::RabbitMQAdapter
+        config:
+          amqp_url: ${AMQP_URL}
+        # class: modules::queue::RedisAdapter
+        # config:
+        #   redis_url: ${REDIS_URL}
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::RedisCronAdapter
+        config:
+          redis_url: ${REDIS_URL}
+  - class: modules::observability::OtelModule
+    config:
+      enabled: true
+      exporter: otlp
+      endpoint: ${OTEL_ENDPOINT}
+      level: warn
+      format: json
+```
+
+## Configuration Reference
+
+<ResponseField name="port" type="integer" default="49134">
+  Engine WebSocket port for SDK/worker connections.
+</ResponseField>
+
+<ResponseField name="modules" type="array" required>
+  List of modules to enable. Each entry requires a `class` identifier and an optional `config` object.
+</ResponseField>
+
+---
+
+### Modules
+
+<AccordionGroup>
+
+<Accordion title="REST API Module">
+
+**Class:** `modules::api::RestApiModule`
+
+Exposes HTTP endpoints for triggers and the core API surface. Functions with HTTP triggers are served through this module.
+
+<ResponseField name="config.port" type="integer" default="3111">
+  TCP port for the HTTP server.
+</ResponseField>
+
+<ResponseField name="config.host" type="string" default="0.0.0.0">
+  Network interface to bind. Use `0.0.0.0` for all interfaces, `127.0.0.1` for localhost only.
+</ResponseField>
+
+<ResponseField name="config.default_timeout" type="integer" default="30000">
+  Maximum time (ms) before an HTTP request times out.
+</ResponseField>
+
+<ResponseField name="config.concurrency_request_limit" type="integer" default="1024">
+  Maximum concurrent HTTP requests the server will handle.
+</ResponseField>
+
+<ResponseField name="config.cors" type="object">
+  Cross-Origin Resource Sharing configuration for browser clients.
+
+  <Expandable title="CORS properties">
+    <ResponseField name="cors.allowed_origins" type="string[]">
+      Origins allowed to make requests. Use `*` for any origin, or list specific domains.
+    </ResponseField>
+
+    <ResponseField name="cors.allowed_methods" type="string[]">
+      HTTP methods permitted for cross-origin requests. Options: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`, `HEAD`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="Stream Module">
+
+**Class:** `modules::stream::StreamModule`
+
+Real-time WebSocket pub/sub for live data streaming to clients. Clients connect via WebSocket to receive pushed updates on subscribed channels.
+
+<ResponseField name="config.port" type="integer" default="3112">
+  TCP port for WebSocket connections.
+</ResponseField>
+
+<ResponseField name="config.host" type="string" default="0.0.0.0">
+  Network interface to bind. Use `0.0.0.0` for all interfaces, `127.0.0.1` for localhost only.
+</ResponseField>
+
+<ResponseField name="config.auth_function" type="string">
+  Function that validates stream connection/subscription requests (e.g., auth checks). Set to `null` or omit to allow all connections.
+</ResponseField>
+
+<ResponseField name="config.adapter" type="object" required>
+  Storage backend for stream state (subscriptions, message history).
+
+  <Expandable title="KvStore adapter">
+    **Class:** `modules::stream::adapters::KvStore`
+
+    <ResponseField name="adapter.config.store_method" type="string" default="file_based">
+      Storage mode. Options: `file_based` (persists to disk), `in_memory` (lost on restart).
+    </ResponseField>
+
+    <ResponseField name="adapter.config.file_path" type="string">
+      Directory path for file-based storage. Required when `store_method` is `file_based`.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.save_interval_ms" type="integer" default="5000">
+      How often (ms) to flush dirty data to disk. Lower = more durable, higher = better performance.
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Redis adapter">
+    **Class:** `modules::stream::adapters::RedisAdapter`
+
+    <ResponseField name="adapter.config.redis_url" type="string" required>
+      Redis connection URL (e.g., `redis://localhost:6379`).
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Bridge adapter">
+    **Class:** `modules::stream::adapters::Bridge`
+
+    <ResponseField name="adapter.config.bridge_url" type="string" required>
+      WebSocket URL of another iii engine instance for distributed streaming.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="State Module">
+
+**Class:** `modules::state::StateModule`
+
+Persistent key-value storage for function state across invocations. Functions use `ctx.state.get` / `ctx.state.set` to read and write stateful data.
+
+<ResponseField name="config.adapter" type="object" required>
+  Storage backend for state data.
+
+  <Expandable title="KvStore adapter">
+    **Class:** `modules::state::adapters::KvStore`
+
+    <ResponseField name="adapter.config.store_method" type="string" default="file_based">
+      Storage mode. Options: `file_based` (persists to disk), `in_memory` (lost on restart).
+    </ResponseField>
+
+    <ResponseField name="adapter.config.file_path" type="string">
+      Directory path for file-based storage. Required when `store_method` is `file_based`.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.save_interval_ms" type="integer" default="5000">
+      How often (ms) to flush dirty data to disk.
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Redis adapter">
+    **Class:** `modules::state::adapters::RedisAdapter`
+
+    <ResponseField name="adapter.config.redis_url" type="string" required>
+      Redis connection URL (e.g., `redis://localhost:6379`).
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Bridge adapter">
+    **Class:** `modules::state::adapters::Bridge`
+
+    <ResponseField name="adapter.config.bridge_url" type="string" required>
+      WebSocket URL of another iii engine instance for forwarding state operations.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="Queue Module">
+
+**Class:** `modules::queue::QueueModule`
+
+Background job processing with retries, dead-letter queues, and concurrency control. Functions enqueue jobs; subscribers process them asynchronously.
+
+<ResponseField name="config.adapter" type="object" required>
+  Job queue backend.
+
+  <Expandable title="Built-in queue adapter">
+    **Class:** `modules::queue::BuiltinQueueAdapter`
+
+    <ResponseField name="adapter.config.max_attempts" type="integer" default="3">
+      Maximum delivery attempts before moving to dead-letter queue.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.backoff_ms" type="integer" default="1000">
+      Initial delay (ms) before retry. Uses exponential backoff (1000, 2000, 4000...).
+    </ResponseField>
+
+    <ResponseField name="adapter.config.concurrency" type="integer" default="10">
+      Maximum parallel job workers. Higher = more throughput, more resource usage.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.poll_interval_ms" type="integer" default="100">
+      How often (ms) to check for new jobs. Lower = faster processing, higher CPU.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.mode" type="string" default="concurrent">
+      Processing order. Options: `concurrent` (parallel, any order), `fifo` (sequential, ordered).
+    </ResponseField>
+
+    <ResponseField name="adapter.config.store_method" type="string" default="file_based">
+      Storage mode. Options: `file_based` (persists jobs to disk), `in_memory` (lost on restart).
+    </ResponseField>
+
+    <ResponseField name="adapter.config.file_path" type="string">
+      Directory path for file-based storage. Required when `store_method` is `file_based`.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.save_interval_ms" type="integer" default="5000">
+      How often (ms) to flush job state to disk.
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Redis adapter">
+    **Class:** `modules::queue::RedisAdapter`
+
+    <ResponseField name="adapter.config.redis_url" type="string" required>
+      Redis connection URL (e.g., `redis://localhost:6379`).
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Bridge adapter">
+    **Class:** `modules::queue::adapters::Bridge`
+
+    <ResponseField name="adapter.config.bridge_url" type="string" required>
+      WebSocket URL of another iii engine instance for forwarding queue operations.
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="RabbitMQ adapter">
+    **Class:** `modules::queue::RabbitMQAdapter`
+
+    <ResponseField name="adapter.config.amqp_url" type="string" required>
+      AMQP connection URL (e.g., `amqp://localhost:5672`).
+    </ResponseField>
+
+    <ResponseField name="adapter.config.max_attempts" type="integer" default="3">
+      Maximum delivery attempts before dead-lettering.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.prefetch_count" type="integer" default="10">
+      Messages to prefetch per consumer. Higher = more throughput, more memory.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.queue_mode" type="string" default="standard">
+      RabbitMQ queue mode. Options: `standard`, `quorum` (replicated for HA).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="PubSub Module">
+
+**Class:** `modules::pubsub::PubSubModule`
+
+In-process event fanout for decoupled function communication. Functions publish events; multiple subscribers receive them immediately.
+
+<ResponseField name="config.adapter" type="object" required>
+  PubSub backend.
+
+  <Expandable title="Local adapter">
+    **Class:** `modules::pubsub::LocalAdapter`
+
+    In-process pub/sub. Events don't cross engine instances. No additional config required.
+  </Expandable>
+
+  <Expandable title="Redis adapter">
+    **Class:** `modules::pubsub::RedisAdapter`
+
+    Distributed pub/sub across multiple engine instances.
+
+    <ResponseField name="adapter.config.redis_url" type="string" required>
+      Redis connection URL (e.g., `redis://localhost:6379`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="Cron Module">
+
+**Class:** `modules::cron::CronModule`
+
+Time-based job scheduling using cron expressions. Functions with cron triggers execute on schedule.
+
+<ResponseField name="config.adapter" type="object" required>
+  Cron scheduling backend.
+
+  <Expandable title="KV-based cron adapter">
+    **Class:** `modules::cron::KvCronAdapter`
+
+    Uses local KV store for distributed lock coordination.
+
+    <Warning>
+      Local locks only prevent duplicates within the same process. Multiple engine instances may execute the same cron job. Use `RedisCronAdapter` for true distributed locking.
+    </Warning>
+
+    <ResponseField name="adapter.config.lock_ttl_ms" type="integer" default="30000">
+      Lock timeout (ms). The job re-executes if the lock holder crashes and the lock expires.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.lock_index" type="string" default="cron_locks">
+      KV index name for storing lock data.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.store_method" type="string" default="file_based">
+      Storage mode. Options: `file_based` (persists locks to disk), `in_memory`.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.file_path" type="string">
+      Directory path for file-based storage.
+    </ResponseField>
+
+    <ResponseField name="adapter.config.save_interval_ms" type="integer" default="5000">
+      How often (ms) to flush lock state to disk.
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Redis cron adapter">
+    **Class:** `modules::cron::RedisCronAdapter`
+
+    True distributed locking across engine instances.
+
+    <ResponseField name="adapter.config.redis_url" type="string" required>
+      Redis connection URL (e.g., `redis://localhost:6379`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="Observability Module">
+
+**Class:** `modules::observability::OtelModule`
+
+OpenTelemetry tracing, metrics, logs, and alerting. Provides visibility into function execution, performance, and errors.
+
+<ResponseField name="config.enabled" type="boolean" default="false">
+  Master switch for all observability features.
+</ResponseField>
+
+<ResponseField name="config.service_name" type="string" default="iii">
+  Service name in traces/metrics/logs. Used for filtering in observability backends.
+</ResponseField>
+
+<ResponseField name="config.service_version" type="string" default="1.0.0">
+  Service version tag. Useful for correlating deployments with telemetry changes.
+</ResponseField>
+
+<ResponseField name="config.service_namespace" type="string" default="production">
+  Namespace/environment label (e.g., `production`, `staging`, `development`).
+</ResponseField>
+
+<ResponseField name="config.exporter" type="string" default="both">
+  Trace export destination. Options: `memory` (queryable via API), `otlp` (send to collector), `both`.
+</ResponseField>
+
+<ResponseField name="config.endpoint" type="string" default="http://localhost:4317">
+  OTLP collector endpoint. Required when exporter is `otlp` or `both`. Common endpoints: Jaeger (4317), Grafana Tempo (4317), Honeycomb, Datadog.
+</ResponseField>
+
+<ResponseField name="config.sampling_ratio" type="float" default="1.0">
+  Base sampling ratio (0.0–1.0). `1.0` = sample all traces, `0.1` = sample 10%. Overridden by advanced sampling rules when configured.
+</ResponseField>
+
+<ResponseField name="config.sampling" type="object">
+  Advanced sampling — fine-grained control over which traces to keep.
+
+  <Expandable title="Sampling properties">
+    <ResponseField name="sampling.default" type="float" default="0.5">
+      Sampling ratio for traces not matching any rule.
+    </ResponseField>
+
+    <ResponseField name="sampling.parent_based" type="boolean" default="true">
+      Inherit sampling decision from the parent span to keep distributed traces complete.
+    </ResponseField>
+
+    <ResponseField name="sampling.rules" type="array">
+      Sampling rules evaluated in order; first match wins. Patterns support wildcards: `*` (any chars), `?` (single char).
+
+      Each rule can specify:
+      - `operation` — operation name pattern (e.g., `api.*`, `queue.*`)
+      - `service` — service name to match
+      - `rate` — sampling ratio for matching traces (0.0–1.0)
+    </ResponseField>
+
+    <ResponseField name="sampling.rate_limit" type="object">
+      Global rate limit to cap telemetry volume during traffic spikes.
+
+      <Expandable title="Rate limit properties">
+        <ResponseField name="rate_limit.max_traces_per_second" type="integer" default="100">
+          Maximum traces per second to keep.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="config.memory_max_spans" type="integer" default="10000">
+  Maximum spans to retain in memory (when exporter is `memory` or `both`). Higher = more history for local debugging, more memory usage.
+</ResponseField>
+
+<ResponseField name="config.metrics_enabled" type="boolean" default="true">
+  Enable metrics collection for counters, gauges, and histograms.
+</ResponseField>
+
+<ResponseField name="config.metrics_exporter" type="string" default="memory">
+  Metrics storage. Options: `memory` (queryable via API), `otlp` (send to collector).
+</ResponseField>
+
+<ResponseField name="config.metrics_retention_seconds" type="integer" default="3600">
+  How long (seconds) to retain metrics before expiration.
+</ResponseField>
+
+<ResponseField name="config.metrics_max_count" type="integer" default="10000">
+  Maximum metric data points to store. Prevents unbounded memory growth.
+</ResponseField>
+
+<ResponseField name="config.logs_enabled" type="boolean" default="true">
+  Enable log collection and storage.
+</ResponseField>
+
+<ResponseField name="config.logs_exporter" type="string" default="both">
+  Log export destination. Options: `memory` (queryable via API), `otlp` (send to collector), `both`.
+</ResponseField>
+
+<ResponseField name="config.logs_max_count" type="integer" default="1000">
+  Maximum log records to retain in memory.
+</ResponseField>
+
+<ResponseField name="config.logs_retention_seconds" type="integer" default="3600">
+  How long (seconds) to retain logs before expiration.
+</ResponseField>
+
+<ResponseField name="config.logs_batch_size" type="integer" default="100">
+  Batch size for OTLP log export. Larger batches = fewer network calls, higher latency.
+</ResponseField>
+
+<ResponseField name="config.logs_flush_interval_ms" type="integer" default="5000">
+  How often (ms) to flush logs to the OTLP collector.
+</ResponseField>
+
+<ResponseField name="config.logs_sampling_ratio" type="float" default="1.0">
+  Log sampling ratio (0.0–1.0). `1.0` = keep all logs, `0.5` = keep 50%.
+</ResponseField>
+
+<ResponseField name="config.logs_console_output" type="boolean" default="true">
+  Also print SDK logs to engine console for local debugging.
+</ResponseField>
+
+<ResponseField name="config.alerts" type="array">
+  Alert rules — trigger actions when metrics cross thresholds.
+
+  <Expandable title="Alert rule properties">
+    <ResponseField name="alerts[].name" type="string" required>
+      Human-readable alert name.
+    </ResponseField>
+
+    <ResponseField name="alerts[].metric" type="string" required>
+      Metric name to monitor. Built-in metrics include `iii.invocations.*`, `iii.workers.*`, etc.
+    </ResponseField>
+
+    <ResponseField name="alerts[].threshold" type="number" required>
+      Threshold value for comparison.
+    </ResponseField>
+
+    <ResponseField name="alerts[].operator" type="string" required>
+      Comparison operator. Options: `>` (gt), `>=` (gte), `<` (lt), `<=` (lte), `==` (eq), `!=` (ne).
+    </ResponseField>
+
+    <ResponseField name="alerts[].window_seconds" type="integer" required>
+      Time window (seconds) for metric aggregation.
+    </ResponseField>
+
+    <ResponseField name="alerts[].enabled" type="boolean" default="true">
+      Enable or disable this alert rule.
+    </ResponseField>
+
+    <ResponseField name="alerts[].cooldown_seconds" type="integer">
+      Minimum seconds between repeated alerts (debounce).
+    </ResponseField>
+
+    <ResponseField name="alerts[].action" type="object" required>
+      Action when alert triggers.
+
+      <Expandable title="Action types">
+        **Webhook action** — POST alert payload to a URL:
+        - `type: webhook`
+        - `url` — target URL
+
+        **Function action** — invoke a function to handle the alert:
+        - `type: function`
+        - `path` — function path (e.g., `alerts.handle_low_workers`)
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="config.level" type="string" default="info">
+  Engine console log level. Options: `trace`, `debug`, `info`, `warn`, `error`. `trace` = most verbose, `error` = only errors.
+</ResponseField>
+
+<ResponseField name="config.format" type="string" default="json">
+  Console output format. Options: `default` (human-readable with colors), `json` (structured).
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="HTTP Functions Module">
+
+**Class:** `modules::http_functions::HttpFunctionsModule`
+
+Enables HTTP-invoked functions (outbound HTTP calls from the engine). Required for functions registered with `HttpInvocationConfig`. The engine makes the HTTP request on behalf of the function and enforces URL security policies.
+
+<ResponseField name="config.security" type="object">
+  URL security policies for outbound requests.
+
+  <Expandable title="Security properties">
+    <ResponseField name="security.url_allowlist" type="string[]">
+      URL patterns allowed for outbound requests. Use `*` to allow all URLs. Examples: `https://api.example.com/*`, `https://*.trusted.com/*`.
+    </ResponseField>
+
+    <ResponseField name="security.block_private_ips" type="boolean" default="true">
+      Block requests to private/internal IP ranges (10.x, 172.16-31.x, 192.168.x, localhost). Helps prevent SSRF attacks.
+    </ResponseField>
+
+    <ResponseField name="security.require_https" type="boolean" default="true">
+      Require HTTPS for all outbound requests. Prevents accidental plaintext transmission.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Note>
+  For local development, you can relax security by setting `block_private_ips: false` and `require_https: false` to allow localhost targets.
+</Note>
+
+</Accordion>
+
+<Accordion title="Exec Module">
+
+**Class:** `modules::shell::ExecModule`
+
+Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host, or from frameworks like Motia.
+
+<ResponseField name="config.watch" type="string[]">
+  Directories to watch for file changes. Changes trigger process restart.
+</ResponseField>
+
+<ResponseField name="config.exec" type="string[]">
+  Command and arguments to execute. First element is the command, rest are arguments.
+</ResponseField>
+
+```yaml
+# Example: run Python SDK worker
+- class: modules::shell::ExecModule
+  config:
+    watch:
+      - ./steps
+    exec:
+      - motia-py
+
+# Example: run Node.js SDK worker
+- class: modules::shell::ExecModule
+  config:
+    watch:
+      - ./steps
+    exec:
+      - npx
+      - motia-node
+```
+
+</Accordion>
+
+<Accordion title="Bridge Client Module">
+
+**Class:** `modules::bridge_client::BridgeClientModule`
+
+Connects this engine to a remote iii instance for cross-instance function invocation. Enables distributed architectures and function federation.
+
+<ResponseField name="config.url" type="string" required>
+  WebSocket URL of the remote iii engine to connect to.
+</ResponseField>
+
+<ResponseField name="config.service_id" type="string" required>
+  Unique identifier for this client in the remote engine's registry.
+</ResponseField>
+
+<ResponseField name="config.service_name" type="string">
+  Human-readable name for logging and observability.
+</ResponseField>
+
+<ResponseField name="config.expose" type="array">
+  Functions to expose to the remote engine (remote can call local functions).
+
+  <Expandable title="Expose entry properties">
+    <ResponseField name="expose[].local_function" type="string" required>
+      Local function path to expose.
+    </ResponseField>
+
+    <ResponseField name="expose[].remote_function" type="string">
+      Name the function appears as on the remote engine. Defaults to the local function name.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="config.forward" type="array">
+  Functions to forward to the remote engine (local calls invoke remote functions).
+
+  <Expandable title="Forward entry properties">
+    <ResponseField name="forward[].local_function" type="string" required>
+      Local function path that triggers the forward.
+    </ResponseField>
+
+    <ResponseField name="forward[].remote_function" type="string" required>
+      Remote function path to invoke.
+    </ResponseField>
+
+    <ResponseField name="forward[].timeout_ms" type="integer" default="5000">
+      Maximum time (ms) to wait for a remote response.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+</Accordion>
+
+<Accordion title="Telemetry Module">
+
+**Class:** `modules::telemetry::TelemetryModule`
+
+Anonymous product usage analytics for iii development. Helps the team understand usage patterns and prioritize features.
+
+<ResponseField name="config.enabled" type="boolean" default="true">
+  Enable/disable anonymous telemetry. Set to `false` to opt out.
+</ResponseField>
+
+<ResponseField name="config.api_key" type="string">
+  API key for telemetry backend. Leave empty for anonymous tracking.
+</ResponseField>
+
+<ResponseField name="config.sdk_api_key" type="string">
+  Separate API key for SDK telemetry events.
+</ResponseField>
+
+<ResponseField name="config.heartbeat_interval_secs" type="integer" default="21600">
+  How often (seconds) to send heartbeat events. Default is 6 hours.
+</ResponseField>
+
+</Accordion>
+
+</AccordionGroup>
