@@ -12,7 +12,7 @@ This roadmap delivers comprehensive E2E test coverage and edge case fixes for th
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Test Infrastructure** - Shared helpers, dev-dependencies, and deterministic time control
+- [x] **Phase 1: Test Infrastructure** - Shared helpers, dev-dependencies, and deterministic time control (completed 2026-03-16)
 - [ ] **Phase 2: Builtin Queue Happy Path** - E2E tests for enqueue-process-ack and condition filtering
 - [ ] **Phase 3: Builtin Queue Failure & Retry** - E2E tests for retry, backoff, DLQ exhaustion, and backoff overflow fix
 - [ ] **Phase 4: Builtin Queue Concurrency & Resilience** - E2E tests for FIFO ordering, panic recovery, and atomic queue transition fix
@@ -46,10 +46,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. An E2E test enqueues a message, processes it via a handler, and verifies the received payload matches the sent payload byte-for-byte
   2. An E2E test enqueues messages with different conditions and verifies only matching messages reach the handler
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md — Add queue helpers and E2E tests for payload integrity (QBLT-01) and condition-based filtering (QBLT-07)
 
 ### Phase 3: Builtin Queue Failure & Retry
 **Goal**: The builtin queue adapter correctly retries failed messages with exponential backoff, exhausts to DLQ with full traceability, and handles boundary cases without arithmetic overflow
@@ -167,8 +167,8 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Test Infrastructure | 0/2 | Planning | - |
-| 2. Builtin Queue Happy Path | 0/? | Not started | - |
+| 1. Test Infrastructure | 0/2 | Complete    | 2026-03-16 |
+| 2. Builtin Queue Happy Path | 0/1 | Not started | - |
 | 3. Builtin Queue Failure & Retry | 0/? | Not started | - |
 | 4. Builtin Queue Concurrency & Resilience | 0/? | Not started | - |
 | 5. HTTP Invoker Error Handling | 0/? | Not started | - |
