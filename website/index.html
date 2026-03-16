@@ -18,30 +18,7 @@
       gtag('js', new Date());
       gtag('config', 'G-E4G8GW1J2Q');
     </script>
-
-    <!-- CommonRoom -->
-    <script>
-      (function () {
-        if (typeof window === 'undefined') return;
-        if (typeof window.signals !== 'undefined') return;
-        var script = document.createElement('script');
-        script.src =
-          'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
-        script.async = true;
-        window.signals = Object.assign(
-          [],
-          { _opts: { apiHost: 'https://api.cr-relay.com' } },
-          ['page', 'identify', 'form'].reduce(function (acc, method) {
-            acc[method] = function () {
-              signals.push([method, arguments]);
-              return signals;
-            };
-            return acc;
-          }, {}),
-        );
-        document.head.appendChild(script);
-      })();
-    </script>
+    <!-- CommonRoom: loaded dynamically after cookie consent (see useCookieConsent.ts) -->
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
