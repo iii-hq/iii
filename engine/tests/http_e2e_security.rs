@@ -129,3 +129,33 @@ async fn https_enforcement_rejects_http_url() {
     assert_eq!(error.code, "url_validation_failed");
     assert_eq!(error.message, "HTTPS is required");
 }
+
+#[tokio::test]
+async fn dns_lookup_failed_returns_security_error() {
+    let invoker = strict_invoker();
+    let url = "https://nonexistent.invalid/api";
+    let timeout_ms: Option<u64> = None;
+    let method = HttpMethod::Post;
+    let headers = HashMap::new();
+    let no_auth: Option<HttpAuth> = None;
+    let endpoint = make_endpoint(&url, &timeout_ms, &method, &headers, &no_auth);
+
+    let result = invoker
+        .invoke_http(
+            "test.dns_lookup_failed",
+            &endpoint,
+            Uuid::new_v4(),
+            json!({"test": true}),
+            None,
+            None,
+        )
+        .await;
+
+    let error = result.expect_err("should fail with DNS lookup error for .invalid TLD");
+    assert_eq!(error.code, "url_validation_failed");
+    assert!(
+        error.message.contains("DNS lookup failed"),
+        "message should contain 'DNS lookup failed', got: {}",
+        error.message,
+    );
+}
