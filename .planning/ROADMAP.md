@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Test Infrastructure** - Shared helpers, dev-dependencies, and deterministic time control (completed 2026-03-16)
 - [x] **Phase 2: Builtin Queue Happy Path** - E2E tests for enqueue-process-ack and condition filtering (completed 2026-03-16)
 - [x] **Phase 3: Builtin Queue Failure & Retry** - E2E tests for retry, backoff, DLQ exhaustion, and backoff overflow fix (completed 2026-03-16)
-- [ ] **Phase 4: Builtin Queue Concurrency & Resilience** - E2E tests for FIFO ordering, panic recovery, and atomic queue transition fix
+- [x] **Phase 4: Builtin Queue Concurrency & Resilience** - E2E tests for FIFO ordering, panic recovery, and atomic queue transition fix (completed 2026-03-16)
 - [ ] **Phase 5: HTTP Invoker Error Handling** - E2E tests for timeouts, connection errors, and response parsing
 - [ ] **Phase 6: HTTP Invoker Security** - E2E tests for private IP blocking, HTTPS enforcement, and DNS failure
 - [ ] **Phase 7: RabbitMQ Happy Path & Topology** - E2E tests for RabbitMQ enqueue-process-ack and exchange routing
@@ -170,7 +170,7 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 | 1. Test Infrastructure | 0/2 | Complete    | 2026-03-16 |
 | 2. Builtin Queue Happy Path | 0/1 | Complete    | 2026-03-16 |
 | 3. Builtin Queue Failure & Retry | 1/2 | Complete    | 2026-03-16 |
-| 4. Builtin Queue Concurrency & Resilience | 0/2 | Not started | - |
+| 4. Builtin Queue Concurrency & Resilience | 2/2 | Complete   | 2026-03-16 |
 | 5. HTTP Invoker Error Handling | 0/? | Not started | - |
 | 6. HTTP Invoker Security | 0/? | Not started | - |
 | 7. RabbitMQ Happy Path & Topology | 0/? | Not started | - |

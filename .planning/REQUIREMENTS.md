@@ -19,7 +19,7 @@ Requirements for this hardening initiative. Each maps to roadmap phases.
 - [x] **QBLT-01**: E2E test verifies enqueue → process → ack happy path with payload integrity
 - [x] **QBLT-02**: E2E test verifies retry with exponential backoff timing (using start_paused for deterministic verification)
 - [x] **QBLT-03**: E2E test verifies DLQ exhaustion with content verification (payload, error reason, attempt count — not just count)
-- [ ] **QBLT-04**: E2E test verifies FIFO ordering under concurrent load with multiple message groups
+- [x] **QBLT-04**: E2E test verifies FIFO ordering under concurrent load with multiple message groups
 - [x] **QBLT-05**: E2E test verifies max_retries=0 boundary sends directly to DLQ without processing
 - [x] **QBLT-06**: E2E test verifies handler panic does not crash the worker and message is retried or DLQ'd
 - [x] **QBLT-07**: E2E test verifies condition-based message filtering routes only matching messages
@@ -102,7 +102,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QBLT-01 | Phase 2 | Complete |
 | QBLT-02 | Phase 3 | Complete |
 | QBLT-03 | Phase 3 | Complete |
-| QBLT-04 | Phase 4 | Pending |
+| QBLT-04 | Phase 4 | Complete |
 | QBLT-05 | Phase 3 | Complete |
 | QBLT-06 | Phase 4 | Complete |
 | QBLT-07 | Phase 2 | Complete |
