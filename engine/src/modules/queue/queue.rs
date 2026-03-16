@@ -13,7 +13,8 @@ use std::{
 use async_trait::async_trait;
 use colored::Colorize;
 use function_macros::{function, service};
-use futures::Future;
+use futures::{Future, FutureExt};
+use std::panic::AssertUnwindSafe;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
@@ -333,12 +334,15 @@ impl Module for QueueCoreModule {
                         )
                         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
-                        let result = async { engine.call(&function_id, msg.data).await }
-                            .instrument(span)
-                            .await;
+                        let result = AssertUnwindSafe(async {
+                            engine.call(&function_id, msg.data).await
+                        })
+                        .catch_unwind()
+                        .instrument(span)
+                        .await;
 
                         match result {
-                            Ok(_) => {
+                            Ok(Ok(_)) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                                 if let Err(e) =
                                     adapter.ack_function_queue(&queue_name, delivery_id).await
@@ -346,7 +350,7 @@ impl Module for QueueCoreModule {
                                     tracing::error!(error = %e, "Failed to ack message");
                                 }
                             }
-                            Err(ref err) => {
+                            Ok(Err(ref err)) => {
                                 tracing::Span::current().record("otel.status_code", "ERROR");
                                 tracing::warn!(
                                     function_id = %function_id,
@@ -366,6 +370,27 @@ impl Module for QueueCoreModule {
                                     .await
                                 {
                                     tracing::error!(error = %e, "Failed to nack message");
+                                }
+                            }
+                            Err(_panic) => {
+                                tracing::Span::current().record("otel.status_code", "ERROR");
+                                tracing::error!(
+                                    function_id = %function_id,
+                                    queue = %queue_name,
+                                    attempt = %attempt,
+                                    max_retries = %max_retries,
+                                    "Function queue job panicked"
+                                );
+                                if let Err(e) = adapter
+                                    .nack_function_queue(
+                                        &queue_name,
+                                        delivery_id,
+                                        attempt,
+                                        max_retries,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(error = %e, "Failed to nack panicked message");
                                 }
                             }
                         }

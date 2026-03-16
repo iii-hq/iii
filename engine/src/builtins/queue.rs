@@ -570,11 +570,13 @@ impl BuiltinQueue {
         if !ready_jobs.is_empty() {
             let waiting_key = self.waiting_key(queue);
             for job_id in &ready_jobs {
-                self.kv_store.zrem(&delayed_key, job_id).await;
-                // Use rpush to add to back (oldest position) so retried jobs
-                // are processed before any jobs that were added after them.
-                // This maintains FIFO order: rpop takes from back (oldest first).
-                self.kv_store.rpush(&waiting_key, job_id.clone()).await;
+                let removed = self.kv_store.zrem(&delayed_key, job_id).await;
+                if removed {
+                    // Use rpush to add to back (oldest position) so retried jobs
+                    // are processed before any jobs that were added after them.
+                    // This maintains FIFO order: rpop takes from back (oldest first).
+                    self.kv_store.rpush(&waiting_key, job_id.clone()).await;
+                }
             }
 
             self.pubsub.send_msg(serde_json::json!({
