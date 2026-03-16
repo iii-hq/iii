@@ -6,10 +6,10 @@
 
 #![cfg(feature = "rabbitmq")]
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+mod common;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use lapin::{Connection, ConnectionProperties, options::*};
@@ -23,232 +23,12 @@ use iii::{
     modules::{module::Module, queue::QueueCoreModule},
 };
 
-// ---------------------------------------------------------------------------
-// Infrastructure helpers
-// ---------------------------------------------------------------------------
-
-fn rabbitmq_url() -> String {
-    std::env::var("RABBITMQ_URL").unwrap_or_else(|_| "amqp://localhost:5672".to_string())
-}
-
-async fn try_connect_rabbitmq() -> Option<Connection> {
-    match Connection::connect(&rabbitmq_url(), ConnectionProperties::default()).await {
-        Ok(conn) => Some(conn),
-        Err(e) => {
-            eprintln!(
-                "Skipping RabbitMQ integration test: cannot connect to {} — {}",
-                rabbitmq_url(),
-                e
-            );
-            None
-        }
-    }
-}
-
-macro_rules! skip_if_no_rabbitmq {
-    () => {
-        if try_connect_rabbitmq().await.is_none() {
-            return;
-        }
-    };
-}
-
-fn test_prefix() -> String {
-    Uuid::new_v4().to_string()[..8].to_string()
-}
-
-fn rabbitmq_queue_config_json(prefix: &str) -> Value {
-    json!({
-        "adapter": {
-            "class": "modules::queue::RabbitMQAdapter",
-            "config": {
-                "amqp_url": rabbitmq_url()
-            }
-        },
-        "queue_configs": {
-            format!("{prefix}-default"): {
-                "type": "standard",
-                "concurrency": 3,
-                "max_retries": 2,
-                "backoff_ms": 200,
-                "poll_interval_ms": 100
-            },
-            format!("{prefix}-payment"): {
-                "type": "fifo",
-                "message_group_field": "transaction_id",
-                "concurrency": 1,
-                "max_retries": 2,
-                "backoff_ms": 200,
-                "poll_interval_ms": 100
-            }
-        }
-    })
-}
-
-async fn enqueue(
-    engine: &Engine,
-    queue_name: &str,
-    function_id: &str,
-    data: Value,
-) -> anyhow::Result<()> {
-    let guard = engine.queue_module.read().await;
-    let qm = guard
-        .as_ref()
-        .expect("queue_module should be set after initialize");
-    let message_id = Uuid::new_v4().to_string();
-    qm.enqueue_to_function_queue(queue_name, function_id, data, message_id, None, None)
-        .await
-}
-
-async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
-    let guard = engine.queue_module.read().await;
-    let qm = guard
-        .as_ref()
-        .expect("queue_module should be set after initialize");
-    qm.function_queue_dlq_count(queue_name)
-        .await
-        .expect("dlq_count should not fail")
-}
-
-/// Cleanup RabbitMQ queues and exchanges created by a test prefix.
-async fn cleanup_queues(prefix: &str) {
-    let conn = match try_connect_rabbitmq().await {
-        Some(c) => c,
-        None => return,
-    };
-    let channel = match conn.create_channel().await {
-        Ok(ch) => ch,
-        Err(_) => return,
-    };
-
-    let queue_names = vec![format!("{prefix}-default"), format!("{prefix}-payment")];
-
-    for name in &queue_names {
-        let resources = vec![
-            format!("iii.__fn_queue::{name}.queue"),
-            format!("iii.__fn_queue::{name}::retry.queue"),
-            format!("iii.__fn_queue::{name}::dlq.queue"),
-        ];
-        let exchanges = vec![
-            format!("iii.__fn_queue::{name}"),
-            format!("iii.__fn_queue::{name}::retry"),
-            format!("iii.__fn_queue::{name}::dlq"),
-        ];
-
-        for q in &resources {
-            let _ = channel
-                .queue_delete(q.as_str(), QueueDeleteOptions::default())
-                .await;
-        }
-        for ex in &exchanges {
-            let _ = channel
-                .exchange_delete(ex.as_str(), ExchangeDeleteOptions::default())
-                .await;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test function helpers (duplicated from queue_integration.rs since each
-// integration test file is a separate crate in Rust)
-// ---------------------------------------------------------------------------
-
-fn register_counting_function(engine: &Arc<Engine>, function_id: &str, counter: Arc<AtomicU64>) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
-            let count = counter.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                FunctionResult::Success(Some(json!({ "ok": true })))
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("counting test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
-
-fn register_order_recording_function(
-    engine: &Arc<Engine>,
-    function_id: &str,
-    field_name: &'static str,
-    record: Arc<Mutex<Vec<Value>>>,
-) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
-            let rec = record.clone();
-            Box::pin(async move {
-                let value = input.get(field_name).cloned().unwrap_or(Value::Null);
-                rec.lock().await.push(value);
-                FunctionResult::Success(Some(json!({ "ok": true })))
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("order recording test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
-
-fn register_slow_function(
-    engine: &Arc<Engine>,
-    function_id: &str,
-    delay: Duration,
-    timestamps: Arc<Mutex<Vec<std::time::Instant>>>,
-) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
-            let ts = timestamps.clone();
-            let d = delay;
-            Box::pin(async move {
-                ts.lock().await.push(std::time::Instant::now());
-                tokio::time::sleep(d).await;
-                FunctionResult::Success(Some(json!({ "ok": true })))
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("slow test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
-
-fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count: Arc<AtomicU64>) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
-            let count = call_count.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                FunctionResult::Failure(iii::protocol::ErrorBody {
-                    code: "FAIL".to_string(),
-                    message: "intentional failure".to_string(),
-                    stacktrace: None,
-                })
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("always-failing test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
+use common::queue_helpers::{
+    enqueue, dlq_count,
+    register_counting_function, register_failing_function,
+    register_order_recording_function, register_slow_function,
+};
+use common::rabbitmq_helpers::{get_rabbitmq, test_prefix, rabbitmq_queue_config};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -256,7 +36,7 @@ fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count
 
 #[tokio::test]
 async fn full_roundtrip_enqueue_consume_invoke() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     let engine = {
@@ -267,7 +47,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::rmq_handler", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config_json(&prefix)))
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -285,7 +65,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     .await
     .expect("Enqueue should succeed");
 
-    // RabbitMQ has real network I/O — use generous timeout
+    // RabbitMQ has real network I/O -- use generous timeout
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     assert_eq!(
@@ -293,13 +73,11 @@ async fn full_roundtrip_enqueue_consume_invoke() {
         1,
         "The registered function should have been invoked exactly once"
     );
-
-    cleanup_queues(&prefix).await;
 }
 
 #[tokio::test]
 async fn full_roundtrip_fifo_preserves_order() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     let engine = {
@@ -310,7 +88,7 @@ async fn full_roundtrip_fifo_preserves_order() {
     let invocation_order: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_order_recording_function(&engine, "test::rmq_fifo", "seq", invocation_order.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config_json(&prefix)))
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -349,13 +127,11 @@ async fn full_roundtrip_fifo_preserves_order() {
         *recorded, expected,
         "FIFO queue should preserve insertion order"
     );
-
-    cleanup_queues(&prefix).await;
 }
 
 #[tokio::test]
 async fn retry_behavior_with_rabbitmq() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     let engine = {
@@ -366,7 +142,7 @@ async fn retry_behavior_with_rabbitmq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_retry", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config_json(&prefix)))
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -384,7 +160,7 @@ async fn retry_behavior_with_rabbitmq() {
     .await
     .expect("Enqueue should succeed");
 
-    // max_retries=2, backoff_ms=200 → 3 attempts with TTL-based retry through RabbitMQ
+    // max_retries=2, backoff_ms=200 -> 3 attempts with TTL-based retry through RabbitMQ
     tokio::time::sleep(Duration::from_secs(10)).await;
 
     let total_calls = call_count.load(Ordering::SeqCst);
@@ -402,13 +178,11 @@ async fn retry_behavior_with_rabbitmq() {
         "No further invocations should occur after retry exhaustion, \
          but got {calls_after} (was {calls_before})"
     );
-
-    cleanup_queues(&prefix).await;
 }
 
 #[tokio::test]
 async fn exhausted_message_lands_in_dlq() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     let engine = {
@@ -419,7 +193,7 @@ async fn exhausted_message_lands_in_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config_json(&prefix)))
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -451,13 +225,11 @@ async fn exhausted_message_lands_in_dlq() {
         count, 1,
         "Exactly one message should be in the DLQ after retry exhaustion, got {count}"
     );
-
-    cleanup_queues(&prefix).await;
 }
 
 #[tokio::test]
 async fn concurrent_processing() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     let engine = {
@@ -473,7 +245,7 @@ async fn concurrent_processing() {
         timestamps.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config_json(&prefix)))
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -513,13 +285,11 @@ async fn concurrent_processing() {
             .map(|t| t.duration_since(start))
             .collect::<Vec<_>>()
     );
-
-    cleanup_queues(&prefix).await;
 }
 
 #[tokio::test]
 async fn multiple_queues_operate_independently() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     let engine = {
@@ -532,7 +302,7 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::rmq_default", default_count.clone());
     register_counting_function(&engine, "test::rmq_payment", payment_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config_json(&prefix)))
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -574,18 +344,16 @@ async fn multiple_queues_operate_independently() {
         pc, 3,
         "Payment queue should have processed 3 messages, got {pc}"
     );
-
-    cleanup_queues(&prefix).await;
 }
 
 #[tokio::test]
 async fn message_id_stamped_as_amqp_property() {
-    skip_if_no_rabbitmq!();
+    let ctx = get_rabbitmq().await;
     let prefix = test_prefix();
 
     // We need to publish a message and inspect it BEFORE the consumer picks it up.
     // Use the RabbitMQ adapter directly: set up topology, publish, then basic_get.
-    let conn = try_connect_rabbitmq()
+    let conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
         .await
         .expect("Should connect to RabbitMQ");
     let channel = conn.create_channel().await.expect("Should create channel");
@@ -674,7 +442,7 @@ async fn message_id_stamped_as_amqp_property() {
         panic!("Expected a message in the queue but found none");
     }
 
-    // Cleanup
+    // Cleanup inline topology
     let _ = channel
         .queue_delete(&rmq_queue_name, QueueDeleteOptions::default())
         .await;
