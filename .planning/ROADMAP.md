@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Test Infrastructure** - Shared helpers, dev-dependencies, and deterministic time control (completed 2026-03-16)
 - [x] **Phase 2: Builtin Queue Happy Path** - E2E tests for enqueue-process-ack and condition filtering (completed 2026-03-16)
-- [ ] **Phase 3: Builtin Queue Failure & Retry** - E2E tests for retry, backoff, DLQ exhaustion, and backoff overflow fix
+- [x] **Phase 3: Builtin Queue Failure & Retry** - E2E tests for retry, backoff, DLQ exhaustion, and backoff overflow fix (completed 2026-03-16)
 - [ ] **Phase 4: Builtin Queue Concurrency & Resilience** - E2E tests for FIFO ordering, panic recovery, and atomic queue transition fix
 - [ ] **Phase 5: HTTP Invoker Error Handling** - E2E tests for timeouts, connection errors, and response parsing
 - [ ] **Phase 6: HTTP Invoker Security** - E2E tests for private IP blocking, HTTPS enforcement, and DNS failure
@@ -74,11 +74,11 @@ Plans:
   1. An E2E test enqueues messages across multiple message groups under concurrent load and verifies per-group FIFO ordering is preserved
   2. An E2E test triggers a handler panic and verifies the worker does not crash and the message is retried or moved to DLQ
   3. The delayed-to-waiting queue transition is atomic, verified by a test that cannot produce duplicate job delivery under concurrent access
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md — Fix atomic delayed-to-waiting transition (FIX-02), add panic-safe consumer (QBLT-06), and E2E tests for both
+- [ ] 04-02-PLAN.md — E2E test for multi-group FIFO ordering under concurrent load (QBLT-04)
 
 ### Phase 5: HTTP Invoker Error Handling
 **Goal**: The HTTP invoker returns clear, actionable errors for every failure mode a remote endpoint can produce
@@ -169,8 +169,8 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 |-------|----------------|--------|-----------|
 | 1. Test Infrastructure | 0/2 | Complete    | 2026-03-16 |
 | 2. Builtin Queue Happy Path | 0/1 | Complete    | 2026-03-16 |
-| 3. Builtin Queue Failure & Retry | 1/2 | In Progress|  |
-| 4. Builtin Queue Concurrency & Resilience | 0/? | Not started | - |
+| 3. Builtin Queue Failure & Retry | 1/2 | Complete    | 2026-03-16 |
+| 4. Builtin Queue Concurrency & Resilience | 0/2 | Not started | - |
 | 5. HTTP Invoker Error Handling | 0/? | Not started | - |
 | 6. HTTP Invoker Security | 0/? | Not started | - |
 | 7. RabbitMQ Happy Path & Topology | 0/? | Not started | - |
