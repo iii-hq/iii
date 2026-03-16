@@ -993,3 +993,91 @@ async fn rmq_fifo_multi_group_ordering() {
         }
     }
 }
+
+#[tokio::test]
+async fn rmq_handler_panic_recovery() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let success_count = Arc::new(AtomicU64::new(0));
+    register_panicking_function(&engine, "test::rmq_panic", success_count.clone());
+
+    let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 200);
+    let module = QueueCoreModule::create(engine.clone(), Some(config))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    // Enqueue a panicking message
+    enqueue(
+        &engine,
+        &format!("{prefix}-test"),
+        "test::rmq_panic",
+        json!({"panic": true}),
+    )
+    .await
+    .expect("Enqueue panicking message should succeed");
+
+    // Let first panic attempt fire
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Enqueue a normal message to prove consumer survived the panic
+    enqueue(
+        &engine,
+        &format!("{prefix}-test"),
+        "test::rmq_panic",
+        json!({"panic": false}),
+    )
+    .await
+    .expect("Enqueue normal message should succeed");
+
+    // Wait for retry exhaustion (max_retries=2 with 200ms TTL per retry + broker overhead)
+    tokio::time::sleep(Duration::from_secs(12)).await;
+
+    // Consumer survived: normal message was processed
+    assert!(
+        success_count.load(Ordering::SeqCst) >= 1,
+        "At least one normal message should have been processed after the panic, got {}",
+        success_count.load(Ordering::SeqCst)
+    );
+
+    // Panicked message reached DLQ after retry exhaustion
+    let dlq = dlq_count(&engine, &format!("{prefix}-test")).await;
+    assert!(
+        dlq >= 1,
+        "Panicked message should land in DLQ after exhausting retries, got {} DLQ entries",
+        dlq
+    );
+
+    // Verify DLQ content via direct AMQP basic_get (following Phase 8 pattern)
+    let conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
+        .await
+        .expect("Should connect to RabbitMQ for DLQ inspection");
+    let channel = conn.create_channel().await.expect("Should create channel");
+
+    let dlq_queue_name = format!("iii.__fn_queue::{}::dlq.queue", format!("{prefix}-test"));
+
+    let delivery = channel
+        .basic_get(&dlq_queue_name, BasicGetOptions { no_ack: true })
+        .await
+        .expect("basic_get should succeed");
+
+    let msg = delivery.expect("DLQ should have at least one message");
+
+    let payload: Value =
+        serde_json::from_slice(&msg.delivery.data).expect("DLQ message should be valid JSON");
+    assert_eq!(
+        payload.get("panic").and_then(|v| v.as_bool()),
+        Some(true),
+        "DLQ message should contain the original panicking payload with panic: true"
+    );
+}
