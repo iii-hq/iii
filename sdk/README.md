@@ -22,9 +22,9 @@ See the [engine README](../engine/README.md) for architecture details and the [d
 ### Node.js
 
 ```javascript
-import { init } from 'iii-sdk';
+import { registerWorker } from 'iii-sdk';
 
-const iii = init('ws://localhost:49134');
+const iii = registerWorker('ws://localhost:49134');
 
 iii.registerFunction({ id: 'greet' }, async (input) => {
   return { message: `Hello, ${input.name}!` };
@@ -63,22 +63,22 @@ result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
 ### Rust
 
 ```rust
-use iii_sdk::{init, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("greet", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "greet".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
 
-    iii.register_trigger("http", "greet", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "greet".into(), config: json!({
         "api_path": "/greet",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     let result: serde_json::Value = iii
         .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
@@ -92,13 +92,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Operation                | Node.js                                              | Python                                      | Rust                                         | Description                                            |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `init(url)`                                          | `init(url, options?)`                       | `init(url, options)`                         | Create an SDK instance and auto-connect                |
+| Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
 | Register function        | `iii.registerFunction({ id }, handler)`              | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
 | Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |
 
-`init()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
+`registerWorker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
 
 > `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
 

@@ -43,9 +43,9 @@ npm install iii-sdk
 ```
 
 ```javascript
-import { init, getContext } from 'iii-sdk';
+import { registerWorker, getContext } from 'iii-sdk';
 
-const iii = init('ws://localhost:49134');
+const iii = registerWorker('ws://localhost:49134');
 const { logger } = getContext();
 
 iii.registerFunction({ id: 'math.add' }, async (input) => {
@@ -98,23 +98,23 @@ logger.info("result", result)  # {"sum": 3}
 <summary>Rust</summary>
 
 ```rust
-use iii_sdk::{init, InitOptions, get_context, TriggerRequest};
+use iii_sdk::{register_worker, InitOptions, get_context, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("math.add", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "math.add".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(json!({ "sum": a + b }))
     });
 
-    iii.register_trigger("http", "math.add", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "math.add".into(), config: json!({
         "api_path": "add",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     let result = iii.trigger(TriggerRequest::new("math.add", json!({ "a": 1, "b": 2 }))).await?;
     let logger = get_context().logger;
