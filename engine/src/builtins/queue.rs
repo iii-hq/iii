@@ -105,7 +105,8 @@ impl Job {
     }
 
     pub fn calculate_backoff(&self) -> u64 {
-        self.backoff_delay_ms * 2_u64.pow(self.attempts_made.saturating_sub(1))
+        self.backoff_delay_ms
+            .saturating_mul(2_u64.saturating_pow(self.attempts_made.saturating_sub(1)))
     }
 }
 
@@ -1227,6 +1228,47 @@ mod tests {
 
         job.increment_attempts();
         assert_eq!(job.calculate_backoff(), 4000);
+    }
+
+    #[tokio::test]
+    async fn calculate_backoff_normal_cases() {
+        // attempts_made=1 => backoff_delay_ms * 2^0 = 1000
+        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        job.attempts_made = 1;
+        assert_eq!(job.calculate_backoff(), 1000);
+
+        // attempts_made=2 => backoff_delay_ms * 2^1 = 2000
+        job.attempts_made = 2;
+        assert_eq!(job.calculate_backoff(), 2000);
+
+        // attempts_made=3 => backoff_delay_ms * 2^2 = 4000
+        job.attempts_made = 3;
+        assert_eq!(job.calculate_backoff(), 4000);
+    }
+
+    #[tokio::test]
+    async fn calculate_backoff_saturates_at_high_attempts() {
+        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+
+        // attempts_made=56 => 2^55 overflows when multiplied by 1000, saturates to u64::MAX
+        job.attempts_made = 56;
+        assert_eq!(job.calculate_backoff(), u64::MAX);
+
+        // attempts_made=65 => 2^64 overflows u64 in saturating_pow, saturates to u64::MAX
+        job.attempts_made = 65;
+        assert_eq!(job.calculate_backoff(), u64::MAX);
+
+        // attempts_made=u32::MAX => extreme boundary, must not panic
+        job.attempts_made = u32::MAX;
+        assert_eq!(job.calculate_backoff(), u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn calculate_backoff_zero_attempts() {
+        // attempts_made=0 => saturating_sub(1) = 0, so result = backoff_delay_ms * 2^0 = backoff_delay_ms
+        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        job.attempts_made = 0;
+        assert_eq!(job.calculate_backoff(), 1000);
     }
 
     #[tokio::test]
