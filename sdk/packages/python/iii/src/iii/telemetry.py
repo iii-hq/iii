@@ -376,7 +376,7 @@ def _reset_state() -> None:
 def attach_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Wire the running asyncio event loop into the OTel connection.
 
-    Call this from within an async context (e.g. III._async_connect()) after
+    Call this from within an async context (e.g. III.connect_async()) after
     init_otel() has been called without a loop so that SharedEngineConnection
     starts sending buffered frames immediately.
     """
