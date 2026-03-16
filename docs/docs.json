@@ -3,7 +3,7 @@
   "name": "iii",
   "theme": "mint",
   "colors": {
-    "primary": "#6366f1"
+    "primary": "#f3f724"
   },
   "logo": {
     "light": "/images/icons/iii-black.svg",
@@ -21,11 +21,7 @@
           },
           {
             "group": "Tutorials",
-            "pages": [
-              "tutorials/index",
-              "tutorials/motia-framework",
-              "tutorials/motia-sdk"
-            ]
+            "pages": ["tutorials/index", "tutorials/quickstart"]
           },
           {
             "group": "Primitives & Concepts",
@@ -98,11 +94,7 @@
           },
           {
             "group": "Standalone",
-            "pages": [
-              "workers",
-              "adapters",
-              "remote-functions"
-            ]
+            "pages": ["workers", "adapters", "remote-functions"]
           },
           {
             "group": "Examples",
