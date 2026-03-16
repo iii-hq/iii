@@ -1,6 +1,31 @@
 name: NPM Publish
 
 on:
+  workflow_dispatch:
+    inputs:
+      package_path:
+        description: 'Package directory to publish (e.g., sdk/packages/node/iii)'
+        required: true
+        type: string
+      npm_tag:
+        description: 'NPM dist-tag (latest, alpha, beta, rc)'
+        required: true
+        type: choice
+        options: [latest, alpha, beta, rc, dry-run]
+      build_filter:
+        description: 'pnpm filter for building the package (e.g., iii-sdk)'
+        required: true
+        type: string
+      pre_build_filter:
+        description: 'pnpm filter for building dependencies first (optional)'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Build and validate without publishing'
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       package_path:
@@ -90,7 +115,21 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
 
+      - name: Check if version already published
+        id: check_npm
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version 2>/dev/null; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${PKG_NAME}@${PKG_VERSION} already published — skipping"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to NPM
+        if: steps.check_npm.outputs.already_published != 'true'
         working-directory: ${{ inputs.package_path }}
         run: pnpm publish --no-git-checks --tag "${{ inputs.npm_tag }}" --access public ${{ inputs.dry_run == true && '--dry-run' || '' }}
         env:

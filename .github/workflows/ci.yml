@@ -17,12 +17,86 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
+  # Change Detection — skip jobs when their paths are untouched
+  # ──────────────────────────────────────────────────────────────
+
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      engine: ${{ steps.filter.outputs.engine || 'true' }}
+      sdk_node: ${{ steps.filter.outputs.sdk_node || 'true' }}
+      sdk_python: ${{ steps.filter.outputs.sdk_python || 'true' }}
+      sdk_rust: ${{ steps.filter.outputs.sdk_rust || 'true' }}
+      motia_js: ${{ steps.filter.outputs.motia_js || 'true' }}
+      motia_py: ${{ steps.filter.outputs.motia_py || 'true' }}
+      console: ${{ steps.filter.outputs.console || 'true' }}
+      needs_engine: ${{ steps.filter.outputs.needs_engine || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            engine:
+              - 'engine/**'
+              - 'cli/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            sdk_node:
+              - 'sdk/packages/node/**'
+              - 'sdk/fixtures/**'
+              - 'scripts/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            sdk_python:
+              - 'sdk/packages/python/**'
+              - 'sdk/fixtures/**'
+              - 'scripts/**'
+              - '.github/workflows/ci.yml'
+            sdk_rust:
+              - 'sdk/packages/rust/**'
+              - 'sdk/fixtures/**'
+              - 'scripts/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            motia_js:
+              - 'frameworks/motia/motia-js/**'
+              - 'sdk/packages/node/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            motia_py:
+              - 'frameworks/motia/motia-py/**'
+              - 'sdk/packages/python/**'
+              - '.github/workflows/ci.yml'
+            console:
+              - 'console/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+            needs_engine:
+              - 'engine/**'
+              - 'cli/**'
+              - 'sdk/**'
+              - 'frameworks/motia/**'
+              - 'scripts/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+
+  # ──────────────────────────────────────────────────────────────
   # Engine (test + build + upload artifact for downstream jobs)
   # ──────────────────────────────────────────────────────────────
 
   build-engine:
     name: Build Engine
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -62,6 +136,7 @@ jobs:
   engine-rabbitmq-tests:
     name: Engine RabbitMQ Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       rabbitmq:
         image: rabbitmq:3-management-alpine
@@ -89,6 +164,7 @@ jobs:
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -131,6 +207,7 @@ jobs:
     name: SDK Node Tests
     needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -140,7 +217,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -195,6 +272,7 @@ jobs:
     name: SDK Python (${{ matrix.python-version }})
     needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -255,6 +333,7 @@ jobs:
     name: SDK Rust Tests
     needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -300,6 +379,7 @@ jobs:
     name: Motia JS Tests
     needs: [build-engine, sdk-node-ci]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -309,7 +389,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -354,6 +434,7 @@ jobs:
     name: Motia Python (${{ matrix.python-version }})
     needs: [build-engine, sdk-python-ci]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -410,6 +491,7 @@ jobs:
   console-ci:
     name: Console Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -435,5 +517,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # TODO: add console tests (frontend + rust) once test infrastructure exists
       - name: Build console binary
         run: cargo build -p iii-console --release
