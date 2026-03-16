@@ -169,7 +169,7 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 |-------|----------------|--------|-----------|
 | 1. Test Infrastructure | 0/2 | Complete    | 2026-03-16 |
 | 2. Builtin Queue Happy Path | 0/1 | Complete    | 2026-03-16 |
-| 3. Builtin Queue Failure & Retry | 0/2 | Not started | - |
+| 3. Builtin Queue Failure & Retry | 1/2 | In Progress|  |
 | 4. Builtin Queue Concurrency & Resilience | 0/? | Not started | - |
 | 5. HTTP Invoker Error Handling | 0/? | Not started | - |
 | 6. HTTP Invoker Security | 0/? | Not started | - |

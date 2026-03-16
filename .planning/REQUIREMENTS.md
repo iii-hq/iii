@@ -18,7 +18,7 @@ Requirements for this hardening initiative. Each maps to roadmap phases.
 
 - [x] **QBLT-01**: E2E test verifies enqueue → process → ack happy path with payload integrity
 - [ ] **QBLT-02**: E2E test verifies retry with exponential backoff timing (using start_paused for deterministic verification)
-- [ ] **QBLT-03**: E2E test verifies DLQ exhaustion with content verification (payload, error reason, attempt count — not just count)
+- [x] **QBLT-03**: E2E test verifies DLQ exhaustion with content verification (payload, error reason, attempt count — not just count)
 - [ ] **QBLT-04**: E2E test verifies FIFO ordering under concurrent load with multiple message groups
 - [ ] **QBLT-05**: E2E test verifies max_retries=0 boundary sends directly to DLQ without processing
 - [ ] **QBLT-06**: E2E test verifies handler panic does not crash the worker and message is retried or DLQ'd
@@ -47,7 +47,7 @@ Requirements for this hardening initiative. Each maps to roadmap phases.
 
 ### Bug Fixes
 
-- [ ] **FIX-01**: Backoff calculation uses saturating arithmetic to prevent u64 overflow at high retry counts (attempts >= 54)
+- [x] **FIX-01**: Backoff calculation uses saturating arithmetic to prevent u64 overflow at high retry counts (attempts >= 54)
 - [ ] **FIX-02**: Delayed-to-waiting queue transition is atomic to prevent duplicate job delivery under concurrent load
 - [ ] **FIX-03**: Auth E2E tests refactored to avoid unsafe env::set_var pattern with safer alternative
 
@@ -101,7 +101,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFRA-04 | Phase 1 | Complete |
 | QBLT-01 | Phase 2 | Complete |
 | QBLT-02 | Phase 3 | Pending |
-| QBLT-03 | Phase 3 | Pending |
+| QBLT-03 | Phase 3 | Complete |
 | QBLT-04 | Phase 4 | Pending |
 | QBLT-05 | Phase 3 | Pending |
 | QBLT-06 | Phase 4 | Pending |
@@ -121,7 +121,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HTTP-06 | Phase 6 | Pending |
 | HTTP-07 | Phase 6 | Pending |
 | HTTP-08 | Phase 6 | Pending |
-| FIX-01 | Phase 3 | Pending |
+| FIX-01 | Phase 3 | Complete |
 | FIX-02 | Phase 4 | Pending |
 | FIX-03 | Phase 10 | Pending |
 | BLOG-01 | Phase 10 | Pending |
