@@ -505,3 +505,137 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
         "Received payload must match sent payload byte-for-byte (serde_json structural equality)"
     );
 }
+
+#[tokio::test]
+async fn rmq_topology_matches_expected_configuration() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    // Register dummy handlers for both configured queues
+    let default_count = Arc::new(AtomicU64::new(0));
+    let payment_count = Arc::new(AtomicU64::new(0));
+    register_counting_function(&engine, "test::rmq_topo_default", default_count);
+    register_counting_function(&engine, "test::rmq_topo_payment", payment_count);
+
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    // Open a separate connection for verification (do not reuse the adapter's internal channel)
+    let verify_conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
+        .await
+        .expect("Should connect to RabbitMQ for verification");
+
+    let queue_names = [format!("{prefix}-default"), format!("{prefix}-payment")];
+
+    for queue_name in &queue_names {
+        // Derive the 6 expected entity names using the naming convention
+        let main_exchange = format!("iii.__fn_queue::{queue_name}");
+        let main_queue = format!("iii.__fn_queue::{queue_name}.queue");
+        let retry_exchange = format!("iii.__fn_queue::{queue_name}::retry");
+        let retry_queue = format!("iii.__fn_queue::{queue_name}::retry.queue");
+        let dlq_exchange = format!("iii.__fn_queue::{queue_name}::dlq");
+        let dlq_queue = format!("iii.__fn_queue::{queue_name}::dlq.queue");
+
+        // Verify all 3 exchanges exist via passive declare
+        // Each passive declare needs a fresh channel because a failed declare closes the channel
+        for exchange_name in [&main_exchange, &retry_exchange, &dlq_exchange] {
+            let ch = verify_conn
+                .create_channel()
+                .await
+                .expect("Should create verification channel");
+            ch.exchange_declare(
+                exchange_name,
+                lapin::ExchangeKind::Direct,
+                ExchangeDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Exchange '{exchange_name}' should exist: {e}"));
+        }
+
+        // Verify all 3 queues exist via passive declare
+        for q_name in [&main_queue, &retry_queue, &dlq_queue] {
+            let ch = verify_conn
+                .create_channel()
+                .await
+                .expect("Should create verification channel");
+            ch.queue_declare(
+                q_name,
+                QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Queue '{q_name}' should exist: {e}"));
+        }
+
+        // Verify queue arguments via Management HTTP API
+        let client = reqwest::Client::new();
+
+        // URL-encode queue names (they contain :: and . characters)
+        let encoded_main_queue = main_queue.replace("/", "%2F");
+        let encoded_retry_queue = retry_queue.replace("/", "%2F");
+
+        // Verify main queue arguments: x-dead-letter-exchange -> DLQ exchange
+        let main_resp: Value = client
+            .get(format!("{}/api/queues/%2f/{}", ctx.mgmt_url, encoded_main_queue))
+            .basic_auth("guest", Some("guest"))
+            .send()
+            .await
+            .expect("Management API request for main queue should succeed")
+            .json()
+            .await
+            .expect("Management API response should be valid JSON");
+
+        let main_args = &main_resp["arguments"];
+        assert_eq!(
+            main_args["x-dead-letter-exchange"].as_str(),
+            Some(dlq_exchange.as_str()),
+            "Main queue '{main_queue}' should have x-dead-letter-exchange pointing to DLQ exchange '{dlq_exchange}'"
+        );
+
+        // Verify retry queue arguments: x-message-ttl, x-dead-letter-exchange, x-dead-letter-routing-key
+        let retry_resp: Value = client
+            .get(format!("{}/api/queues/%2f/{}", ctx.mgmt_url, encoded_retry_queue))
+            .basic_auth("guest", Some("guest"))
+            .send()
+            .await
+            .expect("Management API request for retry queue should succeed")
+            .json()
+            .await
+            .expect("Management API response should be valid JSON");
+
+        let retry_args = &retry_resp["arguments"];
+        assert_eq!(
+            retry_args["x-message-ttl"].as_u64(),
+            Some(200),
+            "Retry queue '{retry_queue}' should have x-message-ttl=200 (backoff_ms)"
+        );
+        assert_eq!(
+            retry_args["x-dead-letter-exchange"].as_str(),
+            Some(main_exchange.as_str()),
+            "Retry queue '{retry_queue}' should have x-dead-letter-exchange pointing to main exchange '{main_exchange}'"
+        );
+        assert_eq!(
+            retry_args["x-dead-letter-routing-key"].as_str(),
+            Some(queue_name.as_str()),
+            "Retry queue '{retry_queue}' should have x-dead-letter-routing-key='{queue_name}'"
+        );
+    }
+}

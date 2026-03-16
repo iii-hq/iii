@@ -4,10 +4,11 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use tokio::sync::OnceCell;
 
-/// Holds a running RabbitMQ container and its AMQP URL.
+/// Holds a running RabbitMQ container and its AMQP + Management URLs.
 /// The container lives for the lifetime of the static OnceCell (entire test process).
 pub struct RabbitMqTestContext {
     pub amqp_url: String,
+    pub mgmt_url: String,
     _container: ContainerAsync<RabbitMq>,
 }
 
@@ -27,9 +28,15 @@ pub async fn get_rabbitmq() -> &'static RabbitMqTestContext {
                 .get_host_port_ipv4(5672)
                 .await
                 .expect("Failed to get RabbitMQ port");
+            let mgmt_port = container
+                .get_host_port_ipv4(15672)
+                .await
+                .expect("Failed to get RabbitMQ management port");
             let amqp_url = format!("amqp://guest:guest@127.0.0.1:{}", port);
+            let mgmt_url = format!("http://127.0.0.1:{}", mgmt_port);
             RabbitMqTestContext {
                 amqp_url,
+                mgmt_url,
                 _container: container,
             }
         })
