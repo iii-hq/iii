@@ -20,10 +20,6 @@
             "pages": ["index", "tutorials/quickstart"]
           },
           {
-            "group": "Tutorials",
-            "pages": ["tutorials/index", "tutorials/quickstart"]
-          },
-          {
             "group": "Primitives & Concepts",
             "pages": [
               "primitives-and-concepts/index",
