@@ -53,8 +53,8 @@ Requirements for this hardening initiative. Each maps to roadmap phases.
 
 ### Backlog Documentation
 
-- [ ] **BLOG-01**: Backlog document created with future reliability improvements (circuit breaker, body size limits, consumer crash recovery, message deduplication, DNS rebinding fix)
-- [ ] **BLOG-02**: Backlog document includes future feature additions (priority queues, scheduled jobs UI, retry policies, Redis adapter hardening)
+- [x] **BLOG-01**: Backlog document created with future reliability improvements (circuit breaker, body size limits, consumer crash recovery, message deduplication, DNS rebinding fix)
+- [x] **BLOG-02**: Backlog document includes future feature additions (priority queues, scheduled jobs UI, retry policies, Redis adapter hardening)
 
 ## v2 Requirements
 
@@ -124,8 +124,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FIX-01 | Phase 3 | Complete |
 | FIX-02 | Phase 4 | Complete |
 | FIX-03 | Phase 10 | Pending |
-| BLOG-01 | Phase 10 | Pending |
-| BLOG-02 | Phase 10 | Pending |
+| BLOG-01 | Phase 10 | Complete |
+| BLOG-02 | Phase 10 | Complete |
 
 **Coverage:**
 - v1 requirements: 31 total
