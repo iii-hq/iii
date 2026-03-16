@@ -41,6 +41,10 @@ pub trait QueueAdapter: Send + Sync + 'static {
     async fn unsubscribe(&self, topic: &str, id: &str);
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64>;
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64>;
+    async fn dlq_messages(&self, topic: &str, count: usize) -> anyhow::Result<Vec<Value>> {
+        let _ = (topic, count);
+        Ok(vec![])
+    }
 
     // Function queue transport methods
     async fn publish_to_function_queue(

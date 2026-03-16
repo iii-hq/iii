@@ -52,6 +52,18 @@ pub async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
         .expect("dlq_count should not fail")
 }
 
+/// Returns up to `count` DLQ messages for a function queue as parsed JSON Values.
+/// Each message has structure: { "job": {...}, "error": "...", "failed_at": u64 }
+pub async fn dlq_messages(engine: &Engine, queue_name: &str, count: usize) -> Vec<Value> {
+    let guard = engine.queue_module.read().await;
+    let qm = guard
+        .as_ref()
+        .expect("queue_module should be set after initialize");
+    qm.function_queue_dlq_messages(queue_name, count)
+        .await
+        .expect("dlq_messages should not fail")
+}
+
 /// Registers a test function whose handler increments a shared counter on
 /// every invocation.
 pub fn register_counting_function(engine: &Arc<Engine>, function_id: &str, counter: Arc<AtomicU64>) {

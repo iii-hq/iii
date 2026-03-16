@@ -110,6 +110,12 @@ impl QueueCoreModule {
         self.adapter.dlq_count(&namespaced).await
     }
 
+    /// Returns up to `count` DLQ messages for a function queue as parsed JSON Values.
+    pub async fn function_queue_dlq_messages(&self, queue_name: &str, count: usize) -> anyhow::Result<Vec<Value>> {
+        let namespaced = format!("__fn_queue::{}", queue_name);
+        self.adapter.dlq_messages(&namespaced, count).await
+    }
+
     #[function(id = "enqueue", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
@@ -168,6 +174,10 @@ impl QueueEnqueuer for QueueCoreModule {
 
     async fn function_queue_dlq_count(&self, queue_name: &str) -> anyhow::Result<u64> {
         self.function_queue_dlq_count(queue_name).await
+    }
+
+    async fn function_queue_dlq_messages(&self, queue_name: &str, count: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.function_queue_dlq_messages(queue_name, count).await
     }
 }
 

@@ -667,6 +667,15 @@ impl BuiltinQueue {
         self.kv_store.llen(&dlq_key).await as u64
     }
 
+    pub async fn dlq_messages(&self, queue: &str, count: usize) -> Vec<Value> {
+        let dlq_key = self.dlq_key(queue);
+        let raw_items = self.kv_store.lrange(&dlq_key, count).await;
+        raw_items
+            .into_iter()
+            .filter_map(|item| serde_json::from_str::<Value>(&item).ok())
+            .collect()
+    }
+
     pub async fn dlq_redrive(&self, queue: &str) -> u64 {
         let dlq_key = self.dlq_key(queue);
         let mut count = 0;
