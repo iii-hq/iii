@@ -33,6 +33,18 @@ pub fn permissive_invoker() -> HttpInvoker {
     .expect("create permissive invoker")
 }
 
+pub fn strict_invoker() -> HttpInvoker {
+    HttpInvoker::new(HttpInvokerConfig {
+        url_validator: UrlValidatorConfig {
+            require_https: true,
+            block_private_ips: true,
+            allowlist: vec!["*".to_string()],
+        },
+        ..HttpInvokerConfig::default()
+    })
+    .expect("create strict invoker")
+}
+
 pub fn store_request(
     capture: &RequestCapture,
     method: AxumMethod,

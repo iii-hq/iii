@@ -36,11 +36,11 @@ Requirements for this hardening initiative. Each maps to roadmap phases.
 
 ### HTTP Invoker E2E Tests
 
-- [ ] **HTTP-01**: E2E test verifies timeout behavior when remote endpoint is slow (response exceeds configured timeout)
-- [ ] **HTTP-02**: E2E test verifies connection refused handling returns clear error with actionable message
-- [ ] **HTTP-03**: E2E test verifies structured error response parsing (error.code, error.message from JSON)
-- [ ] **HTTP-04**: E2E test verifies unstructured error response fallback to HTTP status message
-- [ ] **HTTP-05**: E2E test verifies empty response body (204 No Content) returns None successfully
+- [x] **HTTP-01**: E2E test verifies timeout behavior when remote endpoint is slow (response exceeds configured timeout)
+- [x] **HTTP-02**: E2E test verifies connection refused handling returns clear error with actionable message
+- [x] **HTTP-03**: E2E test verifies structured error response parsing (error.code, error.message from JSON)
+- [x] **HTTP-04**: E2E test verifies unstructured error response fallback to HTTP status message
+- [x] **HTTP-05**: E2E test verifies empty response body (204 No Content) returns None successfully
 - [ ] **HTTP-06**: E2E test verifies private IP blocking rejects requests to RFC1918 addresses
 - [ ] **HTTP-07**: E2E test verifies HTTPS enforcement rejects HTTP URLs when require_https is enabled
 - [ ] **HTTP-08**: E2E test verifies DNS failure handling returns SecurityError::DnsLookupFailed
@@ -113,11 +113,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QRMQ-05 | Phase 8 | Pending |
 | QRMQ-06 | Phase 9 | Pending |
 | QRMQ-07 | Phase 7 | Pending |
-| HTTP-01 | Phase 5 | Pending |
-| HTTP-02 | Phase 5 | Pending |
-| HTTP-03 | Phase 5 | Pending |
-| HTTP-04 | Phase 5 | Pending |
-| HTTP-05 | Phase 5 | Pending |
+| HTTP-01 | Phase 5 | Complete |
+| HTTP-02 | Phase 5 | Complete |
+| HTTP-03 | Phase 5 | Complete |
+| HTTP-04 | Phase 5 | Complete |
+| HTTP-05 | Phase 5 | Complete |
 | HTTP-06 | Phase 6 | Pending |
 | HTTP-07 | Phase 6 | Pending |
 | HTTP-08 | Phase 6 | Pending |

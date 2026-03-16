@@ -90,11 +90,10 @@ Plans:
   3. An E2E test verifies structured JSON error responses (error.code, error.message) are parsed and surfaced to the caller
   4. An E2E test verifies non-JSON error responses fall back to HTTP status message
   5. An E2E test verifies 204 No Content with empty body returns None successfully
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md — E2E tests for timeout, connection refused, structured/unstructured error parsing, and 204 empty body (HTTP-01 through HTTP-05)
 
 ### Phase 6: HTTP Invoker Security
 **Goal**: The HTTP invoker's security validations reject dangerous requests and produce specific, informative error types
@@ -170,8 +169,8 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 | 1. Test Infrastructure | 0/2 | Complete    | 2026-03-16 |
 | 2. Builtin Queue Happy Path | 0/1 | Complete    | 2026-03-16 |
 | 3. Builtin Queue Failure & Retry | 1/2 | Complete    | 2026-03-16 |
-| 4. Builtin Queue Concurrency & Resilience | 2/2 | Complete   | 2026-03-16 |
-| 5. HTTP Invoker Error Handling | 0/? | Not started | - |
+| 4. Builtin Queue Concurrency & Resilience | 2/2 | Complete    | 2026-03-16 |
+| 5. HTTP Invoker Error Handling | 0/1 | Not started | - |
 | 6. HTTP Invoker Security | 0/? | Not started | - |
 | 7. RabbitMQ Happy Path & Topology | 0/? | Not started | - |
 | 8. RabbitMQ Failure & Retry | 0/? | Not started | - |
