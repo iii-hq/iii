@@ -129,6 +129,10 @@ class ChannelWriter:
 
     async def close_async(self) -> None:
         if self._ws is not None and self._connected:
+            # Delay the close frame slightly to allow the TCP stack to flush
+            # all buffered send() data. Without this, the close frame can arrive
+            # at the engine before all data frames, causing data truncation.
+            await asyncio.sleep(0.01)
             await self._ws.close()
             self._connected = False
 

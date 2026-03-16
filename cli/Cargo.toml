@@ -5,6 +5,10 @@ edition = "2021"
 description = "Unified CLI dispatcher for iii-engine tools"
 license = "Apache-2.0"
 
+[lib]
+name = "iii_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "iii-cli"
 path = "src/main.rs"
@@ -27,11 +31,13 @@ zip = "2"
 dirs = "6"
 sha2 = "0.10"
 futures-util = "0.3"
+toml = { version = "0.8", features = ["preserve_order"] }
+toml_edit = "0.22"
+serde_yml = "0.0.12"
 uuid = { version = "1", features = ["v4"] }
-toml = "0.8"
 
 [dev-dependencies]
-tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+tempfile = "3"
 serial_test = "3"
