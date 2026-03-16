@@ -77,9 +77,9 @@ npm install iii-sdk
 ### Basic Usage
 
 ```typescript
-import {Logger} from 'iii-sdk'
+import { registerWorker, Logger } from 'iii-sdk'
 
-const iii = init('ws://127.0.0.1:49134')
+const iii = registerWorker('ws://127.0.0.1:49134')
 
 iii.registerFunction(
   { id: 'users::create', description: 'Create a user' },
@@ -116,7 +116,7 @@ OpenTelemetry is initialized automatically by default. Each function invocation 
 
 | Import | Contents |
 | --- | --- |
-| `iii-sdk` | `init`, `Logger`, `OTel context`, `Logger`, `ISdk`, `ApiRequest`, `ApiResponse` |
+| `iii-sdk` | `registerWorker`, `Logger`, `OTel context`, `ISdk`, `ApiRequest`, `ApiResponse` |
 | `iii-sdk/stream` | `IStream`, stream input/output types, `UpdateOp` |
 | `iii-sdk/state` | State management types |
 | `iii-sdk/telemetry` | `initOtel`, `getTracer`, `getMeter`, `withSpan`, `SpanKind`, etc. |
@@ -241,14 +241,14 @@ iii-sdk = { version = "0.2", features = ["otel"] }
 ### Basic Usage
 
 ```rust
-use iii_sdk::{InitOptions, Logger, register_worker};
+use iii_sdk::{InitOptions, Logger, register_worker, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("users::create", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "users::create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let logger = Logger();
         logger.info("Creating user", None);
         Ok(json!({
@@ -257,10 +257,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
     });
 
-    iii.register_trigger("http", "users::create", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "users::create".into(), config: json!({
         "api_path": "/users",
         "http_method": "POST",
-    }))?;
+    }) })?;
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -417,9 +417,9 @@ def handler(data) -> ApiResponse:
       <Tab value="Rust">
 
 ```rust
-use iii_sdk::types::ApiRequest;
+use iii_sdk::{types::ApiRequest, RegisterFunctionMessage};
 
-iii.register_function("handler", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "handler".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let req: ApiRequest = serde_json::from_value(input)?;
     Ok(json!({ "status_code": 200, "body": { "ok": true } }))
 });

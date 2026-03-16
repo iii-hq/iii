@@ -151,9 +151,9 @@ async def process_order(data):
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::telemetry::with_span;
+use iii_sdk::{telemetry::with_span, RegisterFunctionMessage};
 
-iii.register_function("orders::process", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "orders::process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     with_span("validate-order", |span| async move {
         span.set_attribute("order.id", input["orderId"].as_str().unwrap_or_default());
         let valid = validate_order(&input).await?;
@@ -228,9 +228,9 @@ Subscribe to OpenTelemetry log events from the engine using `onLog()`. Logs incl
   <Tab value="Node / TypeScript">
 
 ```typescript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
 iii.onLog((log) => {
   console.log(`[${log.severity_text}] ${log.body}`)
