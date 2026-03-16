@@ -5,13 +5,42 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>iii | Interoperable Invocation Interface</title>
 
-    <!-- Google tag (gtag.js) -->  
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-E4G8GW1J2Q"></script>
+    <!-- Google tag (gtag.js) -->
+    <script
+      async
+      src="https://www.googletagmanager.com/gtag/js?id=G-E4G8GW1J2Q"
+    ></script>
     <script>
       window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
+      function gtag() {
+        dataLayer.push(arguments);
+      }
       gtag('js', new Date());
       gtag('config', 'G-E4G8GW1J2Q');
+    </script>
+
+    <!-- CommonRoom -->
+    <script>
+      (function () {
+        if (typeof window === 'undefined') return;
+        if (typeof window.signals !== 'undefined') return;
+        var script = document.createElement('script');
+        script.src =
+          'https://cdn.cr-relay.com/v1/site/da18833a-8f00-4ad0-9833-6608b59a713a/signals.js';
+        script.async = true;
+        window.signals = Object.assign(
+          [],
+          { _opts: { apiHost: 'https://api.cr-relay.com' } },
+          ['page', 'identify', 'form'].reduce(function (acc, method) {
+            acc[method] = function () {
+              signals.push([method, arguments]);
+              return signals;
+            };
+            return acc;
+          }, {}),
+        );
+        document.head.appendChild(script);
+      })();
     </script>
 
     <!-- Favicon -->
@@ -66,48 +95,48 @@
         theme: {
           extend: {
             fontFamily: {
-              chivo: ['"Chivo Mono"', "monospace"],
+              chivo: ['"Chivo Mono"', 'monospace'],
             },
             colors: {
               iii: {
-                black: "var(--color-black)",
-                dark: "var(--color-dark)",
-                medium: "var(--color-medium)",
-                "medium-dark": "var(--color-medium-dark)",
-                "medium-light": "var(--color-medium-light)",
-                light: "var(--color-light)",
-                accent: "var(--color-accent)",
-                "accent-light": "var(--color-accent-light)",
-                info: "var(--color-info)",
-                warn: "var(--color-warn)",
-                alert: "var(--color-alert)",
-                success: "var(--color-success)",
+                black: 'var(--color-black)',
+                dark: 'var(--color-dark)',
+                medium: 'var(--color-medium)',
+                'medium-dark': 'var(--color-medium-dark)',
+                'medium-light': 'var(--color-medium-light)',
+                light: 'var(--color-light)',
+                accent: 'var(--color-accent)',
+                'accent-light': 'var(--color-accent-light)',
+                info: 'var(--color-info)',
+                warn: 'var(--color-warn)',
+                alert: 'var(--color-alert)',
+                success: 'var(--color-success)',
               },
             },
             animation: {
-              "pulse-fast": "pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite",
-              glitch: "glitch 1s linear infinite",
-              flow: "flow 20s linear infinite",
-              "fade-in-up": "fadeInUp 0.8s ease-out forwards",
-              "fade-in": "fadeIn 0.5s ease-out forwards",
+              'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+              glitch: 'glitch 1s linear infinite',
+              flow: 'flow 20s linear infinite',
+              'fade-in-up': 'fadeInUp 0.8s ease-out forwards',
+              'fade-in': 'fadeIn 0.5s ease-out forwards',
             },
             keyframes: {
               fadeInUp: {
-                "0%": { opacity: "0", transform: "translateY(20px)" },
-                "100%": { opacity: "1", transform: "translateY(0)" },
+                '0%': { opacity: '0', transform: 'translateY(20px)' },
+                '100%': { opacity: '1', transform: 'translateY(0)' },
               },
               fadeIn: {
-                "0%": { opacity: "0" },
-                "100%": { opacity: "1" },
+                '0%': { opacity: '0' },
+                '100%': { opacity: '1' },
               },
               glitch: {
-                "2%, 64%": { transform: "translate(2px,0) skew(0deg)" },
-                "4%, 60%": { transform: "translate(-2px,0) skew(0deg)" },
-                "62%": { transform: "translate(0,0) skew(5deg)" },
+                '2%, 64%': { transform: 'translate(2px,0) skew(0deg)' },
+                '4%, 60%': { transform: 'translate(-2px,0) skew(0deg)' },
+                '62%': { transform: 'translate(0,0) skew(5deg)' },
               },
               flow: {
-                "0%": { backgroundPosition: "0 0" },
-                "100%": { backgroundPosition: "0 100%" },
+                '0%': { backgroundPosition: '0 0' },
+                '100%': { backgroundPosition: '0 100%' },
               },
             },
           },
@@ -118,7 +147,7 @@
       body {
         background-color: var(--color-black);
         color: var(--color-light);
-        font-family: "Chivo Mono", monospace;
+        font-family: 'Chivo Mono', monospace;
         overflow-x: hidden;
       }
     </style>
