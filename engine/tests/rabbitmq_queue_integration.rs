@@ -26,10 +26,11 @@ use iii::{
 use common::queue_helpers::{
     enqueue, dlq_count,
     register_counting_function, register_failing_function,
+    register_failing_function_with_timestamps,
     register_order_recording_function, register_payload_capturing_function,
     register_slow_function,
 };
-use common::rabbitmq_helpers::{get_rabbitmq, test_prefix, rabbitmq_queue_config};
+use common::rabbitmq_helpers::{get_rabbitmq, test_prefix, rabbitmq_queue_config, rabbitmq_queue_config_custom};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -636,6 +637,76 @@ async fn rmq_topology_matches_expected_configuration() {
             retry_args["x-dead-letter-routing-key"].as_str(),
             Some(queue_name.as_str()),
             "Retry queue '{retry_queue}' should have x-dead-letter-routing-key='{queue_name}'"
+        );
+    }
+}
+
+#[tokio::test]
+async fn rmq_retry_backoff_timing_is_flat() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let backoff_ms: u64 = 500;
+    let max_retries: u32 = 3;
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let call_count = Arc::new(AtomicU64::new(0));
+    let timestamps: Arc<Mutex<Vec<std::time::Instant>>> = Arc::new(Mutex::new(Vec::new()));
+    register_failing_function_with_timestamps(
+        &engine,
+        "test::rmq_flat_backoff",
+        call_count.clone(),
+        timestamps.clone(),
+    );
+
+    let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, max_retries, backoff_ms);
+    let module = QueueCoreModule::create(engine.clone(), Some(config))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    enqueue(
+        &engine,
+        &format!("{prefix}-test"),
+        "test::rmq_flat_backoff",
+        json!({"key": "flat_backoff_test"}),
+    )
+    .await
+    .expect("Enqueue should succeed");
+
+    // max_retries=3 means attempts 0,1,2 retry and attempt 3 goes to DLQ = 4 total invocations
+    // 3 retry intervals * 500ms + generous overhead
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    let total_calls = call_count.load(Ordering::SeqCst);
+    assert_eq!(
+        total_calls, 4,
+        "Expected 4 handler invocations (1 initial + 3 retries), got {total_calls}"
+    );
+
+    let ts = timestamps.lock().await;
+    assert_eq!(
+        ts.len(),
+        4,
+        "Expected 4 timestamps recorded, got {}",
+        ts.len()
+    );
+
+    // Verify FLAT backoff: all 3 retry intervals should be approximately equal (~500ms)
+    // NOT exponentially growing. Use tolerant bounds for CI stability.
+    for i in 0..3 {
+        let interval = ts[i + 1].duration_since(ts[i]);
+        assert!(
+            interval >= Duration::from_millis(400) && interval <= Duration::from_millis(3000),
+            "Retry interval {i} should be ~{backoff_ms}ms (flat TTL backoff), got {:?}",
+            interval
         );
     }
 }

@@ -48,6 +48,33 @@ pub fn test_prefix() -> String {
     uuid::Uuid::new_v4().to_string()[..8].to_string()
 }
 
+/// Creates a RabbitMQ adapter queue config with a single queue named `"{prefix}-test"`
+/// using the given `max_retries` and `backoff_ms`. Useful for focused failure/retry tests.
+pub fn rabbitmq_queue_config_custom(
+    amqp_url: &str,
+    prefix: &str,
+    max_retries: u32,
+    backoff_ms: u64,
+) -> Value {
+    json!({
+        "adapter": {
+            "class": "modules::queue::RabbitMQAdapter",
+            "config": {
+                "amqp_url": amqp_url
+            }
+        },
+        "queue_configs": {
+            format!("{prefix}-test"): {
+                "type": "standard",
+                "concurrency": 1,
+                "max_retries": max_retries,
+                "backoff_ms": backoff_ms,
+                "poll_interval_ms": 100
+            }
+        }
+    })
+}
+
 /// Creates a RabbitMQ adapter queue config with the given AMQP URL and prefix.
 /// Defines two queues: "{prefix}-default" (standard) and "{prefix}-payment" (fifo).
 pub fn rabbitmq_queue_config(amqp_url: &str, prefix: &str) -> Value {
