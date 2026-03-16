@@ -143,6 +143,7 @@ subtle = "2.6"
 [dev-dependencies]
 mockall = "0.13"
 serial_test = "3"
+temp-env = "0.3"
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 tokio-tungstenite = "0.28"
 tempfile = "3"
