@@ -27,7 +27,9 @@ use common::queue_helpers::{
     enqueue, dlq_count,
     register_counting_function, register_failing_function,
     register_failing_function_with_timestamps,
-    register_order_recording_function, register_payload_capturing_function,
+    register_group_order_recording_function,
+    register_order_recording_function, register_panicking_function,
+    register_payload_capturing_function,
     register_slow_function,
 };
 use common::rabbitmq_helpers::{get_rabbitmq, test_prefix, rabbitmq_queue_config, rabbitmq_queue_config_custom};
@@ -889,4 +891,105 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     // Do NOT assert x-attempt header for max_retries=0:
     // The message goes directly to DLQ via nack without being republished
     // to the retry exchange, so no x-attempt header is set.
+}
+
+#[tokio::test]
+async fn rmq_fifo_multi_group_ordering() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let records: Arc<Mutex<Vec<(String, i64)>>> = Arc::new(Mutex::new(Vec::new()));
+    register_group_order_recording_function(
+        &engine,
+        "test::rmq_fifo_group",
+        "group",
+        "seq",
+        records.clone(),
+        Duration::from_millis(0),
+    );
+
+    // Build FIFO queue config inline (single queue, not the two-queue helper)
+    let config = json!({
+        "adapter": {
+            "class": "modules::queue::RabbitMQAdapter",
+            "config": { "amqp_url": ctx.amqp_url }
+        },
+        "queue_configs": {
+            format!("{prefix}-fifo"): {
+                "type": "fifo",
+                "message_group_field": "group",
+                "concurrency": 1,
+                "max_retries": 2,
+                "backoff_ms": 200,
+                "poll_interval_ms": 100
+            }
+        }
+    });
+
+    let module = QueueCoreModule::create(engine.clone(), Some(config))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    // Enqueue 3 groups x 5 messages INTERLEAVED to stress ordering guarantee
+    let groups = ["A", "B", "C"];
+    let messages_per_group = 5;
+    for seq in 0..messages_per_group {
+        for group in &groups {
+            enqueue(
+                &engine,
+                &format!("{prefix}-fifo"),
+                "test::rmq_fifo_group",
+                json!({"group": group, "seq": seq}),
+            )
+            .await
+            .expect("Enqueue should succeed");
+        }
+    }
+
+    // 15 messages sequential with RabbitMQ I/O overhead
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    let recs = records.lock().await;
+    assert_eq!(
+        recs.len(),
+        15,
+        "All 15 messages should have been processed, got {}",
+        recs.len()
+    );
+
+    // Verify per-group FIFO ordering: sequence numbers must be strictly increasing
+    for group in &groups {
+        let group_seqs: Vec<i64> = recs
+            .iter()
+            .filter(|(g, _)| g == group)
+            .map(|(_, s)| *s)
+            .collect();
+        assert_eq!(
+            group_seqs.len(),
+            messages_per_group as usize,
+            "Group {} should have {} messages, got {}",
+            group,
+            messages_per_group,
+            group_seqs.len()
+        );
+        for window in group_seqs.windows(2) {
+            assert!(
+                window[0] < window[1],
+                "FIFO violation in group {}: seq {} came before seq {}",
+                group,
+                window[0],
+                window[1]
+            );
+        }
+    }
 }
