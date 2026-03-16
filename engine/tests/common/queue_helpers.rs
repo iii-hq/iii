@@ -143,6 +143,47 @@ pub fn register_slow_function(
         .register_function(function_id.to_string(), function);
 }
 
+/// Registers a test function that records `(group_id, sequence_number)` tuples
+/// from each invocation, then sleeps for `processing_delay` to simulate work.
+/// This makes concurrent group processing observable in timing assertions.
+pub fn register_group_order_recording_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    group_field: &'static str,
+    seq_field: &'static str,
+    records: Arc<Mutex<Vec<(String, i64)>>>,
+    processing_delay: Duration,
+) {
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, input| {
+            let rec = records.clone();
+            let delay = processing_delay;
+            Box::pin(async move {
+                let group_id = input
+                    .get(group_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let seq = input
+                    .get(seq_field)
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(-1);
+                rec.lock().await.push((group_id, seq));
+                tokio::time::sleep(delay).await;
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("group order recording test handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+}
+
 /// Registers a test function that always fails (returns FunctionResult::Failure).
 /// Records the number of invocations in `call_count`.
 pub fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count: Arc<AtomicU64>) {

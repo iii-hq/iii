@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 current_plan: 2
 status: executing
-stopped_at: Completed 03-02-PLAN.md
-last_updated: "2026-03-16T15:08:16.889Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-16T15:40:03.543Z"
 last_activity: 2026-03-16
 progress:
   total_phases: 10
   completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 7
+  completed_plans: 6
   percent: 0
 ---
 
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 02 P01 | 6min | 2 tasks | 2 files |
 | Phase 03 P01 | 4min | 2 tasks | 7 files |
 | Phase 03 P02 | 7min | 2 tasks | 2 files |
+| Phase 04 P01 | 4min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,8 @@ Recent decisions affecting current work:
 - [Phase 03]: Default no-op for dlq_messages in QueueAdapter trait avoids changes to Redis/RabbitMQ adapters
 - [Phase 03]: Used real wall-clock time for retry tests because function queue nack path uses SystemTime::now()
 - [Phase 03]: Function queue consumer always uses nack->delayed->re-poll path, never FIFO inline retry
+- [Phase 04]: Used catch_unwind + AssertUnwindSafe over JoinHandle::is_panic for panic-safe consumer
+- [Phase 04]: Inline BuiltinQueue construction in concurrency test avoids reliance on private make_queue_kv helper
 
 ### Pending Todos
 
@@ -90,6 +93,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-16T15:08:16.887Z
-Stopped at: Completed 03-02-PLAN.md
+Last session: 2026-03-16T15:40:03.541Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None
