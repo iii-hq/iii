@@ -169,14 +169,14 @@ pub fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_c
         .register_function(function_id.to_string(), function);
 }
 
-/// Registers a test function that always fails AND records the tokio::time::Instant
-/// of each invocation. Use with `#[tokio::test(start_paused = true)]` for deterministic
-/// backoff timing verification.
+/// Registers a test function that always fails AND records the std::time::Instant
+/// of each invocation. Use for measuring real wall-clock backoff timing in tests
+/// that exercise the function queue consumer path (nack -> delayed -> re-poll).
 pub fn register_failing_function_with_timestamps(
     engine: &Arc<Engine>,
     function_id: &str,
     call_count: Arc<AtomicU64>,
-    timestamps: Arc<Mutex<Vec<tokio::time::Instant>>>,
+    timestamps: Arc<Mutex<Vec<std::time::Instant>>>,
 ) {
     let function = Function {
         handler: Arc::new(move |_invocation_id, _input| {
@@ -184,7 +184,7 @@ pub fn register_failing_function_with_timestamps(
             let ts = timestamps.clone();
             Box::pin(async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                ts.lock().await.push(tokio::time::Instant::now());
+                ts.lock().await.push(std::time::Instant::now());
                 FunctionResult::Failure(iii::protocol::ErrorBody {
                     code: "FAIL".to_string(),
                     message: "intentional failure for timing".to_string(),
