@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: HTTP Invoker Error Handling** - E2E tests for timeouts, connection errors, and response parsing (completed 2026-03-16)
 - [x] **Phase 6: HTTP Invoker Security** - E2E tests for private IP blocking, HTTPS enforcement, and DNS failure (completed 2026-03-16)
 - [x] **Phase 7: RabbitMQ Happy Path & Topology** - E2E tests for RabbitMQ enqueue-process-ack and exchange routing (completed 2026-03-16)
-- [ ] **Phase 8: RabbitMQ Failure & Retry** - E2E tests for RabbitMQ TTL-based retry, DLQ exhaustion, and boundary cases
+- [x] **Phase 8: RabbitMQ Failure & Retry** - E2E tests for RabbitMQ TTL-based retry, DLQ exhaustion, and boundary cases (completed 2026-03-16)
 - [ ] **Phase 9: RabbitMQ Concurrency & Resilience** - E2E tests for RabbitMQ FIFO ordering and panic recovery
 - [ ] **Phase 10: Auth Cleanup & Backlog Documentation** - Auth test env safety fix and future improvement backlog
 
@@ -140,10 +140,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. An E2E test verifies FIFO ordering via RabbitMQ with message group support under concurrent consumers
   2. An E2E test triggers a handler panic with the RabbitMQ adapter and verifies the message is nack'd and retried or moved to DLQ
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 09-01: TBD
+- [ ] 09-01-PLAN.md — E2E tests for RabbitMQ FIFO multi-group ordering (QRMQ-04) and handler panic recovery with DLQ verification (QRMQ-06)
 
 ### Phase 10: Auth Cleanup & Backlog Documentation
 **Goal**: Unsafe test patterns are removed and all identified future improvements are documented in a structured backlog
@@ -173,6 +173,6 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 | 5. HTTP Invoker Error Handling | 0/1 | Complete    | 2026-03-16 |
 | 6. HTTP Invoker Security | 0/1 | Complete    | 2026-03-16 |
 | 7. RabbitMQ Happy Path & Topology | 1/1 | Complete    | 2026-03-16 |
-| 8. RabbitMQ Failure & Retry | 0/1 | Not started | - |
-| 9. RabbitMQ Concurrency & Resilience | 0/? | Not started | - |
+| 8. RabbitMQ Failure & Retry | 0/1 | Complete    | 2026-03-16 |
+| 9. RabbitMQ Concurrency & Resilience | 0/1 | Not started | - |
 | 10. Auth Cleanup & Backlog Documentation | 0/? | Not started | - |
