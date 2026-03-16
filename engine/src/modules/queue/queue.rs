@@ -14,10 +14,10 @@ use async_trait::async_trait;
 use colored::Colorize;
 use function_macros::{function, service};
 use futures::{Future, FutureExt};
-use std::panic::AssertUnwindSafe;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
+use std::panic::AssertUnwindSafe;
 
 use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
 use tracing::Instrument;
@@ -112,7 +112,11 @@ impl QueueCoreModule {
     }
 
     /// Returns up to `count` DLQ messages for a function queue as parsed JSON Values.
-    pub async fn function_queue_dlq_messages(&self, queue_name: &str, count: usize) -> anyhow::Result<Vec<Value>> {
+    pub async fn function_queue_dlq_messages(
+        &self,
+        queue_name: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<Value>> {
         let namespaced = format!("__fn_queue::{}", queue_name);
         self.adapter.dlq_messages(&namespaced, count).await
     }
@@ -177,7 +181,11 @@ impl QueueEnqueuer for QueueCoreModule {
         self.function_queue_dlq_count(queue_name).await
     }
 
-    async fn function_queue_dlq_messages(&self, queue_name: &str, count: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn function_queue_dlq_messages(
+        &self,
+        queue_name: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         self.function_queue_dlq_messages(queue_name, count).await
     }
 }
@@ -334,12 +342,11 @@ impl Module for QueueCoreModule {
                         )
                         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
-                        let result = AssertUnwindSafe(async {
-                            engine.call(&function_id, msg.data).await
-                        })
-                        .catch_unwind()
-                        .instrument(span)
-                        .await;
+                        let result =
+                            AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
+                                .catch_unwind()
+                                .instrument(span)
+                                .await;
 
                         match result {
                             Ok(Ok(_)) => {

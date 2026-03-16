@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
+use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::rabbitmq::RabbitMq;
 use tokio::sync::OnceCell;
 

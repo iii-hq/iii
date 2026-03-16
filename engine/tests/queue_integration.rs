@@ -14,9 +14,8 @@ use iii::{
 };
 
 use common::queue_helpers::{
-    builtin_queue_config, create_engine_with_queue, enqueue, dlq_count,
-    register_counting_function, register_failing_function,
-    register_order_recording_function, register_slow_function,
+    builtin_queue_config, create_engine_with_queue, dlq_count, enqueue, register_counting_function,
+    register_failing_function, register_order_recording_function, register_slow_function,
 };
 
 // ---------------------------------------------------------------------------

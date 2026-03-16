@@ -13,8 +13,8 @@ use iii::{
 };
 
 use common::queue_helpers::{
-    builtin_queue_config, enqueue, enqueue_to_topic,
-    register_payload_capturing_function, register_condition_function,
+    builtin_queue_config, enqueue, enqueue_to_topic, register_condition_function,
+    register_payload_capturing_function,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,14 +44,23 @@ async fn enqueue_process_ack_preserves_payload() {
         "nested": {"a": {"b": {"c": true}}}
     });
 
-    enqueue(&engine, "default", "test::payload_check", sent_payload.clone())
-        .await
-        .expect("enqueue should succeed");
+    enqueue(
+        &engine,
+        "default",
+        "test::payload_check",
+        sent_payload.clone(),
+    )
+    .await
+    .expect("enqueue should succeed");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let received = captured_payloads.lock().await;
-    assert_eq!(received.len(), 1, "handler should have been invoked exactly once");
+    assert_eq!(
+        received.len(),
+        1,
+        "handler should have been invoked exactly once"
+    );
     assert_eq!(
         received[0], sent_payload,
         "received payload must match sent payload structurally"

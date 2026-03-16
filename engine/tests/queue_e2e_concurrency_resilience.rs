@@ -17,9 +17,7 @@ use iii::engine::Engine;
 use iii::modules::{module::Module, queue::QueueCoreModule};
 use tokio::sync::Mutex;
 
-use common::queue_helpers::{
-    dlq_count, enqueue, register_panicking_function,
-};
+use common::queue_helpers::{dlq_count, enqueue, register_panicking_function};
 
 // ---------------------------------------------------------------------------
 // QBLT-06: Handler panic does not crash the consumer loop
@@ -152,7 +150,10 @@ async fn move_delayed_to_waiting_no_duplicates() {
 
     // Wait for all tasks to complete
     for handle in handles {
-        handle.await.expect("task should not panic").expect("move_delayed_to_waiting should not error");
+        handle
+            .await
+            .expect("task should not panic")
+            .expect("move_delayed_to_waiting should not error");
     }
 
     // Check: exactly 10 entries in waiting queue (not 20, 30, etc.)
@@ -204,11 +205,7 @@ impl JobHandler for GroupOrderRecordingHandler {
             .group_id
             .clone()
             .unwrap_or_else(|| "default".to_string());
-        let seq = job
-            .data
-            .get("seq")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1);
+        let seq = job.data.get("seq").and_then(|v| v.as_i64()).unwrap_or(-1);
         self.records.lock().await.push((group_id, seq));
         tokio::time::sleep(self.processing_delay).await;
         Ok(())

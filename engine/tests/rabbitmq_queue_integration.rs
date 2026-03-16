@@ -24,15 +24,14 @@ use iii::{
 };
 
 use common::queue_helpers::{
-    enqueue, dlq_count,
-    register_counting_function, register_failing_function,
-    register_failing_function_with_timestamps,
-    register_group_order_recording_function,
+    dlq_count, enqueue, register_counting_function, register_failing_function,
+    register_failing_function_with_timestamps, register_group_order_recording_function,
     register_order_recording_function, register_panicking_function,
-    register_payload_capturing_function,
-    register_slow_function,
+    register_payload_capturing_function, register_slow_function,
 };
-use common::rabbitmq_helpers::{get_rabbitmq, test_prefix, rabbitmq_queue_config, rabbitmq_queue_config_custom};
+use common::rabbitmq_helpers::{
+    get_rabbitmq, rabbitmq_queue_config, rabbitmq_queue_config_custom, test_prefix,
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -51,9 +50,12 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::rmq_handler", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -92,9 +94,12 @@ async fn full_roundtrip_fifo_preserves_order() {
     let invocation_order: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_order_recording_function(&engine, "test::rmq_fifo", "seq", invocation_order.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -146,9 +151,12 @@ async fn retry_behavior_with_rabbitmq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_retry", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -197,9 +205,12 @@ async fn exhausted_message_lands_in_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -249,9 +260,12 @@ async fn concurrent_processing() {
         timestamps.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -306,9 +320,12 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::rmq_default", default_count.clone());
     register_counting_function(&engine, "test::rmq_payment", payment_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -468,9 +485,12 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::rmq_payload", captured.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -525,9 +545,12 @@ async fn rmq_topology_matches_expected_configuration() {
     register_counting_function(&engine, "test::rmq_topo_default", default_count);
     register_counting_function(&engine, "test::rmq_topo_payment", payment_count);
 
-    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
-        .await
-        .expect("QueueCoreModule::create should succeed");
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
 
     module
         .initialize()
@@ -597,7 +620,10 @@ async fn rmq_topology_matches_expected_configuration() {
 
         // Verify main queue arguments: x-dead-letter-exchange -> DLQ exchange
         let main_resp: Value = client
-            .get(format!("{}/api/queues/%2f/{}", ctx.mgmt_url, encoded_main_queue))
+            .get(format!(
+                "{}/api/queues/%2f/{}",
+                ctx.mgmt_url, encoded_main_queue
+            ))
             .basic_auth("guest", Some("guest"))
             .send()
             .await
@@ -615,7 +641,10 @@ async fn rmq_topology_matches_expected_configuration() {
 
         // Verify retry queue arguments: x-message-ttl, x-dead-letter-exchange, x-dead-letter-routing-key
         let retry_resp: Value = client
-            .get(format!("{}/api/queues/%2f/{}", ctx.mgmt_url, encoded_retry_queue))
+            .get(format!(
+                "{}/api/queues/%2f/{}",
+                ctx.mgmt_url, encoded_retry_queue
+            ))
             .basic_auth("guest", Some("guest"))
             .send()
             .await

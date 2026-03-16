@@ -52,7 +52,11 @@ pub trait QueueEnqueuer: Send + Sync {
         Ok(0)
     }
 
-    async fn function_queue_dlq_messages(&self, _queue_name: &str, _count: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+    async fn function_queue_dlq_messages(
+        &self,
+        _queue_name: &str,
+        _count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         Ok(vec![])
     }
 }

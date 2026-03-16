@@ -66,7 +66,11 @@ pub async fn dlq_messages(engine: &Engine, queue_name: &str, count: usize) -> Ve
 
 /// Registers a test function whose handler increments a shared counter on
 /// every invocation.
-pub fn register_counting_function(engine: &Arc<Engine>, function_id: &str, counter: Arc<AtomicU64>) {
+pub fn register_counting_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    counter: Arc<AtomicU64>,
+) {
     let function = Function {
         handler: Arc::new(move |_invocation_id, _input| {
             let count = counter.clone();
@@ -164,10 +168,7 @@ pub fn register_group_order_recording_function(
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                let seq = input
-                    .get(seq_field)
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(-1);
+                let seq = input.get(seq_field).and_then(|v| v.as_i64()).unwrap_or(-1);
                 rec.lock().await.push((group_id, seq));
                 tokio::time::sleep(delay).await;
                 FunctionResult::Success(Some(json!({ "ok": true })))
@@ -186,7 +187,11 @@ pub fn register_group_order_recording_function(
 
 /// Registers a test function that always fails (returns FunctionResult::Failure).
 /// Records the number of invocations in `call_count`.
-pub fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count: Arc<AtomicU64>) {
+pub fn register_failing_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    call_count: Arc<AtomicU64>,
+) {
     let function = Function {
         handler: Arc::new(move |_invocation_id, _input| {
             let count = call_count.clone();
@@ -333,11 +338,7 @@ pub fn register_panicking_function(
 
 /// Calls `engine.call("enqueue", ...)` with a topic and data payload,
 /// mapping the result to `anyhow::Result<()>`.
-pub async fn enqueue_to_topic(
-    engine: &Engine,
-    topic: &str,
-    data: Value,
-) -> anyhow::Result<()> {
+pub async fn enqueue_to_topic(engine: &Engine, topic: &str, data: Value) -> anyhow::Result<()> {
     use iii::engine::EngineTrait;
     let result = engine
         .call("enqueue", json!({"topic": topic, "data": data}))

@@ -34,9 +34,7 @@ async fn timeout_returns_actionable_error() {
     let mock_server = MockServer::start().await;
 
     Mock::given(any())
-        .respond_with(
-            ResponseTemplate::new(200).set_delay(Duration::from_secs(5)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -71,9 +69,7 @@ async fn timeout_returns_actionable_error() {
 
 #[tokio::test]
 async fn connection_refused_returns_clear_error() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener); // Port is now closed
 
@@ -114,14 +110,12 @@ async fn structured_error_parsed_from_json() {
     let mock_server = MockServer::start().await;
 
     Mock::given(any())
-        .respond_with(
-            ResponseTemplate::new(502).set_body_json(json!({
-                "error": {
-                    "code": "upstream_failure",
-                    "message": "gateway failed"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(502).set_body_json(json!({
+            "error": {
+                "code": "upstream_failure",
+                "message": "gateway failed"
+            }
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -155,9 +149,7 @@ async fn unstructured_error_falls_back_to_status() {
     let mock_server = MockServer::start().await;
 
     Mock::given(any())
-        .respond_with(
-            ResponseTemplate::new(400).set_body_string("bad request"),
-        )
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
         .expect(1)
         .mount(&mock_server)
         .await;
