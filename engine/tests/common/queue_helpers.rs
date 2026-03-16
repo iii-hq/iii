@@ -257,6 +257,39 @@ pub fn register_condition_function(
         .register_function(function_id.to_string(), function);
 }
 
+/// Registers a test function that panics when input contains `{"panic": true}`,
+/// otherwise increments the `success_count` counter and succeeds.
+pub fn register_panicking_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    success_count: Arc<AtomicU64>,
+) {
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, input| {
+            let count = success_count.clone();
+            Box::pin(async move {
+                let should_panic = input
+                    .get("panic")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if should_panic {
+                    panic!("intentional test panic");
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("panicking test handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+}
+
 /// Calls `engine.call("enqueue", ...)` with a topic and data payload,
 /// mapping the result to `anyhow::Result<()>`.
 pub async fn enqueue_to_topic(
