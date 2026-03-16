@@ -115,7 +115,7 @@ class III:
 
         # Auto-connect (non-blocking, matches Node.js constructor behavior)
         self._connected_event = threading.Event()
-        self._schedule_on_loop(self._async_connect())
+        self._schedule_on_loop(self.connect_async())
 
     def _run_on_loop(self, coro: Coroutine[Any, Any, TResult]) -> TResult:
         if threading.current_thread() is self._thread:
@@ -153,11 +153,18 @@ class III:
             >>> # ... do work ...
             >>> iii.shutdown()
         """
-        self._run_on_loop(self._async_shutdown())
+        self._run_on_loop(self.shutdown_async())
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
 
-    async def _async_connect(self) -> None:
+    async def connect_async(self) -> None:
+        """Connect to the III Engine via WebSocket.
+
+        Initializes OpenTelemetry (if configured), attaches the event loop,
+        and establishes the WebSocket connection. This is called automatically
+        during construction -- use it only if you need to reconnect manually
+        from an async context.
+        """
         self._running = True
         try:
             from .telemetry import attach_event_loop, init_otel
@@ -176,7 +183,19 @@ class III:
         self._set_connection_state("connecting")
         await self._do_connect()
 
-    async def _async_shutdown(self) -> None:
+    async def shutdown_async(self) -> None:
+        """Gracefully shut down the client, releasing all resources.
+
+        Cancels any pending reconnection attempts, rejects all in-flight
+        invocations with an error, closes the WebSocket connection, and
+        stops the background event-loop thread.  After this call the
+        instance must not be reused.
+
+        Examples:
+            >>> iii = register_worker('ws://localhost:49134')
+            >>> # ... do work ...
+            >>> await iii.shutdown_async()
+        """
         self._running = False
 
         for task in [self._reconnect_task, self._receiver_task]:
@@ -784,9 +803,31 @@ class III:
             >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
-        return self._run_on_loop(self._async_trigger(request))
+        return self._run_on_loop(self.trigger_async(request))
 
-    async def _async_trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
+    async def trigger_async(self, request: "dict[str, Any] | TriggerRequest") -> Any:
+        """Invoke a remote function.
+
+        The routing behavior and return type depend on the ``action`` field:
+
+        - No action: synchronous -- waits for the function to return.
+        - ``TriggerAction.Enqueue(...)``: async via named queue -- returns ``EnqueueResult``.
+        - ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+
+        Args:
+            request: A ``TriggerRequest`` or dict with ``function_id``, ``payload``,
+                and optional ``action`` / ``timeout_ms``.
+
+        Returns:
+            The result of the function invocation, or ``None`` for void calls.
+
+        Raises:
+            TimeoutError: If the invocation times out.
+
+        Examples:
+            >>> result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> await iii.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+        """
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]
         payload = req.get("payload")
@@ -850,10 +891,19 @@ class III:
             >>> for fn in iii.list_functions():
             ...     print(fn.function_id, fn.description)
         """
-        return self._run_on_loop(self._async_list_functions())
+        return self._run_on_loop(self.list_functions_async())
 
-    async def _async_list_functions(self) -> list[FunctionInfo]:
-        result = await self._async_trigger({"function_id": "engine::functions::list", "payload": {}})
+    async def list_functions_async(self) -> list[FunctionInfo]:
+        """List all functions registered with the engine across all workers.
+
+        Returns:
+            A list of ``FunctionInfo`` objects describing each function.
+
+        Examples:
+            >>> for fn in await iii.list_functions_async():
+            ...     print(fn.function_id, fn.description)
+        """
+        result = await self.trigger_async({"function_id": "engine::functions::list", "payload": {}})
         functions_data = result.get("functions", [])
         return [FunctionInfo(**f) for f in functions_data]
 
@@ -867,10 +917,19 @@ class III:
             >>> for w in iii.list_workers():
             ...     print(w.name, w.worker_id)
         """
-        return self._run_on_loop(self._async_list_workers())
+        return self._run_on_loop(self.list_workers_async())
 
-    async def _async_list_workers(self) -> list[WorkerInfo]:
-        result = await self._async_trigger({"function_id": "engine::workers::list", "payload": {}})
+    async def list_workers_async(self) -> list[WorkerInfo]:
+        """List all workers currently connected to the engine.
+
+        Returns:
+            A list of ``WorkerInfo`` objects with worker metadata.
+
+        Examples:
+            >>> for w in await iii.list_workers_async():
+            ...     print(w.name, w.worker_id)
+        """
+        result = await self.trigger_async({"function_id": "engine::workers::list", "payload": {}})
         workers_data = result.get("workers", [])
         return [WorkerInfo(**w) for w in workers_data]
 
@@ -888,10 +947,23 @@ class III:
             >>> triggers = iii.list_triggers()
             >>> internal = iii.list_triggers(include_internal=True)
         """
-        return self._run_on_loop(self._async_list_triggers(include_internal))
+        return self._run_on_loop(self.list_triggers_async(include_internal))
 
-    async def _async_list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]:
-        result = await self._async_trigger(
+    async def list_triggers_async(self, include_internal: bool = False) -> list[TriggerInfo]:
+        """List all triggers registered with the engine.
+
+        Args:
+            include_internal: If ``True``, include engine-internal triggers
+                (e.g. ``functions-available``). Defaults to ``False``.
+
+        Returns:
+            A list of ``TriggerInfo`` objects.
+
+        Examples:
+            >>> triggers = await iii.list_triggers_async()
+            >>> internal = await iii.list_triggers_async(include_internal=True)
+        """
+        result = await self.trigger_async(
             {
                 "function_id": "engine::triggers::list",
                 "payload": {"include_internal": include_internal},
@@ -919,10 +991,28 @@ class III:
             >>> fn = iii.register_function({"id": "producer"}, producer_handler)
             >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
-        return self._run_on_loop(self._async_create_channel(buffer_size))
+        return self._run_on_loop(self.create_channel_async(buffer_size))
 
-    async def _async_create_channel(self, buffer_size: int | None = None) -> Channel:
-        result = await self._async_trigger(
+    async def create_channel_async(self, buffer_size: int | None = None) -> Channel:
+        """Create a streaming channel pair for worker-to-worker data transfer.
+
+        The returned ``Channel`` contains a local ``writer`` / ``reader``
+        and their serializable refs (``writer_ref``, ``reader_ref``) that
+        can be passed as fields in invocation data to other functions.
+
+        Args:
+            buffer_size: Buffer capacity for the channel. Defaults to ``64``.
+
+        Returns:
+            A ``Channel`` with ``writer``, ``reader``, ``writer_ref``, and
+            ``reader_ref`` attributes.
+
+        Examples:
+            >>> ch = await iii.create_channel_async()
+            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
+        """
+        result = await self.trigger_async(
             {
                 "function_id": "engine::channels::create",
                 "payload": {"buffer_size": buffer_size},
