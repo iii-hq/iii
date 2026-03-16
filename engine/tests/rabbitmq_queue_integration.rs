@@ -26,7 +26,8 @@ use iii::{
 use common::queue_helpers::{
     enqueue, dlq_count,
     register_counting_function, register_failing_function,
-    register_order_recording_function, register_slow_function,
+    register_order_recording_function, register_payload_capturing_function,
+    register_slow_function,
 };
 use common::rabbitmq_helpers::{get_rabbitmq, test_prefix, rabbitmq_queue_config};
 
@@ -449,4 +450,58 @@ async fn message_id_stamped_as_amqp_property() {
     let _ = channel
         .exchange_delete(&rmq_exchange, ExchangeDeleteOptions::default())
         .await;
+}
+
+#[tokio::test]
+async fn rmq_enqueue_process_ack_preserves_payload() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    register_payload_capturing_function(&engine, "test::rmq_payload", captured.clone());
+
+    let module = QueueCoreModule::create(engine.clone(), Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    let sent_payload = json!({
+        "order_id": 42,
+        "items": [{"sku": "ABC-123", "qty": 3}],
+        "metadata": {"source": "test", "timestamp": 1234567890},
+        "nested": {"deep": {"value": true}}
+    });
+
+    enqueue(
+        &engine,
+        &format!("{prefix}-default"),
+        "test::rmq_payload",
+        sent_payload.clone(),
+    )
+    .await
+    .expect("Enqueue should succeed");
+
+    // RabbitMQ has real network I/O -- use generous timeout
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let received = captured.lock().await;
+    assert_eq!(
+        received.len(),
+        1,
+        "Exactly one message should have been captured, got {}",
+        received.len()
+    );
+    assert_eq!(
+        received[0], sent_payload,
+        "Received payload must match sent payload byte-for-byte (serde_json structural equality)"
+    );
 }
