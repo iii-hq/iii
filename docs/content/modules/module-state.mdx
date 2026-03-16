@@ -311,7 +311,7 @@ use iii_sdk::RegisterFunctionMessage;
 iii.register_function(
     RegisterFunctionMessage {
         id: "state::onUserUpdated".into(),
-        ..Default::default()
+        description: None, request_format: None, response_format: None, metadata: None, invocation: None
     },
     |event| async move {
         println!("State changed: {} {}", event["event_type"], event["key"]);
@@ -528,7 +528,7 @@ use serde_json::json;
 iii.register_function(
     RegisterFunctionMessage {
         id: "conditions::emailChanged".into(),
-        ..Default::default()
+        description: None, request_format: None, response_format: None, metadata: None, invocation: None
     },
     |event| async move {
         let is_update = event["event_type"].as_str() == Some("state:updated");
@@ -541,7 +541,7 @@ iii.register_function(
 iii.register_function(
     RegisterFunctionMessage {
         id: "state::onEmailChange".into(),
-        ..Default::default()
+        description: None, request_format: None, response_format: None, metadata: None, invocation: None
     },
     |event| async move {
         let email = event["new_value"]["email"].as_str().unwrap_or("");

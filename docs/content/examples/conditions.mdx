@@ -99,23 +99,23 @@ use serde_json::json;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-    iii.register_function(RegisterFunctionMessage { id: "conditions::is_premium".into(), ..Default::default() }, |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "conditions::is_premium".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let amount = input["body"]["amount"].as_f64().unwrap_or(0.0);
         Ok(json!(amount > 1000.0))
     });
 
-    iii.register_function(RegisterFunctionMessage { id: "orders::premium".into(), ..Default::default() }, |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "orders::premium".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let logger = Logger();
         let amount = input["body"]["amount"].as_f64().unwrap_or(0.0);
         logger.info("Processing premium order", Some(json!({ "amount": amount })));
         Ok(json!({ "status_code": 200, "body": { "message": "Premium order processed" } }))
     });
 
-    iii.register_trigger(RegisterTriggerInput { type_: "http".into(), function_id: "orders::premium".into(), config: json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "orders::premium".into(), config: json!({
         "api_path": "orders/premium",
         "http_method": "POST",
         "condition_function_id": "conditions::is_premium",
-    }), ..Default::default() })?;
+    }) })?;
 
     loop { tokio::time::sleep(std::time::Duration::from_secs(60)).await; }
 }
@@ -205,12 +205,12 @@ iii.register_trigger({
 use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function(RegisterFunctionMessage { id: "conditions::is_high_value".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "conditions::is_high_value".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let amount = input["amount"].as_f64().unwrap_or(0.0);
     Ok(json!(amount > 1000.0))
 });
 
-iii.register_function(RegisterFunctionMessage { id: "orders::high_value".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "orders::high_value".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let amount = input["amount"].as_f64().unwrap_or(0.0);
     logger.info("Processing high-value order", Some(json!({ "amount": amount })));
@@ -223,10 +223,10 @@ iii.register_function(RegisterFunctionMessage { id: "orders::high_value".into(),
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "queue".into(), function_id: "orders::high_value".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders::high_value".into(), config: json!({
     "topic": "order.created",
     "condition_function_id": "conditions::is_high_value",
-}), ..Default::default() })?;
+}) })?;
 ```
 
   </Tab>
@@ -294,12 +294,12 @@ iii.register_trigger({
 use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function(RegisterFunctionMessage { id: "conditions::is_update".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "conditions::is_update".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let event_type = input["event_type"].as_str().unwrap_or("");
     Ok(json!(event_type == "updated"))
 });
 
-iii.register_function(RegisterFunctionMessage { id: "orders::on_update".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "orders::on_update".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     logger.info("Order updated", Some(json!({
         "scope": input["scope"],
@@ -308,10 +308,10 @@ iii.register_function(RegisterFunctionMessage { id: "orders::on_update".into(), 
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "state".into(), function_id: "orders::on_update".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "state".into(), function_id: "orders::on_update".into(), config: json!({
     "scope": "orders",
     "condition_function_id": "conditions::is_update",
-}), ..Default::default() })?;
+}) })?;
 ```
 
   </Tab>

@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker(&url, InitOptions::default())?;
 
     iii.register_function(
-        RegisterFunctionMessage { id: "users::create".into(), ..Default::default() },
+        RegisterFunctionMessage { id: "users::create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
         |req| async move {
             let logger = Logger::new();
             let name = req["body"]["name"].as_str().unwrap_or("");

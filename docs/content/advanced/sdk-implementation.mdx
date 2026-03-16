@@ -248,7 +248,7 @@ use serde_json::json;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function(RegisterFunctionMessage { id: "users::create".into(), ..Default::default() }, |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "users::create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let logger = Logger();
         logger.info("Creating user", None);
         Ok(json!({
@@ -257,10 +257,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
     });
 
-    iii.register_trigger(RegisterTriggerInput { type_: "http".into(), function_id: "users::create".into(), config: json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "users::create".into(), config: json!({
         "api_path": "/users",
         "http_method": "POST",
-    }), ..Default::default() })?;
+    }) })?;
 
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -419,7 +419,7 @@ def handler(data) -> ApiResponse:
 ```rust
 use iii_sdk::{types::ApiRequest, RegisterFunctionMessage};
 
-iii.register_function(RegisterFunctionMessage { id: "handler".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "handler".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let req: ApiRequest = serde_json::from_value(input)?;
     Ok(json!({ "status_code": 200, "body": { "ok": true } }))
 });

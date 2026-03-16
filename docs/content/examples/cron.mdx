@@ -90,7 +90,7 @@ use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-iii.register_function(RegisterFunctionMessage { id: "cron.periodic_job".into(), ..Default::default() }, |_input| async move {
+iii.register_function(RegisterFunctionMessage { id: "cron.periodic_job".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     let logger = Logger();
     logger.info("Periodic job fired", None);
 
@@ -105,9 +105,9 @@ iii.register_function(RegisterFunctionMessage { id: "cron.periodic_job".into(), 
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
     "expression": "* * * * *",
-}), ..Default::default() })?;
+}) })?;
 ```
 
   </Tab>
@@ -160,13 +160,13 @@ iii.register_trigger({"type": "queue", "function_id": "job.handle_tick", "config
 use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function(RegisterFunctionMessage { id: "job.handle_tick".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "job.handle_tick".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     logger.info("Periodic job processed", Some(input));
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }), ..Default::default() })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }) })?;
 ```
 
   </Tab>
@@ -278,7 +278,7 @@ iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "confi
 use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function(RegisterFunctionMessage { id: "cron.orders_sweep".into(), ..Default::default() }, |_input| async move {
+iii.register_function(RegisterFunctionMessage { id: "cron.orders_sweep".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     let logger = Logger();
 
     let orders_val = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "orders" }))).await?;
@@ -314,7 +314,7 @@ iii.register_function(RegisterFunctionMessage { id: "cron.orders_sweep".into(), 
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }), ..Default::default() })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }) })?;
 ```
 
   </Tab>

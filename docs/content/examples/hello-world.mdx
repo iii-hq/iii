@@ -159,7 +159,7 @@ iii.register_trigger({
 ```rust
 use iii_sdk::{Logger, TriggerAction, TriggerRequest, types::ApiRequest, RegisterFunctionMessage, RegisterTriggerInput};
 
-iii.register_function(RegisterFunctionMessage { id: "hello::api".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "hello::api".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let app_name = "III App";
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -190,10 +190,10 @@ iii.register_function(RegisterFunctionMessage { id: "hello::api".into(), ..Defau
     }))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "http".into(), function_id: "hello::api".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::api".into(), config: json!({
     "api_path": "hello",
     "http_method": "GET",
-}), ..Default::default() })?;
+}) })?;
 ```
 
   </Tab>
@@ -285,7 +285,7 @@ iii.register_trigger({
   <Tab value="Rust">
 
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "greet::process".into(), ..Default::default() }, |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "greet::process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let request_id = input["requestId"].as_str().unwrap_or("unknown");
     let app_name = input["appName"].as_str().unwrap_or("III App");
@@ -318,9 +318,9 @@ iii.register_function(RegisterFunctionMessage { id: "greet::process".into(), ..D
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { type_: "queue".into(), function_id: "greet::process".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "greet::process".into(), config: json!({
     "topic": "greet::process",
-}), ..Default::default() })?;
+}) })?;
 ```
 
   </Tab>
