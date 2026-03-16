@@ -3,7 +3,9 @@
   "name": "iii",
   "theme": "mint",
   "colors": {
-    "primary": "#f3f724"
+    "primary": "#f3f724",
+    "light": "#fcff5d",
+    "dark": "#babd18"
   },
   "logo": {
     "light": "/images/icons/iii-black.svg",
