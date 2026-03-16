@@ -27,10 +27,10 @@ Requirements for this hardening initiative. Each maps to roadmap phases.
 ### Queue E2E Tests (RabbitMQ)
 
 - [x] **QRMQ-01**: E2E test verifies enqueue → process → ack via RabbitMQ adapter using testcontainers
-- [ ] **QRMQ-02**: E2E test verifies retry with backoff via RabbitMQ TTL-based retry mechanism
-- [ ] **QRMQ-03**: E2E test verifies DLQ exhaustion via RabbitMQ dead letter exchange with content verification
+- [x] **QRMQ-02**: E2E test verifies retry with backoff via RabbitMQ TTL-based retry mechanism
+- [x] **QRMQ-03**: E2E test verifies DLQ exhaustion via RabbitMQ dead letter exchange with content verification
 - [ ] **QRMQ-04**: E2E test verifies FIFO ordering via RabbitMQ with message group support
-- [ ] **QRMQ-05**: E2E test verifies max_retries=0 boundary via RabbitMQ adapter
+- [x] **QRMQ-05**: E2E test verifies max_retries=0 boundary via RabbitMQ adapter
 - [ ] **QRMQ-06**: E2E test verifies handler panic recovery via RabbitMQ adapter
 - [x] **QRMQ-07**: E2E test verifies RabbitMQ-specific exchange routing and topology setup
 
@@ -107,10 +107,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QBLT-06 | Phase 4 | Complete |
 | QBLT-07 | Phase 2 | Complete |
 | QRMQ-01 | Phase 7 | Complete |
-| QRMQ-02 | Phase 8 | Pending |
-| QRMQ-03 | Phase 8 | Pending |
+| QRMQ-02 | Phase 8 | Complete |
+| QRMQ-03 | Phase 8 | Complete |
 | QRMQ-04 | Phase 9 | Pending |
-| QRMQ-05 | Phase 8 | Pending |
+| QRMQ-05 | Phase 8 | Complete |
 | QRMQ-06 | Phase 9 | Pending |
 | QRMQ-07 | Phase 7 | Complete |
 | HTTP-01 | Phase 5 | Complete |

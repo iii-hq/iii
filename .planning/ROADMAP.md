@@ -128,10 +128,10 @@ Plans:
   1. An E2E test verifies retry with backoff via RabbitMQ TTL-based retry (using real time, not start_paused) with tolerance for timing variance
   2. An E2E test verifies DLQ exhaustion via RabbitMQ dead letter exchange with correct payload and attempt metadata
   3. An E2E test verifies max_retries=0 sends the message directly to DLQ via RabbitMQ without processing
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 08-01: TBD
+- [ ] 08-01-PLAN.md — E2E tests for RabbitMQ flat backoff timing (QRMQ-02), DLQ content verification via direct AMQP basic_get (QRMQ-03), and max_retries=0 boundary (QRMQ-05)
 
 ### Phase 9: RabbitMQ Concurrency & Resilience
 **Goal**: The RabbitMQ adapter maintains FIFO ordering with message groups and recovers from handler panics without losing messages
@@ -172,7 +172,7 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 | 4. Builtin Queue Concurrency & Resilience | 2/2 | Complete    | 2026-03-16 |
 | 5. HTTP Invoker Error Handling | 0/1 | Complete    | 2026-03-16 |
 | 6. HTTP Invoker Security | 0/1 | Complete    | 2026-03-16 |
-| 7. RabbitMQ Happy Path & Topology | 1/1 | Complete   | 2026-03-16 |
-| 8. RabbitMQ Failure & Retry | 0/? | Not started | - |
+| 7. RabbitMQ Happy Path & Topology | 1/1 | Complete    | 2026-03-16 |
+| 8. RabbitMQ Failure & Retry | 0/1 | Not started | - |
 | 9. RabbitMQ Concurrency & Resilience | 0/? | Not started | - |
 | 10. Auth Cleanup & Backlog Documentation | 0/? | Not started | - |
