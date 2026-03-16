@@ -157,6 +157,81 @@ pub fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_c
         .register_function(function_id.to_string(), function);
 }
 
+/// Registers a test function that stores every received `Value` payload into a shared
+/// `Arc<Mutex<Vec<Value>>>`. Captures the entire input, not a single field.
+pub fn register_payload_capturing_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    captured: Arc<Mutex<Vec<Value>>>,
+) {
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, input| {
+            let store = captured.clone();
+            Box::pin(async move {
+                store.lock().await.push(input);
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("payload capturing test handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+}
+
+/// Registers a condition function that returns `json!(true)` when
+/// `input[field] == expected_value`, and `json!(false)` otherwise.
+pub fn register_condition_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+    field: &'static str,
+    expected_value: Value,
+) {
+    let expected = expected_value.clone();
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, input| {
+            let exp = expected.clone();
+            Box::pin(async move {
+                let matches = input.get(field).map(|v| *v == exp).unwrap_or(false);
+                FunctionResult::Success(Some(json!(matches)))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("condition function".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+}
+
+/// Calls `engine.call("enqueue", ...)` with a topic and data payload,
+/// mapping the result to `anyhow::Result<()>`.
+pub async fn enqueue_to_topic(
+    engine: &Engine,
+    topic: &str,
+    data: Value,
+) -> anyhow::Result<()> {
+    use iii::engine::EngineTrait;
+    let result = engine
+        .call("enqueue", json!({"topic": topic, "data": data}))
+        .await;
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow::anyhow!(
+            "enqueue to topic failed: {} - {}",
+            e.code,
+            e.message
+        )),
+    }
+}
+
 /// Default builtin queue config with "default" (standard) and "payment" (fifo) queues.
 pub fn builtin_queue_config() -> Value {
     json!({
