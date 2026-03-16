@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6: HTTP Invoker Security** - E2E tests for private IP blocking, HTTPS enforcement, and DNS failure (completed 2026-03-16)
 - [x] **Phase 7: RabbitMQ Happy Path & Topology** - E2E tests for RabbitMQ enqueue-process-ack and exchange routing (completed 2026-03-16)
 - [x] **Phase 8: RabbitMQ Failure & Retry** - E2E tests for RabbitMQ TTL-based retry, DLQ exhaustion, and boundary cases (completed 2026-03-16)
-- [ ] **Phase 9: RabbitMQ Concurrency & Resilience** - E2E tests for RabbitMQ FIFO ordering and panic recovery
+- [x] **Phase 9: RabbitMQ Concurrency & Resilience** - E2E tests for RabbitMQ FIFO ordering and panic recovery (completed 2026-03-16)
 - [ ] **Phase 10: Auth Cleanup & Backlog Documentation** - Auth test env safety fix and future improvement backlog
 
 ## Phase Details
@@ -153,10 +153,11 @@ Plans:
   1. Auth E2E tests no longer use unsafe env::set_var; the safer alternative compiles and all auth tests pass
   2. A backlog document exists listing future reliability improvements (circuit breaker, body size limits, consumer crash recovery, message deduplication, DNS rebinding fix) with rationale for each
   3. The same backlog document includes future feature additions (priority queues, scheduled jobs UI, retry policies, Redis adapter hardening) categorized separately from reliability items
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 10-01: TBD
+- [ ] 10-01-PLAN.md — Migrate auth tests from unsafe env::set_var to temp-env crate (FIX-03)
+- [ ] 10-02-PLAN.md — Create consolidated backlog document with reliability improvements (BLOG-01) and feature additions (BLOG-02)
 
 ## Progress
 
@@ -174,5 +175,5 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 | 6. HTTP Invoker Security | 0/1 | Complete    | 2026-03-16 |
 | 7. RabbitMQ Happy Path & Topology | 1/1 | Complete    | 2026-03-16 |
 | 8. RabbitMQ Failure & Retry | 0/1 | Complete    | 2026-03-16 |
-| 9. RabbitMQ Concurrency & Resilience | 0/1 | Not started | - |
-| 10. Auth Cleanup & Backlog Documentation | 0/? | Not started | - |
+| 9. RabbitMQ Concurrency & Resilience | 1/1 | Complete    | 2026-03-16 |
+| 10. Auth Cleanup & Backlog Documentation | 0/2 | Not started | - |
