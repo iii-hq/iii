@@ -115,7 +115,6 @@
           {
             "group": "SDKs",
             "pages": [
-              "api-reference/iii-sdk",
               "api-reference/sdk-node",
               "api-reference/sdk-python",
               "api-reference/sdk-rust",
