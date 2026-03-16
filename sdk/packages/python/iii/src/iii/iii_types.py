@@ -10,18 +10,14 @@ class HttpAuthHmac(BaseModel):
     """HMAC signature verification using a shared secret."""
 
     type: Literal["hmac"] = "hmac"
-    secret_key: str = Field(
-        description="Environment variable name containing the HMAC shared secret."
-    )
+    secret_key: str = Field(description="Environment variable name containing the HMAC shared secret.")
 
 
 class HttpAuthBearer(BaseModel):
     """Bearer token authentication."""
 
     type: Literal["bearer"] = "bearer"
-    token_key: str = Field(
-        description="Environment variable name containing the bearer token."
-    )
+    token_key: str = Field(description="Environment variable name containing the bearer token.")
 
 
 class HttpAuthApiKey(BaseModel):
@@ -29,9 +25,7 @@ class HttpAuthApiKey(BaseModel):
 
     type: Literal["api_key"] = "api_key"
     header: str = Field(description="HTTP header name for the API key.")
-    value_key: str = Field(
-        description="Environment variable name containing the API key value."
-    )
+    value_key: str = Field(description="Environment variable name containing the API key value.")
 
 
 HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
@@ -53,9 +47,7 @@ class HttpInvocationConfig(BaseModel):
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = Field(
         default="POST", description="HTTP method. Defaults to ``'POST'``."
     )
-    timeout_ms: int | None = Field(
-        default=None, description="Request timeout in milliseconds."
-    )
+    timeout_ms: int | None = Field(default=None, description="Request timeout in milliseconds.")
     headers: dict[str, str] | None = Field(
         default=None,
         description="Additional HTTP headers to include in the request.",
@@ -125,9 +117,7 @@ class RegisterTriggerTypeInput(BaseModel):
     """
 
     id: str = Field(description="Unique identifier for the trigger type.")
-    description: str = Field(
-        description="Human-readable description of the trigger type."
-    )
+    description: str = Field(description="Human-readable description of the trigger type.")
 
 
 class RegisterTriggerInput(BaseModel):
@@ -140,12 +130,8 @@ class RegisterTriggerInput(BaseModel):
     """
 
     type: str = Field(description="Trigger type identifier.")
-    function_id: str = Field(
-        description="ID of the function this trigger invokes."
-    )
-    config: Any = Field(
-        default=None, description="Trigger-type-specific configuration."
-    )
+    function_id: str = Field(description="ID of the function this trigger invokes.")
+    config: Any = Field(default=None, description="Trigger-type-specific configuration.")
 
 
 class RegisterServiceInput(BaseModel):
@@ -159,12 +145,8 @@ class RegisterServiceInput(BaseModel):
     """
 
     id: str = Field(description="Unique service identifier.")
-    name: str | None = Field(
-        default=None, description="Human-readable service name."
-    )
-    description: str | None = Field(
-        default=None, description="Description of the service."
-    )
+    name: str | None = Field(default=None, description="Human-readable service name.")
+    description: str | None = Field(default=None, description="Description of the service.")
     parent_service_id: str | None = Field(
         default=None,
         description="ID of the parent service for hierarchical grouping.",
@@ -224,18 +206,12 @@ class RegisterFunctionInput(BaseModel):
     """
 
     id: str = Field(description="Unique function identifier.")
-    description: str | None = Field(
-        default=None, description="Human-readable description."
-    )
-    request_format: RegisterFunctionFormat | None = Field(
-        default=None, description="Schema describing expected input."
-    )
+    description: str | None = Field(default=None, description="Human-readable description.")
+    request_format: RegisterFunctionFormat | None = Field(default=None, description="Schema describing expected input.")
     response_format: RegisterFunctionFormat | None = Field(
         default=None, description="Schema describing expected output."
     )
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Arbitrary metadata attached to the function."
-    )
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
     invocation: HttpInvocationConfig | None = Field(
         default=None,
         description="HTTP invocation config for externally hosted functions.",
@@ -287,9 +263,7 @@ class EnqueueResult(BaseModel):
         messageReceiptId: UUID assigned by the engine to the enqueued job.
     """
 
-    messageReceiptId: str = Field(
-        description="UUID assigned by the engine to the enqueued job."
-    )
+    messageReceiptId: str = Field(description="UUID assigned by the engine to the enqueued job.")
 
 
 class TriggerRequest(BaseModel):
@@ -298,14 +272,13 @@ class TriggerRequest(BaseModel):
     Attributes:
         function_id: ID of the function to invoke.
         payload: Data to pass to the function.
-        action: Routing action — ``None`` for sync, ``TriggerAction.Enqueue(...)`` for queue, ``TriggerAction.Void()`` for fire-and-forget.
+        action: Routing action — ``None`` for sync, ``TriggerAction.Enqueue(...)``
+            for queue, ``TriggerAction.Void()`` for fire-and-forget.
         timeout_ms: Override the default invocation timeout.
     """
 
     function_id: str = Field(description="ID of the function to invoke.")
-    payload: Any = Field(
-        default=None, description="Data to pass to the function."
-    )
+    payload: Any = Field(default=None, description="Data to pass to the function.")
     action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
         default=None,
         description=(
@@ -314,9 +287,7 @@ class TriggerRequest(BaseModel):
             "``TriggerAction.Void()`` for fire-and-forget."
         ),
     )
-    timeout_ms: int | None = Field(
-        default=None, description="Override the default invocation timeout."
-    )
+    timeout_ms: int | None = Field(default=None, description="Override the default invocation timeout.")
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -369,18 +340,12 @@ class FunctionInfo(BaseModel):
     """
 
     function_id: str = Field(description="Unique identifier of the function.")
-    description: str | None = Field(
-        default=None, description="Human-readable description."
-    )
-    request_format: RegisterFunctionFormat | None = Field(
-        default=None, description="Schema describing expected input."
-    )
+    description: str | None = Field(default=None, description="Human-readable description.")
+    request_format: RegisterFunctionFormat | None = Field(default=None, description="Schema describing expected input.")
     response_format: RegisterFunctionFormat | None = Field(
         default=None, description="Schema describing expected output."
     )
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Arbitrary metadata attached to the function."
-    )
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
 
 
 class TriggerInfo(BaseModel):
@@ -394,15 +359,9 @@ class TriggerInfo(BaseModel):
     """
 
     id: str = Field(description="Unique trigger identifier.")
-    trigger_type: str = Field(
-        description="Type of trigger (e.g. ``http``, ``queue``, ``cron``)."
-    )
-    function_id: str = Field(
-        description="ID of the function this trigger invokes."
-    )
-    config: Any = Field(
-        default=None, description="Trigger-type-specific configuration."
-    )
+    trigger_type: str = Field(description="Type of trigger (e.g. ``http``, ``queue``, ``cron``).")
+    function_id: str = Field(description="ID of the function this trigger invokes.")
+    config: Any = Field(default=None, description="Trigger-type-specific configuration.")
 
 
 WorkerStatus = Literal["connected", "available", "busy", "disconnected"]
@@ -426,19 +385,13 @@ class WorkerInfo(BaseModel):
     """
 
     id: str = Field(description="Engine-assigned unique worker ID.")
-    name: str | None = Field(
-        default=None, description="Worker name from InitOptions."
-    )
+    name: str | None = Field(default=None, description="Worker name from InitOptions.")
     runtime: str | None = Field(
         default=None,
         description="SDK runtime (``python``, ``node``, ``rust``).",
     )
-    version: str | None = Field(
-        default=None, description="SDK version string."
-    )
-    os: str | None = Field(
-        default=None, description="Operating system identifier."
-    )
+    version: str | None = Field(default=None, description="SDK version string.")
+    os: str | None = Field(default=None, description="Operating system identifier.")
     ip_address: str | None = Field(
         default=None,
         description="Worker's IP address as seen by the engine.",
@@ -446,16 +399,10 @@ class WorkerInfo(BaseModel):
     status: WorkerStatus = Field(
         description="Current status (``connected``, ``available``, ``busy``, ``disconnected``)."
     )
-    connected_at_ms: int = Field(
-        description="Connection timestamp in milliseconds since epoch."
-    )
+    connected_at_ms: int = Field(description="Connection timestamp in milliseconds since epoch.")
     function_count: int = Field(description="Number of registered functions.")
-    functions: list[str] = Field(
-        description="List of registered function IDs."
-    )
-    active_invocations: int = Field(
-        description="Number of currently executing invocations."
-    )
+    functions: list[str] = Field(description="List of registered function IDs.")
+    active_invocations: int = Field(description="Number of currently executing invocations.")
 
 
 class StreamChannelRef(BaseModel):
@@ -468,12 +415,8 @@ class StreamChannelRef(BaseModel):
     """
 
     channel_id: str = Field(description="Unique channel identifier.")
-    access_key: str = Field(
-        description="Secret key for authenticating channel access."
-    )
-    direction: Literal["read", "write"] = Field(
-        description="Channel direction (``reader`` or ``writer``)."
-    )
+    access_key: str = Field(description="Secret key for authenticating channel access.")
+    direction: Literal["read", "write"] = Field(description="Channel direction (``reader`` or ``writer``).")
 
 
 class OtelLogEvent(BaseModel):
