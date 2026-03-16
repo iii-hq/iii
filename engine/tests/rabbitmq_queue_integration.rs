@@ -710,3 +710,183 @@ async fn rmq_retry_backoff_timing_is_flat() {
         );
     }
 }
+
+#[tokio::test]
+async fn rmq_dlq_exhaustion_with_content_verification() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let call_count = Arc::new(AtomicU64::new(0));
+    register_failing_function(&engine, "test::rmq_dlq_content", call_count.clone());
+
+    let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 300);
+    let module = QueueCoreModule::create(engine.clone(), Some(config))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    let sent_payload = json!({"order_id": 42, "action": "verify_dlq_content"});
+
+    enqueue(
+        &engine,
+        &format!("{prefix}-test"),
+        "test::rmq_dlq_content",
+        sent_payload.clone(),
+    )
+    .await
+    .expect("Enqueue should succeed");
+
+    // max_retries=2 means attempts 0,1 retry and attempt 2 goes to DLQ = 3 total invocations
+    tokio::time::sleep(Duration::from_secs(12)).await;
+
+    let total_calls = call_count.load(Ordering::SeqCst);
+    assert_eq!(
+        total_calls, 3,
+        "Expected 3 handler invocations (1 initial + 2 retries), got {total_calls}"
+    );
+
+    let count = dlq_count(&engine, &format!("{prefix}-test")).await;
+    assert_eq!(
+        count, 1,
+        "Exactly one message should be in the DLQ after retry exhaustion, got {count}"
+    );
+
+    // Open a SEPARATE AMQP connection for DLQ content inspection
+    let conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
+        .await
+        .expect("Should connect to RabbitMQ for DLQ inspection");
+    let channel = conn.create_channel().await.expect("Should create channel");
+
+    let dlq_queue_name = format!("iii.__fn_queue::{}::dlq.queue", format!("{prefix}-test"));
+
+    let delivery = channel
+        .basic_get(&dlq_queue_name, BasicGetOptions { no_ack: true })
+        .await
+        .expect("basic_get should succeed");
+
+    let msg = delivery.expect("DLQ should have one message");
+
+    // Verify raw payload matches the original sent data (NOT a structured envelope)
+    let payload: Value =
+        serde_json::from_slice(&msg.delivery.data).expect("DLQ message should be valid JSON");
+    assert_eq!(
+        payload, sent_payload,
+        "DLQ message body should be the raw original payload"
+    );
+
+    // Verify x-death header presence (RabbitMQ dead-letter mechanism proof)
+    let headers = msg
+        .delivery
+        .properties
+        .headers()
+        .as_ref()
+        .expect("DLQ message should have headers");
+    let x_death = headers.inner().get("x-death");
+    assert!(
+        x_death.is_some(),
+        "x-death header should be present (proves RabbitMQ dead-letter mechanism was used)"
+    );
+
+    // Verify x-attempt header presence (message went through retry path with max_retries=2)
+    let x_attempt = headers.inner().get("x-attempt");
+    assert!(
+        x_attempt.is_some(),
+        "x-attempt header should be present (message went through retry path)"
+    );
+}
+
+#[tokio::test]
+async fn rmq_max_retries_zero_sends_directly_to_dlq() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let call_count = Arc::new(AtomicU64::new(0));
+    register_failing_function(&engine, "test::rmq_zero_retry", call_count.clone());
+
+    let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 0, 200);
+    let module = QueueCoreModule::create(engine.clone(), Some(config))
+        .await
+        .expect("QueueCoreModule::create should succeed");
+
+    module
+        .initialize()
+        .await
+        .expect("Module initialization should succeed");
+
+    let sent_payload = json!({"zero_retry": true});
+
+    enqueue(
+        &engine,
+        &format!("{prefix}-test"),
+        "test::rmq_zero_retry",
+        sent_payload.clone(),
+    )
+    .await
+    .expect("Enqueue should succeed");
+
+    // With max_retries=0, handler called once then message goes to DLQ
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let total_calls = call_count.load(Ordering::SeqCst);
+    assert_eq!(
+        total_calls, 1,
+        "Expected exactly 1 handler invocation (no retries with max_retries=0), got {total_calls}"
+    );
+
+    let count = dlq_count(&engine, &format!("{prefix}-test")).await;
+    assert_eq!(
+        count, 1,
+        "Exactly one message should be in the DLQ, got {count}"
+    );
+
+    // Wait additional time and verify no further retries happen
+    let calls_before = call_count.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let calls_after = call_count.load(Ordering::SeqCst);
+    assert_eq!(
+        calls_before, calls_after,
+        "No further invocations should occur after DLQ routing, \
+         but got {calls_after} (was {calls_before})"
+    );
+
+    // Open a separate AMQP connection for DLQ content verification
+    let conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
+        .await
+        .expect("Should connect to RabbitMQ for DLQ inspection");
+    let channel = conn.create_channel().await.expect("Should create channel");
+
+    let dlq_queue_name = format!("iii.__fn_queue::{}::dlq.queue", format!("{prefix}-test"));
+
+    let delivery = channel
+        .basic_get(&dlq_queue_name, BasicGetOptions { no_ack: true })
+        .await
+        .expect("basic_get should succeed");
+
+    let msg = delivery.expect("DLQ should have one message");
+
+    // Verify raw payload matches the sent data
+    let payload: Value =
+        serde_json::from_slice(&msg.delivery.data).expect("DLQ message should be valid JSON");
+    assert_eq!(
+        payload, sent_payload,
+        "DLQ message body should be the raw original payload"
+    );
+
+    // Do NOT assert x-attempt header for max_retries=0:
+    // The message goes directly to DLQ via nack without being republished
+    // to the retry exchange, so no x-attempt header is set.
+}
