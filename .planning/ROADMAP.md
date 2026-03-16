@@ -13,7 +13,7 @@ This roadmap delivers comprehensive E2E test coverage and edge case fixes for th
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Test Infrastructure** - Shared helpers, dev-dependencies, and deterministic time control (completed 2026-03-16)
-- [ ] **Phase 2: Builtin Queue Happy Path** - E2E tests for enqueue-process-ack and condition filtering
+- [x] **Phase 2: Builtin Queue Happy Path** - E2E tests for enqueue-process-ack and condition filtering (completed 2026-03-16)
 - [ ] **Phase 3: Builtin Queue Failure & Retry** - E2E tests for retry, backoff, DLQ exhaustion, and backoff overflow fix
 - [ ] **Phase 4: Builtin Queue Concurrency & Resilience** - E2E tests for FIFO ordering, panic recovery, and atomic queue transition fix
 - [ ] **Phase 5: HTTP Invoker Error Handling** - E2E tests for timeouts, connection errors, and response parsing
@@ -60,11 +60,11 @@ Plans:
   2. An E2E test verifies that after max retries, the message lands in DLQ with correct payload, error reason, and attempt count
   3. An E2E test verifies that max_retries=0 sends the message directly to DLQ without any processing attempt
   4. Backoff calculation at retry attempt 54 and above does not panic or overflow (saturating arithmetic in production code)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
+- [ ] 03-01-PLAN.md — Fix backoff overflow (FIX-01) and add DLQ content inspection infrastructure (QBLT-03 prereq)
+- [ ] 03-02-PLAN.md — E2E tests for exponential backoff timing (QBLT-02), DLQ exhaustion content (QBLT-03), and max_retries=0 boundary (QBLT-05)
 
 ### Phase 4: Builtin Queue Concurrency & Resilience
 **Goal**: The builtin queue adapter maintains FIFO ordering under concurrent load and recovers gracefully from handler panics without message loss
@@ -168,8 +168,8 @@ Note: Phases 2-4 (builtin queue) and 5-6 (HTTP invoker) share only Phase 1 as a 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Test Infrastructure | 0/2 | Complete    | 2026-03-16 |
-| 2. Builtin Queue Happy Path | 0/1 | Not started | - |
-| 3. Builtin Queue Failure & Retry | 0/? | Not started | - |
+| 2. Builtin Queue Happy Path | 0/1 | Complete    | 2026-03-16 |
+| 3. Builtin Queue Failure & Retry | 0/2 | Not started | - |
 | 4. Builtin Queue Concurrency & Resilience | 0/? | Not started | - |
 | 5. HTTP Invoker Error Handling | 0/? | Not started | - |
 | 6. HTTP Invoker Security | 0/? | Not started | - |
