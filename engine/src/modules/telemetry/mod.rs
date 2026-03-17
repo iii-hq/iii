@@ -136,58 +136,50 @@ fn get_or_create_install_id() -> String {
     static INSTALL_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     INSTALL_ID
         .get_or_init(|| {
+            if let Some(id) = environment::read_ini_key("identity", "id") {
+                return id;
+            }
+
             let base_dir = dirs::home_dir().unwrap_or_else(|| {
                 tracing::warn!(
                     "Failed to resolve home directory, falling back to temp dir for telemetry_id"
                 );
                 std::env::temp_dir()
             });
-            let path = base_dir.join(".iii").join("telemetry_id");
 
-            if let Ok(id) = std::fs::read_to_string(&path) {
+            let legacy_path = base_dir.join(".iii").join("telemetry_id");
+            if let Ok(id) = std::fs::read_to_string(&legacy_path) {
                 let id = id.trim().to_string();
                 if !id.is_empty() {
+                    environment::set_ini_key("identity", "id", &id);
                     return id;
                 }
             }
 
             let id = uuid::Uuid::new_v4().to_string();
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-
-            let tmp_path = path.with_extension("tmp");
-            if std::fs::write(&tmp_path, &id).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let perms = std::fs::Permissions::from_mode(0o600);
-                    std::fs::set_permissions(&tmp_path, perms).ok();
-                }
-                std::fs::rename(&tmp_path, &path).ok();
-            }
-
+            environment::set_ini_key("identity", "id", &id);
             id
         })
         .clone()
 }
 
 fn check_and_mark_first_run() -> bool {
-    let state_path = dirs::home_dir()
+    if environment::read_ini_key("state", "first_run_sent").as_deref() == Some("true") {
+        return false;
+    }
+
+    let legacy_path = dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".iii")
         .join("state.ini");
-
-    if let Ok(contents) = std::fs::read_to_string(&state_path) {
+    if let Ok(contents) = std::fs::read_to_string(&legacy_path) {
         if contents.contains("first_run_sent=true") {
+            environment::set_ini_key("state", "first_run_sent", "true");
             return false;
         }
     }
 
-    if let Some(parent) = state_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    std::fs::write(&state_path, "[telemetry]\nfirst_run_sent=true\n").ok();
+    environment::set_ini_key("state", "first_run_sent", "true");
     true
 }
 
@@ -405,7 +397,7 @@ impl TelemetryContext {
             event_type: event_type.to_string(),
             event_properties: properties,
             user_properties: Some(self.build_user_properties(sdk_telemetry)),
-            platform: "III Engine".to_string(),
+            platform: "iii-engine".to_string(),
             os_name: std::env::consts::OS.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             time: chrono::Utc::now().timestamp_millis(),
@@ -1391,7 +1383,7 @@ mod tests {
         assert_eq!(event.user_id, Some("test-install-id".to_string()));
         assert_eq!(event.event_type, "test_event");
         assert_eq!(event.event_properties["key"], "value");
-        assert_eq!(event.platform, "III Engine");
+        assert_eq!(event.platform, "iii-engine");
         assert_eq!(event.os_name, std::env::consts::OS);
         assert!(event.insert_id.is_some());
         assert_eq!(event.ip, Some("$remote".to_string()));

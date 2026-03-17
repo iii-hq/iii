@@ -1,6 +1,82 @@
+use std::collections::BTreeMap;
+
+use sha2::{Digest, Sha256};
 use serde::Serialize;
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
+
+// ---------------------------------------------------------------------------
+// ~/.iii/telemetry.ini helpers
+// ---------------------------------------------------------------------------
+
+fn telemetry_ini_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".iii")
+        .join("telemetry.ini")
+}
+
+fn parse_ini(content: &str) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut current = String::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            current = line[1..line.len() - 1].to_string();
+        } else if let Some((key, val)) = line.split_once('=') {
+            let key = key.trim().to_string();
+            let val = val.trim().to_string();
+            if !key.is_empty() && !current.is_empty() {
+                sections.entry(current.clone()).or_default().insert(key, val);
+            }
+        }
+    }
+    sections
+}
+
+fn serialize_ini(sections: &BTreeMap<String, BTreeMap<String, String>>) -> String {
+    let mut out = String::new();
+    for (section, keys) in sections {
+        out.push_str(&format!("[{}]\n", section));
+        for (k, v) in keys {
+            out.push_str(&format!("{} = {}\n", k, v));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn read_ini_key(section: &str, key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(telemetry_ini_path()).ok()?;
+    parse_ini(&contents)
+        .remove(section)?
+        .remove(key)
+        .filter(|v| !v.is_empty())
+}
+
+fn set_ini_key(section: &str, key: &str, value: &str) {
+    let path = telemetry_ini_path();
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut sections = parse_ini(&contents);
+    sections
+        .entry(section.to_string())
+        .or_default()
+        .insert(key.to_string(), value.to_string());
+    let serialized = serialize_ini(&sections);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, &serialized).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&tmp, perms).ok();
+        }
+        std::fs::rename(&tmp, &path).ok();
+    }
+}
 
 const COMPILE_TIME_API_KEY: Option<&str> = option_env!("III_CLI_AMPLITUDE_API_KEY");
 
@@ -11,6 +87,8 @@ struct AmplitudeEvent {
     user_id: Option<String>,
     event_type: String,
     event_properties: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_properties: Option<serde_json::Value>,
     platform: String,
     os_name: String,
     app_version: String,
@@ -26,27 +104,74 @@ struct AmplitudePayload<'a> {
     events: Vec<AmplitudeEvent>,
 }
 
+fn detect_machine_id() -> String {
+    let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(hostname.as_bytes());
+    let result = hasher.finalize();
+    result[..8].iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn detect_is_container() -> bool {
+    if std::env::var("III_CONTAINER").is_ok() {
+        return true;
+    }
+    if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+        return true;
+    }
+    std::path::Path::new("/.dockerenv").exists()
+}
+
+fn detect_install_method() -> &'static str {
+    if let Ok(exe) = std::env::current_exe() {
+        let path = exe.to_string_lossy();
+        if path.contains("homebrew") || path.contains("Cellar") || path.contains("linuxbrew") {
+            return "brew";
+        }
+        if path.contains("chocolatey") || path.contains("choco") {
+            return "chocolatey";
+        }
+        if path.contains(".local/bin") {
+            return "sh";
+        }
+    }
+    "manual"
+}
+
+fn build_user_properties() -> serde_json::Value {
+    serde_json::json!({
+        "environment.os": std::env::consts::OS,
+        "environment.arch": std::env::consts::ARCH,
+        "environment.cpu_cores": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+        "environment.timezone": std::env::var("TZ").unwrap_or_else(|_| "Unknown".to_string()),
+        "environment.machine_id": detect_machine_id(),
+        "environment.is_container": detect_is_container(),
+        "env": std::env::var("III_ENV").unwrap_or_else(|_| "unknown".to_string()),
+        "install_method": detect_install_method(),
+        "cli_version": env!("CARGO_PKG_VERSION"),
+        "host_user_id": std::env::var("III_HOST_USER_ID").ok(),
+    })
+}
+
 fn get_or_create_telemetry_id() -> String {
-    let path = dirs::home_dir()
+    if let Some(id) = read_ini_key("identity", "id") {
+        return id;
+    }
+
+    let legacy_path = dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".iii")
         .join("telemetry_id");
-
-    if let Ok(id) = std::fs::read_to_string(&path) {
+    if let Ok(id) = std::fs::read_to_string(&legacy_path) {
         let id = id.trim().to_string();
         if !id.is_empty() {
+            set_ini_key("identity", "id", &id);
             return id;
         }
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, &id).is_ok() {
-        std::fs::rename(&tmp, &path).ok();
-    }
+    set_ini_key("identity", "id", &id);
     id
 }
 
@@ -109,6 +234,7 @@ fn build_event(
         user_id: Some(telemetry_id),
         event_type: event_type.to_string(),
         event_properties: properties,
+        user_properties: Some(build_user_properties()),
         platform: "iii-cli".to_string(),
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -141,6 +267,7 @@ pub fn send_cli_update_started(target_binary: &str, from_version: &str) {
         serde_json::json!({
             "target_binary": target_binary,
             "from_version": from_version,
+            "install_method": detect_install_method(),
         }),
     ) {
         send_fire_and_forget(key, event);
@@ -154,6 +281,7 @@ pub fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_ver
             "target_binary": target_binary,
             "from_version": from_version,
             "to_version": to_version,
+            "install_method": detect_install_method(),
         }),
     ) {
         send_fire_and_forget(key, event);
@@ -167,6 +295,7 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
             "target_binary": target_binary,
             "from_version": from_version,
             "error": error,
+            "install_method": detect_install_method(),
         }),
     ) {
         send_fire_and_forget(key, event);
@@ -284,6 +413,10 @@ mod tests {
         assert!(!event.device_id.is_empty());
         assert!(!event.insert_id.is_empty());
         assert_eq!(event.event_properties["target_binary"], "iii");
+        let user_props = event.user_properties.as_ref().expect("user_properties should be set");
+        assert!(user_props.get("cli_version").is_some());
+        assert!(user_props.get("environment.os").is_some());
+        assert!(user_props.get("install_method").is_some());
         unsafe { env::remove_var("III_TELEMETRY_API_KEY") };
     }
 
@@ -307,5 +440,30 @@ mod tests {
         let id2 = get_or_create_telemetry_id();
         assert!(!id1.is_empty());
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_parse_ini_reads_identity_section() {
+        let content = "[identity]\nid = my-uuid\n\n[state]\nfirst_run_sent = true\n";
+        let sections = parse_ini(content);
+        assert_eq!(sections["identity"]["id"], "my-uuid");
+        assert_eq!(sections["state"]["first_run_sent"], "true");
+    }
+
+    #[test]
+    fn test_serialize_ini_roundtrip() {
+        let mut sections = BTreeMap::new();
+        let mut identity = BTreeMap::new();
+        identity.insert("id".to_string(), "abc-123".to_string());
+        sections.insert("identity".to_string(), identity);
+        let serialized = serialize_ini(&sections);
+        let parsed = parse_ini(&serialized);
+        assert_eq!(parsed["identity"]["id"], "abc-123");
+    }
+
+    #[test]
+    fn test_parse_ini_empty_input() {
+        let sections = parse_ini("");
+        assert!(sections.is_empty());
     }
 }

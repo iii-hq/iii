@@ -18,6 +18,9 @@ BIN_NAME="${BIN_NAME:-iii-cli}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BREW_FORMULA="${BREW_FORMULA:-$BIN_NAME}"
 
+AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
+AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-}"
+
 # Validate REPO format (owner/repo)
 if [[ ! "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
   echo "error: REPO must match owner/repo format (got: $REPO)" >&2
@@ -58,6 +61,20 @@ NC='\033[0m'
 
 err() {
   printf "${RED}error:${NC} %s\n" "$*" >&2
+  if [[ -n "${install_event_prefix:-}" && -n "${install_id:-}" && -n "${telemetry_id:-}" ]]; then
+    local err_msg
+    err_msg=$(echo "$*" | tr '"' "'")
+    if [[ "$install_event_prefix" == "upgrade" ]]; then
+      iii_send_event "upgrade_failed" \
+        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\"" \
+        "$telemetry_id"
+    else
+      iii_send_event "install_failed" \
+        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\"" \
+        "$telemetry_id"
+    fi
+    wait
+  fi
   exit 1
 }
 
@@ -75,6 +92,186 @@ print_message() {
   esac
 
   printf "${color}%s${NC}\n" "$message"
+}
+
+# --- Telemetry helpers --------------------------------------------------------
+
+iii_telemetry_enabled() {
+  if [[ "${III_TELEMETRY_ENABLED:-}" == "false" || "${III_TELEMETRY_ENABLED:-}" == "0" ]]; then
+    return 1
+  fi
+  local ci_vars=(CI GITHUB_ACTIONS GITLAB_CI CIRCLECI JENKINS_URL TRAVIS BUILDKITE TF_BUILD CODEBUILD_BUILD_ID BITBUCKET_BUILD_NUMBER DRONE TEAMCITY_VERSION)
+  for v in "${ci_vars[@]}"; do
+    if [[ -n "${!v:-}" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+iii_gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    od -x /dev/urandom 2>/dev/null | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}' | head -c 36 || echo "00000000-0000-0000-0000-000000000000"
+  fi
+}
+
+iii_ini_path() {
+  echo "${HOME}/.iii/telemetry.ini"
+}
+
+iii_read_ini_key() {
+  local section="$1"
+  local key="$2"
+  local ini_file
+  ini_file=$(iii_ini_path)
+  if [[ ! -f "$ini_file" ]]; then
+    echo ""
+    return
+  fi
+  local in_section=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [[ "$line" == "[$section]" ]]; then
+      in_section=1
+    elif [[ "$line" =~ ^\[.*\]$ ]]; then
+      in_section=0
+    elif [[ "$in_section" == "1" ]]; then
+      local lkey lval
+      lkey="${line%%=*}"
+      lkey="${lkey%"${lkey##*[![:space:]]}"}"
+      lval="${line#*=}"
+      lval="${lval#"${lval%%[![:space:]]*}"}"
+      if [[ "$lkey" == "$key" ]]; then
+        echo "$lval"
+        return
+      fi
+    fi
+  done < "$ini_file"
+  echo ""
+}
+
+iii_set_ini_key() {
+  local section="$1"
+  local key="$2"
+  local value="$3"
+  local ini_file
+  ini_file=$(iii_ini_path)
+  mkdir -p "$(dirname "$ini_file")"
+  local tmp_file="${ini_file}.tmp"
+  local in_target=0
+  local key_written=0
+  : > "$tmp_file"
+  if [[ -f "$ini_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      local trimmed="${line#"${line%%[![:space:]]*}"}"
+      trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+      if [[ "$trimmed" == "[$section]" ]]; then
+        printf '%s\n' "$trimmed" >> "$tmp_file"
+        in_target=1
+      elif [[ "$trimmed" =~ ^\[.*\]$ ]]; then
+        if [[ "$in_target" == "1" && "$key_written" == "0" ]]; then
+          printf '%s = %s\n' "$key" "$value" >> "$tmp_file"
+          key_written=1
+        fi
+        in_target=0
+        printf '%s\n' "$trimmed" >> "$tmp_file"
+      elif [[ "$in_target" == "1" ]]; then
+        local lkey="${trimmed%%=*}"
+        lkey="${lkey%"${lkey##*[![:space:]]}"}"
+        if [[ "$lkey" == "$key" ]]; then
+          printf '%s = %s\n' "$key" "$value" >> "$tmp_file"
+          key_written=1
+        else
+          printf '%s\n' "$line" >> "$tmp_file"
+        fi
+      else
+        printf '%s\n' "$line" >> "$tmp_file"
+      fi
+    done < "$ini_file"
+  fi
+  if [[ "$key_written" == "0" ]]; then
+    if [[ "$in_target" == "1" ]]; then
+      printf '%s = %s\n' "$key" "$value" >> "$tmp_file"
+    else
+      printf '\n[%s]\n%s = %s\n' "$section" "$key" "$value" >> "$tmp_file"
+    fi
+  fi
+  mv "$tmp_file" "$ini_file"
+}
+
+iii_get_or_create_telemetry_id() {
+  local existing_id
+  existing_id=$(iii_read_ini_key "identity" "id")
+  if [[ -n "$existing_id" ]]; then
+    echo "$existing_id"
+    return
+  fi
+
+  local legacy_path="${HOME}/.iii/telemetry_id"
+  if [[ -f "$legacy_path" ]]; then
+    local legacy_id
+    legacy_id=$(cat "$legacy_path" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$legacy_id" ]]; then
+      iii_set_ini_key "identity" "id" "$legacy_id"
+      echo "$legacy_id"
+      return
+    fi
+  fi
+
+  mkdir -p "${HOME}/.iii"
+  local new_id
+  new_id=$(iii_gen_uuid)
+  iii_set_ini_key "identity" "id" "$new_id"
+  echo "$new_id"
+}
+
+iii_send_event() {
+  local event_type="$1"
+  local event_props="$2"
+  local device_id="$3"
+
+  if [[ -z "$AMPLITUDE_API_KEY" ]]; then
+    return 0
+  fi
+
+  if ! iii_telemetry_enabled; then
+    return 0
+  fi
+
+  local os_name
+  os_name=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+  local ts
+  ts=$(date +%s 2>/dev/null || echo "0")
+  local ts_ms=$(( ts * 1000 ))
+  local insert_id
+  insert_id=$(iii_gen_uuid)
+
+  local payload="{\"api_key\":\"${AMPLITUDE_API_KEY}\",\"events\":[{\"device_id\":\"${device_id}\",\"user_id\":\"${device_id}\",\"event_type\":\"${event_type}\",\"event_properties\":{${event_props}},\"platform\":\"install-script\",\"os_name\":\"${os_name}\",\"app_version\":\"script\",\"time\":${ts_ms},\"insert_id\":\"${insert_id}\",\"ip\":\"\$remote\"}]}"
+
+  curl -s -o /dev/null -X POST "$AMPLITUDE_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    --data-raw "$payload" &
+}
+
+iii_export_host_user_id() {
+  local huid
+  huid=$(iii_read_ini_key "identity" "id")
+  if [[ -z "$huid" ]]; then
+    return 0
+  fi
+  local export_line="export III_HOST_USER_ID=\"${huid}\""
+  local profile
+  for profile in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+    if [[ -f "$profile" ]] && ! grep -qF "III_HOST_USER_ID" "$profile" 2>/dev/null; then
+      printf '\n# iii host correlation\n%s\n' "$export_line" >> "$profile"
+      break
+    fi
+  done
 }
 
 check_homebrew() {
@@ -639,6 +836,31 @@ install_from_binary() {
   printf "\n${MUTED}Installing ${NC}%s ${MUTED}from: ${NC}%s\n" "$BIN_NAME" "$binary_path"
 }
 
+# --- Telemetry init -----------------------------------------------------------
+
+install_id=$(iii_gen_uuid)
+telemetry_id=$(iii_get_or_create_telemetry_id)
+install_event_prefix="install"
+
+from_version=""
+if [[ -z "$binary_path" ]]; then
+  if command -v "$BIN_NAME" >/dev/null 2>&1; then
+    from_version=$("$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")
+    from_version="${from_version#v}"
+  fi
+fi
+
+if [[ -n "$from_version" ]]; then
+  install_event_prefix="upgrade"
+  iii_send_event "upgrade_started" \
+    "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+else
+  iii_send_event "install_started" \
+    "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+fi
+
 # --- Main dispatch ------------------------------------------------------------
 
 if [[ -n "$binary_path" ]]; then
@@ -646,6 +868,21 @@ if [[ -n "$binary_path" ]]; then
 else
   download_and_install
 fi
+
+installed_version=$("$INSTALL_DIR/$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")
+installed_version="${installed_version#v}"
+
+if [[ "$install_event_prefix" == "upgrade" ]]; then
+  iii_send_event "upgrade_succeeded" \
+    "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version}\",\"to_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+else
+  iii_send_event "install_succeeded" \
+    "\"install_id\":\"${install_id}\",\"installed_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+fi
+
+iii_export_host_user_id
 
 # --- PATH modification --------------------------------------------------------
 
