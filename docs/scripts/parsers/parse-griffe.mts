@@ -29,7 +29,7 @@ interface GriffeObject {
   value?: string | null
 }
 
-function annotationToString(ann: any): string {
+export function annotationToString(ann: any): string {
   if (!ann) return ''
   if (typeof ann === 'string') return ann
 
@@ -60,7 +60,7 @@ function annotationToString(ann: any): string {
   }
 }
 
-function extractDocstring(obj: GriffeObject): string {
+export function extractDocstring(obj: GriffeObject): string {
   if (!obj.docstring?.parsed) {
     // Strip all Google-style sections from raw docstring
     return obj.docstring?.value
@@ -71,7 +71,7 @@ function extractDocstring(obj: GriffeObject): string {
   return textParts.map(p => typeof p.value === 'string' ? p.value : '').join('\n').trim()
 }
 
-function extractParams(obj: GriffeObject): ParamDoc[] {
+export function extractParams(obj: GriffeObject): ParamDoc[] {
   const docParams: Record<string, string> = {}
 
   if (obj.docstring?.parsed) {
@@ -117,7 +117,7 @@ function extractParams(obj: GriffeObject): ParamDoc[] {
     }))
 }
 
-function extractExamples(obj: GriffeObject): string[] {
+export function extractExamples(obj: GriffeObject): string[] {
   if (!obj.docstring?.value) return []
   const exampleMatch = obj.docstring.value.match(/Examples?:\n([\s\S]*?)(?:\n\n(?:[A-Z]\w*:)|\n\n\S|$)/)
   if (!exampleMatch) return []
@@ -131,7 +131,12 @@ function extractExamples(obj: GriffeObject): string[] {
   return code ? [code] : []
 }
 
-function buildSignature(obj: GriffeObject): string {
+export function isAsync(obj: GriffeObject): boolean {
+  return (obj.labels ?? []).includes('async')
+}
+
+export function buildSignature(obj: GriffeObject): string {
+  const asyncPrefix = isAsync(obj) ? 'async ' : ''
   const params = (obj.parameters ?? [])
     .filter(p => p.name !== 'self' && p.name !== 'cls')
     .map(p => {
@@ -143,10 +148,10 @@ function buildSignature(obj: GriffeObject): string {
     .join(', ')
   const retStr = annotationToString(obj.returns?.annotation)
   const ret = retStr ? ` -> ${retStr}` : ''
-  return `(${params})${ret}`
+  return `${asyncPrefix}(${params})${ret}`
 }
 
-function griffeToFunction(obj: GriffeObject): FunctionDoc {
+export function griffeToFunction(obj: GriffeObject): FunctionDoc {
   return {
     name: obj.name,
     signature: buildSignature(obj),
@@ -160,7 +165,7 @@ function griffeToFunction(obj: GriffeObject): FunctionDoc {
   }
 }
 
-function extractAttributeDescriptions(obj: GriffeObject): Record<string, string> {
+export function extractAttributeDescriptions(obj: GriffeObject): Record<string, string> {
   const docstring = obj.docstring?.value ?? ''
   const attrMatch = docstring.match(/Attributes:\n([\s\S]*?)(?:\n\n\S|\n\n$|$)/)
   if (!attrMatch) return {}
@@ -181,7 +186,7 @@ function extractAttributeDescriptions(obj: GriffeObject): Record<string, string>
   return result
 }
 
-function griffeToType(obj: GriffeObject): TypeDoc {
+export function griffeToType(obj: GriffeObject): TypeDoc {
   const fields: ParamDoc[] = []
   const attrDescs = extractAttributeDescriptions(obj)
 
@@ -210,7 +215,7 @@ function griffeToType(obj: GriffeObject): TypeDoc {
   }
 }
 
-function extractTypesFromModule(members: Record<string, GriffeObject>, skipClasses: Set<string>): TypeDoc[] {
+export function extractTypesFromModule(members: Record<string, GriffeObject>, skipClasses: Set<string>): TypeDoc[] {
   const types: TypeDoc[] = []
 
   for (const [name, member] of Object.entries(members)) {
@@ -223,9 +228,7 @@ function extractTypesFromModule(members: Record<string, GriffeObject>, skipClass
   return types
 }
 
-export function parseGriffe(jsonPath: string): SdkDoc {
-  const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
-
+export function parseGriffeData(raw: Record<string, any>): SdkDoc {
   const rootModule = raw['iii'] ?? raw
   const rootMembers: Record<string, GriffeObject> = rootModule.members ?? {}
 
@@ -309,4 +312,8 @@ export function parseGriffe(jsonPath: string): SdkDoc {
     types,
     loggerSection,
   }
+}
+
+export function parseGriffe(jsonPath: string): SdkDoc {
+  return parseGriffeData(JSON.parse(readFileSync(jsonPath, 'utf-8')))
 }
