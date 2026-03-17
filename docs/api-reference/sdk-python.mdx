@@ -24,6 +24,21 @@ iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker
 
 ## Methods
 
+### connect_async
+
+Connect to the III Engine via WebSocket.
+
+Initializes OpenTelemetry (if configured), attaches the event loop,
+and establishes the WebSocket connection. This is called automatically
+during construction -- use it only if you need to reconnect manually
+from an async context.
+
+**Signature**
+
+```python
+async ()
+```
+
 ### create_channel
 
 Create a streaming channel pair for worker-to-worker data transfer.
@@ -50,6 +65,34 @@ create_channel(buffer_size: int | None = None)
 ch = iii.create_channel()
 fn = iii.register_function({"id": "producer"}, producer_handler)
 iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
+```
+
+### create_channel_async
+
+Create a streaming channel pair for worker-to-worker data transfer.
+
+The returned ``Channel`` contains a local ``writer`` / ``reader``
+and their serializable refs (``writer_ref``, ``reader_ref``) that
+can be passed as fields in invocation data to other functions.
+
+**Signature**
+
+```python
+async (buffer_size: int | None = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `buffer_size` | `int \| None` | No | Buffer capacity for the channel. Defaults to ``64``. |
+
+#### Example
+
+```python
+ch = await iii.create_channel_async()
+fn = iii.register_function({"id": "producer"}, producer_handler)
+await iii.trigger_async({"function_id": "producer", "payload": {"output": ch.writer_ref}})
 ```
 
 ### create_stream
@@ -114,6 +157,23 @@ for fn in iii.list_functions():
     print(fn.function_id, fn.description)
 ```
 
+### list_functions_async
+
+List all functions registered with the engine across all workers.
+
+**Signature**
+
+```python
+async ()
+```
+
+#### Example
+
+```python
+for fn in await iii.list_functions_async():
+    print(fn.function_id, fn.description)
+```
+
 ### list_triggers
 
 List all triggers registered with the engine.
@@ -137,6 +197,29 @@ triggers = iii.list_triggers()
 internal = iii.list_triggers(include_internal=True)
 ```
 
+### list_triggers_async
+
+List all triggers registered with the engine.
+
+**Signature**
+
+```python
+async (include_internal: bool = False)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `include_internal` | `bool` | No | If ``True``, include engine-internal triggers (e.g. ``functions-available``). Defaults to ``False``. |
+
+#### Example
+
+```python
+triggers = await iii.list_triggers_async()
+internal = await iii.list_triggers_async(include_internal=True)
+```
+
 ### list_workers
 
 List all workers currently connected to the engine.
@@ -151,6 +234,23 @@ list_workers()
 
 ```python
 for w in iii.list_workers():
+    print(w.name, w.worker_id)
+```
+
+### list_workers_async
+
+List all workers currently connected to the engine.
+
+**Signature**
+
+```python
+async ()
+```
+
+#### Example
+
+```python
+for w in await iii.list_workers_async():
     print(w.name, w.worker_id)
 ```
 
@@ -328,6 +428,29 @@ iii = register_worker('ws://localhost:49134')
 iii.shutdown()
 ```
 
+### shutdown_async
+
+Gracefully shut down the client, releasing all resources.
+
+Cancels any pending reconnection attempts, rejects all in-flight
+invocations with an error, closes the WebSocket connection, and
+stops the background event-loop thread.  After this call the
+instance must not be reused.
+
+**Signature**
+
+```python
+async ()
+```
+
+#### Example
+
+```python
+iii = register_worker('ws://localhost:49134')
+# ... do work ...
+await iii.shutdown_async()
+```
+
 ### trigger
 
 Invoke a remote function.
@@ -355,6 +478,35 @@ trigger(request: dict[str, Any] | TriggerRequest)
 ```python
 result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
 iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+```
+
+### trigger_async
+
+Invoke a remote function.
+
+The routing behavior and return type depend on the ``action`` field:
+
+- No action: synchronous -- waits for the function to return.
+- ``TriggerAction.Enqueue(...)``: async via named queue -- returns ``EnqueueResult``.
+- ``TriggerAction.Void()``: fire-and-forget -- returns ``None``.
+
+**Signature**
+
+```python
+async (request: dict[str, Any] | TriggerRequest)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | dict[str, Any] \| [`TriggerRequest`](#triggerrequest) | Yes | A ``TriggerRequest`` or dict with ``function_id``, ``payload``, and optional ``action`` / ``timeout_ms``. |
+
+#### Example
+
+```python
+result = await iii.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
+await iii.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
 ```
 
 ### unregister_trigger_type
