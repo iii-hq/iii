@@ -161,6 +161,16 @@ See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain,
 
 See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tutorials.
 
+## Docs Development
+
+The iii documentation lives in [`docs/`](docs/), which is a Mintlify docs site driven by [`docs/docs.json`](docs/docs.json).
+
+```bash
+pnpm dev:docs
+```
+
+This runs `npx mint dev` inside `docs/` and serves the docs locally, typically at `http://localhost:3000`.
+
 ## Resources
 
 - [Documentation](https://iii.dev/docs)

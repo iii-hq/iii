@@ -22,7 +22,7 @@
     "fmt:check": "biome check . && cargo fmt --all -- --check",
     "type-check": "turbo run type-check",
     "generate:api-docs": "bash scripts/generate-api-docs.sh",
-    "dev:docs": "turbo run dev --filter=docs",
+    "dev:docs": "cd docs && npx mint dev",
     "dev:motia-docs": "turbo run dev --filter=motia-docs",
     "dev:website": "turbo run dev --filter=iii-website",
     "dev:console": "turbo run dev --filter=console-frontend"
