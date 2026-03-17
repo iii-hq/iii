@@ -57,9 +57,9 @@ stateDiagram-v2
 Worker establishes WebSocket connection to the Engine:
 
 ```typescript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-const iii = init('ws://127.0.0.1:49134')
+const iii = registerWorker('ws://127.0.0.1:49134')
 ```
 
 ### 2. Registration
@@ -155,9 +155,9 @@ graph TD
 ### Node.js
 
 ```typescript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
 iii.registerFunction(
   { id: 'greet::hello' },

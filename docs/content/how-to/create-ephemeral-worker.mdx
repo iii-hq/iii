@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 2. Trigger and Graceful Shutdown
 
-The main thread connects, triggers the function, awaits its completion, then calls `shutdown()` to cleanly close the WebSocket and exit the process.
+The main thread connects, triggers the function, awaits its completion, then calls `shutdown()` (or `shutdown_async().await` in Rust for guaranteed telemetry flush) to cleanly close the WebSocket and exit the process.
 
 <Tabs groupId="language" persist items={["Node / TypeScript", "Python", "Rust"]}>
 <Tab value="Node / TypeScript">
@@ -169,7 +169,7 @@ iii.shutdown()
     println!("Task completed. Shutting down worker...");
 
     // Cleanly close the WebSocket connection
-    iii.shutdown();
+    iii.shutdown_async().await;
 
     Ok(())
 }

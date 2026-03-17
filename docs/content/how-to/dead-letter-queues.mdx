@@ -98,7 +98,7 @@ modules:
   - class: modules::queue::QueueModule
     config:
       queue_configs:
-        payment:
+        payment_dlq:
           max_retries: 5
           backoff_ms: 2000
           concurrency: 2
@@ -115,7 +115,7 @@ import { TriggerAction } from 'iii-sdk'
 await iii.trigger({
   function_id: 'payments::charge',
   payload: { orderId: order.id, amount: order.total },
-  action: TriggerAction.Enqueue({ queue: 'payment' }),
+  action: TriggerAction.Enqueue({ queue: 'payment_dlq' }),
 })
 ```
 </Tab>
@@ -126,7 +126,7 @@ from iii import TriggerAction
 iii.trigger({
     "function_id": "payments::charge",
     "payload": {"orderId": order["id"], "amount": order["total"]},
-    "action": TriggerAction.Enqueue(queue="payment"),
+    "action": TriggerAction.Enqueue(queue="payment_dlq"),
 })
 ```
 </Tab>
@@ -142,7 +142,7 @@ iii.trigger(TriggerRequest {
         "amount": order["total"],
     }),
     action: Some(TriggerAction::Enqueue {
-        queue: "payment".into(),
+        queue: "payment_dlq".into(),
     }),
     timeout_ms: None,
 })
@@ -170,7 +170,7 @@ When the payment endpoint is down and all 5 retries exhaust, the engine:
 3. Logs a warning:
 
 ```
-WARN queue="payment" job_id="..." attempts=5 "Job exhausted, moved to DLQ"
+WARN queue="payment_dlq" job_id="..." attempts=5 "Job exhausted, moved to DLQ"
 ```
 
 The job stays in the DLQ until the engine redrives it. No other jobs in the queue are blocked — processing continues normally for new messages.

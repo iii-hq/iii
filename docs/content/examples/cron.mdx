@@ -85,12 +85,12 @@ iii.register_trigger({
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction};
+use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-iii.register_function("cron.periodic_job", |_input| async move {
+iii.register_function(RegisterFunctionMessage { id: "cron.periodic_job".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     let logger = Logger();
     logger.info("Periodic job fired", None);
 
@@ -105,9 +105,9 @@ iii.register_function("cron.periodic_job", |_input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("cron", "cron.periodic_job", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
     "expression": "* * * * *",
-}))?;
+}) })?;
 ```
 
   </Tab>
@@ -157,13 +157,16 @@ iii.register_trigger({"type": "queue", "function_id": "job.handle_tick", "config
   <Tab value="Rust">
 
 ```rust
-iii.register_function("job.handle_tick", |input| async move {
+use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "job.handle_tick".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     logger.info("Periodic job processed", Some(input));
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "job.handle_tick", json!({ "topic": "job.tick" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }) })?;
 ```
 
   </Tab>
@@ -272,7 +275,10 @@ iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "confi
   <Tab value="Rust">
 
 ```rust
-iii.register_function("cron.orders_sweep", |_input| async move {
+use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "cron.orders_sweep".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     let logger = Logger();
 
     let orders_val = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "orders" }))).await?;
@@ -308,7 +314,7 @@ iii.register_function("cron.orders_sweep", |_input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("cron", "cron.orders_sweep", json!({ "expression": "*/5 * * * *" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }) })?;
 ```
 
   </Tab>

@@ -140,12 +140,12 @@ iii.register_trigger({
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, types::ApiRequest};
+use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, types::ApiRequest, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-iii.register_function("orders.create", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "orders.create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let req: ApiRequest = serde_json::from_value(input)?;
 
@@ -188,10 +188,10 @@ iii.register_function("orders.create", |input| async move {
     Ok(json!({ "status_code": 201, "body": { "orderId": order_id, "status": "processing" } }))
 });
 
-iii.register_trigger("http", "orders.create", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "orders.create".into(), config: json!({
     "api_path": "orders",
     "http_method": "POST",
-}))?;
+}) })?;
 ```
 
   </Tab>
@@ -285,7 +285,10 @@ iii.register_trigger({"type": "queue", "function_id": "order.process", "config":
   <Tab value="Rust">
 
 ```rust
-iii.register_function("order.process", |input| async move {
+use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "order.process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
@@ -303,7 +306,7 @@ iii.register_function("order.process", |input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "order.process", json!({ "topic": "order.process" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.process".into(), config: json!({ "topic": "order.process" }) })?;
 ```
 
   </Tab>
@@ -369,7 +372,10 @@ iii.register_trigger({"type": "queue", "function_id": "order.notify", "config": 
   <Tab value="Rust">
 
 ```rust
-iii.register_function("order.notify", |input| async move {
+use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "order.notify".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
@@ -383,7 +389,7 @@ iii.register_function("order.notify", |input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "order.notify", json!({ "topic": "order.notify" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.notify".into(), config: json!({ "topic": "order.notify" }) })?;
 ```
 
   </Tab>

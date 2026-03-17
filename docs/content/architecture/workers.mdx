@@ -34,7 +34,7 @@ graph LR
 
 ```mermaid
 flowchart TD
-    Start(("init()")) --> Connecting
+    Start(("registerWorker()")) --> Connecting
     Connecting -->|WebSocket open| Connected
     Connected -->|"Register<br/>functions & triggers"| Registering
     Registering -->|All registered| Ready

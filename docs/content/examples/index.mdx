@@ -41,8 +41,8 @@ All three SDKs share the same concepts with language-idiomatic initialization:
 |---|---|---|---|
 | Init | `registerWorker(url)` | `register_worker(url, options?)` | `register_worker(url, InitOptions::default())?` |
 | Connect | Auto on `registerWorker()` | Auto on `register_worker()` | Auto on `register_worker()` |
-| Register function | `iii.registerFunction({ id }, handler)` | `iii.register_function({"id": ...}, handler)` | `iii.register_function(id, \|input\| ...)` |
-| Register trigger | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, function_id, config)?` |
+| Register function | `iii.registerFunction({ id }, handler)` | `iii.register_function({"id": ...}, handler)` | `iii.register_function(RegisterFunctionMessage { id, .. }, \|input\| ...)` |
+| Register trigger | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(RegisterTriggerInput { type_, function_id, config, .. })?` |
 | Context | `new Logger()` | `Logger()` | `iii_sdk::Logger()` |
 | Trigger (sync) | `await iii.trigger({ function_id, payload })` | `iii.trigger({'function_id': id, 'payload': data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` |
 | Trigger (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | `iii.trigger({'function_id': id, 'payload': data, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new(id, data).action(TriggerAction::void())).await?` |
