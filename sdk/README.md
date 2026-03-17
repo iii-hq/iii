@@ -1,6 +1,6 @@
 # iii
 
-iii is a single engine that replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability pipeline with two primitives: **Function** and **Trigger**. You write functions, declare what triggers them, and the engine handles discovery, routing, retries, and observability.
+iii is a single engine that replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability pipeline with three primitives: **Function**, **Trigger**, and **Worker**. You write functions, declare what triggers them, connect a worker, and the engine handles routing, retries, and observability.
 
 See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
 
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |
 
-`registerWorker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
+`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All three SDKs expose the same API surface — register functions and triggers, then invoke them.
 
 > `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
 

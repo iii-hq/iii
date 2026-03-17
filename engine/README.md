@@ -10,19 +10,19 @@
 
 You start building a backend and immediately need six different tools: an API framework, a task queue, a cron scheduler, pub/sub, a state store, and an observability pipeline. Each has its own config, its own deployment, its own failure modes. A simple "process this, then notify that" workflow touches three services before you write any business logic.
 
-iii replaces all of that with a single engine and two primitives: **Function** and **Trigger**.
+iii replaces all of that with a single engine and three primitives: **Function**, **Trigger**, and **Worker**.
 
-A Function is anything that does work. A Trigger is what causes it to run - an HTTP request, a cron schedule, a queue message, a state change. You write the function, declare what triggers it, and the engine handles discovery, routing, retries, and observability.
+A Function is anything that does work. A Trigger is what causes it to run — an HTTP request, a cron schedule, a queue message, a state change. A Worker is any process that registers Functions and Triggers — long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware. You write the function, declare what triggers it, connect a worker, and the engine handles routing, retries, and observability.
 
-One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI - iii gives your backend a single model for execution.
+One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI — iii gives your backend a single model for execution.
 
-## Three Concepts
+## Three Primitives
 
-| Concept       | What it does                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Function**  | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint. It can mutate state, invoke other functions, and modify databases. |
-| **Trigger**   | What causes a Function to run - explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event. |
-| **Discovery** | Functions and triggers register and deregister themselves without configuration. Once discovered, they are available across the entire backend. |
+| Primitive     | What it does |
+| ------------- | ------------ |
+| **Function**  | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint. |
+| **Trigger**   | What causes a Function to run — explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event. |
+| **Worker**    | Any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect and participate as first-class members. |
 
 ## Quick Start
 

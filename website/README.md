@@ -47,7 +47,7 @@ Deployed to [Vercel](https://vercel.com) under the **motia** org. Pushes to `mai
 │   └── sections/
 │       ├── HeroSection.tsx           # Hero + tagline
 │       ├── HelloWorldSection.tsx     # Polyglot code demo (Python/Rust/Node)
-│       ├── EngineSection.tsx         # Three concepts: Function, Trigger, Discovery
+│       ├── EngineSection.tsx         # Three primitives: Function, Trigger, Worker
 │       ├── CodeExamples.tsx          # 14 side-by-side comparisons (traditional vs iii)
 │       ├── ExampleCodeSection.tsx    # Code examples renderer
 │       ├── AgentReadySection.tsx     # 8 agent capability patterns

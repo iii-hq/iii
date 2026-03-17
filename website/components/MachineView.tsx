@@ -49,14 +49,14 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`}</pre>
 
           <pre className="whitespace-pre-wrap break-words overflow-x-auto">{`# What is iii
 
-One Engine. Three primitives: Function, Trigger, Discovery.
+One Engine. Three primitives: Function, Trigger, Worker.
 React simplified frontend with Component and Context. iii does the same for backend.
 
 | Primitive  | Role                                                        |
 |------------|-------------------------------------------------------------|
 | Function   | Anything that does work — receives input, returns output    |
 | Trigger    | What makes a Function run — HTTP, cron, queue, state, stream|
-| Discovery  | The system knows itself — live registry, no config files    |
+| Worker     | Any process that registers functions and triggers            |
 
 Key properties:
 - Polyglot execution — any language participates through one universal protocol
@@ -72,11 +72,11 @@ Platforms: AWS, Google Cloud, Azure, Cloudflare, Vercel, Fly.io, Docker, Kuberne
 
 ## TypeScript
 \`\`\`typescript
-import { init, Logger } from "iii-sdk"
-const iii = init(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
+import { registerWorker, Logger } from "iii-sdk"
+const iii = registerWorker(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
 
 iii.registerFunction(
-  { id: "users.create" },
+  { id: "users::create" },
   async (input) => {
     const logger = new Logger()
     logger.info("Creating user", { email: input.email })
@@ -86,58 +86,60 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: "http",
-  function_id: "users.create",
-  config: { api_path: "/users", http_method: "POST" }
+  function_id: "users::create",
+  config: { api_path: "users", http_method: "POST" }
 })
 \`\`\`
 
 ## Python
 \`\`\`python
-from iii import init 
+from iii import register_worker, Logger
 
-iii = init(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
+iii = register_worker(os.environ.get("III_BRIDGE_URL", "ws://localhost:49134"))
 
 async def create_user(input):
     logger = Logger()
     logger.info("Creating user", { "email": input["email"] })
     return { "id": "123", "email": input["email"] }
 
-iii.register_function("users.create", create_user)
+iii.register_function("users::create", create_user)
 
 iii.register_trigger(
     "http",
-    "users.create",
-    { "api_path": "/users", "http_method": "POST" }
+    "users::create",
+    { "api_path": "users", "http_method": "POST" }
 )
 \`\`\`
 
 ## Rust
 \`\`\`rust
-use iii_sdk::{III, Logger};
+use iii_sdk::{register_worker, InitOptions, Logger};
 use serde_json::json;
 
-let iii = init("ws://localhost:49134", InitOptions::default())?;
+let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
 
 iii.register_function("users::create", |input| async move {
-    let logger = Logger()();
+    let logger = Logger::new();
     let email = input["email"].as_str().unwrap_or("");
     logger.info(&format!("Creating user: {}", email));
     Ok(json!({ "id": "123", "email": email }))
 });
 
-iii.register_trigger("http", "users.create", json!({
-    "api_path": "/users", "http_method": "POST"
-}))?;
+iii.register_trigger(Trigger {
+    trigger_type: "http".into(),
+    function_id: "users::create".into(),
+    config: json!({ "api_path": "users", "http_method": "POST" }),
+});
 \`\`\`
 
 ## Core SDK Methods
 - iii.registerFunction({ id }, handler) — register a function
 - iii.registerTrigger({ type, function_id, config }) — bind a trigger
-- iii.trigger({ function_id: "ns::name", payload: input }) — invoke a function (awaitable)
-- iii.trigger({ function_id: "publish", payload: { topic, data }, action: TriggerAction.Void() }) — fire-and-forget
+- iii.trigger({ function_id, payload }) — invoke a function (awaitable)
+- iii.trigger({ function_id, payload, action: TriggerAction.Void() }) — fire-and-forget
 - iii.listFunctions() — discover all available functions
 - iii.onFunctionsAvailable(callback) — subscribe to topology changes
-- new Logger() — auto-injected logger with traceId correlation
+- new Logger() — structured logger with traceId correlation
 
 ## Built-in System Functions
 - state::get / state::set — { scope, key, value }
@@ -151,7 +153,7 @@ iii.register_trigger("http", "users.create", json!({
 A Function receives input and optionally returns output.
 It can live anywhere — locally, on cloud, on serverless, or as a third-party HTTP endpoint.
 - Write in TypeScript, Python, or Rust — mix freely
-- Addressable by path (users::create, orders::process)
+- Addressable by path (users.create, orders.process)
 - Hot-swap handlers without restarting consumers
 - Auto-cleanup when workers disconnect
 
@@ -163,12 +165,12 @@ or automatically from an event source like an HTTP request, cron schedule, queue
 - Custom trigger types plug in at runtime
 - Same pattern for every event source
 
-## Discovery — The system knows itself
-When a worker connects, every other worker learns what it can do.
-When it disconnects, its functions vanish. No config files. No service registries. No hardcoded URLs.
-- Workers register → everyone is notified instantly
+## Worker — Any process that registers functions
+A Worker is any process that registers Functions and Triggers.
+Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware.
+- Workers register functions → immediately available to all
 - Workers disconnect → functions removed, no stale refs
-- trigger() by name — engine routes to the right worker
+- Long-running, ephemeral, or agentic — all first-class
 - Scale up, scale down — topology adapts in real time
 
 ## Engine Capabilities
@@ -199,8 +201,8 @@ Compatible agents: Claude Code, Cursor, Gemini, Codex, Windsurf, Trae, Amp, Roo,
 
 ## 1. AI Agent with Tools — ReAct loop with tool calling
 \`\`\`typescript
-import { init, Logger } from "iii-sdk"
-const iii = init(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
+import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+const iii = registerWorker(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
 const logger = new Logger()
 
 const tools = await iii.listFunctions()
@@ -224,8 +226,6 @@ iii.registerFunction(
 
 ## 2. Multi-Agent Network — Researcher → Analyzer → Writer pipeline
 \`\`\`typescript
-import { TriggerAction } from "iii-sdk"
-
 iii.registerFunction({ id: "agents::researcher" }, async ({ topic }) => {
   const sources = await iii.trigger({ function_id: "tools::webSearch", payload: { query: topic } })
   return iii.trigger({ function_id: "agents::analyzer", payload: { sources, topic } })
@@ -238,7 +238,9 @@ iii.registerFunction({ id: "agents::analyzer" }, async ({ sources, topic }) => {
 
 iii.registerFunction({ id: "agents::writer" }, async ({ insights, topic }) => {
   const draft = await callLLM("Write a report", { insights })
-  await iii.trigger({ function_id: "state::set", payload: { scope: "reports", key: topic, value: draft } })
+  await iii.trigger({ function_id: "state::set", payload: {
+    scope: "reports", key: topic, value: draft
+  } })
   iii.trigger({ function_id: "publish", payload: { topic: "report.ready", data: { topic } }, action: TriggerAction.Void() })
   return draft
 })
@@ -248,7 +250,9 @@ iii.registerFunction({ id: "agents::writer" }, async ({ insights, topic }) => {
 \`\`\`typescript
 iii.registerFunction({ id: "orders::process" }, async ({ orderId }) => {
   const logger = new Logger()
-  const step = await iii.trigger({ function_id: "state::get", payload: { scope: orderId, key: "step" } }) ?? 0
+  const step = await iii.trigger({ function_id: "state::get", payload: {
+    scope: orderId, key: "step"
+  } }) ?? 0
 
   const pipeline = [
     () => iii.trigger({ function_id: "payments::charge", payload: { orderId } }),
@@ -259,7 +263,9 @@ iii.registerFunction({ id: "orders::process" }, async ({ orderId }) => {
 
   for (let i = step; i < pipeline.length; i++) {
     await pipeline[i]()
-    await iii.trigger({ function_id: "state::set", payload: { scope: orderId, key: "step", value: i + 1 } })
+    await iii.trigger({ function_id: "state::set", payload: {
+      scope: orderId, key: "step", value: i + 1
+    } })
     logger.info("Step completed", { orderId, step: i + 1 })
   }
   return { status: "completed" }
@@ -268,8 +274,6 @@ iii.registerFunction({ id: "orders::process" }, async ({ orderId }) => {
 
 ## 4. Polyglot Workers — TS + Python + Rust as one system
 \`\`\`typescript
-import { TriggerAction } from "iii-sdk"
-
 iii.registerFunction({ id: "api::users" }, async (req) => {
   const user = await db.createUser(req)
   iii.trigger({ function_id: "publish", payload: { topic: "user.created", data: user }, action: TriggerAction.Void() })
@@ -300,7 +304,9 @@ iii.registerFunction({ id: "chat::send" }, async ({ roomId, message }) => {
   } })
   if (history.length > 100) {
     const summary = await iii.trigger({ function_id: "agents::summarize", payload: { history } })
-    await iii.trigger({ function_id: "state::set", payload: { scope: roomId, key: "summary", value: summary } })
+    await iii.trigger({ function_id: "state::set", payload: {
+      scope: roomId, key: "summary", value: summary
+    } })
   }
   logger.info("Message sent", { roomId, messages: history.length })
 })
@@ -337,10 +343,11 @@ iii.registerFunction({ id: "pipeline::onUserCreated" }, async ({ user }) => {
     iii.trigger({ function_id: "ml::computeSegment", payload: { user } }),
   ])
   const segment = await iii.trigger({ function_id: "state::get", payload: { scope: user.id, key: "segment" } })
-  await iii.trigger({ function_id: "enqueue", payload: {
-    topic: "emails",
-    data: { template: segment === "enterprise" ? "white-glove" : "welcome", user }
-  } })
+  await iii.trigger({
+    function_id: "emails",
+    payload: { template: segment === "enterprise" ? "white-glove" : "welcome", user },
+    action: TriggerAction.Enqueue({ queue: "emails" })
+  })
   logger.info("Pipeline complete", { userId: user.id, segment })
 })
 
@@ -412,13 +419,13 @@ All capabilities available via the same iii protocol — accessible from any lan
 
 ## Shared State — Cross-language state access
 Python worker sets a value, Node.js worker reads it instantly — no Redis required.
-  iii.trigger("state::set", { scope: "user:123", key: "prefs", value: data })
-  iii.trigger("state::get", { scope: "user:123", key: "prefs" })
+  iii.trigger({ function_id: "state::set", payload: { scope: "user:123", key: "prefs", value: data } })
+  iii.trigger({ function_id: "state::get", payload: { scope: "user:123", key: "prefs" } })
 
 ## Real-time Streaming — Bidirectional data flows
 Stream data between workers in real-time. Process infinite sequences without buffering.
-  iii.trigger("stream::set", { stream_name: "feed", group_id: id, item_id: uuid, data: chunk })
-  iii.trigger("stream::list", { stream_name: "feed", group_id: id })
+  iii.trigger({ function_id: "stream::set", payload: { stream_name: "feed", group_id: id, item_id: uuid, data: chunk } })
+  iii.trigger({ function_id: "stream::list", payload: { stream_name: "feed", group_id: id } })
 
 ## Complete Observability — Auto-injected tracing
 Every invocation carries a trace ID. Logs and metrics flow automatically.

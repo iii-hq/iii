@@ -8,7 +8,7 @@ import { DependencyVisualization } from "./DependencyVisualization";
 const replaceCategories = [
   { id: "api", label: "API" },
   { id: "jobs", label: "Background Jobs" },
-  { id: "events", label: "Queues" },
+  { id: "events", label: "Pub/Sub" },
   { id: "realtime", label: "Realtime" },
   { id: "state", label: "State" },
   { id: "cron", label: "Cron" },

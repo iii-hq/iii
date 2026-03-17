@@ -219,8 +219,8 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("", "info");
         addLog("4. Connect a worker (Node.js):", "warning");
         addLog("   npm install iii-sdk", "info");
-        addLog('   const iii = init("ws://127.0.0.1:49134")', "success");
-        addLog('   iii.registerFunction({ id: "my::fn" }, handler)', "success");
+        addLog('   const iii = registerWorker("ws://127.0.0.1:49134")', "success");
+        addLog('   iii.registerFunction({ id: "my.fn" }, handler)', "success");
         addLog("", "info");
         addLog("Read the docs at iii.dev/docs", "warning");
         break;
@@ -295,21 +295,21 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("  cargo add iii-sdk", "success");
         addLog("", "info");
         addLog("Node.js/TypeScript:", "warning");
-        addLog('import { init } from "iii-sdk";', "success");
-        addLog('const iii = init("ws://127.0.0.1:49134");', "success");
+        addLog('import { registerWorker } from "iii-sdk";', "success");
+        addLog('const iii = registerWorker("ws://127.0.0.1:49134");', "success");
         addLog("", "info");
         addLog("iii.registerFunction({", "success");
-        addLog('  id: "math::add"', "success");
+        addLog('  id: "math.add"', "success");
         addLog("}, async (input) => {", "success");
         addLog("  return { sum: input.a + input.b };", "success");
         addLog("});", "success");
         addLog("", "info");
         addLog("Python:", "warning");
-        addLog("from iii import init", "success");
-        addLog('iii = init("ws://127.0.0.1:49134")', "success");
+        addLog("from iii import register_worker", "success");
+        addLog('iii = register_worker("ws://127.0.0.1:49134")', "success");
         addLog("", "info");
         addLog("Rust:", "warning");
-        addLog('let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;', "success");
+        addLog('let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;', "success");
         addLog("", "info");
         addLog('See "register" and "triggers" for more examples', "info");
         break;
@@ -320,7 +320,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("Register a function:", "warning");
         addLog("", "info");
         addLog("iii.registerFunction({", "success");
-        addLog('  id: "api::echo"', "success");
+        addLog('  id: "api.echo"', "success");
         addLog("}, async (req) => {", "success");
         addLog("  return {", "success");
         addLog("    status_code: 200,", "success");
@@ -343,7 +343,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("", "info");
         addLog("iii.registerTrigger({", "success");
         addLog('  type: "http",', "success");
-        addLog('  function_id: "api::echo",', "success");
+        addLog('  function_id: "api.echo",', "success");
         addLog("  config: {", "success");
         addLog('    api_path: "echo",', "success");
         addLog('    http_method: "POST"', "success");
@@ -573,12 +573,12 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("", "info");
         addLog("// TypeScript Example", "warning");
         addLog("", "info");
-        addLog('import { init } from "iii-sdk";', "success");
+        addLog('import { registerWorker } from "iii-sdk";', "success");
         addLog("", "info");
-        addLog('const iii = init("ws://localhost:49134");', "success");
+        addLog('const iii = registerWorker("ws://localhost:49134");', "success");
         addLog("", "info");
         addLog("iii.registerFunction({", "success");
-        addLog('  id: "myService::greet",', "success");
+        addLog('  id: "myService.greet",', "success");
         addLog("}, async (input) => {", "success");
         addLog("  return { message: `Hello, ${input.name}!` };", "success");
         addLog("});", "success");
@@ -599,16 +599,17 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("═══ TRIGGER ═══", "system");
         addLog("", "info");
         addLog("// Synchronous invocation (wait for result)", "warning");
-        addLog("const result = await iii.trigger(", "success");
-        addLog('  "userService::getProfile",', "success");
-        addLog('  { userId: "123" }', "success");
-        addLog(");", "success");
+        addLog("const result = await iii.trigger({", "success");
+        addLog('  function_id: "userService::getProfile",', "success");
+        addLog('  payload: { userId: "123" }', "success");
+        addLog("});", "success");
         addLog("", "info");
         addLog("// Async invocation (fire and forget)", "warning");
-        addLog("iii.trigger({ function_id, payload, action: TriggerAction.Void() })", "success");
-        addLog('  "emailService::sendWelcome",', "success");
-        addLog('  { email: "user@example.com" }', "success");
-        addLog(");", "success");
+        addLog("iii.trigger({", "success");
+        addLog('  function_id: "emailService::sendWelcome",', "success");
+        addLog('  payload: { email: "user@example.com" },', "success");
+        addLog("  action: TriggerAction.Void()", "success");
+        addLog("});", "success");
         addLog("", "info");
         addLog(
           "Functions can trigger OTHER functions across workers!",
@@ -1001,7 +1002,7 @@ export const Terminal: React.FC<TerminalProps> = ({
         addLog("  List all connected workers", "info");
         addLog("", "info");
         addLog(
-          "All invokable via iii.trigger() with optional TriggerAction",
+          "All invokable via iii.trigger({ function_id, payload })",
           "warning",
         );
         break;

@@ -60,24 +60,25 @@ app.listen(3000)`,
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Language-agnostic API
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Register handler - works from any language
 iii.registerFunction(
   { id: 'users::create' },
   async (req) => {
     const logger = new Logger()
-    logger.info('Creating user', { email: req.body.email })
+    logger.info('Creating user', {
+      email: req.body.email
+    })
 
     const user = await createUser(req.body)
 
-    // Publish event - subscribers notified automatically
     iii.trigger({
-      function_id: 'events::user-created',
-      payload: user,
+      function_id: 'publish',
+      payload: { topic: 'user.created', data: user },
       action: TriggerAction.Void()
     })
 
@@ -85,50 +86,39 @@ iii.registerFunction(
   }
 )
 
-// Bind to HTTP - one line, any method, any path
 iii.registerTrigger({
   type: 'http',
   function_id: 'users::create',
-  config: { api_path: 'users', http_method: 'POST' }
-})
-
-// Python ML service registers the same way
-// Rust service registers the same way
-// One unified protocol, any language`,
+  config: {
+    api_path: 'users',
+    http_method: 'POST'
+  }
+})`,
     },
-    linesTraditional: 35,
-    linesIII: 32,
+    linesTraditional: 33,
+    linesIII: 33,
   },
 
   jobs: {
     description:
-      "Background jobs without Sidekiq, Celery, or Bull. Just functions.",
+      "Background jobs without Bull, Celery, or Sidekiq. Functions are the jobs.",
     traditional: {
       title: "Bull + Celery + Sidekiq",
       tools: ["Bull", "BullMQ", "Celery", "Sidekiq", "Agenda", "Dramatiq"],
       language: "typescript",
-      code: `// Bull queue setup
-import Bull from 'bull'
+      code: `import Bull from 'bull'
 import Redis from 'ioredis'
 
 const redis = new Redis(process.env.REDIS_URL)
 const emailQueue = new Bull('emails', { redis })
-const analyticsQueue = new Bull('analytics', { redis })
 const reportQueue = new Bull('reports', { redis })
 
-// Define processors separately
 emailQueue.process('welcome', async (job) => {
   const { userId, email } = job.data
   await sendWelcomeEmail(email)
   return { sent: true }
 })
 
-emailQueue.process('notification', async (job) => {
-  const { userId, message } = job.data
-  await sendNotification(userId, message)
-})
-
-// Manual retry configuration
 emailQueue.on('failed', (job, err) => {
   if (job.attemptsMade < 3) {
     job.retry()
@@ -137,64 +127,37 @@ emailQueue.on('failed', (job, err) => {
   }
 })
 
-// Add jobs from your API
 await emailQueue.add('welcome', { userId, email }, {
   attempts: 3,
   backoff: { type: 'exponential', delay: 1000 },
   removeOnComplete: true,
-})
-
-// Need Python? Set up Celery separately
-// celery_app = Celery('tasks', broker='redis://localhost')
-// @celery_app.task(bind=True, max_retries=3)
-// def send_email(self, user_id): ...`,
+})`,
     },
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Functions ARE the jobs
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, TriggerAction, Logger } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
-// Register job handler
 iii.registerFunction(
   { id: 'jobs::sendWelcomeEmail' },
   async (input) => {
     const logger = new Logger()
-    logger.info('Sending welcome email', { userId: input.userId })
-
+    logger.info('Sending email', { userId: input.userId })
     await sendWelcomeEmail(input.email)
     return { sent: true }
   }
 )
 
-// Bind function to a queue - one consumer per message
-iii.registerTrigger({
-  type: 'queue',
+await iii.trigger({
   function_id: 'jobs::sendWelcomeEmail',
-  config: {
-    topic: 'emails',
-    metadata: {
-      infrastructure: {
-        queue: { maxRetries: 3, concurrency: 5 }
-      }
-    }
-  }
-})
-
-// Enqueue a job - engine handles retries, DLQ
-iii.trigger({
-  function_id: 'emails::send',
-  payload: { userId: user.id, email: user.email },
-  action: TriggerAction.Enqueue({ queue: 'default' })
-})
-
-// Python workers consume the same queue
-// Retry, backoff, dead-letter - built into QueueModule`,
+  payload: { userId, email },
+  action: TriggerAction.Enqueue({ queue: 'emails' }),
+})`,
     },
-    linesTraditional: 42,
-    linesIII: 38,
+    linesTraditional: 26,
+    linesIII: 18,
   },
 
   events: {
@@ -257,17 +220,19 @@ await subscribe('order.placed', async (order) => {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Events are function invocations
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Register event handlers as functions
 iii.registerFunction(
   { id: 'events::user::created' },
   async (user) => {
     const logger = new Logger()
-    logger.info('Syncing user to CRM', { userId: user.id })
+    logger.info('Syncing to CRM', {
+      userId: user.id
+    })
     await syncToCRM(user)
   }
 )
@@ -280,7 +245,6 @@ iii.registerFunction(
   }
 )
 
-// Subscribe functions to topics
 iii.registerTrigger({
   type: 'subscribe',
   function_id: 'events::user::created',
@@ -293,14 +257,13 @@ iii.registerTrigger({
   config: { topic: 'order.placed' }
 })
 
-// Publish events - all subscribers invoked automatically
 iii.trigger({
-  function_id: 'events::user-created',
-  payload: newUser,
+  function_id: 'publish',
+  payload: { topic: 'user.created', data: newUser },
   action: TriggerAction.Void()
 })`,
     },
-    linesTraditional: 48,
+    linesTraditional: 49,
     linesIII: 41,
   },
 
@@ -367,19 +330,20 @@ io.on('connection', (socket) => {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Streams are built-in
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Create typed stream with in-memory store
 const rooms = new Map<string, Map<string, any>>()
 
 iii.createStream('chat', {
   get: async ({ group_id, item_id }) =>
     rooms.get(group_id)?.get(item_id) ?? null,
   set: async ({ group_id, item_id, data }) => {
-    if (!rooms.has(group_id)) rooms.set(group_id, new Map())
+    if (!rooms.has(group_id))
+      rooms.set(group_id, new Map())
     const old = rooms.get(group_id)!.get(item_id)
     rooms.get(group_id)!.set(item_id, data)
     return { old_value: old, new_value: data }
@@ -395,46 +359,62 @@ iii.createStream('chat', {
   update: async () => null,
 })
 
-// Handle join events via stream:join trigger
 iii.registerFunction(
   { id: 'chat::onJoin' },
   async ({ subscription_id, group_id }) => {
     const logger = new Logger()
-    logger.info(\`User joined room: \${group_id}\`)
+    logger.info('Joined', { room: group_id })
   }
 )
-
 iii.registerTrigger({
   type: 'stream:join',
   function_id: 'chat::onJoin',
   config: { stream_name: 'chat' }
 })
 
-// Send message - broadcasts to all subscribers
 iii.registerFunction(
-  { id: 'chat::sendMessage' },
+  { id: 'chat::send' },
   async ({ roomId, content, userId }) => {
-    const message = {
-      id: crypto.randomUUID(),
-      content,
-      userId,
-      timestamp: new Date().toISOString()
-    }
-    
-    // Set in stream - subscribers notified automatically
-    await iii.trigger({ function_id: 'stream::set', payload: {
-      stream_name: 'chat',
-      group_id: roomId,
-      item_id: message.id,
-      data: message
-    }})
-    
-    return message
+    const msg = { id: crypto.randomUUID(), content, userId }
+    await iii.trigger({
+      function_id: 'stream::set',
+      payload: {
+        stream_name: 'chat',
+        group_id: roomId,
+        item_id: msg.id,
+        data: msg
+      }
+    })
+    return msg
+  }
+)
+
+iii.registerFunction(
+  { id: 'chat::history' },
+  async ({ roomId }) => {
+    return iii.trigger({
+      function_id: 'stream::list',
+      payload: { stream_name: 'chat', group_id: roomId }
+    })
+  }
+)
+
+iii.registerFunction(
+  { id: 'chat::getMessage' },
+  async ({ roomId, messageId }) => {
+    return iii.trigger({
+      function_id: 'stream::get',
+      payload: {
+        stream_name: 'chat',
+        group_id: roomId,
+        item_id: messageId
+      }
+    })
   }
 )`,
     },
     linesTraditional: 52,
-    linesIII: 38,
+    linesIII: 76,
   },
 
   state: {
@@ -499,51 +479,50 @@ async function setSession(sessionId: string, data: any, ttl: number) {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - State is a module
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Use StateModule - same API everywhere
 iii.registerFunction(
   { id: 'workflow::process' },
   async (input) => {
     const logger = new Logger()
 
-    // Get state - works across all workers
-    const currentStep = await iii.trigger({
+    const step = await iii.trigger({
       function_id: 'state::get',
-      payload: { scope: input.workflowId, key: 'currentStep' }
+      payload: {
+        scope: input.workflowId,
+        key: 'currentStep'
+      }
     })
-    
-    logger.info('Processing step', { step: currentStep })
-    
-    // Update state - trace_id propagated automatically
-    await iii.trigger({ function_id: 'state::set', payload: {
-      scope: input.workflowId,
-      key: 'currentStep',
-      value: currentStep + 1
-    }})
 
-    // Continue workflow
-    if (currentStep < 5) {
+    logger.info('Processing', { step })
+
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: {
+        scope: input.workflowId,
+        key: 'currentStep',
+        value: step + 1
+      }
+    })
+
+    if (step < 5) {
       iii.trigger({
         function_id: 'workflow::process',
         payload: { workflowId: input.workflowId },
         action: TriggerAction.Void()
       })
     }
-    
-    return { step: currentStep, status: 'processed' }
-  }
-)
 
-// StateModule uses Redis adapter in production
-// File adapter in development
-// Consistent API, pluggable backends`,
+    return { step, status: 'processed' }
+  }
+)`,
     },
-    linesTraditional: 48,
-    linesIII: 36,
+    linesTraditional: 51,
+    linesIII: 33,
   },
 
   cron: {
@@ -601,54 +580,50 @@ await agenda.every('1 week', 'send-weekly-digest', { userId: 123 })
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Cron is a trigger type
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Register the function
 iii.registerFunction(
   { id: 'reports::daily' },
   async () => {
     const logger = new Logger()
     logger.info('Generating daily report')
-
     const report = await generateDailyReport()
-
-    // Store in state for retrieval
-    await iii.trigger({ function_id: 'state::set', payload: {
-      scope: 'reports',
-      key: 'daily-' + new Date().toISOString().split('T')[0],
-      value: report
-    }})
-    
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: {
+        scope: 'reports',
+        key: 'daily-' + new Date()
+          .toISOString().split('T')[0],
+        value: report
+      }
+    })
     return { generated: true }
   }
 )
-
-// Register cron trigger - distributed locking built-in
 iii.registerTrigger({
   type: 'cron',
   function_id: 'reports::daily',
-  config: { expression: '0 9 * * *' } // 9am daily
+  config: { expression: '0 9 * * *' }
 })
 
-// Cleanup job - CronModule handles locking
 iii.registerFunction(
   { id: 'maintenance::cleanup' },
   async () => {
     await cleanupExpiredSessions()
   }
 )
-
 iii.registerTrigger({
   type: 'cron',
   function_id: 'maintenance::cleanup',
-  config: { expression: '*/5 * * * *' } // Every 5 min
+  config: { expression: '*/5 * * * *' }
 })`,
     },
-    linesTraditional: 42,
-    linesIII: 40,
+    linesTraditional: 44,
+    linesIII: 38,
   },
 
   logging: {
@@ -719,51 +694,41 @@ async function handleRequest(req: Request) {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Logging is built-in
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
 iii.registerFunction(
   { id: 'orders::process' },
   async (input) => {
-    // Context includes logger with trace_id
     const logger = new Logger()
-    
-    // Logs include trace_id + function id automatically
-    logger.info('Processing order', { 
+
+    logger.info('Processing order', {
       orderId: input.orderId,
-      items: input.items.length 
+      items: input.items.length
     })
-    
+
     try {
       const order = await processOrder(input)
-      
-      // Log success
-      logger.info('Order processed', { 
+      logger.info('Order processed', {
         orderId: order.id,
-        total: order.total 
+        total: order.total
       })
-      
       return order
     } catch (error) {
-      // Error logged with full context
-      logger.error('Order failed', { 
+      logger.error('Order failed', {
         orderId: input.orderId,
-        error: error.message 
+        error: error.message
       })
       throw error
     }
   }
-)
-
-// Logs flow through LoggingModule
-// FileLogger for dev, RedisLogger for prod
-// Trace correlation across function calls
-// Workbench visualizes everything`,
+)`,
     },
-    linesTraditional: 52,
-    linesIII: 38,
+    linesTraditional: 57,
+    linesIII: 32,
   },
 
   workflow: {
@@ -830,80 +795,62 @@ await worker.run()
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Durable workflows from plain functions
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// HTTP endpoint kicks off the workflow
 iii.registerFunction(
   { id: 'order::start' },
   async (order) => {
-    const logger = new Logger()
-
-    await sendConfirmation({ email: order.email, orderId: order.id })
-
-    // State write = durable checkpoint — survives restarts
-    await iii.trigger({ function_id: 'state::set', payload: {
-      scope: order.id, key: 'status', value: 'confirmed'
-    }})
-
-    logger.info('Order confirmed', { orderId: order.id })
-
-    // Enqueue next step — engine guarantees delivery
-    iii.trigger({ function_id: 'orders::charge', payload: order, action: TriggerAction.Enqueue({ queue: 'default' }) })
-    return { status_code: 202, body: { orderId: order.id, status: 'confirmed' } }
+    await sendConfirmation(order)
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: order.id, key: 'status', value: 'confirmed' }
+    })
+    await iii.trigger({
+      function_id: 'order::charge',
+      payload: order,
+      action: TriggerAction.Enqueue({ queue: 'order::charge' })
+    })
   }
 )
 iii.registerTrigger({
-  type: 'http',
-  function_id: 'order::start',
+  type: 'http', function_id: 'order::start',
   config: { api_path: 'orders', http_method: 'POST' }
 })
 
-// Queue trigger = at-least-once delivery + automatic retries on failure
 iii.registerFunction(
   { id: 'order::charge' },
   async (order) => {
-    const logger = new Logger()
-    const payment = await chargeCard({ amount: order.total, token: order.paymentToken })
-
-    if (!payment.success) {
-      await iii.trigger({ function_id: 'state::set', payload: { scope: order.id, key: 'status', value: 'failed' } })
-      return
-    }
-
-    await iii.trigger({ function_id: 'state::set', payload: { scope: order.id, key: 'payment', value: payment } })
-    logger.info('Charged', { orderId: order.id, paymentId: payment.id })
-    iii.trigger({ function_id: 'order::ship', payload: order, action: TriggerAction.Void() })
+    const pay = await chargeCard(order)
+    if (!pay.success) return
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: order.id, key: 'status', value: 'charged' }
+    })
+    await iii.trigger({
+      function_id: 'order::ship',
+      payload: order,
+      action: TriggerAction.Enqueue({ queue: 'order::ship' })
+    })
   }
 )
-iii.registerTrigger({
-  type: 'queue',
-  function_id: 'order::charge',
-  config: {
-    topic: 'order.charge',
-    metadata: { infrastructure: { queue: { maxRetries: 3 } } }
-  }
-})
 
-// Final step — state records completion
 iii.registerFunction(
   { id: 'order::ship' },
   async (order) => {
-    const logger = new Logger()
-    const shipment = await shipOrder({ orderId: order.id, address: order.address })
-
-    await iii.trigger({ function_id: 'state::set', payload: { scope: order.id, key: 'status', value: 'shipped' } })
-    logger.info('Shipped', { orderId: order.id, tracking: shipment.trackingNumber })
-    return { orderId: order.id, trackingNumber: shipment.trackingNumber }
+    const s = await shipOrder(order)
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: order.id, key: 'status', value: 'shipped' }
+    })
+    return { tracking: s.trackingNumber }
   }
-)
-
-// No DSL. No separate server. No determinism rules.
-// State = durability. Queue = retries. Functions = steps.`,
+)`,
     },
-    linesTraditional: 48,
+    linesTraditional: 47,
     linesIII: 55,
   },
 
@@ -970,75 +917,69 @@ const stream = await executor.streamEvents(
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Functions ARE tools, State IS memory
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Register tools as functions - automatic discovery
 iii.registerFunction(
-  { 
-    id: 'tools::searchDatabase',
-    description: 'Search the product database',
-    request_format: { name: 'query', type: 'string' }
-  },
+  { id: 'tools::webSearch' },
   async ({ query }) => {
-    const results = await db.products.search(query)
-    return { results }
+    return await searchWeb(query)
   }
 )
 
 iii.registerFunction(
-  { 
-    id: 'tools::sendEmail',
-    description: 'Send an email to user'
-  },
-  async ({ to, subject, body }) => {
-    await sendEmail(to, subject, body)
-    return { sent: true }
+  { id: 'agents::researcher' },
+  async ({ topic }) => {
+    const sources = await iii.trigger({
+      function_id: 'tools::webSearch',
+      payload: { query: topic }
+    })
+    return iii.trigger({
+      function_id: 'agents::analyzer',
+      payload: { sources, topic }
+    })
   }
 )
 
-// Agent orchestrator - uses StateModule for memory
 iii.registerFunction(
-  { id: 'agent::chat' },
-  async ({ sessionId, message }) => {
-    const logger = new Logger()
-
-    // Get conversation history from StateModule
-    const history = await iii.trigger({ function_id: 'state::get', payload: {
-      scope: sessionId, key: 'history'
-    }}) || []
-    
-    // Call LLM with tools available via ListFunctions
-    const response = await callLLM(message, history)
-    
-    // If tool call, trigger function directly
-    if (response.toolCall) {
-      const result = await iii.trigger({
-        function_id: response.toolCall.function,
-        payload: response.toolCall.args
-      })
-      // Stream response back
-      await iii.trigger({ function_id: 'stream::set', payload: {
-        stream_name: 'chat', group_id: sessionId,
-        item_id: 'response', data: result
-      }})
-    }
-    
-    // Save to memory
-    await iii.trigger({ function_id: 'state::set', payload: {
-      scope: sessionId,
-      key: 'history',
-      value: [...history, { role: 'user', content: message }]
-    }})
-    
-    return response
+  { id: 'agents::analyzer' },
+  async ({ sources, topic }) => {
+    const draft = await callLLM(
+      'Analyze sources', { sources }
+    )
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: 'reports', key: topic, value: draft }
+    })
+    iii.trigger({
+      function_id: 'publish',
+      payload: { topic: 'report.ready', data: { topic } },
+      action: TriggerAction.Void()
+    })
   }
-)`,
+)
+
+iii.registerFunction(
+  { id: 'agents::writer' },
+  async ({ topic }) => {
+    const draft = await iii.trigger({
+      function_id: 'state::get',
+      payload: { scope: 'reports', key: topic }
+    })
+    return callLLM('Write final report', { draft })
+  }
+)
+iii.registerTrigger({
+  type: 'subscribe',
+  function_id: 'agents::writer',
+  config: { topic: 'report.ready' }
+})`,
     },
     linesTraditional: 52,
-    linesIII: 48,
+    linesIII: 58,
   },
 
   "feature-flags": {
@@ -1105,63 +1046,53 @@ process.on('SIGTERM', () => {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - State + Streams = Feature Flags
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Define flags in StateModule
 iii.registerFunction(
   { id: 'flags::set' },
   async ({ flagKey, config }) => {
     const logger = new Logger()
-
-    // Store flag config
-    await iii.trigger({ function_id: 'state::set', payload: {
-      scope: 'flags',
-      key: flagKey,
-      value: config
-    }})
-
-    // Broadcast to all connected clients instantly
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: 'flags', key: flagKey, value: config }
+    })
     iii.trigger({
-      function_id: 'events::flags',
-      payload: { type: 'update', flag: flagKey, config },
+      function_id: 'publish',
+      payload: { topic: 'flags', data: { flag: flagKey, config } },
       action: TriggerAction.Void()
     })
-    
     logger.info('Flag updated', { flagKey })
     return { updated: true }
   }
 )
 
-// Evaluate flag
 iii.registerFunction(
   { id: 'flags::evaluate' },
   async ({ flagKey, user, defaultValue }) => {
-    const config = await iii.trigger({ function_id: 'state::get', payload: {
-      scope: 'flags', key: flagKey
-    }})
-    
+    const config = await iii.trigger({
+      function_id: 'state::get',
+      payload: { scope: 'flags', key: flagKey }
+    })
     if (!config) return defaultValue
-    
-    // Evaluate targeting rules
-    if (config.userIds?.includes(user.id)) return config.value
+    if (config.userIds?.includes(user.id))
+      return config.value
     if (config.percentage) {
       const hash = hashUser(user.id, flagKey)
-      if (hash < config.percentage) return config.value
+      if (hash < config.percentage)
+        return config.value
     }
-    if (config.plans?.includes(user.plan)) return config.value
-    
+    if (config.plans?.includes(user.plan))
+      return config.value
     return defaultValue
   }
-)
-
-// Client subscribes to flags stream for real-time updates
-// No vendor, no monthly fee, full control`,
+)`,
     },
-    linesTraditional: 52,
-    linesIII: 42,
+    linesTraditional: 53,
+    linesIII: 43,
   },
 
   multiplayer: {
@@ -1237,18 +1168,19 @@ class GameRoom extends Room<GameState> {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Streams for state, Events for actions
-import { registerWorker, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Register game stream with in-memory store
 const players = new Map<string, Map<string, any>>()
 iii.createStream('game', {
   get: async ({ group_id, item_id }) =>
     players.get(group_id)?.get(item_id) ?? null,
   set: async ({ group_id, item_id, data }) => {
-    if (!players.has(group_id)) players.set(group_id, new Map())
+    if (!players.has(group_id))
+      players.set(group_id, new Map())
     const old = players.get(group_id)!.get(item_id)
     players.get(group_id)!.set(item_id, data)
     return { old_value: old, new_value: data }
@@ -1264,66 +1196,82 @@ iii.createStream('game', {
   update: async () => null,
 })
 
-// Player joins - stream:join trigger
 iii.registerFunction(
   { id: 'game::onJoin' },
   async ({ subscription_id, group_id }) => {
-    await iii.trigger({ function_id: 'stream::set', payload: {
-      stream_name: 'game', group_id,
-      item_id: subscription_id,
-      data: { x: 0, y: 0, score: 0 }
-    }})
-    return { joined: true }
+    await iii.trigger({
+      function_id: 'stream::set',
+      payload: {
+        stream_name: 'game',
+        group_id,
+        item_id: subscription_id,
+        data: { x: 0, y: 0, score: 0 }
+      }
+    })
   }
 )
-
 iii.registerTrigger({
   type: 'stream:join',
   function_id: 'game::onJoin',
   config: { stream_name: 'game' }
 })
 
-// Handle player movement
 iii.registerFunction(
   { id: 'game::move' },
   async ({ roomId, playerId, x, y }) => {
-    const player = await iii.trigger({ function_id: 'stream::get', payload: {
-      stream_name: 'game', group_id: roomId, item_id: playerId
-    }})
-
-    await iii.trigger({ function_id: 'stream::set', payload: {
-      stream_name: 'game', group_id: roomId,
-      item_id: playerId,
-      data: { ...player, x, y }
-    }})
+    const p = await iii.trigger({
+      function_id: 'stream::get',
+      payload: {
+        stream_name: 'game',
+        group_id: roomId,
+        item_id: playerId
+      }
+    })
+    await iii.trigger({
+      function_id: 'stream::set',
+      payload: {
+        stream_name: 'game',
+        group_id: roomId,
+        item_id: playerId,
+        data: { ...p, x, y }
+      }
+    })
   }
 )
 
-// Handle game action
 iii.registerFunction(
   { id: 'game::action' },
   async ({ roomId, playerId, points }) => {
-    const player = await iii.trigger({ function_id: 'stream::get', payload: {
-      stream_name: 'game', group_id: roomId, item_id: playerId
-    }})
-
-    await iii.trigger({ function_id: 'stream::set', payload: {
-      stream_name: 'game', group_id: roomId,
-      item_id: playerId,
-      data: { ...player, score: player.score + points }
-    }})
-    
-    // Leaderboard update via event
+    const p = await iii.trigger({
+      function_id: 'stream::get',
+      payload: {
+        stream_name: 'game',
+        group_id: roomId,
+        item_id: playerId
+      }
+    })
+    await iii.trigger({
+      function_id: 'stream::set',
+      payload: {
+        stream_name: 'game',
+        group_id: roomId,
+        item_id: playerId,
+        data: { ...p, score: p.score + points }
+      }
+    })
     iii.trigger({
-      function_id: 'leaderboard::update',
-      payload: { playerId, score: player.score + points },
+      function_id: 'publish',
+      payload: {
+        topic: 'leaderboard',
+        data: { playerId, score: p.score + points }
+      },
       action: TriggerAction.Void()
     })
   }
 )`,
     },
-    linesTraditional: 58,
-    linesIII: 52,
+    linesTraditional: 62,
+    linesIII: 82,
   },
 
   etl: {
@@ -1378,88 +1326,87 @@ cron.schedule('0 2 * * *', async () => {
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Staged pipeline, events for flow, state for recovery
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, TriggerAction } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Extract — reads last checkpoint, hands off to transform
 iii.registerFunction(
   { id: 'etl::extract' },
   async ({ pipeline }) => {
-    const logger = new Logger()
-    const checkpoint = await iii.trigger({ function_id: 'state::get', payload: {
-      scope: pipeline, key: 'checkpoint'
-    }})
-    const users = await db.users.find({
-      updated_at: { $gt: checkpoint || new Date(0) }
+    const cp = await iii.trigger({
+      function_id: 'state::get',
+      payload: { scope: pipeline, key: 'checkpoint' }
     })
-    logger.info('Extracted', { count: users.length })
-    iii.trigger({ function_id: 'etl::transform', payload: { pipeline, users }, action: TriggerAction.Void() })
-    return { extracted: users.length }
+    const users = await db.users.find({
+      updated_at: { $gt: cp || new Date(0) }
+    })
+    iii.trigger({
+      function_id: 'etl::transform',
+      payload: { pipeline, users },
+      action: TriggerAction.Void()
+    })
   }
 )
 
-// Transform — pure function, isolated failure, no re-extract on error
 iii.registerFunction(
   { id: 'etl::transform' },
   async ({ pipeline, users }) => {
-    const transformed = users.map(user => ({
-      user_id: user.id,
-      lifetime_value: calculateLTV(user),
-      segment: classifySegment(user),
+    const rows = users.map(u => ({
+      user_id: u.id,
+      ltv: calculateLTV(u),
+      segment: classifySegment(u),
     }))
-    iii.trigger({ function_id: 'etl::load', payload: { pipeline, data: transformed }, action: TriggerAction.Void() })
-    return { transformed: transformed.length }
+    iii.trigger({
+      function_id: 'etl::load',
+      payload: { pipeline, data: rows },
+      action: TriggerAction.Void()
+    })
   }
 )
 
-// Load — saves checkpoint only after successful write
 iii.registerFunction(
   { id: 'etl::load' },
   async ({ pipeline, data }) => {
-    const logger = new Logger()
     await warehouse.bulkInsert('user_analytics', data)
-    await iii.trigger({ function_id: 'state::set', payload: {
-      scope: pipeline, key: 'checkpoint', value: new Date().toISOString()
-    }})
-    logger.info('Pipeline complete', { loaded: data.length })
-    return { loaded: data.length }
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: {
+        scope: pipeline,
+        key: 'checkpoint',
+        value: new Date().toISOString()
+      }
+    })
   }
 )
 
-// Distributed locking built in — no duplicate runs
 iii.registerTrigger({
   type: 'cron',
   function_id: 'etl::extract',
   config: { expression: '0 2 * * *' }
 })`,
     },
-    linesTraditional: 42,
-    linesIII: 48,
+    linesTraditional: 41,
+    linesIII: 52,
   },
 
   reactive: {
     description:
-      "Real-time reactive backend without WebSocket servers or Redis wiring. Publish once, all subscribers update.",
+      "Reactive backends without WebSocket servers or Redis wiring. Publish once, all subscribers update.",
     traditional: {
       title: "WebSocket + Redis + Postgres",
       tools: ["ws", "Socket.io", "Redis Pub/Sub", "Ably", "Supabase Realtime"],
       language: "typescript",
-      code: `// Building reactive from scratch
-import { WebSocketServer } from 'ws'
+      code: `import { WebSocketServer } from 'ws'
 import Redis from 'ioredis'
-import { Pool } from 'pg'
 
 const wss = new WebSocketServer({ port: 8080 })
 const pub = new Redis(process.env.REDIS_URL)
 const sub = new Redis(process.env.REDIS_URL)
-const pg = new Pool({ connectionString: process.env.DATABASE_URL })
 
-// Track subscriptions per server pod — not shared across pods
 const channelSubs = new Map<string, Set<WebSocket>>()
 
-// Sync events across pods via Redis pub/sub
 sub.subscribe('messages')
 sub.on('message', (_, payload) => {
   const { channelId, data } = JSON.parse(payload)
@@ -1473,101 +1420,56 @@ wss.on('connection', (ws, req) => {
   if (!channelSubs.has(channelId)) channelSubs.set(channelId, new Set())
   channelSubs.get(channelId)!.add(ws)
 
-  // Send initial state from Postgres on connect
-  pg.query(
-    'SELECT * FROM messages WHERE channel_id=$1 ORDER BY created_at DESC LIMIT 50',
-    [channelId]
-  ).then(({ rows }) => ws.send(JSON.stringify({ type: 'init', data: rows })))
-
   ws.on('close', () => channelSubs.get(channelId)?.delete(ws))
 })
 
-// Separate HTTP endpoint to send messages
 app.post('/messages', async (req, res) => {
   const { channelId, content } = req.body
-  const { rows: [msg] } = await pg.query(
-    'INSERT INTO messages (channel_id, content) VALUES ($1, $2) RETURNING *',
-    [channelId, content]
-  )
-  // Broadcast to all pods via Redis
-  await pub.publish('messages', JSON.stringify({ channelId, data: msg }))
-  res.json(msg)
-})
-
-// Need: WebSocket server + Express + Redis + Postgres — all managed manually
-// Manual: connection tracking, cross-pod sync, initial state, cleanup`,
+  await pub.publish('messages', JSON.stringify({ channelId, data: content }))
+  res.json({ ok: true })
+})`,
     },
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Reactive backend, your database, your infrastructure
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, TriggerAction, Logger } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
-// Send message — persist to your DB, notify all subscribers instantly
 iii.registerFunction(
-  { id: 'chat::sendMessage' },
+  { id: 'chat::send' },
   async ({ channelId, content }) => {
     const logger = new Logger()
+    await db.messages.create({ channelId, content })
 
-    // Use YOUR database — Postgres, Mongo, anything
-    const message = await db.messages.create({
-      channelId, content, createdAt: new Date()
-    })
-
-    // One call — all channel subscribers notified automatically
     iii.trigger({
-      function_id: \`events::channel-\${channelId}\`,
-      payload: message,
-      action: TriggerAction.Void()
+      function_id: 'publish',
+      payload: { topic: \`channel.\${channelId}\`, data: { content } },
+      action: TriggerAction.Void(),
     })
 
-    logger.info('Message sent', { channelId, messageId: message.id })
-    return message
+    logger.info('Message sent', { channelId })
+    return { ok: true }
   }
 )
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'chat::sendMessage',
-  config: { api_path: 'messages', http_method: 'POST' }
-})
 
-// Get messages — initial state for connecting clients
-iii.registerFunction(
-  { id: 'chat::getMessages' },
-  async ({ channelId }) => {
-    return await db.messages.findMany({
-      where: { channelId },
-      orderBy: { createdAt: 'desc' },
-      take: 50
-    })
-  }
-)
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'chat::getMessages',
-  config: { api_path: 'channels/:channelId/messages', http_method: 'GET' }
-})
-
-// React to new messages — server-side fan-out
 iii.registerFunction(
   { id: 'chat::onMessage' },
-  async (message) => {
+  async (data) => {
     const logger = new Logger()
-    logger.info('Broadcasting', { channelId: message.channelId })
+    logger.info('New message received', data)
+    return {}
   }
 )
+
 iii.registerTrigger({
   type: 'subscribe',
   function_id: 'chat::onMessage',
-  config: { topic: 'channel.general' }
-})
-
-// No WebSocket server. No Redis. Your database. Real-time built in.`,
+  config: { topic: 'channel.*' },
+})`,
     },
-    linesTraditional: 48,
-    linesIII: 50,
+    linesTraditional: 30,
+    linesIII: 32,
   },
 
   remote: {
@@ -1652,47 +1554,37 @@ app.listen(3000)`,
     iii: {
       title: "iii Engine",
       language: "typescript",
-      code: `// iii SDK - Functions as universal remote invokers
-import { registerWorker, Logger, TriggerAction } from "iii-sdk"
+      code: `import { registerWorker, Logger } from "iii-sdk"
 
-const iii = registerWorker(process.env.III_BRIDGE_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(
+  process.env.III_BRIDGE_URL ?? 'ws://localhost:49134'
+)
 
-// Route to Stripe
 iii.registerFunction(
   { id: 'remote::stripe::checkout' },
   async ({ items, successUrl }) => {
-    const logger = new Logger()
     const stripe = new Stripe(process.env.STRIPE_KEY!)
-
     const session = await stripe.checkout.sessions.create({
       line_items: items,
       mode: 'payment',
       success_url: successUrl,
     })
-
-    logger.info('Stripe session created', { sessionId: session.id })
     return { url: session.url }
   }
 )
 
-// Route to AWS Lambda
 iii.registerFunction(
   { id: 'remote::lambda::process' },
   async (payload) => {
-    const logger = new Logger()
     const lambda = new Lambda({ region: 'us-east-1' })
-
     const result = await lambda.invoke({
       FunctionName: 'data-processor',
       Payload: JSON.stringify(payload),
     })
-
-    logger.info('Lambda invoked', { status: result.StatusCode })
     return JSON.parse(result.Payload as string)
   }
 )
 
-// Route to any HTTP endpoint (Cloud Functions, webhooks)
 iii.registerFunction(
   { id: 'remote::gcf::analyze' },
   async (payload) => {
@@ -1708,7 +1600,6 @@ iii.registerFunction(
   }
 )
 
-// Expose all as HTTP — one line each
 iii.registerTrigger({
   type: 'http',
   function_id: 'remote::stripe::checkout',
@@ -1723,12 +1614,9 @@ iii.registerTrigger({
   type: 'http',
   function_id: 'remote::gcf::analyze',
   config: { api_path: 'analyze', http_method: 'POST' }
-})
-
-// Retries, logging, tracing — all built into the engine
-// Add more external services by registering more functions`,
+})`,
     },
-    linesTraditional: 62,
-    linesIII: 52,
+    linesTraditional: 71,
+    linesIII: 60,
   },
 };
