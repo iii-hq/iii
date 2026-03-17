@@ -19,20 +19,15 @@
         "groups": [
           {
             "group": "Getting Started",
-            "pages": ["index", "tutorials/quickstart"]
+            "pages": ["index", "quickstart"]
           },
           {
             "group": "Primitives & Concepts",
-            "pages": [
-              "primitives-and-concepts/index",
-              "primitives-and-concepts/functions-triggers-workers",
-              "primitives-and-concepts/discovery"
-            ]
+            "pages": ["primitives-and-concepts/functions-triggers-workers", "primitives-and-concepts/discovery"]
           },
           {
             "group": "How-to Guides",
             "pages": [
-              "how-to/index",
               "how-to/use-functions-and-triggers",
               "how-to/use-queues",
               "how-to/dead-letter-queues",
@@ -91,13 +86,8 @@
             ]
           },
           {
-            "group": "Standalone",
-            "pages": ["workers", "adapters", "remote-functions"]
-          },
-          {
             "group": "Examples",
             "pages": [
-              "examples/index",
               "examples/hello-world",
               "examples/todo-app",
               "examples/multi-trigger",
