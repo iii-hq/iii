@@ -3,8 +3,8 @@
   "name": "iii",
   "theme": "mint",
   "colors": {
-    "primary": "#f3f724",
-    "light": "#8a8c00",
+    "primary": "#8a8c00",
+    "light": "#f3f724",
     "dark": "#fcff5d"
   },
   "logo": {
