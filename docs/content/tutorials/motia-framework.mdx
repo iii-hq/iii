@@ -81,7 +81,7 @@ export const handler: Handlers<typeof config> = async (req, { logger }) => {
 **Python Example** (`steps/hello.step.py`):
 
 ```python
-from motia import ApiRouteConfig, ApiRequest, ApiResponse, FlowContext, step_wrapper
+from motia import ApiRouteConfig, ApiRequest, ApiResponse, FlowContext, logger, step_wrapper
 
 # Define step configuration
 config = ApiRouteConfig(
@@ -92,7 +92,7 @@ config = ApiRouteConfig(
 )
 
 # Define handler
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     name = req.path_params.get("name", "World")
 
     logger.info(f"Greeting {name}")
@@ -186,11 +186,11 @@ config = ApiRouteConfig(
     }
 )
 
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
-    user = await create_user(req.body)
+def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+    user = create_user(req.body)
 
     # Emit event
-    await ctx.emit("user.created", user)
+    ctx.emit("user.created", user)
 
     return ApiResponse(status=201, body=user)
 
@@ -227,7 +227,7 @@ export const handler: Handlers<typeof config> = async (data, { logger }) => {
 ### Python
 
 ```python
-from motia import EventConfig, FlowContext, step_wrapper
+from motia import EventConfig, FlowContext, logger, step_wrapper
 
 config = EventConfig(
     type="event",
@@ -235,9 +235,9 @@ config = EventConfig(
     subscribes=["user.created"]
 )
 
-async def handler(data, ctx: FlowContext):
+def handler(data, ctx: FlowContext):
     logger.info(f"Sending welcome email to {data['email']}")
-    await send_email(data['email'], "Welcome!")
+    send_email(data['email'], "Welcome!")
 
 step_wrapper(config, __file__, handler)
 ```
@@ -268,7 +268,7 @@ export const handler: Handlers<typeof config> = async ({ emit, logger }) => {
 ### Python
 
 ```python
-from motia import CronConfig, FlowContext, step_wrapper
+from motia import CronConfig, FlowContext, logger, step_wrapper
 
 config = CronConfig(
     type="cron",
@@ -277,9 +277,9 @@ config = CronConfig(
     emits=["report.generated"]
 )
 
-async def handler(data, ctx: FlowContext):
-    report = await generate_daily_report()
-    await ctx.emit("report.generated", report)
+def handler(data, ctx: FlowContext):
+    report = generate_daily_report()
+    ctx.emit("report.generated", report)
     logger.info("Daily report generated")
 
 step_wrapper(config, __file__, handler)
@@ -303,7 +303,7 @@ await emit({ topic: 'topic-name', data: { key: 'value' } })
 **Python:**
 
 ```python
-await ctx.emit("topic.name", {"key": "value"})
+ctx.emit("topic.name", {"key": "value"})
 ```
 
 </ResponseField>
@@ -338,8 +338,8 @@ const theme = await state.get('config', 'theme')
 **Python:**
 
 ```python
-await ctx.state.set("config", "theme", "dark")
-theme = await ctx.state.get("config", "theme")
+ctx.state.set("config", "theme", "dark")
+theme = ctx.state.get("config", "theme")
 ```
 
 </ResponseField>
@@ -357,7 +357,7 @@ await streams.todos.set('inbox', 'item-1', { title: 'Buy milk' })
 
 ```python
 todo_stream = Stream("todos")
-await todo_stream.set("inbox", "item-1", {"title": "Buy milk"})
+todo_stream.set("inbox", "item-1", {"title": "Buy milk"})
 ```
 
 </ResponseField>
@@ -393,7 +393,7 @@ from motia import Stream, ApiRequest, ApiResponse, FlowContext, step_wrapper
 # Define stream
 todo_stream = Stream("todos")
 
-async def create_todo(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+def create_todo(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     todo_id = generate_id()
     todo = {
         "id": todo_id,
@@ -402,13 +402,13 @@ async def create_todo(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     }
 
     # Store in stream
-    await todo_stream.set("inbox", todo_id, todo)
+    todo_stream.set("inbox", todo_id, todo)
 
     return ApiResponse(status=201, body=todo)
 
-async def get_todos(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+def get_todos(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     # Get all todos in group
-    todos = await todo_stream.get_group("inbox")
+    todos = todo_stream.get_group("inbox")
     return ApiResponse(status=200, body=todos)
 ```
 
@@ -424,18 +424,18 @@ async def get_todos(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
 Use `ctx.state` for configuration and internal data:
 
 ```python
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     # Set state
-    await ctx.state.set("user-prefs", "theme", "dark")
+    ctx.state.set("user-prefs", "theme", "dark")
 
     # Get state
-    theme = await ctx.state.get("user-prefs", "theme")
+    theme = ctx.state.get("user-prefs", "theme")
 
     # Get all in group
-    prefs = await ctx.state.get_group("user-prefs")
+    prefs = ctx.state.get_group("user-prefs")
 
     # Delete
-    await ctx.state.delete("user-prefs", "theme")
+    ctx.state.delete("user-prefs", "theme")
 ```
 
 ## Middleware
@@ -446,14 +446,14 @@ Add middleware for authentication, logging, or validation:
 from motia import ApiRouteConfig, ApiRequest, ApiResponse, FlowContext, step_wrapper
 
 # Define middleware
-async def auth_middleware(req: ApiRequest, ctx: FlowContext, next_handler):
+def auth_middleware(req: ApiRequest, ctx: FlowContext, next_handler):
     token = req.headers.get("authorization")
 
     if not token:
         return ApiResponse(status=401, body={"error": "Unauthorized"})
 
     # Validate token
-    user = await validate_token(token)
+    user = validate_token(token)
     if not user:
         return ApiResponse(status=401, body={"error": "Invalid token"})
 
@@ -461,7 +461,7 @@ async def auth_middleware(req: ApiRequest, ctx: FlowContext, next_handler):
     ctx.user = user
 
     # Call next handler
-    return await next_handler(req, ctx)
+    return next_handler(req, ctx)
 
 # Use middleware in step
 config = ApiRouteConfig(
@@ -472,7 +472,7 @@ config = ApiRouteConfig(
     middleware=[auth_middleware]  # Add middleware
 )
 
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     # ctx.user is available here
     return ApiResponse(
         status=200,
@@ -508,9 +508,9 @@ config = EventConfig(
     )
 )
 
-async def handler(data, ctx: FlowContext):
+def handler(data, ctx: FlowContext):
     # Heavy processing logic
-    await process_large_file(data)
+    process_large_file(data)
 
 step_wrapper(config, __file__, handler)
 ```
@@ -692,7 +692,7 @@ export const handler: Handlers<typeof config> = async (data, { logger }) => {
 **steps/create_todo.step.py**
 
 ```python
-from motia import ApiRouteConfig, ApiRequest, ApiResponse, FlowContext, Stream, step_wrapper
+from motia import ApiRouteConfig, ApiRequest, ApiResponse, FlowContext, Stream, logger, step_wrapper
 
 todo_stream = Stream("todos")
 
@@ -703,7 +703,7 @@ config = ApiRouteConfig(
     method="POST"
 )
 
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
     import uuid
 
     todo_id = str(uuid.uuid4())
@@ -713,8 +713,8 @@ async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
         "completed": False
     }
 
-    await todo_stream.set("default", todo_id, todo)
-    await ctx.emit("todo.created", todo)
+    todo_stream.set("default", todo_id, todo)
+    ctx.emit("todo.created", todo)
 
     logger.info(f"Created todo: {todo_id}")
 
@@ -737,8 +737,8 @@ config = ApiRouteConfig(
     method="GET"
 )
 
-async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
-    todos = await todo_stream.get_group("default")
+def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+    todos = todo_stream.get_group("default")
     return ApiResponse(status=200, body=todos)
 
 step_wrapper(config, __file__, handler)
@@ -747,7 +747,7 @@ step_wrapper(config, __file__, handler)
 **steps/notify_todo.step.py**
 
 ```python
-from motia import EventConfig, FlowContext, step_wrapper
+from motia import EventConfig, FlowContext, logger, step_wrapper
 
 config = EventConfig(
     type="event",
@@ -755,7 +755,7 @@ config = EventConfig(
     subscribes=["todo.created"]
 )
 
-async def handler(data, ctx: FlowContext):
+def handler(data, ctx: FlowContext):
     logger.info(f"New todo created: {data['title']}")
     # Send notification logic here
 
@@ -787,7 +787,7 @@ step_wrapper(config, __file__, handler)
     ```python
     from typing import Dict, Any
 
-    async def handler(
+    def handler(
         req: ApiRequest[Dict[str, Any]],
         ctx: FlowContext
     ) -> ApiResponse[Dict[str, Any]]:
@@ -800,9 +800,9 @@ step_wrapper(config, __file__, handler)
     Always handle errors gracefully:
 
     ```python
-    async def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
+    def handler(req: ApiRequest, ctx: FlowContext) -> ApiResponse:
         try:
-            result = await process_data(req.body)
+            result = process_data(req.body)
             return ApiResponse(status=200, body=result)
         except ValueError as e:
             logger.error(f"Validation error: {e}")
@@ -819,7 +819,7 @@ step_wrapper(config, __file__, handler)
 
     ```python
     # Step 1: Create order
-    await ctx.emit("order.created", order)
+    ctx.emit("order.created", order)
 
     # Step 2: Process payment (separate step listening to order.created)
     # Step 3: Send confirmation (separate step listening to payment.completed)

@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "generate:api-docs": "tsx scripts/generate-api-docs.mts",
+    "test": "vitest run",
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
@@ -40,6 +41,7 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
   }
 }

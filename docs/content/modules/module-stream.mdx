@@ -338,17 +338,17 @@ iii.registerFunction({ id: 'onAuth' }, (input) => ({
 </Tab>
 <Tab value="Python">
 ```python
-async def on_auth(input):
+def on_auth(input):
     return {'context': {'name': 'John Doe'}}
 
-iii.register_function('onAuth', on_auth)
+iii.register_function({'id': 'onAuth'}, on_auth)
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("onAuth", |_input| async move {
+iii.register_function(RegisterFunctionMessage { id: "onAuth".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     Ok(json!({ "context": { "name": "John Doe" } }))
-})?;
+});
 ```
 </Tab>
 </Tabs>
@@ -423,22 +423,22 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python
-async def on_join(input):
+def on_join(input):
     print('Joined stream', input)
     return {}
 
-iii.register_function('onJoin', on_join)
-iii.register_trigger(type='stream:join', function_id='onJoin', config={})
+iii.register_function({'id': 'onJoin'}, on_join)
+iii.register_trigger({'type': 'stream:join', 'function_id': 'onJoin', 'config': {}})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("onJoin", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "onJoin".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     println!("Joined stream: {:?}", input);
     Ok(json!({}))
-})?;
+});
 
-iii.register_trigger("stream:join", "onJoin", json!({}))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "stream:join".into(), function_id: "onJoin".into(), config: json!({}) })?;
 ```
 </Tab>
 </Tabs>
@@ -450,9 +450,9 @@ Streams organize data by `stream_name`, `group_id`, and `item_id`. Use for live 
 <Tabs groupId="language" persist items={["Node / TypeScript", "Python", "Rust"]}>
 <Tab value="Node / TypeScript">
 ```typescript
-import { TriggerAction } from 'iii-sdk'
+import { registerWorker, TriggerAction } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
 iii.trigger({
   function_id: 'stream::set',
@@ -495,12 +495,11 @@ iii.trigger({
 </Tab>
 <Tab value="Python">
 ```python
-from iii import III, TriggerAction
+from iii import register_worker, TriggerAction
 
-iii = III('ws://localhost:49134')
-await iii.connect()
+iii = register_worker('ws://localhost:49134')
 
-await iii.trigger({
+iii.trigger({
     'function_id': 'stream::set',
     'payload': {
         'stream_name': 'presence',
@@ -511,7 +510,7 @@ await iii.trigger({
     'action': TriggerAction.Void(),
 })
 
-user = await iii.trigger({
+user = iii.trigger({
     'function_id': 'stream::get',
     'payload': {
         'stream_name': 'presence',
@@ -520,7 +519,7 @@ user = await iii.trigger({
     },
 })
 
-room_members = await iii.trigger({
+room_members = iii.trigger({
     'function_id': 'stream::list',
     'payload': {
         'stream_name': 'presence',
@@ -528,7 +527,7 @@ room_members = await iii.trigger({
     },
 })
 
-await iii.trigger({
+iii.trigger({
     'function_id': 'stream::delete',
     'payload': {
         'stream_name': 'presence',
@@ -541,11 +540,10 @@ await iii.trigger({
 </Tab>
 <Tab value="Rust">
 ```rust
-use iii_sdk::{III, TriggerRequest, TriggerAction};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, TriggerAction};
 use serde_json::json;
 
-let iii = III::new("ws://localhost:49134");
-iii.connect().await?;
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 iii.trigger(TriggerRequest::new("stream::set", json!({
     "stream_name": "presence",
@@ -608,19 +606,19 @@ iii.registerFunction({ id: 'stream::auth' }, (input) => {
 </Tab>
 <Tab value="Python">
 ```python
-async def stream_auth(input):
+def stream_auth(input):
     auth = input.get('headers', {}).get('authorization', '')
     token = auth.replace('Bearer ', '', 1) if auth.startswith('Bearer ') else None
     if token:
         return {'context': {'userId': 'user-from-token'}}
     return {'context': None}
 
-iii.register_function('stream::auth', stream_auth)
+iii.register_function({'id': 'stream::auth'}, stream_auth)
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("stream::auth", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "stream::auth".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let headers = input.get("headers").and_then(|h| h.as_object());
     let token = headers
         .and_then(|h| h.get("authorization"))
@@ -631,7 +629,7 @@ iii.register_function("stream::auth", |input| async move {
         Some(_) => Ok(json!({ "context": { "userId": "user-from-token" } })),
         None => Ok(json!({ "context": null })),
     }
-})?;
+});
 ```
 </Tab>
 </Tabs>
@@ -658,19 +656,19 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python
-async def on_join(input):
+def on_join(input):
     context = input.get('context', {})
     if context.get('userId'):
         print(f"User {context['userId']} joined {input['stream_name']}/{input['group_id']}/{input.get('id', '')}")
     return {}
 
-iii.register_function('onJoin', on_join)
-iii.register_trigger(type='stream:join', function_id='onJoin', config={})
+iii.register_function({'id': 'onJoin'}, on_join)
+iii.register_trigger({'type': 'stream:join', 'function_id': 'onJoin', 'config': {}})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("onJoin", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "onJoin".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     if let Some(user_id) = input.get("context").and_then(|c| c.get("userId")).and_then(|u| u.as_str()) {
         let stream = input["stream_name"].as_str().unwrap_or("");
         let group = input["group_id"].as_str().unwrap_or("");
@@ -678,9 +676,9 @@ iii.register_function("onJoin", |input| async move {
         println!("User {} joined {}/{}/{}", user_id, stream, group, item);
     }
     Ok(json!({}))
-})?;
+});
 
-iii.register_trigger("stream:join", "onJoin", json!({}))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "stream:join".into(), function_id: "onJoin".into(), config: json!({}) })?;
 ```
 </Tab>
 </Tabs>
@@ -709,43 +707,43 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python
-async def require_context(input):
+def require_context(input):
     return input.get('context', {}).get('userId') is not None
 
-iii.register_function('conditions::requireContext', require_context)
+iii.register_function({'id': 'conditions::requireContext'}, require_context)
 
-async def on_join(input):
+def on_join(input):
     print('User joined:', input.get('context', {}).get('userId'), input['stream_name'])
     return {}
 
-iii.register_function('onJoin', on_join)
-iii.register_trigger(
-    type='stream:join',
-    function_id='onJoin',
-    config={'condition_function_id': 'conditions::requireContext'},
-)
+iii.register_function({'id': 'onJoin'}, on_join)
+iii.register_trigger({
+    'type': 'stream:join',
+    'function_id': 'onJoin',
+    'config': {'condition_function_id': 'conditions::requireContext'},
+})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("conditions::requireContext", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "conditions::requireContext".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let has_user = input
         .get("context")
         .and_then(|c| c.get("userId"))
         .is_some();
     Ok(json!(has_user))
-})?;
+});
 
-iii.register_function("onJoin", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "onJoin".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let user_id = input.get("context").and_then(|c| c.get("userId")).and_then(|u| u.as_str()).unwrap_or("");
     let stream = input["stream_name"].as_str().unwrap_or("");
     println!("User joined: {} {}", user_id, stream);
     Ok(json!({}))
-})?;
+});
 
-iii.register_trigger("stream:join", "onJoin", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "stream:join".into(), function_id: "onJoin".into(), config: json!({
     "condition_function_id": "conditions::requireContext"
-}))?;
+}) })?;
 ```
 </Tab>
 </Tabs>

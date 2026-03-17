@@ -449,9 +449,14 @@ impl EngineBuilder {
             tracing::debug!("Creating module: {}", entry.class);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)
-                .await?;
+                .await
+                .map_err(|err| {
+                    anyhow::anyhow!("failed to create module '{}': {}", entry.class, err)
+                })?;
             tracing::debug!("Initializing module: {}", entry.class);
-            module.initialize().await?;
+            module.initialize().await.map_err(|err| {
+                anyhow::anyhow!("failed to initialize module '{}': {}", entry.class, err)
+            })?;
             module.register_functions(self.engine.clone());
             self.modules.push(Arc::from(module));
         }
@@ -1496,5 +1501,41 @@ modules:
 
         builder.destroy().await.expect("destroy engine");
         assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn engine_builder_reports_module_class_on_stream_bind_failure() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let port = occupied.local_addr().expect("local addr").port();
+
+        let err = EngineBuilder::new()
+            .add_module(
+                "modules::stream::StreamModule",
+                Some(serde_json::json!({
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "adapter": {
+                        "class": "modules::stream::adapters::KvStore"
+                    }
+                })),
+            )
+            .build()
+            .await
+            .err()
+            .expect("build should fail when the stream port is occupied");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("modules::stream::StreamModule"),
+            "unexpected error message: {message}"
+        );
+        assert!(
+            message.contains(&format!("127.0.0.1:{port}")),
+            "unexpected error message: {message}"
+        );
+        assert!(
+            message.contains("already in use"),
+            "unexpected error message: {message}"
+        );
     }
 }

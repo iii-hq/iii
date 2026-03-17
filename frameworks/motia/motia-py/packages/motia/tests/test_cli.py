@@ -167,11 +167,8 @@ def test_main_run_loads_modules_and_handles_keyboard_interrupt(monkeypatch: pyte
     monkeypatch.setattr(cli, "discover_streams", lambda directory, include_src=True: ["streams/demo_stream.py"])
     monkeypatch.setattr(cli, "load_module_from_path", loaded_streams.append)
     monkeypatch.setattr(cli, "load_and_register_step", loaded_steps.append)
-    monkeypatch.setattr("motia.iii.get_instance", lambda: SimpleNamespace(connect=MagicMock()))
-    monkeypatch.setattr(
-        "asyncio.run",
-        lambda coro: (coro.close(), (_ for _ in ()).throw(KeyboardInterrupt()))[1],
-    )
+    monkeypatch.setattr("motia.iii.get_instance", lambda: SimpleNamespace(_wait_until_connected=MagicMock(), shutdown=MagicMock()))
+    monkeypatch.setattr(cli.threading, "Event", lambda: SimpleNamespace(wait=MagicMock(), set=MagicMock()))
     monkeypatch.setattr(sys, "argv", ["motia", "run"])
 
     cli.main()
@@ -216,12 +213,9 @@ def test_main_dev_without_watchfiles_logs_warning_and_handles_keyboard_interrupt
     monkeypatch.setattr(cli, "discover_streams", lambda directory, include_src=True: ["streams/demo_stream.py"])
     monkeypatch.setattr(cli, "load_module_from_path", loaded_streams.append)
     monkeypatch.setattr(cli, "load_and_register_step", loaded_steps.append)
-    monkeypatch.setattr("motia.iii.get_instance", lambda: SimpleNamespace(connect=MagicMock()))
+    monkeypatch.setattr("motia.iii.get_instance", lambda: SimpleNamespace(_wait_until_connected=MagicMock(), shutdown=MagicMock()))
     monkeypatch.setattr(cli.log, "warning", lambda message: warnings.append(message))
-    monkeypatch.setattr(
-        "asyncio.run",
-        lambda coro: (coro.close(), (_ for _ in ()).throw(KeyboardInterrupt()))[1],
-    )
+    monkeypatch.setattr(cli.threading, "Event", lambda: SimpleNamespace(wait=MagicMock(), set=MagicMock()))
     monkeypatch.setattr(sys, "argv", ["motia", "dev", "--watch"])
 
     cli.main()

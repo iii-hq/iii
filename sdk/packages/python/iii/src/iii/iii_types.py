@@ -92,6 +92,30 @@ class TriggerRegistrationResultMessage(BaseModel):
     message_type: MessageType = Field(default=MessageType.TRIGGER_REGISTRATION_RESULT, alias="type")
 
 
+class RegisterTriggerTypeInput(BaseModel):
+    """Input for registering a trigger type (matches Node SDK's RegisterTriggerTypeInput)."""
+
+    id: str
+    description: str
+
+
+class RegisterTriggerInput(BaseModel):
+    """Input for registering a trigger (matches Node SDK's RegisterTriggerInput)."""
+
+    type: str
+    function_id: str
+    config: Any = None
+
+
+class RegisterServiceInput(BaseModel):
+    """Input for registering a service (matches Node SDK's RegisterServiceInput)."""
+
+    id: str
+    name: str | None = None
+    description: str | None = None
+    parent_service_id: str | None = None
+
+
 class RegisterTriggerMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -121,6 +145,17 @@ class RegisterFunctionFormat(BaseModel):
     body: list["RegisterFunctionFormat"] | None = None
     items: "RegisterFunctionFormat | None" = None
     required: bool = False
+
+
+class RegisterFunctionInput(BaseModel):
+    """Input for registering a function — matches Node.js RegisterFunctionInput."""
+
+    id: str
+    description: str | None = None
+    request_format: RegisterFunctionFormat | None = None
+    response_format: RegisterFunctionFormat | None = None
+    metadata: dict[str, Any] | None = None
+    invocation: HttpInvocationConfig | None = None
 
 
 class RegisterFunctionMessage(BaseModel):
@@ -274,6 +309,7 @@ class OtelLogEvent(BaseModel):
     service_name: str = ""
     instrumentation_scope_name: str | None = None
     instrumentation_scope_version: str | None = None
+
 
 IIIMessage = (
     RegisterFunctionMessage

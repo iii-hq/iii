@@ -8,7 +8,7 @@ Run with:
     pytest tests/test_tracing_integration.py -m integration
 """
 
-import asyncio
+import time
 import uuid
 from unittest.mock import patch
 
@@ -98,8 +98,8 @@ async def test_api_step_creates_trace(otel_exporter, patch_motia_bridge, api_url
     motia.add_step(config, f"steps/{step_name}_step.py", handler)
 
     # Flush the bridge queue so the engine registers our step
-    await flush_bridge_queue(patch_motia_bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(patch_motia_bridge)
+    time.sleep(0.5)
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -112,7 +112,7 @@ async def test_api_step_creates_trace(otel_exporter, patch_motia_bridge, api_url
     assert body["traced"] is True
 
     # Allow a short time for spans to flush
-    await asyncio.sleep(0.2)
+    time.sleep(0.2)
 
     spans = otel_exporter.get_finished_spans()
     step_spans = [s for s in spans if s.name == f"step:{step_name}"]
@@ -149,15 +149,15 @@ async def test_enqueue_creates_child_span(otel_exporter, patch_motia_bridge, api
     )
     motia.add_step(config, f"steps/{step_name}_step.py", handler)
 
-    await flush_bridge_queue(patch_motia_bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(patch_motia_bridge)
+    time.sleep(0.5)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(f"{api_url}{path}", json={})
 
     assert response.status_code == 200
 
-    await asyncio.sleep(0.2)
+    time.sleep(0.2)
 
     spans = otel_exporter.get_finished_spans()
 
@@ -170,13 +170,12 @@ async def test_enqueue_creates_child_span(otel_exporter, patch_motia_bridge, api
     assert len(enqueue_spans) >= 1, f"Expected at least one 'enqueue' span, got: {[s.name for s in spans]}"
 
 
-@pytest.mark.asyncio
-async def test_engine_receives_traceparent(bridge):
+def test_engine_receives_traceparent(bridge):
     """Call the engine's traces list RPC. If the engine does not support
     this RPC method, the test is skipped.
     """
     try:
-        result = await bridge.trigger({"function_id": "engine.traces.list", "payload": {"limit": 10}})
+        result = bridge.trigger({"function_id": "engine.traces.list", "payload": {"limit": 10}})
     except Exception:
         pytest.skip("Engine does not support 'engine.traces.list' RPC; " "skipping traceparent verification")
 

@@ -5,7 +5,7 @@ from typing import Any
 from motia import FlowContext, cron, logger
 
 
-async def is_business_hours(input: Any, ctx: FlowContext[Any]) -> bool:
+def is_business_hours(input: Any, ctx: FlowContext[Any]) -> bool:
     """Check if current time is business hours."""
     _ = input
     _ = ctx
@@ -25,7 +25,7 @@ config = {
 }
 
 
-async def handler(input: None) -> None:
+def handler(input: None) -> None:
     """Handle cron that fires only during business hours."""
     _ = input
     logger.info("Running business hours task")

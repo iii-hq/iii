@@ -25,9 +25,9 @@ The condition function receives the full API request. If it returns `false`, the
   <Tab value="Node / TypeScript">
 
 ```typescript
-import {Logger, TriggerAction} from 'iii-sdk'
+import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 
-const iii = init(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
   { id: 'conditions::is_premium' },
@@ -60,68 +60,62 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-from iii import III, InitOptions, ApiRequest, ApiResponse, TriggerAction
+from iii import register_worker, InitOptions, ApiRequest, ApiResponse, Logger, TriggerAction
 
-iii = III(address="ws://localhost:49134", options=InitOptions(worker_name="orders-worker"))
+iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="orders-worker"))
 
-
-async def is_premium(data) -> bool:
+def is_premium(data) -> bool:
     req = ApiRequest(**data) if isinstance(data, dict) else data
     return (req.body or {}).get("amount", 0) > 1000
 
-
-async def orders_premium(data, ctx) -> ApiResponse:
+def orders_premium(data) -> ApiResponse:
+    logger = Logger()
     req = ApiRequest(**data) if isinstance(data, dict) else data
     logger.info("Processing premium order", {"amount": (req.body or {}).get("amount")})
-    return ApiResponse(statusCode=200, body={"message": "Premium order processed"})
+    return ApiResponse(status_code=200, body={"message": "Premium order processed"})
 
+iii.register_function({"id": "conditions::is_premium"}, is_premium)
+iii.register_function({"id": "orders::premium"}, orders_premium)
 
-async def orders_premium_wrapper(data):
-    return await orders_premium(data, Logger())
-
-iii.register_function("conditions::is_premium", is_premium)
-iii.register_function("orders::premium", orders_premium_wrapper)
-
-iii.register_trigger(
-    type="http",
-    function_id="orders::premium",
-    config={
+iii.register_trigger({
+    "type": "http",
+    "function_id": "orders::premium",
+    "config": {
         "api_path": "orders/premium",
         "http_method": "POST",
         "condition_function_id": "conditions::is_premium",
     },
-)
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Logger, TriggerRequest, TriggerAction};
+use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = III::new("ws://127.0.0.1:49134");
-    iii.connect().await?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-    iii.register_function("conditions::is_premium", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "conditions::is_premium".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let amount = input["body"]["amount"].as_f64().unwrap_or(0.0);
         Ok(json!(amount > 1000.0))
     });
 
-    iii.register_function("orders::premium", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "orders::premium".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let logger = Logger();
         let amount = input["body"]["amount"].as_f64().unwrap_or(0.0);
         logger.info("Processing premium order", Some(json!({ "amount": amount })));
         Ok(json!({ "status_code": 200, "body": { "message": "Premium order processed" } }))
     });
 
-    iii.register_trigger("http", "orders::premium", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "orders::premium".into(), config: json!({
         "api_path": "orders/premium",
         "http_method": "POST",
         "condition_function_id": "conditions::is_premium",
-    }))?;
+    }) })?;
 
     loop { tokio::time::sleep(std::time::Duration::from_secs(60)).await; }
 }
@@ -151,7 +145,7 @@ iii.registerFunction(
     const logger = new Logger()
     logger.info('Processing high-value order', { amount: data.amount })
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'enqueue',
       payload: { topic: 'order.processed', data: { ...data, processedAt: new Date().toISOString() } },
       action: TriggerAction.Void(),
@@ -171,15 +165,15 @@ iii.registerTrigger({
 
 ```python
 from datetime import datetime, timezone
+from iii import Logger
 
-
-async def is_high_value(data) -> bool:
+def is_high_value(data) -> bool:
     if isinstance(data, dict):
         return data.get("amount", 0) > 1000
     return False
 
-
-async def orders_high_value(data: dict, ctx) -> None:
+def orders_high_value(data: dict) -> None:
+    logger = Logger()
     amount = data.get("amount", 0)
     logger.info("Processing high-value order", {"amount": amount})
 
@@ -187,34 +181,36 @@ async def orders_high_value(data: dict, ctx) -> None:
         logger.info("Low-value order — skipping", {"amount": amount})
         return
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "enqueue",
         "payload": {"topic": "order.processed", "data": {**data, "processedAt": datetime.now(timezone.utc).isoformat()}},
         "action": TriggerAction.Void(),
     })
 
 
+iii.register_function({"id": "conditions::is_high_value"}, is_high_value)
+iii.register_function({"id": "orders::high_value"}, orders_high_value)
 
-iii.register_function("conditions::is_high_value", is_high_value)
-iii.register_function("orders::high_value", lambda data: orders_high_value(data, Logger()))
-
-iii.register_trigger(
-    type="queue",
-    function_id="orders::high_value",
-    config={"topic": "order.created", "condition_function_id": "conditions::is_high_value"},
-)
+iii.register_trigger({
+    "type": "queue",
+    "function_id": "orders::high_value",
+    "config": {"topic": "order.created", "condition_function_id": "conditions::is_high_value"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("conditions::is_high_value", |input| async move {
+use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "conditions::is_high_value".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let amount = input["amount"].as_f64().unwrap_or(0.0);
     Ok(json!(amount > 1000.0))
 });
 
-iii.register_function("orders::high_value", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "orders::high_value".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let amount = input["amount"].as_f64().unwrap_or(0.0);
     logger.info("Processing high-value order", Some(json!({ "amount": amount })));
@@ -227,10 +223,10 @@ iii.register_function("orders::high_value", |input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "orders::high_value", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders::high_value".into(), config: json!({
     "topic": "order.created",
     "condition_function_id": "conditions::is_high_value",
-}))?;
+}) })?;
 ```
 
   </Tab>
@@ -270,36 +266,40 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def is_update(event) -> bool:
+from iii import Logger
+
+def is_update(event) -> bool:
     if isinstance(event, dict):
         return event.get("event_type") == "updated"
     return False
 
-
-async def orders_on_update(event: dict, ctx) -> None:
+def orders_on_update(event: dict) -> None:
+    logger = Logger()
     logger.info("Order updated", {"scope": event.get("scope"), "key": event.get("key")})
 
+iii.register_function({"id": "conditions::is_update"}, is_update)
+iii.register_function({"id": "orders::on_update"}, orders_on_update)
 
-iii.register_function("conditions::is_update", is_update)
-iii.register_function("orders::on_update", lambda data: orders_on_update(data, Logger()))
-
-iii.register_trigger(
-    type="state",
-    function_id="orders::on_update",
-    config={"scope": "orders", "condition_function_id": "conditions::is_update"},
-)
+iii.register_trigger({
+    "type": "state",
+    "function_id": "orders::on_update",
+    "config": {"scope": "orders", "condition_function_id": "conditions::is_update"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("conditions::is_update", |input| async move {
+use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "conditions::is_update".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let event_type = input["event_type"].as_str().unwrap_or("");
     Ok(json!(event_type == "updated"))
 });
 
-iii.register_function("orders::on_update", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "orders::on_update".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     logger.info("Order updated", Some(json!({
         "scope": input["scope"],
@@ -308,10 +308,10 @@ iii.register_function("orders::on_update", |input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("state", "orders::on_update", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "state".into(), function_id: "orders::on_update".into(), config: json!({
     "scope": "orders",
     "condition_function_id": "conditions::is_update",
-}))?;
+}) })?;
 ```
 
   </Tab>

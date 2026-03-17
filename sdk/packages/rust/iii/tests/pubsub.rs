@@ -2,21 +2,15 @@
 //!
 //! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{III, TriggerRequest};
-
-fn engine_ws_url() -> String {
-    std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".to_string())
-}
-
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(300)).await;
-}
+use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput, TriggerRequest};
 
 fn unique_topic(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,9 +23,7 @@ fn unique_topic(prefix: &str) -> String {
 
 #[tokio::test]
 async fn subscribe_and_receive_published_messages() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let topic = unique_topic("test_topic");
     let received = Arc::new(Mutex::new(Vec::new()));
@@ -40,28 +32,44 @@ async fn subscribe_and_receive_published_messages() {
     let tx = Arc::new(Mutex::new(Some(tx)));
 
     let fn_id = format!("test.pubsub.rs.subscriber.{topic}");
-    let fn_ref = iii.register_function(fn_id.clone(), move |data: Value| {
-        let received = received_clone.clone();
-        let tx = tx.clone();
-        async move {
-            received.lock().await.push(data);
-            if let Some(sender) = tx.lock().await.take() {
-                let _ = sender.send(());
+    let fn_ref = iii.register_function(
+        RegisterFunctionMessage {
+            id: fn_id.clone(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |data: Value| {
+            let received = received_clone.clone();
+            let tx = tx.clone();
+            async move {
+                received.lock().await.push(data);
+                if let Some(sender) = tx.lock().await.take() {
+                    let _ = sender.send(());
+                }
+                Ok(json!({}))
             }
-            Ok(json!({}))
-        }
-    });
+        },
+    );
 
     let trigger = iii
-        .register_trigger("subscribe", &fn_id, json!({"topic": topic}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "subscribe".to_string(),
+            function_id: fn_id.clone(),
+            config: json!({"topic": topic}),
+        })
         .expect("register trigger");
 
-    settle().await;
+    common::settle().await;
 
-    iii.trigger(TriggerRequest::new(
-        "publish",
-        json!({"topic": topic, "data": {"message": "Hello PubSub!"}}),
-    ))
+    iii.trigger(TriggerRequest {
+        function_id: "publish".to_string(),
+        payload: json!({"topic": topic, "data": {"message": "Hello PubSub!"}}),
+        action: None,
+        timeout_ms: None,
+    })
     .await
     .expect("publish");
 
@@ -76,14 +84,11 @@ async fn subscribe_and_receive_published_messages() {
 
     fn_ref.unregister();
     trigger.unregister();
-    iii.shutdown_async().await;
 }
 
 #[tokio::test]
 async fn topic_isolation() {
-    let iii = III::new(&engine_ws_url());
-    iii.connect().await.expect("connect");
-    settle().await;
+    let iii = common::shared_iii();
 
     let topic_a = unique_topic("topic_a");
     let topic_b = unique_topic("topic_b");
@@ -99,39 +104,69 @@ async fn topic_isolation() {
     let fn_id_a = format!("test.pubsub.rs.topic_a.{topic_a}");
     let fn_id_b = format!("test.pubsub.rs.topic_b.{topic_b}");
 
-    let fn_a = iii.register_function(fn_id_a.clone(), move |data: Value| {
-        let received = received_a_clone.clone();
-        let tx = tx_a.clone();
-        async move {
-            received.lock().await.push(data);
-            if let Some(sender) = tx.lock().await.take() {
-                let _ = sender.send(());
+    let fn_a = iii.register_function(
+        RegisterFunctionMessage {
+            id: fn_id_a.clone(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |data: Value| {
+            let received = received_a_clone.clone();
+            let tx = tx_a.clone();
+            async move {
+                received.lock().await.push(data);
+                if let Some(sender) = tx.lock().await.take() {
+                    let _ = sender.send(());
+                }
+                Ok(json!({}))
             }
-            Ok(json!({}))
-        }
-    });
+        },
+    );
 
-    let fn_b = iii.register_function(fn_id_b.clone(), move |data: Value| {
-        let received = received_b_clone.clone();
-        async move {
-            received.lock().await.push(data);
-            Ok(json!({}))
-        }
-    });
+    let fn_b = iii.register_function(
+        RegisterFunctionMessage {
+            id: fn_id_b.clone(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |data: Value| {
+            let received = received_b_clone.clone();
+            async move {
+                received.lock().await.push(data);
+                Ok(json!({}))
+            }
+        },
+    );
 
     let trigger_a = iii
-        .register_trigger("subscribe", &fn_id_a, json!({"topic": topic_a}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "subscribe".to_string(),
+            function_id: fn_id_a.clone(),
+            config: json!({"topic": topic_a}),
+        })
         .expect("register trigger a");
     let trigger_b = iii
-        .register_trigger("subscribe", &fn_id_b, json!({"topic": topic_b}))
+        .register_trigger(RegisterTriggerInput {
+            trigger_type: "subscribe".to_string(),
+            function_id: fn_id_b.clone(),
+            config: json!({"topic": topic_b}),
+        })
         .expect("register trigger b");
 
-    settle().await;
+    common::settle().await;
 
-    iii.trigger(TriggerRequest::new(
-        "publish",
-        json!({"topic": topic_a, "data": {"for": "a"}}),
-    ))
+    iii.trigger(TriggerRequest {
+        function_id: "publish".to_string(),
+        payload: json!({"topic": topic_a, "data": {"for": "a"}}),
+        action: None,
+        timeout_ms: None,
+    })
     .await
     .expect("publish to topic_a");
 
@@ -149,5 +184,4 @@ async fn topic_isolation() {
     fn_b.unregister();
     trigger_a.unregister();
     trigger_b.unregister();
-    iii.shutdown_async().await;
 }

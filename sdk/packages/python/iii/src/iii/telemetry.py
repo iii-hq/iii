@@ -4,6 +4,7 @@ Provides init_otel() / shutdown_otel() which set up distributed tracing
 (via EngineSpanExporter), log export (via EngineLogExporter), and
 auto-instrument urllib with rich HTTP attributes matching the Node.js SDK.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -61,21 +62,12 @@ def init_otel(
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except ImportError as exc:
         raise ImportError(
-            "opentelemetry-api and opentelemetry-sdk are required. "
-            "Install with: pip install 'iii-sdk[otel]'"
+            "opentelemetry-api and opentelemetry-sdk are required. Install with: pip install 'iii-sdk[otel]'"
         ) from exc
 
-    service_name = (
-        cfg.service_name
-        or os.environ.get("OTEL_SERVICE_NAME")
-        or _DEFAULT_SERVICE_NAME
-    )
-    service_version = (
-        cfg.service_version
-        or os.environ.get("SERVICE_VERSION")
-        or "unknown"
-    )
-    service_instance_id = cfg.service_instance_id or str(uuid.uuid4())
+    service_name = cfg.service_name or os.environ.get("OTEL_SERVICE_NAME") or _DEFAULT_SERVICE_NAME
+    service_version = cfg.service_version or os.environ.get("SERVICE_VERSION") or "unknown"
+    service_instance_id = cfg.service_instance_id or os.environ.get("SERVICE_INSTANCE_ID") or str(uuid.uuid4())
 
     resource_attrs: dict[str, Any] = {
         SERVICE_NAME: service_name,
@@ -84,19 +76,16 @@ def init_otel(
         "telemetry.sdk.name": "iii-python-sdk",
         "telemetry.sdk.language": "python",
     }
-    if cfg.service_namespace:
-        resource_attrs["service.namespace"] = cfg.service_namespace
+    service_namespace = cfg.service_namespace or os.environ.get("SERVICE_NAMESPACE")
+    if service_namespace:
+        resource_attrs["service.namespace"] = service_namespace
 
     resource = Resource.create(resource_attrs)
 
     # --- Span exporter ---
     from .telemetry_exporters import EngineSpanExporter, SharedEngineConnection
 
-    ws_url = (
-        cfg.engine_ws_url
-        or os.environ.get("III_URL")
-        or "ws://localhost:49134"
-    )
+    ws_url = cfg.engine_ws_url or os.environ.get("III_URL") or "ws://localhost:49134"
     _connection = SharedEngineConnection(ws_url)
     if loop is not None:
         _connection.start(loop)
@@ -137,9 +126,7 @@ def _configure_meter_provider(
 
         from .telemetry_exporters import EngineMetricsExporter
     except ImportError:
-        logging.getLogger("iii.telemetry").warning(
-            "opentelemetry-sdk metrics not available; metrics export skipped."
-        )
+        logging.getLogger("iii.telemetry").warning("opentelemetry-sdk metrics not available; metrics export skipped.")
         return
 
     metrics_exporter = EngineMetricsExporter(connection)
@@ -188,18 +175,21 @@ def _configure_log_provider(resource: Any, connection: Any, cfg: OtelConfig) -> 
 
         from .telemetry_exporters import EngineLogExporter
     except ImportError:
-        logging.getLogger("iii.telemetry").warning(
-            "opentelemetry-sdk logs not available; log export skipped."
-        )
+        logging.getLogger("iii.telemetry").warning("opentelemetry-sdk logs not available; log export skipped.")
         return
 
     log_exporter = EngineLogExporter(connection)
 
     logs_flush_interval_ms = _resolve_int(
-        cfg.logs_flush_interval_ms, "OTEL_LOGS_FLUSH_INTERVAL_MS", default=100,
+        cfg.logs_flush_interval_ms,
+        "OTEL_LOGS_FLUSH_INTERVAL_MS",
+        default=100,
     )
     logs_batch_size = _resolve_int(
-        cfg.logs_batch_size, "OTEL_LOGS_BATCH_SIZE", default=1, minimum=1,
+        cfg.logs_batch_size,
+        "OTEL_LOGS_BATCH_SIZE",
+        default=1,
+        minimum=1,
     )
 
     log_provider = SdkLoggerProvider(resource=resource)
@@ -358,6 +348,7 @@ def _reset_state() -> None:
     if _fetch_patched:
         try:
             import urllib.request
+
             if _original_opener_open is not None:
                 urllib.request.OpenerDirector.open = _original_opener_open  # type: ignore[method-assign]
         except Exception:
@@ -367,6 +358,7 @@ def _reset_state() -> None:
     if _initialized:
         try:
             from opentelemetry import trace
+
             _shutdown_provider(trace.get_tracer_provider())
         except Exception:
             pass
@@ -384,7 +376,7 @@ def _reset_state() -> None:
 def attach_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Wire the running asyncio event loop into the OTel connection.
 
-    Call this from within an async context (e.g. III.connect()) after
+    Call this from within an async context (e.g. III._async_connect()) after
     init_otel() has been called without a loop so that SharedEngineConnection
     starts sending buffered frames immediately.
     """
@@ -439,6 +431,7 @@ def get_logger() -> Any:
         return None
     try:
         from opentelemetry import _logs
+
         return _logs.get_logger("iii-python-sdk")
     except ImportError:
         return None
@@ -467,6 +460,7 @@ async def with_span(
     """
     tracer = get_tracer()
     if tracer is None:
+
         class _NoopSpan:
             def set_attribute(self, *a: Any, **kw: Any) -> None: ...
             def set_attributes(self, *a: Any, **kw: Any) -> None: ...
@@ -474,8 +468,12 @@ async def with_span(
             def set_status(self, *a: Any, **kw: Any) -> None: ...
             def record_exception(self, *a: Any, **kw: Any) -> None: ...
             def end(self) -> None: ...
-            def is_recording(self) -> bool: return False
-            def get_span_context(self) -> Any: return None
+            def is_recording(self) -> bool:
+                return False
+
+            def get_span_context(self) -> Any:
+                return None
+
         return await fn(_NoopSpan())
 
     try:
@@ -508,6 +506,7 @@ def inject_traceparent() -> str | None:
     try:
         from opentelemetry import context as otel_ctx
         from opentelemetry.propagate import inject as otel_inject
+
         carrier: dict[str, str] = {}
         otel_inject(carrier, context=otel_ctx.get_current())
         return carrier.get("traceparent")
@@ -519,6 +518,7 @@ def extract_traceparent(traceparent: str) -> Any:
     """Extract a trace context from a W3C traceparent header string."""
     try:
         from opentelemetry.propagate import extract as otel_extract
+
         return otel_extract({"traceparent": traceparent})
     except ImportError:
         return None
@@ -529,6 +529,7 @@ def inject_baggage() -> str | None:
     try:
         from opentelemetry import context as otel_ctx
         from opentelemetry.propagate import inject as otel_inject
+
         carrier: dict[str, str] = {}
         otel_inject(carrier, context=otel_ctx.get_current())
         return carrier.get("baggage")
@@ -540,6 +541,7 @@ def extract_baggage(baggage: str) -> Any:
     """Extract baggage from a W3C baggage header string."""
     try:
         from opentelemetry.propagate import extract as otel_extract
+
         return otel_extract({"baggage": baggage})
     except ImportError:
         return None
@@ -549,6 +551,7 @@ def extract_context(traceparent: str | None = None, baggage: str | None = None) 
     """Extract both trace context and baggage from their respective headers."""
     try:
         from opentelemetry.propagate import extract as otel_extract
+
         carrier: dict[str, str] = {}
         if traceparent:
             carrier["traceparent"] = traceparent
@@ -563,6 +566,7 @@ def get_baggage_entry(key: str) -> str | None:
     """Get a baggage entry value from the current context."""
     try:
         from opentelemetry import baggage as otel_baggage
+
         val = otel_baggage.get_baggage(key)
         return str(val) if val is not None else None
     except ImportError:
@@ -573,6 +577,7 @@ def set_baggage_entry(key: str, value: str) -> Any:
     """Set a baggage entry in the current context. Returns the new context."""
     try:
         from opentelemetry import baggage as otel_baggage
+
         ctx = otel_baggage.set_baggage(key, value)
         return ctx
     except ImportError:
@@ -583,6 +588,7 @@ def remove_baggage_entry(key: str) -> Any:
     """Remove a baggage entry from the current context. Returns the new context."""
     try:
         from opentelemetry import baggage as otel_baggage
+
         return otel_baggage.remove_baggage(key)
     except ImportError:
         return None
@@ -592,6 +598,7 @@ def get_all_baggage() -> dict[str, str]:
     """Get all baggage entries from the current context."""
     try:
         from opentelemetry import baggage as otel_baggage
+
         entries = otel_baggage.get_all()
         return {k: str(v) for k, v in entries.items()} if entries else {}
     except ImportError:

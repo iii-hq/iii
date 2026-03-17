@@ -19,9 +19,9 @@ graph LR
   <Tab value="Node / TypeScript">
 
 ```typescript
-import {Logger, TriggerAction} from 'iii-sdk'
+import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 
-const iii = init(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
   { id: 'cron.periodic_job', description: 'Fires on schedule and enqueues work' },
@@ -29,7 +29,7 @@ iii.registerFunction(
     const logger = new Logger()
     logger.info('Periodic job fired')
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'enqueue',
       payload: {
         topic: 'job.tick',
@@ -51,17 +51,16 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-import asyncio
 from datetime import datetime, timezone
-from iii import III, InitOptions, TriggerAction
+from iii import register_worker, InitOptions, Logger, TriggerAction
 
-iii = III(address="ws://localhost:49134", options=InitOptions(worker_name="cron-worker"))
+iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="cron-worker"))
 
-
-async def periodic_job(_data, ctx) -> None:
+def periodic_job(_data) -> None:
+    logger = Logger()
     logger.info("Periodic job fired")
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "enqueue",
         "payload": {
             "topic": "job.tick",
@@ -74,25 +73,24 @@ async def periodic_job(_data, ctx) -> None:
     })
 
 
-
-iii.register_function("cron.periodic_job", lambda data: periodic_job(data, Logger()))
-iii.register_trigger(
-    type="cron",
-    function_id="cron.periodic_job",
-    config={"expression": "* * * * *"},  # every minute
-)
+iii.register_function({"id": "cron.periodic_job"}, periodic_job)
+iii.register_trigger({
+    "type": "cron",
+    "function_id": "cron.periodic_job",
+    "config": {"expression": "* * * * *"},  # every minute
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Logger, TriggerRequest, TriggerAction};
+use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-let iii = III::new("ws://127.0.0.1:49134");
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-iii.register_function("cron.periodic_job", |_input| async move {
+iii.register_function(RegisterFunctionMessage { id: "cron.periodic_job".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     let logger = Logger();
     logger.info("Periodic job fired", None);
 
@@ -107,11 +105,9 @@ iii.register_function("cron.periodic_job", |_input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("cron", "cron.periodic_job", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
     "expression": "* * * * *",
-}))?;
-
-iii.connect().await?;
+}) })?;
 ```
 
   </Tab>
@@ -144,28 +140,33 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def handle_tick(data: dict, ctx) -> None:
+from iii import Logger
+
+def handle_tick(data: dict) -> None:
+    logger = Logger()
     logger.info("Periodic job processed", {
         "firedAt": data.get("firedAt"),
         "message": data.get("message"),
     })
 
-
-iii.register_function("job.handle_tick", lambda data: handle_tick(data, Logger()))
-iii.register_trigger(type="queue", function_id="job.handle_tick", config={"topic": "job.tick"})
+iii.register_function({"id": "job.handle_tick"}, handle_tick)
+iii.register_trigger({"type": "queue", "function_id": "job.handle_tick", "config": {"topic": "job.tick"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("job.handle_tick", |input| async move {
+use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "job.handle_tick".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     logger.info("Periodic job processed", Some(input));
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "job.handle_tick", json!({ "topic": "job.tick" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }) })?;
 ```
 
   </Tab>
@@ -197,7 +198,7 @@ iii.registerFunction(
       if (!order.complete && new Date() > new Date(order.shipDate)) {
         logger.warn('Order overdue', { orderId: order.id, shipDate: order.shipDate })
 
-        iii.trigger({
+        await iii.trigger({
           function_id: 'enqueue',
           payload: {
             topic: 'notification',
@@ -231,10 +232,11 @@ iii.registerTrigger({
 
 ```python
 from datetime import datetime, timezone
+from iii import Logger, TriggerAction
 
-
-async def orders_sweep(_data, ctx) -> None:
-    orders = await iii.trigger({"function_id": "state::list", "payload": {"scope": "orders"}}) or []
+def orders_sweep(_data) -> None:
+    logger = Logger()
+    orders = iii.trigger({"function_id": "state::list", "payload": {"scope": "orders"}}) or []
     swept = 0
 
     for order in orders:
@@ -249,7 +251,7 @@ async def orders_sweep(_data, ctx) -> None:
         if not complete and datetime.now(timezone.utc) > ship_date:
             logger.warn("Order overdue", {"orderId": order.get("id")})
 
-            iii.trigger_void({
+            iii.trigger({
                 "function_id": "enqueue",
                 "payload": {
                     "topic": "notification",
@@ -265,16 +267,18 @@ async def orders_sweep(_data, ctx) -> None:
 
     logger.info("Sweep complete", {"checked": len(orders), "swept": swept})
 
-
-iii.register_function("cron.orders_sweep", lambda data: orders_sweep(data, Logger()))
-iii.register_trigger(type="cron", function_id="cron.orders_sweep", config={"expression": "*/5 * * * *"})
+iii.register_function({"id": "cron.orders_sweep"}, orders_sweep)
+iii.register_trigger({"type": "cron", "function_id": "cron.orders_sweep", "config": {"expression": "*/5 * * * *"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("cron.orders_sweep", |_input| async move {
+use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "cron.orders_sweep".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
     let logger = Logger();
 
     let orders_val = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "orders" }))).await?;
@@ -310,7 +314,7 @@ iii.register_function("cron.orders_sweep", |_input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("cron", "cron.orders_sweep", json!({ "expression": "*/5 * * * *" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }) })?;
 ```
 
   </Tab>

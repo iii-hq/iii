@@ -294,29 +294,41 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python
-async def on_user_updated(event):
+def on_user_updated(event):
     print('State changed:', event['event_type'], event['key'])
     print('Previous:', event.get('old_value'))
     print('Current:', event.get('new_value'))
     return {}
 
-iii.register_function('state::onUserUpdated', on_user_updated)
-iii.register_trigger(type='state', function_id='state::onUserUpdated', config={'scope': 'users', 'key': 'profile'})
+iii.register_function({'id': 'state::onUserUpdated'}, on_user_updated)
+iii.register_trigger({'type': 'state', 'function_id': 'state::onUserUpdated', 'config': {'scope': 'users', 'key': 'profile'}})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("state::onUserUpdated", |event| async move {
-    println!("State changed: {} {}", event["event_type"], event["key"]);
-    println!("Previous: {:?}", event.get("old_value"));
-    println!("Current: {:?}", event.get("new_value"));
-    Ok(json!({}))
-})?;
+use iii_sdk::RegisterFunctionMessage;
 
-iii.register_trigger("state", "state::onUserUpdated", json!({
-    "scope": "users",
-    "key": "profile"
-}))?;
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "state::onUserUpdated".into(),
+        description: None, request_format: None, response_format: None, metadata: None, invocation: None
+    },
+    |event| async move {
+        println!("State changed: {} {}", event["event_type"], event["key"]);
+        println!("Previous: {:?}", event.get("old_value"));
+        println!("Current: {:?}", event.get("new_value"));
+        Ok(json!({}))
+    },
+);
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "state".into(),
+    function_id: "state::onUserUpdated".into(),
+    config: json!({
+        "scope": "users",
+        "key": "profile"
+    }),
+})?;
 ```
 </Tab>
 </Tabs>
@@ -328,9 +340,7 @@ Store user profiles in state and react when they change:
 <Tabs groupId="language" persist items={["Node / TypeScript", "Python", "Rust"]}>
 <Tab value="Node / TypeScript">
 ```typescript
-import { TriggerAction } from 'iii-sdk'
-
-iii.trigger({
+await iii.trigger({
   function_id: 'state::set',
   payload: {
     scope: 'users',
@@ -345,7 +355,7 @@ const profile = await iii.trigger({
   payload: { scope: 'users', key: 'user-123' },
 })
 
-iii.trigger({
+await iii.trigger({
   function_id: 'state::set',
   payload: {
     scope: 'users',
@@ -367,38 +377,36 @@ const scopes = await iii.trigger({
 </Tab>
 <Tab value="Python">
 ```python
-from iii import TriggerAction
-
-await iii.trigger({
+iii.trigger({
     'function_id': 'state::set',
     'payload': {
         'scope': 'users',
         'key': 'user-123',
         'value': {'name': 'Alice', 'email': 'alice@example.com', 'preferences': {'theme': 'dark'}},
     },
-    'action': TriggerAction.Void(),
+    'action': {'type': 'void'},
 })
 
-profile = await iii.trigger({
+profile = iii.trigger({
     'function_id': 'state::get',
     'payload': {'scope': 'users', 'key': 'user-123'},
 })
 
-await iii.trigger({
+iii.trigger({
     'function_id': 'state::set',
     'payload': {
         'scope': 'users',
         'key': 'user-123',
         'value': {'name': 'Alice', 'email': 'alice@example.com', 'preferences': {'theme': 'light'}},
     },
-    'action': TriggerAction.Void(),
+    'action': {'type': 'void'},
 })
 
-all_users = await iii.trigger({
+all_users = iii.trigger({
     'function_id': 'state::list',
     'payload': {'scope': 'users'},
 })
-scopes = await iii.trigger({
+scopes = iii.trigger({
     'function_id': 'state::list_groups',
     'payload': {},
 })
@@ -409,25 +417,48 @@ scopes = await iii.trigger({
 use iii_sdk::{TriggerRequest, TriggerAction};
 use serde_json::json;
 
-iii.trigger(TriggerRequest::new("state::set", json!({
-    "scope": "users",
-    "key": "user-123",
-    "value": { "name": "Alice", "email": "alice@example.com", "preferences": { "theme": "dark" } }
-})).action(TriggerAction::void())).await?;
+iii.trigger(TriggerRequest {
+    function_id: "state::set".into(),
+    payload: json!({
+        "scope": "users",
+        "key": "user-123",
+        "value": { "name": "Alice", "email": "alice@example.com", "preferences": { "theme": "dark" } }
+    }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
 
-let profile = iii.trigger(TriggerRequest::new("state::get", json!({
-    "scope": "users",
-    "key": "user-123"
-}))).await?;
+let profile = iii.trigger(TriggerRequest {
+    function_id: "state::get".into(),
+    payload: json!({ "scope": "users", "key": "user-123" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
 
-iii.trigger(TriggerRequest::new("state::set", json!({
-    "scope": "users",
-    "key": "user-123",
-    "value": { "name": "Alice", "email": "alice@example.com", "preferences": { "theme": "light" } }
-})).action(TriggerAction::void())).await?;
+iii.trigger(TriggerRequest {
+    function_id: "state::set".into(),
+    payload: json!({
+        "scope": "users",
+        "key": "user-123",
+        "value": { "name": "Alice", "email": "alice@example.com", "preferences": { "theme": "light" } }
+    }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
 
-let all_users = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "users" }))).await?;
-let scopes = iii.trigger(TriggerRequest::new("state::list_groups", json!({}))).await?;
+let all_users = iii.trigger(TriggerRequest {
+    function_id: "state::list".into(),
+    payload: json!({ "scope": "users" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+
+let scopes = iii.trigger(TriggerRequest {
+    function_id: "state::list_groups".into(),
+    payload: json!({}),
+    action: None,
+    timeout_ms: None,
+}).await?;
 ```
 </Tab>
 </Tabs>
@@ -464,51 +495,70 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python
-async def email_changed(event):
+def email_changed(event):
     if event.get('event_type') != 'state:updated':
         return False
     old = event.get('old_value', {})
     new = event.get('new_value', {})
     return old.get('email') != new.get('email')
 
-iii.register_function('conditions::emailChanged', email_changed)
+iii.register_function({'id': 'conditions::emailChanged'}, email_changed)
 
-async def on_email_change(event):
-    await send_verification_email(event['new_value']['email'])
+def on_email_change(event):
+    send_verification_email(event['new_value']['email'])
     return {}
 
-iii.register_function('state::onEmailChange', on_email_change)
-iii.register_trigger(
-    type='state',
-    function_id='state::onEmailChange',
-    config={
+iii.register_function({'id': 'state::onEmailChange'}, on_email_change)
+iii.register_trigger({
+    'type': 'state',
+    'function_id': 'state::onEmailChange',
+    'config': {
         'scope': 'users',
         'key': 'profile',
         'condition_function_id': 'conditions::emailChanged',
     },
-)
+})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("conditions::emailChanged", |event| async move {
-    let is_update = event["event_type"].as_str() == Some("state:updated");
-    let old_email = event.get("old_value").and_then(|v| v.get("email"));
-    let new_email = event.get("new_value").and_then(|v| v.get("email"));
-    Ok(json!(is_update && old_email != new_email))
-})?;
+use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
 
-iii.register_function("state::onEmailChange", |event| async move {
-    let email = event["new_value"]["email"].as_str().unwrap_or("");
-    send_verification_email(email).await?;
-    Ok(json!({}))
-})?;
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "conditions::emailChanged".into(),
+        description: None, request_format: None, response_format: None, metadata: None, invocation: None
+    },
+    |event| async move {
+        let is_update = event["event_type"].as_str() == Some("state:updated");
+        let old_email = event.get("old_value").and_then(|v| v.get("email"));
+        let new_email = event.get("new_value").and_then(|v| v.get("email"));
+        Ok(json!(is_update && old_email != new_email))
+    },
+);
 
-iii.register_trigger("state", "state::onEmailChange", json!({
-    "scope": "users",
-    "key": "profile",
-    "condition_function_id": "conditions::emailChanged"
-}))?;
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "state::onEmailChange".into(),
+        description: None, request_format: None, response_format: None, metadata: None, invocation: None
+    },
+    |event| async move {
+        let email = event["new_value"]["email"].as_str().unwrap_or("");
+        send_verification_email(email).await?;
+        Ok(json!({}))
+    },
+);
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "state".into(),
+    function_id: "state::onEmailChange".into(),
+    config: json!({
+        "scope": "users",
+        "key": "profile",
+        "condition_function_id": "conditions::emailChanged"
+    }),
+})?;
 ```
 </Tab>
 </Tabs>

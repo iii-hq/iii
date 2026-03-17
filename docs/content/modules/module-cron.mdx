@@ -132,24 +132,36 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python
-async def cleanup_old_data(event):
+def cleanup_old_data(event):
     print('Running cleanup scheduled at:', event['scheduled_time'])
     return {}
 
-iii.register_function('jobs::cleanupOldData', cleanup_old_data)
-iii.register_trigger(type='cron', function_id='jobs::cleanupOldData', config={'expression': '0 0 2 * * *'})
+iii.register_function({'id': 'jobs::cleanupOldData'}, cleanup_old_data)
+iii.register_trigger({'type': 'cron', 'function_id': 'jobs::cleanupOldData', 'config': {'expression': '0 0 2 * * *'}})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust
-iii.register_function("jobs::cleanupOldData", |event| async move {
-    println!("Running cleanup scheduled at: {}", event["scheduled_time"]);
-    Ok(json!({}))
-})?;
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "jobs::cleanupOldData".into(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    },
+    |event: Value| async move {
+        println!("Running cleanup scheduled at: {}", event["scheduled_time"]);
+        Ok(json!({}))
+    },
+);
 
-iii.register_trigger("cron", "jobs::cleanupOldData", json!({
-    "expression": "0 0 2 * * *"
-}))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "cron".into(),
+    function_id: "jobs::cleanupOldData".into(),
+    config: json!({ "expression": "0 0 2 * * *" }),
+})?;
 ```
 </Tab>
 </Tabs>

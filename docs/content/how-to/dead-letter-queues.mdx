@@ -36,12 +36,14 @@ iii.registerFunction(
 <Tab value="Python">
 ```python title="payment_processor.py"
 import os
-from iii import III, HttpInvocationConfig
 
-iii = III(os.environ.get('III_URL', 'ws://localhost:49134'))
+from iii import HttpInvocationConfig, register_worker
+
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
 
 iii.register_function(
-    "payments::charge",
+    {"id": "payments::charge"},
     HttpInvocationConfig(
         url="https://api.payments.example.com/charge",
         method="POST",
@@ -52,18 +54,34 @@ iii.register_function(
 </Tab>
 <Tab value="Rust">
 ```rust title="payment_processor.rs"
-use iii_sdk::{III, HttpInvocationConfig, HttpMethod};
+use iii_sdk::{
+    register_worker, InitOptions, RegisterFunctionMessage,
+    HttpInvocationConfig, HttpMethod,
+};
 use std::collections::HashMap;
 
-let iii = III::new(&std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()));
+let iii = register_worker(
+    &std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()),
+    InitOptions::default(),
+);
 
-iii.register_function("payments::charge", HttpInvocationConfig {
-    url: "https://api.payments.example.com/charge".to_string(),
-    method: HttpMethod::Post,
-    timeout_ms: Some(5000),
-    headers: HashMap::new(),
-    auth: None,
-});
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "payments::charge".into(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    },
+    HttpInvocationConfig {
+        url: "https://api.payments.example.com/charge".to_string(),
+        method: HttpMethod::Post,
+        timeout_ms: Some(5000),
+        headers: HashMap::new(),
+        auth: None,
+    },
+);
 ```
 </Tab>
 </Tabs>
@@ -80,7 +98,7 @@ modules:
   - class: modules::queue::QueueModule
     config:
       queue_configs:
-        payment:
+        payment_dlq:
           max_retries: 5
           backoff_ms: 2000
           concurrency: 2
@@ -97,7 +115,7 @@ import { TriggerAction } from 'iii-sdk'
 await iii.trigger({
   function_id: 'payments::charge',
   payload: { orderId: order.id, amount: order.total },
-  action: TriggerAction.Enqueue({ queue: 'payment' }),
+  action: TriggerAction.Enqueue({ queue: 'payment_dlq' }),
 })
 ```
 </Tab>
@@ -105,10 +123,10 @@ await iii.trigger({
 ```python title="order_handler.py"
 from iii import TriggerAction
 
-await iii.trigger({
+iii.trigger({
     "function_id": "payments::charge",
     "payload": {"orderId": order["id"], "amount": order["total"]},
-    "action": TriggerAction.Enqueue(queue="payment"),
+    "action": TriggerAction.Enqueue(queue="payment_dlq"),
 })
 ```
 </Tab>
@@ -117,13 +135,17 @@ await iii.trigger({
 use iii_sdk::{TriggerAction, TriggerRequest};
 use serde_json::json;
 
-iii.trigger(
-    TriggerRequest::new("payments::charge", json!({
+iii.trigger(TriggerRequest {
+    function_id: "payments::charge".into(),
+    payload: json!({
         "orderId": order["id"],
         "amount": order["total"],
-    }))
-    .action(TriggerAction::enqueue("payment")),
-)
+    }),
+    action: Some(TriggerAction::Enqueue {
+        queue: "payment_dlq".into(),
+    }),
+    timeout_ms: None,
+})
 .await?;
 ```
 </Tab>
@@ -148,7 +170,7 @@ When the payment endpoint is down and all 5 retries exhaust, the engine:
 3. Logs a warning:
 
 ```
-WARN queue="payment" job_id="..." attempts=5 "Job exhausted, moved to DLQ"
+WARN queue="payment_dlq" job_id="..." attempts=5 "Job exhausted, moved to DLQ"
 ```
 
 The job stays in the DLQ until the engine redrives it. No other jobs in the queue are blocked — processing continues normally for new messages.

@@ -14,7 +14,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
     """Handle single API trigger."""
     logger.info("Single API trigger fired")
     return ApiResponse(status=200, body={"message": "Single API trigger works"})

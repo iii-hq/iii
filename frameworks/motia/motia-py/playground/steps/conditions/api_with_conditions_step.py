@@ -39,7 +39,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
     """Handle API requests that pass conditions."""
     logger.info("Processing premium order via API")
     return ApiResponse(status=200, body={"message": "Premium order processed", "data": request.body})

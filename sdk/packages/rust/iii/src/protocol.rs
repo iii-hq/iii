@@ -68,18 +68,6 @@ pub enum TriggerAction {
     Void,
 }
 
-impl TriggerAction {
-    /// Create an enqueue action for the given queue name.
-    pub fn enqueue(queue: &str) -> Self {
-        TriggerAction::Enqueue {
-            queue: queue.to_string(),
-        }
-    }
-    pub fn void() -> Self {
-        TriggerAction::Void
-    }
-}
-
 /// Result returned by the engine when a message is successfully enqueued.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnqueueResult {
@@ -90,20 +78,24 @@ pub struct EnqueueResult {
 /// Request object for `trigger()`. Matches the Node/Python SDK signature:
 /// `trigger({ function_id, payload, action?, timeout_ms? })`
 ///
-/// Build with the constructor or the builder-style methods:
 /// ```rust
 /// # use iii_sdk::protocol::{TriggerRequest, TriggerAction};
 /// # use serde_json::json;
 /// // Simple call
-/// TriggerRequest::new("my::function", json!({ "key": "value" }));
+/// TriggerRequest {
+///     function_id: "my::function".to_string(),
+///     payload: json!({ "key": "value" }),
+///     action: None,
+///     timeout_ms: None,
+/// };
 ///
 /// // With action
-/// TriggerRequest::new("my::function", json!({}))
-///     .action(TriggerAction::enqueue("payments"));
-///
-/// // With timeout
-/// TriggerRequest::new("my::function", json!({}))
-///     .timeout_ms(10_000);
+/// TriggerRequest {
+///     function_id: "my::function".to_string(),
+///     payload: json!({}),
+///     action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
+///     timeout_ms: None,
+/// };
 /// ```
 #[derive(Debug, Clone)]
 pub struct TriggerRequest {
@@ -111,33 +103,6 @@ pub struct TriggerRequest {
     pub payload: Value,
     pub action: Option<TriggerAction>,
     pub timeout_ms: Option<u64>,
-}
-
-impl TriggerRequest {
-    pub fn new(function_id: impl Into<String>, payload: impl serde::Serialize) -> Self {
-        Self {
-            function_id: function_id.into(),
-            payload: serde_json::to_value(payload).unwrap_or(Value::Null),
-            action: None,
-            timeout_ms: None,
-        }
-    }
-
-    pub fn action(mut self, action: TriggerAction) -> Self {
-        self.action = Some(action);
-        self
-    }
-
-    pub fn timeout_ms(mut self, timeout_ms: u64) -> Self {
-        self.timeout_ms = Some(timeout_ms);
-        self
-    }
-
-    #[deprecated(since = "0.3.0", note = "Use timeout_ms(milliseconds) instead")]
-    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.timeout_ms = Some(timeout.as_millis() as u64);
-        self
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +200,15 @@ impl RegisterTriggerTypeMessage {
             description: self.description.clone(),
         }
     }
+}
+
+/// Input for [`III::register_trigger`](crate::III::register_trigger).
+/// The `id` is auto-generated internally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterTriggerInput {
+    pub trigger_type: String,
+    pub function_id: String,
+    pub config: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { FunctionDoc, ParamDoc, SdkDoc, TypeDoc as TypeDocType, SubpathExport } from '../types.mjs'
+import type { FunctionDoc, LoggerDoc, ParamDoc, SdkDoc, TypeDoc as TypeDocType, SubpathExport } from '../types.mjs'
 
 interface TypeDocReflection {
   id: number
@@ -78,6 +78,7 @@ function reflectionToFunction(ref: TypeDocReflection): FunctionDoc | null {
 const KIND_ENUM = 8
 const KIND_CLASS = 128
 const KIND_INTERFACE = 256
+const KIND_METHOD = 2048
 const KIND_TYPE_ALIAS = 2097152
 
 function extractFieldsFromChildren(children: any[]): ParamDoc[] {
@@ -144,6 +145,19 @@ function extractTypesFrom(children: TypeDocReflection[], skipNames: Set<string>)
   return types
 }
 
+function extractLoggerDoc(ref: TypeDocReflection): LoggerDoc | undefined {
+  if (!ref || ref.kind !== KIND_CLASS) return undefined
+  const description = extractText(ref.comment?.summary)
+  const methods: FunctionDoc[] = []
+  for (const child of ref.children ?? []) {
+    if (child.kind !== KIND_METHOD) continue
+    const fn = reflectionToFunction(child)
+    if (fn) methods.push(fn)
+  }
+  if (!description && methods.length === 0) return undefined
+  return { description, methods }
+}
+
 export function parseTypedoc(jsonPath: string): SdkDoc {
   const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
 
@@ -166,7 +180,10 @@ export function parseTypedoc(jsonPath: string): SdkDoc {
     }
   }
 
-  const skipTypes = new Set(['ISdk'])
+  const loggerClass = allChildren.find(c => c.name === 'Logger' && c.kind === KIND_CLASS)
+  const loggerSection = loggerClass ? extractLoggerDoc(loggerClass) : undefined
+
+  const skipTypes = new Set(['ISdk', 'Logger'])
   const types: TypeDocType[] = [
     ...extractTypesFrom(allChildren, skipTypes),
     ...extractTypesFrom(streamModule?.children ?? [], skipTypes),
@@ -199,13 +216,11 @@ export function parseTypedoc(jsonPath: string): SdkDoc {
       importExample: "import { registerWorker } from 'iii-sdk'",
     },
     initialization: {
-      description: 'The Node.js SDK exports `registerWorker` that creates a connected SDK instance. The WebSocket connection is established automatically — there is no separate `connect()` call.',
-      example: `import { registerWorker } from 'iii-sdk'\n\nconst iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {\n  workerName: 'my-worker',\n})`,
       entryPoint: entryFn ?? { name: 'registerWorker', signature: '(address: string, options?: InitOptions) => ISdk', description: '', params: [], returns: { type: 'ISdk', description: '' }, examples: [] },
     },
     methods,
     types,
     subpathExports,
-    contextSection: "```typescript\nimport { Logger } from 'iii-sdk'\n\nconst logger = new Logger()\nlogger.info('Processing started')\n```\n\nThe `new Logger()` function returns the current `Context` (with `logger` and `trace`) from within a function handler.",
+    loggerSection,
   }
 }

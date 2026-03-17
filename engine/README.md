@@ -101,24 +101,20 @@ pip install iii-sdk
 ```
 
 ```python
-import asyncio
 from iii import register_worker
 
-async def main():
-    iii = register_worker("ws://localhost:49134")
+iii = register_worker("ws://localhost:49134")
 
-    async def add(data):
-        return {"sum": data["a"] + data["b"]}
+def add(data):
+    return {"sum": data["a"] + data["b"]}
 
-    iii.register_function("math.add", add)
+iii.register_function({"id": "math.add"}, add)
 
-    iii.register_trigger(
-        type="http",
-        function_id="math.add",
-        config={"api_path": "add", "http_method": "POST"}
-    )
-
-asyncio.run(main())
+iii.register_trigger({
+    "type": "http",
+    "function_id": "math.add",
+    "config": {"api_path": "add", "http_method": "POST"}
+})
 ```
 
 </details>
@@ -127,23 +123,23 @@ asyncio.run(main())
 <summary>Rust</summary>
 
 ```rust
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("math.add", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "math.add".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(json!({ "sum": a + b }))
     });
 
-    iii.register_trigger("http", "math.add", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "math.add".into(), config: json!({
         "api_path": "add",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     Ok(())
 }

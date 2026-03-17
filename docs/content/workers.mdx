@@ -38,7 +38,7 @@ graph LR
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Connecting: init(url)
+    [*] --> Connecting: registerWorker(url)
     Connecting --> Connected: WebSocket open
     Connected --> Registering: Register functions/triggers
     Registering --> Ready: All registered
@@ -57,9 +57,9 @@ stateDiagram-v2
 Worker establishes WebSocket connection to the Engine:
 
 ```typescript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-const iii = init('ws://127.0.0.1:49134')
+const iii = registerWorker('ws://127.0.0.1:49134')
 ```
 
 ### 2. Registration
@@ -155,9 +155,9 @@ graph TD
 ### Node.js
 
 ```typescript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
 iii.registerFunction(
   { id: 'greet::hello' },
@@ -179,30 +179,24 @@ iii.registerTrigger({
 ### Python
 
 ```python
-import asyncio
-from iii import III
+from iii import register_worker
 
-async def main():
-    iii = III('ws://localhost:49134')
+iii = register_worker('ws://localhost:49134')
 
-    async def hello(data):
-        name = data.get('name', 'World')
-        return {'message': f'Hello, {name}!'}
+def hello(data):
+    name = data.get('name', 'World')
+    return {'message': f'Hello, {name}!'}
 
-    iii.register_function('greet::hello', hello)
+iii.register_function({"id": "greet::hello"}, hello)
 
-    iii.register_trigger(
-        type='http',
-        function_id='greet::hello',
-        config={
-            'api_path': '/greet/:name',
-            'http_method': 'GET',
-        }
-    )
-
-    await iii.connect()
-
-asyncio.run(main())
+iii.register_trigger({
+    'type': 'http',
+    'function_id': 'greet::hello',
+    'config': {
+        'api_path': '/greet/:name',
+        'http_method': 'GET',
+    },
+})
 ```
 
 ## Best Practices

@@ -989,6 +989,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
+dependencies = [
+ "ctor-proc-macro",
+ "dtor",
+]
+
+[[package]]
+name = "ctor-proc-macro"
+version = "0.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
+
+[[package]]
 name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1135,6 +1151,21 @@ name = "downcast"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1435fa1053d8b2fbbe9be7e97eca7f33d37b28409959813daefc1446a14247f1"
+
+[[package]]
+name = "dtor"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "404d02eeb088a82cfd873006cb713fe411306c7d182c344905e101fb1167d301"
+dependencies = [
+ "dtor-proc-macro",
+]
+
+[[package]]
+name = "dtor-proc-macro"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
 
 [[package]]
 name = "dunce"
@@ -1853,7 +1884,7 @@ dependencies = [
  "hostname",
  "http-body-util",
  "iana-time-zone",
- "iii-sdk 0.8.3",
+ "iii-sdk",
  "indexmap",
  "inventory",
  "lapin",
@@ -1922,7 +1953,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
- "iii-sdk 0.2.1",
+ "iii-sdk",
  "mime_guess",
  "rust-embed",
  "serde",
@@ -1937,36 +1968,11 @@ dependencies = [
 name = "iii-example"
 version = "0.0.0"
 dependencies = [
- "iii-sdk 0.8.3",
+ "iii-sdk",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "iii-sdk"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ea93d3ff2ad85ef7730cea44f45cbbd4781bcc39bb9d33c4226170bf92b5695"
-dependencies = [
- "async-trait",
- "futures-util",
- "hostname",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-proto",
- "opentelemetry_sdk",
- "prost",
- "reqwest",
- "serde",
- "serde_json",
- "sysinfo",
- "thiserror",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1974,6 +1980,7 @@ name = "iii-sdk"
 version = "0.8.3"
 dependencies = [
  "async-trait",
+ "ctor",
  "futures-util",
  "hostname",
  "opentelemetry",
@@ -3556,9 +3563,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.28"
+version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
+checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
 ]

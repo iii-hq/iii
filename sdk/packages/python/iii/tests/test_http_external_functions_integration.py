@@ -1,7 +1,6 @@
 """Tests for HTTP external functions.
 
-Unit tests use FakeWebSocket; integration tests require a running III engine
-with HttpFunctionsModule.
+Unit tests use FakeWebSocket; integration tests require a running III engine with HttpFunctionsModule.
 """
 
 import asyncio
@@ -13,13 +12,13 @@ from typing import Any
 
 import pytest
 
-from iii import III, HttpInvocationConfig, InitOptions
+from iii import HttpInvocationConfig, InitOptions
+from iii.iii import III
 from iii.iii_types import HttpAuthBearer
 
 
 def _unique_function_id(prefix: str) -> str:
     return f"{prefix}::{int(time.time())}::{random.random():.10f}".replace(".", "")
-
 
 def _unique_topic(prefix: str) -> str:
     return f"{prefix}.{int(time.time())}.{random.random():.10f}".replace(".", "")
@@ -157,15 +156,16 @@ def _make_fake_ws_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         return FakeWs()
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)
+    monkeypatch.setattr("iii.telemetry.init_otel", lambda **kwargs: None)
+    monkeypatch.setattr("iii.telemetry.attach_event_loop", lambda loop: None)
+    monkeypatch.setattr(iii_module.III, "_register_worker_metadata", lambda self: None)
     return sent
 
 
-async def _make_connected_client(sent: list[dict[str, Any]] | None = None) -> III:
+def _make_connected_client() -> III:
     """Create an III client connected via FakeWs (caller must have monkeypatched already)."""
     client = III("ws://fake", InitOptions())
-    client._register_worker_metadata = lambda: None
-    await client.connect()
-    await asyncio.sleep(0.01)
+    time.sleep(0.05)
     return client
 
 
@@ -173,19 +173,17 @@ async def _make_connected_client(sent: list[dict[str, Any]] | None = None) -> II
 # Helpers for integration tests
 # ---------------------------------------------------------------------------
 
-
-async def _make_integration_client() -> III:
+def _make_integration_client() -> III:
     """Create a real III client connected to the engine; skips if unavailable."""
     ws_url = os.environ.get("III_URL", "ws://localhost:49199")
     client = III(ws_url, InitOptions(reconnection_config=None))
-    client._register_worker_metadata = lambda: None
-    await client.connect()
-    await asyncio.sleep(0.1)
+    client._wait_until_connected()
+    time.sleep(0.1)
 
     try:
-        await client.trigger("engine::functions::list", {})
+        client.trigger({"function_id": "engine::functions::list", "payload": {}})
     except Exception:
-        await client.shutdown()
+        client.shutdown()
         pytest.skip("III engine not available")
 
     return client
@@ -196,14 +194,13 @@ async def _make_integration_client() -> III:
 # ===========================================================================
 
 
-@pytest.mark.asyncio
-async def test_register_http_function_sends_invocation_message(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_register_http_function_sends_invocation_message(monkeypatch: pytest.MonkeyPatch) -> None:
     sent = _make_fake_ws_env(monkeypatch)
-    client = await _make_connected_client()
+    client = _make_connected_client()
 
     config = HttpInvocationConfig(url="https://example.com/invoke", method="POST", timeout_ms=3000)
-    ref = client.register_function("external::my_lambda", config)
-    await asyncio.sleep(0.02)
+    ref = client.register_function({"id": "external::my_lambda"}, config)
+    time.sleep(0.02)
 
     assert ref.id == "external::my_lambda"
     reg_fn = [m for m in sent if m.get("type") == "registerfunction" and m.get("id") == "external::my_lambda"]
@@ -212,17 +209,16 @@ async def test_register_http_function_sends_invocation_message(monkeypatch: pyte
     assert reg_fn[0].get("invocation", {}).get("method") == "POST"
 
     ref.unregister()
-    await asyncio.sleep(0.05)
+    time.sleep(0.05)
     unreg = [m for m in sent if m.get("type") == "unregisterfunction" and m.get("id") == "external::my_lambda"]
     assert len(unreg) == 1, f"Expected 1 unregister message, got {len(unreg)}. Sent: {sent}"
 
-    await client.shutdown()
+    client.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_register_http_function_with_all_config_options(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_register_http_function_with_all_config_options(monkeypatch: pytest.MonkeyPatch) -> None:
     sent = _make_fake_ws_env(monkeypatch)
-    client = await _make_connected_client()
+    client = _make_connected_client()
 
     config = HttpInvocationConfig(
         url="https://api.example.com/handler",
@@ -231,8 +227,8 @@ async def test_register_http_function_with_all_config_options(monkeypatch: pytes
         headers={"X-Custom-Header": "test-value", "X-Another": "123"},
         auth=HttpAuthBearer(token_key="MY_SECRET_TOKEN"),
     )
-    ref = client.register_function("external::full_config", config)
-    await asyncio.sleep(0.02)
+    ref = client.register_function({"id": "external::full_config"}, config)
+    time.sleep(0.02)
 
     assert ref.id == "external::full_config"
 
@@ -247,17 +243,16 @@ async def test_register_http_function_with_all_config_options(monkeypatch: pytes
     assert invocation["auth"]["type"] == "bearer"
     assert invocation["auth"]["token_key"] == "MY_SECRET_TOKEN"
 
-    await client.shutdown()
+    client.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_unregister_removes_function_from_sent_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unregister_removes_function_from_sent_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     sent = _make_fake_ws_env(monkeypatch)
-    client = await _make_connected_client()
+    client = _make_connected_client()
 
     config = HttpInvocationConfig(url="https://example.com/fn", method="POST")
-    ref = client.register_function("external::to_remove", config)
-    await asyncio.sleep(0.02)
+    ref = client.register_function({"id": "external::to_remove"}, config)
+    time.sleep(0.02)
 
     # Verify registration was sent.
     reg_msgs = [m for m in sent if m.get("type") == "registerfunction" and m.get("id") == "external::to_remove"]
@@ -265,7 +260,7 @@ async def test_unregister_removes_function_from_sent_messages(monkeypatch: pytes
 
     # Unregister.
     ref.unregister()
-    await asyncio.sleep(0.05)
+    time.sleep(0.05)
 
     # Verify unregister was sent with correct id.
     unreg_msgs = [m for m in sent if m.get("type") == "unregisterfunction" and m.get("id") == "external::to_remove"]
@@ -276,7 +271,7 @@ async def test_unregister_removes_function_from_sent_messages(monkeypatch: pytes
     # re-registered on reconnect.
     assert "external::to_remove" not in client._functions
 
-    await client.shutdown()
+    client.shutdown()
 
 
 # ===========================================================================
@@ -286,7 +281,7 @@ async def test_unregister_removes_function_from_sent_messages(monkeypatch: pytes
 
 @pytest.mark.asyncio
 async def test_delivers_queue_events_to_external_http_function() -> None:
-    client = await _make_integration_client()
+    client = _make_integration_client()
 
     probe = WebhookProbe()
     await probe.start()
@@ -299,15 +294,15 @@ async def test_delivers_queue_events_to_external_http_function() -> None:
 
     try:
         http_fn = client.register_function(
-            function_id,
+            {"id": function_id},
             HttpInvocationConfig(url=probe.url(), method="POST", timeout_ms=3000),
         )
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
-        trigger = client.register_trigger("queue", function_id, {"topic": topic})
-        await asyncio.sleep(0.5)
+        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        time.sleep(0.5)
 
-        await client.trigger("enqueue", {"topic": topic, "data": payload})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
 
         webhook = await probe.wait_for_webhook(7.0)
 
@@ -320,12 +315,12 @@ async def test_delivers_queue_events_to_external_http_function() -> None:
         if http_fn:
             http_fn.unregister()
         await probe.close()
-        await client.shutdown()
+        client.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_registers_and_unregisters_external_function() -> None:
-    client = await _make_integration_client()
+    client = _make_integration_client()
 
     # Use a real local server so the engine's URL validator accepts the registration.
     probe = WebhookProbe()
@@ -336,47 +331,47 @@ async def test_registers_and_unregisters_external_function() -> None:
 
     try:
         http_fn = client.register_function(
-            function_id,
+            {"id": function_id},
             HttpInvocationConfig(url=probe.url(), method="POST", timeout_ms=3000),
         )
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
         # Verify the function appears in the engine function list (with retries for timing).
         found = False
         for _ in range(10):
-            result = await client.trigger("engine::functions::list", {})
+            result = client.trigger({"function_id": "engine::functions::list", "payload": {}})
             function_ids = [f["function_id"] for f in result.get("functions", [])]
             if function_id in function_ids:
                 found = True
                 break
-            await asyncio.sleep(0.3)
+            time.sleep(0.3)
         assert found, f"{function_id} not found in {function_ids}"
 
         # Unregister.
         http_fn.unregister()
         http_fn = None
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
         # Verify the function is gone (with retries for timing).
         gone = False
         for _ in range(10):
-            result = await client.trigger("engine::functions::list", {})
+            result = client.trigger({"function_id": "engine::functions::list", "payload": {}})
             function_ids = [f["function_id"] for f in result.get("functions", [])]
             if function_id not in function_ids:
                 gone = True
                 break
-            await asyncio.sleep(0.3)
+            time.sleep(0.3)
         assert gone, f"{function_id} still found after unregister"
     finally:
         if http_fn:
             http_fn.unregister()
         await probe.close()
-        await client.shutdown()
+        client.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_delivers_events_with_custom_headers() -> None:
-    client = await _make_integration_client()
+    client = _make_integration_client()
 
     probe = WebhookProbe()
     await probe.start()
@@ -389,7 +384,7 @@ async def test_delivers_events_with_custom_headers() -> None:
 
     try:
         http_fn = client.register_function(
-            function_id,
+            {"id": function_id},
             HttpInvocationConfig(
                 url=probe.url(),
                 method="POST",
@@ -397,12 +392,12 @@ async def test_delivers_events_with_custom_headers() -> None:
                 headers={"X-Custom-Header": "test-value", "X-Another": "123"},
             ),
         )
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
-        trigger = client.register_trigger("queue", function_id, {"topic": topic})
-        await asyncio.sleep(0.5)
+        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        time.sleep(0.5)
 
-        await client.trigger("enqueue", {"topic": topic, "data": payload})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
 
         webhook = await probe.wait_for_webhook(7.0)
 
@@ -422,12 +417,12 @@ async def test_delivers_events_with_custom_headers() -> None:
         if http_fn:
             http_fn.unregister()
         await probe.close()
-        await client.shutdown()
+        client.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_delivers_events_to_multiple_external_functions() -> None:
-    client = await _make_integration_client()
+    client = _make_integration_client()
 
     probe_a = WebhookProbe()
     probe_b = WebhookProbe()
@@ -448,21 +443,21 @@ async def test_delivers_events_to_multiple_external_functions() -> None:
 
     try:
         http_fn_a = client.register_function(
-            fn_id_a,
+            {"id": fn_id_a},
             HttpInvocationConfig(url=probe_a.url("/hook_a"), method="POST", timeout_ms=3000),
         )
         http_fn_b = client.register_function(
-            fn_id_b,
+            {"id": fn_id_b},
             HttpInvocationConfig(url=probe_b.url("/hook_b"), method="POST", timeout_ms=3000),
         )
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
-        trigger_a = client.register_trigger("queue", fn_id_a, {"topic": topic_a})
-        trigger_b = client.register_trigger("queue", fn_id_b, {"topic": topic_b})
-        await asyncio.sleep(0.5)
+        trigger_a = client.register_trigger({"type": "queue", "function_id": fn_id_a, "config": {"topic": topic_a}})
+        trigger_b = client.register_trigger({"type": "queue", "function_id": fn_id_b, "config": {"topic": topic_b}})
+        time.sleep(0.5)
 
-        await client.trigger("enqueue", {"topic": topic_a, "data": payload_a})
-        await client.trigger("enqueue", {"topic": topic_b, "data": payload_b})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic_a, "data": payload_a}})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic_b, "data": payload_b}})
 
         webhook_a = await probe_a.wait_for_webhook(7.0)
         webhook_b = await probe_b.wait_for_webhook(7.0)
@@ -484,12 +479,12 @@ async def test_delivers_events_to_multiple_external_functions() -> None:
             http_fn_b.unregister()
         await probe_a.close()
         await probe_b.close()
-        await client.shutdown()
+        client.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_stops_delivering_after_unregister() -> None:
-    client = await _make_integration_client()
+    client = _make_integration_client()
 
     probe = WebhookProbe()
     await probe.start()
@@ -503,16 +498,16 @@ async def test_stops_delivering_after_unregister() -> None:
 
     try:
         http_fn = client.register_function(
-            function_id,
+            {"id": function_id},
             HttpInvocationConfig(url=probe.url(), method="POST", timeout_ms=3000),
         )
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
-        trigger = client.register_trigger("queue", function_id, {"topic": topic})
-        await asyncio.sleep(0.5)
+        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        time.sleep(0.5)
 
         # First enqueue -- should be delivered.
-        await client.trigger("enqueue", {"topic": topic, "data": payload_before})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload_before}})
         webhook = await probe.wait_for_webhook(7.0)
         assert webhook["body"] == payload_before
 
@@ -521,10 +516,10 @@ async def test_stops_delivering_after_unregister() -> None:
         trigger = None
         http_fn.unregister()
         http_fn = None
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
         # Second enqueue -- should NOT be delivered (function is gone).
-        await client.trigger("enqueue", {"topic": topic, "data": payload_after})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload_after}})
         no_delivery = await probe.wait_for_webhook_or_none(timeout=2.0)
         assert no_delivery is None, f"Expected no delivery after unregister, but got: {no_delivery}"
     finally:
@@ -533,12 +528,12 @@ async def test_stops_delivering_after_unregister() -> None:
         if http_fn:
             http_fn.unregister()
         await probe.close()
-        await client.shutdown()
+        client.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_delivers_with_put_method() -> None:
-    client = await _make_integration_client()
+    client = _make_integration_client()
 
     probe = WebhookProbe()
     await probe.start()
@@ -551,15 +546,15 @@ async def test_delivers_with_put_method() -> None:
 
     try:
         http_fn = client.register_function(
-            function_id,
+            {"id": function_id},
             HttpInvocationConfig(url=probe.url(), method="PUT", timeout_ms=3000),
         )
-        await asyncio.sleep(0.5)
+        time.sleep(0.5)
 
-        trigger = client.register_trigger("queue", function_id, {"topic": topic})
-        await asyncio.sleep(0.5)
+        trigger = client.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
+        time.sleep(0.5)
 
-        await client.trigger("enqueue", {"topic": topic, "data": payload})
+        client.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
 
         webhook = await probe.wait_for_webhook(7.0)
 
@@ -571,4 +566,4 @@ async def test_delivers_with_put_method() -> None:
         if http_fn:
             http_fn.unregister()
         await probe.close()
-        await client.shutdown()
+        client.shutdown()

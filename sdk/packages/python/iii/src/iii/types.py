@@ -12,10 +12,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from .iii_types import (
     FunctionInfo,
     HttpInvocationConfig,
+    RegisterFunctionInput,
     RegisterFunctionMessage,
-    RegisterTriggerMessage,
+    RegisterServiceInput,
+    RegisterTriggerInput,
+    RegisterTriggerTypeInput,
     RegisterTriggerTypeMessage,
     StreamChannelRef,
+    TriggerInfo,
+    TriggerRequest,
 )
 from .stream import IStream
 from .triggers import Trigger, TriggerHandler
@@ -76,12 +81,6 @@ class RemoteServiceFunctionData(BaseModel):
 
 
 # Type aliases for registration inputs
-RegisterTriggerInput = RegisterTriggerMessage
-RegisterServiceInput = str
-RegisterFunctionInput = RegisterFunctionMessage
-RegisterTriggerTypeInput = RegisterTriggerTypeMessage
-
-
 # Callback type for functions available event
 FunctionsAvailableCallback = Callable[[list[FunctionInfo]], None]
 
@@ -89,54 +88,44 @@ FunctionsAvailableCallback = Callable[[list[FunctionInfo]], None]
 class IIIClient(Protocol):
     """Protocol for III client implementations."""
 
-    def register_trigger(self, trigger: RegisterTriggerMessage) -> Trigger: ...
+    def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
 
-    def register_service(
-        self,
-        id: str,
-        description: str | None = None,
-        parent_id: str | None = None,
-        *,
-        name: str | None = None,
-    ) -> None: ...
+    def register_service(self, service: RegisterServiceInput | dict[str, Any]) -> None: ...
 
     def register_function(
         self,
-        path: str,
+        func: RegisterFunctionInput | dict[str, Any],
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
-        description: str | None = None,
-        metadata: dict[str, Any] | None = None,
     ) -> Any: ...
 
-    async def trigger(self, function_id: str, data: Any, timeout: float = 30.0) -> Any: ...
+    def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
 
     def register_trigger_type(
         self,
-        trigger_type_id: str,
-        description: str,
+        trigger_type: RegisterTriggerTypeInput | dict[str, Any],
         handler: TriggerHandler[Any],
     ) -> None: ...
 
-    def unregister_trigger_type(self, trigger_type_id: str) -> None: ...
+    def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
 
-    def on(self, event: str, callback: Callable[..., None]) -> Callable[[], None]: ...
-
-    async def create_channel(self, buffer_size: int | None = None) -> Channel: ...
+    def create_channel(self, buffer_size: int | None = None) -> Channel: ...
 
     def create_stream(self, stream_name: str, stream: IStream[Any]) -> None: ...
 
+    def list_functions(self) -> list[FunctionInfo]: ...
+
+    def list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]: ...
+
     def on_functions_available(self, callback: FunctionsAvailableCallback) -> Callable[[], None]: ...
 
-    def on_log(self, callback: Callable[..., None], config: Any = None) -> Callable[[], None]: ...
+    def shutdown(self) -> None: ...
 
 
 class ApiRequest(BaseModel, Generic[TInput]):
     """Represents an API request."""
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    path_params: dict[str, str] = Field(default_factory=dict, alias="pathParams")
-    query_params: dict[str, str | list[str]] = Field(default_factory=dict, alias="queryParams")
+    path_params: dict[str, str] = Field(default_factory=dict)
+    query_params: dict[str, str | list[str]] = Field(default_factory=dict)
     body: Any | None = None
     headers: dict[str, str | list[str]] = Field(default_factory=dict)
     method: str = "GET"
@@ -148,7 +137,7 @@ class ApiResponse(BaseModel, Generic[TOutput]):
     model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True)
 
     status_code: int = Field(alias="statusCode")
-    body: Any
+    body: Any | None = None
     headers: dict[str, str] = Field(default_factory=dict)
 
 

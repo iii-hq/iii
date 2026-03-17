@@ -20,19 +20,19 @@ config = {
 }
 
 
-async def handler(data: Any, ctx: FlowContext[Any]) -> None:
+def handler(data: Any, ctx: FlowContext[Any]) -> None:
     order = data.get("data", {}) if isinstance(data, dict) else {}
     order_id = order.get("id", "unknown")
 
     logger.info("Processing order", {"order_id": order_id, "trace_id": ctx.trace_id})
 
-    current = await order_stream.get("pending", order_id)
+    current = order_stream.get("pending", order_id)
 
     if current:
-        await stateManager.set("order_processing", order_id, {"status": "processing"})
+        stateManager.set("order_processing", order_id, {"status": "processing"})
         processed_order = {**current, "status": "processed"}
-        await order_stream.set("processed", order_id, processed_order)
-        await enqueue({"topic": "order.processed", "data": processed_order})
+        order_stream.set("processed", order_id, processed_order)
+        enqueue({"topic": "order.processed", "data": processed_order})
         logger.info("Order processed", {"order_id": order_id})
     else:
         logger.warn("Order not found in stream", {"order_id": order_id})

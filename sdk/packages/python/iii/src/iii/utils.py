@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from .types import HttpRequest, HttpResponse, InternalHttpRequest
@@ -50,3 +51,11 @@ def http(
         return await callback(http_request, http_response)
 
     return wrapper
+
+
+def safe_stringify(value: Any) -> str:
+    """Safely stringify a value, handling circular references and non-serializable types."""
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return "[unserializable]"

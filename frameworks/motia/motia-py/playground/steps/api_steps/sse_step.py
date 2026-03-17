@@ -1,6 +1,5 @@
 """Accepts URL-encoded data and streams back random items as SSE."""
 
-import asyncio
 import json
 import math
 import random
@@ -38,7 +37,7 @@ async def handler(args: MotiaHttpArgs[Any]) -> None:
     })
 
     raw_chunks: list[str] = []
-    async for chunk in request.request_body.stream:
+    for chunk in request.request_body.stream:
         if isinstance(chunk, bytes):
             raw_chunks.append(chunk.decode("utf-8", errors="replace"))
         else:
@@ -51,7 +50,7 @@ async def handler(args: MotiaHttpArgs[Any]) -> None:
 
     for item in items:
         response.writer.stream.write(f"event: item\ndata: {json.dumps(item)}\n\n".encode("utf-8"))
-        await asyncio.sleep(0.3 + random.random() * 0.7)
+        time.sleep(0.3 + random.random() * 0.7)
 
     response.writer.stream.write(f"event: done\ndata: {json.dumps({'total': len(items)})}\n\n".encode("utf-8"))
     response.close()

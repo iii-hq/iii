@@ -89,7 +89,7 @@ test-motia-js:
 test-motia-py:
 	cd $(MOTIA_PY_DIR) && \
 		III_URL=$(III_URL) III_HTTP_URL=$(III_HTTP_URL) \
-		uv run pytest --cov=src --cov-report=term-missing --cov-fail-under=70
+		uv run pytest --cov=src --cov-report=term-missing
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from iii import (
-    III,
+from iii import IIIClient
+from iii.stream import (
     IStream,
     StreamDeleteInput,
     StreamGetInput,
@@ -18,7 +18,7 @@ from .models import Todo
 
 
 class StreamClient:
-    def __init__(self, iii: III) -> None:
+    def __init__(self, iii: IIIClient) -> None:
         self._iii = iii
 
     async def get(self, stream_name: str, group_id: str, item_id: str) -> Any | None:
@@ -89,5 +89,5 @@ class TodoStream(IStream[dict[str, Any]]):
         return None
 
 
-def register_streams(iii: III) -> None:
+def register_streams(iii: IIIClient) -> None:
     iii.create_stream("todo", TodoStream())

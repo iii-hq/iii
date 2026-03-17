@@ -21,9 +21,9 @@ graph LR
   <Tab value="Node / TypeScript">
 
 ```typescript
-import {Logger, TriggerAction} from 'iii-sdk'
+import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 
-const iii = init(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
   { id: 'users.update_status', description: 'Update user status in state' },
@@ -38,7 +38,7 @@ iii.registerFunction(
     const { status = 'active' } = req.body ?? {}
 
     // Write to state — addressed by scope + key
-    iii.trigger({
+    await iii.trigger({
       function_id: 'state::set',
       payload: { scope: 'users', key: userId, value: { status, updatedAt: new Date().toISOString() } },
       action: TriggerAction.Void(),
@@ -62,21 +62,22 @@ iii.registerTrigger({
 
 ```python
 from datetime import datetime, timezone
-from iii import III, InitOptions, ApiRequest, ApiResponse, TriggerAction
+from iii import register_worker, InitOptions, ApiRequest, ApiResponse, Logger, TriggerAction
 
-iii = III(address="ws://localhost:49134", options=InitOptions(worker_name="state-worker"))
+iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="state-worker"))
 
-
-async def update_user_status(req: ApiRequest, ctx) -> ApiResponse:
+def update_user_status(data) -> ApiResponse:
+    logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     user_id = req.path_params.get("id") if req.path_params else None
 
     if not user_id:
-        return ApiResponse(statusCode=400, body={"error": "Missing user ID"})
+        return ApiResponse(status_code=400, body={"error": "Missing user ID"})
 
     new_status = (req.body or {}).get("status", "active")
 
     # Write to state — addressed by scope + key
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "state::set",
         "payload": {"scope": "users", "key": user_id, "value": {"status": new_status, "updatedAt": datetime.now(timezone.utc).isoformat()}},
         "action": TriggerAction.Void(),
@@ -84,55 +85,63 @@ async def update_user_status(req: ApiRequest, ctx) -> ApiResponse:
 
     logger.info(f"Updated user {user_id} status to {new_status}")
 
-    return ApiResponse(statusCode=200, body={"userId": user_id, "status": new_status})
+    return ApiResponse(status_code=200, body={"userId": user_id, "status": new_status})
 
-
-iii.register_function("users.update_status", lambda data: update_user_status(
-    ApiRequest(**data) if isinstance(data, dict) else data, Logger()
-))
-iii.register_trigger(
-    type="http", function_id="users.update_status",
-    config={"api_path": "users/:id/status", "http_method": "POST"},
-)
+iii.register_function({"id": "users.update_status"}, update_user_status)
+iii.register_trigger({
+    "type": "http", "function_id": "users.update_status",
+    "config": {"api_path": "users/:id/status", "http_method": "POST"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Logger, TriggerRequest, TriggerAction, types::ApiRequest};
+use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput, types::ApiRequest};
 use serde_json::json;
 
-iii.register_function("users.update_status", |input| async move {
-    let logger = Logger();
-    let req: ApiRequest = serde_json::from_value(input)?;
-    let user_id = req.path_params.get("id").cloned().unwrap_or_default();
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    if user_id.is_empty() {
-        return Ok(json!({ "status_code": 400, "body": { "error": "Missing user ID" } }));
-    }
+iii.register_function(
+    RegisterFunctionMessage { id: "users.update_status".into(), description: Some("Update user status in state".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    |input| async move {
+        let logger = Logger::new();
+        let req: ApiRequest = serde_json::from_value(input)?;
+        let user_id = req.path_params.get("id").cloned().unwrap_or_default();
 
-    let new_status = req.body["status"].as_str().unwrap_or("active").to_string();
+        if user_id.is_empty() {
+            return Ok(json!({ "status_code": 400, "body": { "error": "Missing user ID" } }));
+        }
 
-    // Write to state — addressed by scope + key
-    iii.trigger(TriggerRequest::new("state::set", json!({
-        "scope": "users",
-        "key": user_id,
-        "value": {
-            "status": new_status,
-            "updatedAt": chrono::Utc::now().to_rfc3339(),
-        },
-    })).action(TriggerAction::void())).await?;
+        let new_status = req.body["status"].as_str().unwrap_or("active").to_string();
 
-    logger.info(&format!("Updated user {} status to {}", user_id, new_status), None);
+        // Write to state — addressed by scope + key
+        iii.trigger(TriggerRequest {
+            function_id: "state::set".into(),
+            payload: json!({
+                "scope": "users",
+                "key": user_id,
+                "value": {
+                    "status": new_status,
+                    "updatedAt": chrono::Utc::now().to_rfc3339(),
+                },
+            }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }).await?;
 
-    Ok(json!({ "status_code": 200, "body": { "userId": user_id, "status": new_status } }))
-});
+        logger.info(&format!("Updated user {} status to {}", user_id, new_status), None);
 
-iii.register_trigger("http", "users.update_status", json!({
-    "api_path": "users/:id/status",
-    "http_method": "POST",
-}))?;
+        Ok(json!({ "status_code": 200, "body": { "userId": user_id, "status": new_status } }))
+    },
+);
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "users.update_status".into(),
+    config: json!({ "api_path": "users/:id/status", "http_method": "POST" }),
+})?;
 ```
 
   </Tab>
@@ -179,53 +188,58 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def get_user_status(req: ApiRequest, ctx) -> ApiResponse:
+def get_user_status(data) -> ApiResponse:
+    logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     user_id = req.path_params.get("id") if req.path_params else None
 
-    user = await iii.trigger({"function_id": "state::get", "payload": {"scope": "users", "key": user_id}}) if user_id else None
+    user = iii.trigger({"function_id": "state::get", "payload": {"scope": "users", "key": user_id}}) if user_id else None
 
     if not user:
-        return ApiResponse(statusCode=404, body={"error": "User not found"})
+        return ApiResponse(status_code=404, body={"error": "User not found"})
 
     logger.info("Got user status", {"userId": user_id, "status": user.get("status")})
-    return ApiResponse(statusCode=200, body=user)
+    return ApiResponse(status_code=200, body=user)
 
-
-iii.register_function("users.get_status", lambda data: get_user_status(
-    ApiRequest(**data) if isinstance(data, dict) else data, Logger()
-))
-iii.register_trigger(
-    type="http", function_id="users.get_status",
-    config={"api_path": "users/:id/status", "http_method": "GET"},
-)
+iii.register_function({"id": "users.get_status"}, get_user_status)
+iii.register_trigger({
+    "type": "http", "function_id": "users.get_status",
+    "config": {"api_path": "users/:id/status", "http_method": "GET"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("users.get_status", |input| async move {
-    let logger = Logger();
-    let req: ApiRequest = serde_json::from_value(input)?;
-    let user_id = req.path_params.get("id").cloned().unwrap_or_default();
+iii.register_function(
+    RegisterFunctionMessage { id: "users.get_status".into(), description: Some("Read user status from state".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    |input| async move {
+        let logger = Logger::new();
+        let req: ApiRequest = serde_json::from_value(input)?;
+        let user_id = req.path_params.get("id").cloned().unwrap_or_default();
 
-    let user = iii.trigger(TriggerRequest::new("state::get", json!({
-        "scope": "users",
-        "key": user_id,
-    }))).await?;
+        let user = iii.trigger(TriggerRequest {
+            function_id: "state::get".into(),
+            payload: json!({ "scope": "users", "key": user_id }),
+            action: None,
+            timeout_ms: None,
+        }).await?;
 
-    if user.is_null() {
-        return Ok(json!({ "status_code": 404, "body": { "error": "User not found" } }));
-    }
+        if user.is_null() {
+            return Ok(json!({ "status_code": 404, "body": { "error": "User not found" } }));
+        }
 
-    logger.info("Got user status", Some(json!({ "userId": user_id })));
-    Ok(json!({ "status_code": 200, "body": user }))
-});
+        logger.info("Got user status", Some(json!({ "userId": user_id })));
+        Ok(json!({ "status_code": 200, "body": user }))
+    },
+);
 
-iii.register_trigger("http", "users.get_status", json!({
-    "api_path": "users/:id/status",
-    "http_method": "GET",
-}))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "users.get_status".into(),
+    config: json!({ "api_path": "users/:id/status", "http_method": "GET" }),
+})?;
 ```
 
   </Tab>
@@ -253,7 +267,7 @@ iii.registerFunction(
       if (!order.complete && new Date() > new Date(order.shipDate)) {
         logger.warn('Order overdue', { orderId: order.id })
 
-        iii.trigger({
+        await iii.trigger({
           function_id: 'enqueue',
           payload: { topic: 'notification', data: { orderId: order.id, templateId: 'order-audit-warning', status: order.status } },
           action: TriggerAction.Void(),
@@ -275,10 +289,11 @@ iii.registerTrigger({
 
 ```python
 from datetime import datetime, timezone
+from iii import Logger, TriggerAction
 
-
-async def orders_audit(_data, ctx) -> None:
-    orders = await iii.trigger({"function_id": "state::list", "payload": {"scope": "orders"}}) or []
+def orders_audit(_data) -> None:
+    logger = Logger()
+    orders = iii.trigger({"function_id": "state::list", "payload": {"scope": "orders"}}) or []
 
     for order in orders:
         ship_date_str = order.get("shipDate") or order.get("ship_date", "2099-01-01T00:00:00Z")
@@ -292,48 +307,64 @@ async def orders_audit(_data, ctx) -> None:
         if not complete and datetime.now(timezone.utc) > ship_date:
             logger.warn("Order overdue", {"orderId": order.get("id")})
 
-            iii.trigger_void({
+            iii.trigger({
                 "function_id": "enqueue",
                 "payload": {"topic": "notification", "data": {"orderId": order.get("id"), "templateId": "order-audit-warning"}},
                 "action": TriggerAction.Void(),
             })
 
 
-
-iii.register_function("cron.orders_audit", lambda data: orders_audit(data, Logger()))
-iii.register_trigger(type="cron", function_id="cron.orders_audit", config={"expression": "*/5 * * * *"})
+iii.register_function({"id": "cron.orders_audit"}, orders_audit)
+iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "config": {"expression": "*/5 * * * *"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("cron.orders_audit", |_input| async move {
-    let logger = Logger();
+iii.register_function(
+    RegisterFunctionMessage { id: "cron.orders_audit".into(), description: Some("Checks for overdue orders".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    |_input| async move {
+        let logger = Logger::new();
 
-    let orders_val = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "orders" }))).await?;
-    let orders = orders_val.as_array().cloned().unwrap_or_default();
+        let orders_val = iii.trigger(TriggerRequest {
+            function_id: "state::list".into(),
+            payload: json!({ "scope": "orders" }),
+            action: None,
+            timeout_ms: None,
+        }).await?;
+        let orders = orders_val.as_array().cloned().unwrap_or_default();
 
-    for order in &orders {
-        let complete = order["complete"].as_bool().unwrap_or(false);
-        let ship_date_str = order["shipDate"].as_str().unwrap_or("2099-01-01T00:00:00Z");
+        for order in &orders {
+            let complete = order["complete"].as_bool().unwrap_or(false);
+            let ship_date_str = order["shipDate"].as_str().unwrap_or("2099-01-01T00:00:00Z");
 
-        if let Ok(ship_date) = chrono::DateTime::parse_from_rfc3339(ship_date_str) {
-            if !complete && chrono::Utc::now() > ship_date {
-                logger.warn("Order overdue", Some(json!({ "orderId": order["id"] })));
+            if let Ok(ship_date) = chrono::DateTime::parse_from_rfc3339(ship_date_str) {
+                if !complete && chrono::Utc::now() > ship_date {
+                    logger.warn("Order overdue", Some(json!({ "orderId": order["id"] })));
 
-                iii.trigger(TriggerRequest::new("enqueue", json!({
-                    "topic": "notification",
-                    "data": { "orderId": order["id"], "templateId": "order-audit-warning" },
-                })).action(TriggerAction::void())).await?;
+                    iii.trigger(TriggerRequest {
+                        function_id: "enqueue".into(),
+                        payload: json!({
+                            "topic": "notification",
+                            "data": { "orderId": order["id"], "templateId": "order-audit-warning" },
+                        }),
+                        action: Some(TriggerAction::Void),
+                        timeout_ms: None,
+                    }).await?;
+                }
             }
         }
-    }
 
-    Ok(json!(null))
-});
+        Ok(json!(null))
+    },
+);
 
-iii.register_trigger("cron", "cron.orders_audit", json!({ "expression": "*/5 * * * *" }))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "cron".into(),
+    function_id: "cron.orders_audit".into(),
+    config: json!({ "expression": "*/5 * * * *" }),
+})?;
 ```
 
   </Tab>
@@ -343,10 +374,10 @@ iii.register_trigger("cron", "cron.orders_audit", json!({ "expression": "*/5 * *
 
 | Operation | TypeScript | Python | Rust |
 |---|---|---|---|
-| Write | `iii.trigger({ function_id: 'state::set', payload: { scope, key, value }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'state::set', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new("state::set", json!({...})).action(TriggerAction::void())).await?` |
-| Read one | `await iii.trigger({ function_id: 'state::get', payload: { scope, key } })` | `await iii.trigger({'function_id': 'state::get', 'payload': {...}})` | `iii.trigger(TriggerRequest::new("state::get", json!({...}))).await?` |
-| Read all in scope | `await iii.trigger({ function_id: 'state::list', payload: { scope } })` | `await iii.trigger({'function_id': 'state::list', 'payload': {...}})` | `iii.trigger(TriggerRequest::new("state::list", json!({...}))).await?` |
-| Delete | `iii.trigger({ function_id: 'state::delete', payload: { scope, key }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'state::delete', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new("state::delete", json!({...})).action(TriggerAction::void())).await?` |
+| Write | `await iii.trigger({ function_id: 'state::set', payload: { scope, key, value }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'state::set', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest { function_id: "state::set".into(), payload: json!({...}), action: Some(TriggerAction::Void), timeout_ms: None }).await?` |
+| Read one | `await iii.trigger({ function_id: 'state::get', payload: { scope, key } })` | `iii.trigger({'function_id': 'state::get', 'payload': {...}})` | `iii.trigger(TriggerRequest { function_id: "state::get".into(), payload: json!({...}), action: None, timeout_ms: None }).await?` |
+| Read all in scope | `await iii.trigger({ function_id: 'state::list', payload: { scope } })` | `iii.trigger({'function_id': 'state::list', 'payload': {...}})` | `iii.trigger(TriggerRequest { function_id: "state::list".into(), payload: json!({...}), action: None, timeout_ms: None }).await?` |
+| Delete | `await iii.trigger({ function_id: 'state::delete', payload: { scope, key }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'state::delete', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest { function_id: "state::delete".into(), payload: json!({...}), action: Some(TriggerAction::Void), timeout_ms: None }).await?` |
 
 ## Key concepts
 

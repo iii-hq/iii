@@ -13,63 +13,17 @@ pip install iii-sdk
 
 ## Initialization
 
-The Python SDK exposes the `III` class. Use `register_worker()` for automatic connection, or create an `III` instance and call `connect()` manually.
 
-```python
-from iii import III, InitOptions
-
-iii = III('ws://localhost:49134', InitOptions(worker_name='my-worker'))
-await iii.connect()
-```
-
-### register_worker
-
-Create an III client and auto-start its connection task.
-
-The WebSocket connection is established automatically. Must be called
-inside an async context with an active event loop.
-
-**Signature**
-
-```python
-register_worker(address: str, options: InitOptions | None = None)
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `address` | `str` | Yes | WebSocket URL of the III engine (e.g. ``ws://localhost:49134``). |
-| `options` | [`InitOptions`](#initoptions) \| None | No | Optional configuration for worker name, timeouts, reconnection, and OTel. |
-
-#### Example
-
-```python
-    >>> import asyncio
-    >>> from iii import register_worker
-    >>> async def main():
-    ...     iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
-    >>> asyncio.run(main())
-```
 
 ## Methods
-
-### connect
-
-Connect to the WebSocket server.
-
-**Signature**
-
-```python
-connect()
-```
 
 ### create_channel
 
 Create a streaming channel pair for worker-to-worker data transfer.
 
-Returns a Channel with writer, reader, and their serializable refs
-that can be passed as fields in the invocation data to other functions.
+The returned ``Channel`` contains a local ``writer`` / ``reader``
+and their serializable refs (``writer_ref``, ``reader_ref``) that
+can be passed as fields in invocation data to other functions.
 
 **Signature**
 
@@ -81,14 +35,22 @@ create_channel(buffer_size: int | None = None)
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `buffer_size` | `int \| None` | No | Optional buffer size for the channel (default: 64). |
+| `buffer_size` | `int \| None` | No | Buffer capacity for the channel. Defaults to ``64``. |
+
+#### Example
+
+```python
+    >>> ch = iii.create_channel()
+    >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+    >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
+```
 
 ### create_stream
 
 Register a custom stream implementation, overriding the engine default.
 
 Registers 5 of the 6 ``IStream`` methods (``get``, ``set``, ``delete``,
-``list``, ``list_groups``). The ``update`` method is **not** registered
+``list``, ``list_groups``).  The ``update`` method is **not** registered
 -- atomic updates are handled by the engine's built-in stream update logic.
 
 **Signature**
@@ -101,12 +63,30 @@ create_stream(stream_name: str, stream: IStream[Any])
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `stream_name` | `str` | Yes | The name of the stream. |
-| `stream` | [`IStream`](#istream)[Any] | Yes | The stream implementation. |
+| `stream_name` | `str` | Yes | Unique name for the stream. |
+| `stream` | [`IStream`](#istream)[Any] | Yes | An object implementing the ``IStream`` interface. |
+
+#### Example
+
+```python
+    >>> from iii.stream import IStream
+    >>> class MyStream(IStream):
+    ...     async def get(self, input): ...
+    ...     async def set(self, input): ...
+    ...     async def delete(self, input): ...
+    ...     async def list(self, input): ...
+    ...     async def list_groups(self, input): ...
+    ...     async def update(self, input): ...
+    >>> iii.create_stream("my-stream", MyStream())
+```
 
 ### get_connection_state
 
-Get the current connection state.
+Return the current WebSocket connection state.
+
+Returns:
+    One of ``"disconnected"``, ``"connecting"``, ``"connected"``,
+    ``"reconnecting"``, or ``"failed"``.
 
 **Signature**
 
@@ -116,7 +96,14 @@ get_connection_state()
 
 ### list_functions
 
-List all registered functions from the engine.
+List all functions registered with the engine across all workers.
+
+Returns:
+    A list of ``FunctionInfo`` objects describing each function.
+
+Examples:
+    >>> for fn in iii.list_functions():
+    ...     print(fn.function_id, fn.description)
 
 **Signature**
 
@@ -124,9 +111,16 @@ List all registered functions from the engine.
 list_functions()
 ```
 
+#### Example
+
+```python
+    >>> for fn in iii.list_functions():
+    ...     print(fn.function_id, fn.description)
+```
+
 ### list_triggers
 
-List all registered triggers from the engine.
+List all triggers registered with the engine.
 
 **Signature**
 
@@ -138,11 +132,25 @@ list_triggers(include_internal: bool = False)
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `include_internal` | `bool` | No | - |
+| `include_internal` | `bool` | No | If ``True``, include engine-internal triggers (e.g. ``functions-available``). Defaults to ``False``. |
+
+#### Example
+
+```python
+    >>> triggers = iii.list_triggers()
+    >>> internal = iii.list_triggers(include_internal=True)
+```
 
 ### list_workers
 
-List all connected workers from the engine.
+List all workers currently connected to the engine.
+
+Returns:
+    A list of ``WorkerInfo`` objects with worker metadata.
+
+Examples:
+    >>> for w in iii.list_workers():
+    ...     print(w.name, w.worker_id)
 
 **Signature**
 
@@ -150,9 +158,19 @@ List all connected workers from the engine.
 list_workers()
 ```
 
+#### Example
+
+```python
+    >>> for w in iii.list_workers():
+    ...     print(w.name, w.worker_id)
+```
+
 ### on_functions_available
 
-Subscribe to function availability events.
+Subscribe to function-availability events from the engine.
+
+The callback fires whenever the set of available functions changes
+(e.g. a new worker connects or a function is unregistered).
 
 **Signature**
 
@@ -164,7 +182,17 @@ on_functions_available(callback: Callable[None])
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `callback` | `Callable[None]` | Yes | Function to call when functions become available. Receives list of FunctionInfo. |
+| `callback` | `Callable[None]` | Yes | Receives the current list of ``FunctionInfo`` objects each time availability changes. |
+
+#### Example
+
+```python
+    >>> def on_change(functions):
+    ...     print("Available:", [f.function_id for f in functions])
+    >>> unsub = iii.on_functions_available(on_change)
+    >>> # later ...
+    >>> unsub()
+```
 
 ### register_function
 
@@ -176,44 +204,54 @@ for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
 **Signature**
 
 ```python
-register_function(path: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, description: str | None = None, metadata: dict[str, Any] | None = None)
+register_function(func: RegisterFunctionInput | dict[str, Any], handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig)
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `str` | Yes | Unique function identifier. |
-| `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | Async handler callable or HTTP invocation config. |
-| `description` | `str \| None` | No | Human-readable description. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata to attach to the function. |
+| `func` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] | Yes | A ``RegisterFunctionInput`` or dict with ``id`` and optional ``description``, ``metadata``, ``request_format``, ``response_format``. |
+| `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | Handler callable or ``HttpInvocationConfig``. |
 
 #### Example
 
 ```python
-    >>> async def greet(data):
+    >>> def greet(data):
     ...     return {'message': f"Hello, {data['name']}!"}
-    >>> fn = iii.register_function('greet', greet, description='Greets a user')
+    >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
 ```
 
 ### register_service
 
+Register a logical service grouping with the engine.
 
+Services provide an organisational hierarchy for functions.  A
+service can optionally reference a ``parent_service_id`` to form
+a tree visible in the engine dashboard.
 
 **Signature**
 
 ```python
-register_service(id: str, description: str | None = None, parent_id: str | None = None, name: str | None = None)
+register_service(service: RegisterServiceInput | dict[str, Any])
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `str` | Yes | - |
-| `description` | `str \| None` | No | - |
-| `parent_id` | `str \| None` | No | - |
-| `name` | `str \| None` | No | - |
+| `service` | [`RegisterServiceInput`](#registerserviceinput) \| dict[str, Any] | Yes | A ``RegisterServiceInput`` or dict with ``id`` and optional ``name``, ``description``, ``parent_service_id``. |
+
+#### Example
+
+```python
+    >>> iii.register_service({"id": "payments", "description": "Payment processing"})
+    >>> iii.register_service({
+    ...     "id": "payments::refunds",
+    ...     "description": "Refund sub-service",
+    ...     "parent_service_id": "payments",
+    ... })
+```
 
 ### register_trigger
 
@@ -222,21 +260,27 @@ Bind a trigger configuration to a registered function.
 **Signature**
 
 ```python
-register_trigger(type: str, function_id: str, config: Any)
+register_trigger(trigger: RegisterTriggerInput | dict[str, Any])
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `type` | `str` | Yes | Trigger type (e.g. ``http``, ``queue``, ``cron``). |
-| `function_id` | `str` | Yes | ID of the function to invoke. |
-| `config` | `Any` | Yes | Trigger-specific configuration. |
+| `trigger` | [`RegisterTriggerInput`](#registertriggerinput) \| dict[str, Any] | Yes | A ``RegisterTriggerInput`` or dict with ``type``, ``function_id``, and optional ``config``. |
 
 #### Example
 
 ```python
-    >>> trigger = iii.register_trigger('http', 'greet', {'api_path': '/greet', 'http_method': 'GET'})
+    >>> trigger = iii.register_trigger({
+    ...   'type': 'http',
+    ...   'function_id': 'greet',
+    ...   'config': {'api_path': '/greet', 'http_method': 'GET'}
+    ... })
+    >>> trigger = iii.register_trigger(RegisterTriggerInput(
+    ...     type="http", function_id="greet",
+    ...     config={'api_path': '/greet', 'http_method': 'GET'}
+    ... ))
     >>> trigger.unregister()
 ```
 
@@ -247,25 +291,51 @@ Register a custom trigger type with the engine.
 **Signature**
 
 ```python
-register_trigger_type(id: str, description: str, handler: TriggerHandler[Any])
+register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], handler: TriggerHandler[Any])
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `str` | Yes | Unique trigger type identifier. |
-| `description` | `str` | Yes | Human-readable description. |
+| `trigger_type` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) \| dict[str, Any] | Yes | A ``RegisterTriggerTypeInput`` or dict with ``id`` and ``description``. |
 | `handler` | [`TriggerHandler`](#triggerhandler)[Any] | Yes | Handler implementing ``register_trigger`` and ``unregister_trigger``. |
+
+#### Example
+
+```python
+    >>> iii.register_trigger_type({"id": "webhook", "description": "Webhook trigger"}, handler)
+    >>> iii.register_trigger_type(
+    ...     RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"), handler
+    ... )
+```
 
 ### shutdown
 
-Disconnect from the WebSocket server.
+Gracefully shut down the client, releasing all resources.
+
+Cancels any pending reconnection attempts, rejects all in-flight
+invocations with an error, closes the WebSocket connection, and
+stops the background event-loop thread.  After this call the
+instance must not be reused.
+
+Examples:
+    >>> iii = register_worker('ws://localhost:49134')
+    >>> # ... do work ...
+    >>> iii.shutdown()
 
 **Signature**
 
 ```python
 shutdown()
+```
+
+#### Example
+
+```python
+    >>> iii = register_worker('ws://localhost:49134')
+    >>> # ... do work ...
+    >>> iii.shutdown()
 ```
 
 ### trigger
@@ -293,8 +363,8 @@ trigger(request: dict[str, Any] | TriggerRequest)
 #### Example
 
 ```python
-    >>> result = await iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
-    >>> await iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+    >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
+    >>> iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
 ```
 
 ### unregister_trigger_type
@@ -304,54 +374,146 @@ Unregister a previously registered trigger type.
 **Signature**
 
 ```python
-unregister_trigger_type(id: str)
+unregister_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any])
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `str` | Yes | The trigger type ID to unregister. |
+| `trigger_type` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) \| dict[str, Any] | Yes | A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``. |
+
+#### Example
+
+```python
+    >>> iii.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
+    >>> iii.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
+```
+
+## Logger
+
+Structured logger that emits logs as OpenTelemetry LogRecords.
+
+Every log call automatically captures the active trace and span context,
+correlating your logs with distributed traces without any manual wiring.
+When OTel is not initialized, Logger gracefully falls back to Python
+``logging``.
+
+Pass structured data as the second argument to any log method. Using a
+dict of key-value pairs (instead of string interpolation) lets you
+filter, aggregate, and build dashboards in your observability backend.
+
+Examples:
+    >>> from iii import Logger
+    >>> logger = Logger()
+    >>>
+    >>> # Basic logging — trace context is injected automatically
+    >>> logger.info('Worker connected')
+    >>>
+    >>> # Structured context for dashboards and alerting
+    >>> logger.info('Order processed', \{'order_id': 'ord_123', 'amount': 49.99, 'currency': 'USD'\})
+    >>> logger.warn('Retry attempt', \{'attempt': 3, 'max_retries': 5, 'endpoint': '/api/charge'\})
+    >>> logger.error('Payment failed', \{'order_id': 'ord_123', 'gateway': 'stripe', 'error_code': 'card_declined'\})
+
+### debug
+
+Log a debug-level message.
+
+**Signature**
+
+```python
+debug(message: str, data: Any = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `str` | Yes | Human-readable log message. |
+| `data` | `Any` | No | Structured context attached as OTel log attributes. Use dicts of key-value pairs to enable filtering and aggregation in your observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```python
+    >>> logger.debug('Cache lookup', {'key': 'user:42', 'hit': False})
+```
+
+### error
+
+Log an error-level message.
+
+**Signature**
+
+```python
+error(message: str, data: Any = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `str` | Yes | Human-readable log message. |
+| `data` | `Any` | No | Structured context attached as OTel log attributes. Use dicts of key-value pairs to enable filtering and aggregation in your observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```python
+    >>> logger.error('Payment failed', {
+    ...     'order_id': 'ord_123',
+    ...     'gateway': 'stripe',
+    ...     'error_code': 'card_declined',
+    ... })
+```
+
+### info
+
+Log an info-level message.
+
+**Signature**
+
+```python
+info(message: str, data: Any = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `str` | Yes | Human-readable log message. |
+| `data` | `Any` | No | Structured context attached as OTel log attributes. Use dicts of key-value pairs to enable filtering and aggregation in your observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```python
+    >>> logger.info('Order processed', {'order_id': 'ord_123', 'status': 'completed'})
+```
+
+### warn
+
+Log a warning-level message.
+
+**Signature**
+
+```python
+warn(message: str, data: Any = None)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `str` | Yes | Human-readable log message. |
+| `data` | `Any` | No | Structured context attached as OTel log attributes. Use dicts of key-value pairs to enable filtering and aggregation in your observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```python
+    >>> logger.warn('Retry attempt', {'attempt': 3, 'max_retries': 5, 'endpoint': '/api/charge'})
+```
 
 ## Types
 
-[`InitOptions`](#initoptions) · [`ReconnectionConfig`](#reconnectionconfig) · [`TelemetryOptions`](#telemetryoptions) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`OtelConfig`](#otelconfig) · [`TriggerHandler`](#triggerhandler)
-
-### InitOptions
-
-Options for configuring the III SDK.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `enable_metrics_reporting` | `bool` | No | - |
-| `invocation_timeout_ms` | `int` | No | - |
-| `otel` | [`OtelConfig`](#otelconfig) \| dict[str, Any] \| None | No | - |
-| `reconnection_config` | [`ReconnectionConfig`](#reconnectionconfig) \| None | No | - |
-| `telemetry` | [`TelemetryOptions`](#telemetryoptions) \| None | No | - |
-| `worker_name` | `str \| None` | No | - |
-
-### ReconnectionConfig
-
-Configuration for WebSocket reconnection behavior.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `backoff_multiplier` | `float` | No | - |
-| `initial_delay_ms` | `int` | No | - |
-| `jitter_factor` | `float` | No | - |
-| `max_delay_ms` | `int` | No | - |
-| `max_retries` | `int` | No | - |
-
-### TelemetryOptions
-
-Telemetry metadata to be reported to the engine.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `amplitude_api_key` | `str \| None` | No | - |
-| `framework` | `str \| None` | No | - |
-| `language` | `str \| None` | No | - |
-| `project_name` | `str \| None` | No | - |
+[`HttpInvocationConfig`](#httpinvocationconfig) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`TriggerActionEnqueue`](#triggeractionenqueue) · [`TriggerActionVoid`](#triggeractionvoid) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`TriggerHandler`](#triggerhandler)
 
 ### HttpInvocationConfig
 
@@ -364,6 +526,62 @@ Config for HTTP external function invocation.
 | `method` | `Literal['GET', 'POST', 'PUT', 'PATCH', 'DELETE']` | No | - |
 | `timeout_ms` | `int \| None` | No | - |
 | `url` | `str` | Yes | - |
+
+### RegisterFunctionFormat
+
+Format definition for function parameters.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | list[[`RegisterFunctionFormat`](#registerfunctionformat)] \| None | No | - |
+| `description` | `str \| None` | No | - |
+| `items` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | - |
+| `name` | `str` | Yes | - |
+| `required` | `bool` | No | - |
+| `type` | `str` | Yes | - |
+
+### RegisterFunctionInput
+
+Input for registering a function — matches Node.js RegisterFunctionInput.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str \| None` | No | - |
+| `id` | `str` | Yes | - |
+| `invocation` | [`HttpInvocationConfig`](#httpinvocationconfig) \| None | No | - |
+| `metadata` | `dict[str, Any] \| None` | No | - |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | - |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | - |
+
+### RegisterServiceInput
+
+Input for registering a service (matches Node SDK's RegisterServiceInput).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str \| None` | No | - |
+| `id` | `str` | Yes | - |
+| `name` | `str \| None` | No | - |
+| `parent_service_id` | `str \| None` | No | - |
+
+### RegisterTriggerInput
+
+Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `config` | `Any` | No | - |
+| `function_id` | `str` | Yes | - |
+| `type` | `str` | Yes | - |
+
+### RegisterTriggerTypeInput
+
+Input for registering a trigger type (matches Node SDK's RegisterTriggerTypeInput).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `str` | Yes | - |
+| `id` | `str` | Yes | - |
 
 ### TriggerActionEnqueue
 
@@ -397,36 +615,6 @@ Request object for ``trigger()``.
 
 Abstract interface for stream operations.
 
-### OtelConfig
-
-Configuration for OpenTelemetry initialization.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `enabled` | `bool \| None` | No | Enable OTel. Defaults to True. Set OTEL_ENABLED=false/0/no/off to disable. |
-| `engine_ws_url` | `str \| None` | No | III Engine WebSocket URL. Defaults to env III_URL or 'ws://localhost:49134'. |
-| `fetch_instrumentation_enabled` | `bool` | No | Auto-instrument urllib HTTP calls via URLLibInstrumentor. Defaults to True. |
-| `logs_batch_size` | `int \| None` | No | Maximum number of log records exported per batch. Defaults to 1 when not set. |
-| `logs_enabled` | `bool \| None` | No | Enable OTel log export via EngineLogExporter. Defaults to True when OTel is enabled. |
-| `logs_flush_interval_ms` | `int \| None` | No | Log processor flush delay in milliseconds. Defaults to 100ms when not set. |
-| `metrics_enabled` | `bool` | No | Enable OTel metrics export via EngineMetricsExporter. Defaults to True. |
-| `metrics_export_interval_ms` | `int` | No | Metrics export interval in milliseconds. Defaults to 60000 (60 seconds). |
-| `service_instance_id` | `str \| None` | No | Service instance ID. Defaults to a random UUID. |
-| `service_name` | `str \| None` | No | Service name. Defaults to env OTEL_SERVICE_NAME or 'iii-python-sdk'. |
-| `service_namespace` | `str \| None` | No | Service namespace attribute. |
-| `service_version` | `str \| None` | No | Service version. Defaults to env SERVICE_VERSION or 'unknown'. |
-
 ### TriggerHandler
 
 Abstract base class for trigger handlers.
-
-## Context
-
-```python
-from iii import Logger
-
-logger = Logger()
-logger.info('Processing started')
-```
-
-The `Logger` class emits OTel LogRecords when OTel is active, otherwise falls back to Python `logging`.

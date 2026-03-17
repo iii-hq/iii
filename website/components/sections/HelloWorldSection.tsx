@@ -28,9 +28,7 @@ const NodeIcon = () => (
 const pythonCode = `import torch
 from iii import register_worker
 
-iii = register_worker(
-    "ws://localhost:49134"
-)
+iii = register_worker("ws://localhost:49134")
 
 async def predict(input):
     t = torch.tensor(input["data"])
@@ -43,7 +41,7 @@ iii.register_function(
     "ml::predict", predict
 )`;
 
-const rustCode = `use iii_sdk::*;
+const rustCode = `use iii_sdk::{register_worker, Value, IIIError, TriggerRequest};
 use serde_json::json;
 
 async fn transform(
@@ -59,13 +57,8 @@ async fn transform(
 
 #[tokio::main]
 async fn main() -> Result<(), IIIError> {
-    let iii = register_worker(
-        "ws://localhost:49134",
-        InitOptions::default(),
-    )?;
-    iii.register_function(
-        "data::transform", transform,
-    );
+    let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
+    iii.register_function("data::transform", transform);
     Ok(())
 }`;
 

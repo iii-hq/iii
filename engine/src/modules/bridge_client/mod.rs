@@ -7,7 +7,10 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use iii_sdk::{III, IIIError};
+use iii_sdk::{
+    III, IIIError, InitOptions, RegisterFunctionMessage, RegisterServiceMessage, TriggerAction,
+    TriggerRequest, register_worker,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -81,7 +84,7 @@ impl Module for BridgeClientModule {
             .or_else(|| std::env::var("III_URL").ok())
             .unwrap_or_else(|| "ws://0.0.0.0:49134".to_string());
 
-        let bridge = III::new(&url);
+        let bridge = register_worker(&url, InitOptions::default());
 
         Ok(Box::new(Self {
             engine,
@@ -122,10 +125,12 @@ impl Module for BridgeClientModule {
                         .unwrap_or_else(|| Duration::from_secs(30));
 
                     match bridge
-                        .trigger(
-                            iii_sdk::TriggerRequest::new(&invoke.function_id, invoke.data)
-                                .timeout(timeout),
-                        )
+                        .trigger(TriggerRequest {
+                            function_id: invoke.function_id,
+                            payload: invoke.data,
+                            action: None,
+                            timeout_ms: Some(timeout.as_millis() as u64),
+                        })
                         .await
                     {
                         Ok(result) => FunctionResult::Success(Some(result)),
@@ -167,10 +172,12 @@ impl Module for BridgeClientModule {
                     };
 
                     if let Err(err) = bridge
-                        .trigger(
-                            iii_sdk::TriggerRequest::new(&invoke.function_id, invoke.data)
-                                .action(iii_sdk::TriggerAction::void()),
-                        )
+                        .trigger(TriggerRequest {
+                            function_id: invoke.function_id,
+                            payload: invoke.data,
+                            action: Some(TriggerAction::Void),
+                            timeout_ms: None,
+                        })
                         .await
                     {
                         tracing::error!(error = ?err, "Bridge fire-and-forget failed");
@@ -209,10 +216,12 @@ impl Module for BridgeClientModule {
                             .unwrap_or_else(|| Duration::from_secs(30));
 
                         match bridge
-                            .trigger(
-                                iii_sdk::TriggerRequest::new(&remote_function, input)
-                                    .timeout(timeout),
-                            )
+                            .trigger(TriggerRequest {
+                                function_id: remote_function,
+                                payload: input,
+                                action: None,
+                                timeout_ms: Some(timeout.as_millis() as u64),
+                            })
                             .await
                         {
                             Ok(result) => FunctionResult::Success(Some(result)),
@@ -232,19 +241,18 @@ impl Module for BridgeClientModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        self.bridge
-            .connect()
-            .await
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-
         if let Some(service_id) = &self.config.service_id {
             let name = self
                 .config
                 .service_name
                 .clone()
                 .unwrap_or_else(|| service_id.clone());
-            self.bridge
-                .register_service_with_name(service_id.clone(), name, None);
+            self.bridge.register_service(RegisterServiceMessage {
+                id: service_id.clone(),
+                name,
+                description: None,
+                parent_service_id: None,
+            });
         }
 
         for expose in &self.config.expose {
@@ -256,20 +264,30 @@ impl Module for BridgeClientModule {
                 .clone()
                 .unwrap_or_else(|| local_function.clone());
 
-            bridge.register_function(remote_function, move |input| {
-                let engine = engine.clone();
-                let local_function = local_function.clone();
-                async move {
-                    match engine.call(&local_function, input).await {
-                        Ok(result) => Ok(result.unwrap_or(Value::Null)),
-                        Err(err) => Err(IIIError::Remote {
-                            code: err.code,
-                            message: err.message,
-                            stacktrace: err.stacktrace,
-                        }),
+            bridge.register_function(
+                RegisterFunctionMessage {
+                    id: remote_function,
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: None,
+                },
+                move |input| {
+                    let engine = engine.clone();
+                    let local_function = local_function.clone();
+                    async move {
+                        match engine.call(&local_function, input).await {
+                            Ok(result) => Ok(result.unwrap_or(Value::Null)),
+                            Err(err) => Err(IIIError::Remote {
+                                code: err.code,
+                                message: err.message,
+                                stacktrace: err.stacktrace,
+                            }),
+                        }
                     }
-                }
-            });
+                },
+            );
         }
 
         Ok(())
@@ -297,7 +315,7 @@ mod tests {
     fn build_module(config: BridgeClientConfig) -> BridgeClientModule {
         BridgeClientModule {
             engine: Arc::new(Engine::new()),
-            bridge: III::new("ws://127.0.0.1:9"),
+            bridge: register_worker("ws://127.0.0.1:9", InitOptions::default()),
             config,
         }
     }

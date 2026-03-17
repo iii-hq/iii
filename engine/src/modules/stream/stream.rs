@@ -151,11 +151,14 @@ impl Module for StreamCoreModule {
             self.config.auth_function.clone(),
             self.triggers.clone(),
         ));
-        let addr = format!("{}:{}", self.config.host, self.config.port)
-            .parse::<SocketAddr>()
-            .unwrap();
+        let raw_addr = format!("{}:{}", self.config.host, self.config.port);
+        let addr: SocketAddr = raw_addr
+            .parse()
+            .map_err(|err| anyhow::anyhow!("invalid stream bind address {}: {}", raw_addr, err))?;
         tracing::info!("Starting StreamCoreModule on {}", addr.to_string().purple());
-        let listener = TcpListener::bind(addr).await.unwrap();
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|err| crate::modules::module::bind_address_error(addr, err))?;
         let app = Router::new()
             .route("/", get(ws_handler))
             .with_state(socket_manager);
@@ -1968,5 +1971,37 @@ mod tests {
 
         module.destroy().await.expect("stream destroy should work");
         assert!(adapter.destroy_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stream_initialize_returns_addr_in_use_error_with_address() {
+        crate::modules::observability::metrics::ensure_default_meter();
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let port = occupied.local_addr().expect("local addr").port();
+
+        let engine = Arc::new(Engine::new());
+        let adapter: Arc<dyn StreamAdapter> = Arc::new(FakeStreamAdapter::default());
+        let module = StreamCoreModule::build(
+            engine,
+            StreamModuleConfig {
+                port,
+                host: "127.0.0.1".to_string(),
+                auth_function: None,
+                adapter: Some(crate::modules::module::AdapterEntry {
+                    class: "test-adapter".to_string(),
+                    config: None,
+                }),
+            },
+            adapter,
+        );
+
+        let err = module
+            .initialize()
+            .await
+            .expect_err("stream init should fail when the port is occupied");
+
+        let message = err.to_string();
+        assert!(message.contains(&format!("127.0.0.1:{port}")));
+        assert!(message.contains("already in use"));
     }
 }

@@ -19,19 +19,19 @@ config = {
 }
 
 
-async def handler(input_data: Any, ctx: FlowContext[Any]) -> Any:
+def handler(input_data: Any, ctx: FlowContext[Any]) -> Any:
     """Dispatch to the API or cron handler based on trigger type."""
 
-    async def _summary_api_handler(request: ApiRequest[Any]) -> ApiResponse[dict[str, Any]]:
-        greetings = await greetings_stream.get_group(GREETINGS_GROUP_ID)
+    def _summary_api_handler(request: ApiRequest[Any]) -> ApiResponse[dict[str, Any]]:
+        greetings = greetings_stream.get_group(GREETINGS_GROUP_ID)
         logger.info("Greetings summary requested", {"count": len(greetings)})
         return ApiResponse(status=200, body={"count": len(greetings), "greetings": greetings})
 
-    async def _summary_cron_handler() -> None:
-        greetings = await greetings_stream.get_group(GREETINGS_GROUP_ID)
+    def _summary_cron_handler() -> None:
+        greetings = greetings_stream.get_group(GREETINGS_GROUP_ID)
         logger.info("Greetings summary (cron)", {"count": len(greetings)})
 
-    return await ctx.match(
+    return ctx.match(
         {
             "http": _summary_api_handler,
             "cron": _summary_cron_handler,

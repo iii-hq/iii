@@ -1,10 +1,10 @@
 from typing import Any
 
-from iii import III
+from iii import IIIClient
 
 
 class State:
-    def __init__(self, iii: III) -> None:
+    def __init__(self, iii: IIIClient) -> None:
         self._iii = iii
 
     async def get(self, scope: str, key: str) -> Any | None:

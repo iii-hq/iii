@@ -46,17 +46,21 @@ class WritableStream:
         try:
             loop = asyncio.get_running_loop()
             if data is not None:
+
                 async def _write_and_close() -> None:
                     await self._writer.write(data)
                     await self._writer.close_async()
+
                 loop.create_task(_write_and_close())
             else:
                 loop.create_task(self._writer.close_async())
         except RuntimeError:
             if data is not None:
+
                 async def _write_and_close() -> None:
                     await self._writer.write(data)
                     await self._writer.close_async()
+
                 asyncio.run(_write_and_close())
             else:
                 asyncio.run(self._writer.close_async())
@@ -100,7 +104,7 @@ class ChannelWriter:
         else:
             offset = 0
             while offset < len(data):
-                await ws.send(data[offset:offset + MAX_FRAME_SIZE])
+                await ws.send(data[offset : offset + MAX_FRAME_SIZE])
                 offset += MAX_FRAME_SIZE
 
     def send_message(self, msg: str) -> None:

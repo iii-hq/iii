@@ -1,4 +1,4 @@
-use iii_sdk::{IIIError, III};
+use iii_sdk::{IIIError, RegisterTriggerInput, III};
 use serde_json::json;
 use tracing::{debug, info};
 
@@ -109,7 +109,11 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
 
         debug!("Registering API trigger: {} -> {}", api_path, function_path);
 
-        bridge.register_trigger("http", function_path, config)?;
+        bridge.register_trigger(RegisterTriggerInput {
+            trigger_type: "http".to_string(),
+            function_id: function_path.to_string(),
+            config,
+        })?;
 
         info!(
             "Successfully registered API trigger: {} -> {}",

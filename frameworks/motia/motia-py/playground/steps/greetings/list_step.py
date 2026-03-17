@@ -18,9 +18,9 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[Any]) -> ApiResponse[dict[str, Any]]:
+def handler(request: ApiRequest[Any]) -> ApiResponse[dict[str, Any]]:
     """Handle list greetings requests."""
     _ = request
-    greetings = await greetings_stream.get_group(GREETINGS_GROUP_ID)
+    greetings = greetings_stream.get_group(GREETINGS_GROUP_ID)
     logger.info("Greetings listed", {"count": len(greetings)})
     return ApiResponse(status=200, body={"greetings": greetings})

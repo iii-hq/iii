@@ -30,7 +30,7 @@ jobs:
           cache-on-failure: true
 
       - name: Run benchmarks
-        run: cargo bench -p iii --benches -- --output-format bencher 2>&1 | tee bench-output.txt
+        run: cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee bench-output.txt
 
       - name: Extract version from tag
         id: meta

@@ -122,6 +122,10 @@ Default. In-process only.
 ```yaml
 adapter:
   class: modules::stream::adapters::KvStore
+  config:
+    store_method: file_based   # in_memory | file_based
+    file_path: ./data/stream_store
+    save_interval_ms: 5000
 ```
 
 #### `modules::stream::adapters::RedisAdapter`

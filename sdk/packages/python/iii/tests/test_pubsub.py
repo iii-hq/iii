@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from iii import III
+from iii.iii import III
 
 
 def unique_topic(prefix: str) -> str:
@@ -25,13 +25,13 @@ async def test_subscribe_and_receive_published_messages(iii_client: III):
         received_event.set()
         return {}
 
-    fn = iii_client.register_function(f"test.pubsub.py.subscriber.{topic}", subscriber_handler)
-    trigger = iii_client.register_trigger("subscribe", fn.id, {"topic": topic})
+    fn = iii_client.register_function({"id": f"test.pubsub.py.subscriber.{topic}"}, subscriber_handler)
+    trigger = iii_client.register_trigger({"type": "subscribe", "function_id": fn.id, "config": {"topic": topic}})
 
     await asyncio.sleep(0.3)
 
     try:
-        await iii_client.trigger(
+        iii_client.trigger(
             {
                 "function_id": "publish",
                 "payload": {"topic": topic, "data": {"message": "Hello PubSub!"}},
@@ -66,15 +66,15 @@ async def test_topic_isolation(iii_client: III):
         received_b.append(data)
         return {}
 
-    fn_a = iii_client.register_function(f"test.pubsub.py.topic_a.{topic_a}", handler_a)
-    fn_b = iii_client.register_function(f"test.pubsub.py.topic_b.{topic_b}", handler_b)
-    trigger_a = iii_client.register_trigger("subscribe", fn_a.id, {"topic": topic_a})
-    trigger_b = iii_client.register_trigger("subscribe", fn_b.id, {"topic": topic_b})
+    fn_a = iii_client.register_function({"id": f"test.pubsub.py.topic_a.{topic_a}"}, handler_a)
+    fn_b = iii_client.register_function({"id": f"test.pubsub.py.topic_b.{topic_b}"}, handler_b)
+    trigger_a = iii_client.register_trigger({"type": "subscribe", "function_id": fn_a.id, "config": {"topic": topic_a}})
+    trigger_b = iii_client.register_trigger({"type": "subscribe", "function_id": fn_b.id, "config": {"topic": topic_b}})
 
     await asyncio.sleep(0.3)
 
     try:
-        await iii_client.trigger(
+        iii_client.trigger(
             {
                 "function_id": "publish",
                 "payload": {"topic": topic_a, "data": {"for": "a"}},

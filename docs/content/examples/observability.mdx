@@ -20,9 +20,9 @@ graph LR
   <Tab value="Node / TypeScript">
 
 ```typescript
-import {Logger, TriggerAction} from 'iii-sdk'
+import {registerWorker, Logger, TriggerAction} from 'iii-sdk'
 
-const iii = init(process.env.III_URL ?? 'ws://localhost:49134', {
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
   otel: {
     enabled: true,
     serviceName: 'orders-service',
@@ -50,7 +50,7 @@ iii.registerFunction(
       traceId: currentTraceId(), // same traceId will appear in downstream logs
     })
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'state::set',
       payload: {
         scope: 'orders',
@@ -60,7 +60,7 @@ iii.registerFunction(
       action: TriggerAction.Void(),
     })
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'enqueue',
       payload: { topic: 'order.process', data: { orderId, amount, customerId, items } },
       action: TriggerAction.Void(),
@@ -81,20 +81,20 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-import asyncio
 from datetime import datetime, timezone
-from iii import III, InitOptions, ApiRequest, ApiResponse, TriggerAction
+from iii import register_worker, InitOptions, ApiRequest, ApiResponse, Logger, TriggerAction, current_trace_id
 
-iii = III(address="ws://localhost:49134", options=InitOptions(worker_name="orders-service"))
+iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="orders-service"))
 
-
-async def create_order(req: ApiRequest, ctx) -> ApiResponse:
+def create_order(data) -> ApiResponse:
+    logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     body = req.body or {}
     customer_id = body.get("customerId")
     amount = body.get("amount")
 
     if not customer_id or not amount:
-        return ApiResponse(statusCode=400, body={"error": "customerId and amount are required"})
+        return ApiResponse(status_code=400, body={"error": "customerId and amount are required"})
 
     order_id = f"order-{int(__import__('time').time() * 1000)}"
 
@@ -105,7 +105,7 @@ async def create_order(req: ApiRequest, ctx) -> ApiResponse:
         "traceId": current_trace_id(),  # same traceId will appear in downstream logs
     })
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "state::set",
         "payload": {
             "scope": "orders",
@@ -121,32 +121,31 @@ async def create_order(req: ApiRequest, ctx) -> ApiResponse:
         "action": TriggerAction.Void(),
     })
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "enqueue",
         "payload": {"topic": "order.process", "data": {"orderId": order_id, "amount": amount, "customerId": customer_id}},
         "action": TriggerAction.Void(),
     })
 
-    return ApiResponse(statusCode=201, body={"orderId": order_id, "status": "processing"})
+    return ApiResponse(status_code=201, body={"orderId": order_id, "status": "processing"})
 
-
-iii.register_function("orders.create", lambda data: create_order(
-    ApiRequest(**data) if isinstance(data, dict) else data, Logger()
-))
-iii.register_trigger(
-    type="http", function_id="orders.create",
-    config={"api_path": "orders", "http_method": "POST"},
-)
+iii.register_function({"id": "orders.create"}, create_order)
+iii.register_trigger({
+    "type": "http", "function_id": "orders.create",
+    "config": {"api_path": "orders", "http_method": "POST"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Logger, TriggerRequest, TriggerAction, types::ApiRequest};
+use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest, TriggerAction, types::ApiRequest, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function("orders.create", |input| async move {
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+iii.register_function(RegisterFunctionMessage { id: "orders.create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let req: ApiRequest = serde_json::from_value(input)?;
 
@@ -189,10 +188,10 @@ iii.register_function("orders.create", |input| async move {
     Ok(json!({ "status_code": 201, "body": { "orderId": order_id, "status": "processing" } }))
 });
 
-iii.register_trigger("http", "orders.create", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "orders.create".into(), config: json!({
     "api_path": "orders",
     "http_method": "POST",
-}))?;
+}) })?;
 ```
 
   </Tab>
@@ -212,7 +211,7 @@ iii.registerFunction(
 
     logger.info('Processing order', { orderId, amount, customerId, traceId: currentTraceId() })
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'state::set',
       payload: {
         scope: 'orders',
@@ -222,7 +221,7 @@ iii.registerFunction(
       action: TriggerAction.Void(),
     })
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'enqueue',
       payload: { topic: 'order.notify', data: { orderId, customerId, amount, status: 'processed' } },
       action: TriggerAction.Void(),
@@ -243,7 +242,10 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def process_order(data: dict, ctx) -> None:
+from iii import Logger, current_trace_id
+
+def process_order(data: dict) -> None:
+    logger = Logger()
     order_id = data.get("orderId")
     amount = data.get("amount")
     customer_id = data.get("customerId")
@@ -254,7 +256,7 @@ async def process_order(data: dict, ctx) -> None:
         "traceId": current_trace_id(),
     })
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "state::set",
         "payload": {
             "scope": "orders",
@@ -267,7 +269,7 @@ async def process_order(data: dict, ctx) -> None:
         "action": TriggerAction.Void(),
     })
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "enqueue",
         "payload": {"topic": "order.notify", "data": {"orderId": order_id, "customerId": customer_id, "amount": amount, "status": "processed"}},
         "action": TriggerAction.Void(),
@@ -275,16 +277,18 @@ async def process_order(data: dict, ctx) -> None:
 
     logger.info("Order processed", {"orderId": order_id, "traceId": current_trace_id()})
 
-
-iii.register_function("order.process", lambda data: process_order(data, Logger()))
-iii.register_trigger(type="queue", function_id="order.process", config={"topic": "order.process"})
+iii.register_function({"id": "order.process"}, process_order)
+iii.register_trigger({"type": "queue", "function_id": "order.process", "config": {"topic": "order.process"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("order.process", |input| async move {
+use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "order.process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
@@ -302,7 +306,7 @@ iii.register_function("order.process", |input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "order.process", json!({ "topic": "order.process" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.process".into(), config: json!({ "topic": "order.process" }) })?;
 ```
 
   </Tab>
@@ -344,7 +348,10 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def notify_order(data: dict, ctx) -> None:
+from iii import Logger, current_trace_id
+
+def notify_order(data: dict) -> None:
+    logger = Logger()
     order_id = data.get("orderId")
     customer_id = data.get("customerId")
 
@@ -357,16 +364,18 @@ async def notify_order(data: dict, ctx) -> None:
     # integrate with your notification service here
     logger.info("Order notification sent", {"orderId": order_id, "traceId": current_trace_id()})
 
-
-iii.register_function("order.notify", lambda data: notify_order(data, Logger()))
-iii.register_trigger(type="queue", function_id="order.notify", config={"topic": "order.notify"})
+iii.register_function({"id": "order.notify"}, notify_order)
+iii.register_trigger({"type": "queue", "function_id": "order.notify", "config": {"topic": "order.notify"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("order.notify", |input| async move {
+use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(RegisterFunctionMessage { id: "order.notify".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
@@ -380,7 +389,7 @@ iii.register_function("order.notify", |input| async move {
     Ok(json!(null))
 });
 
-iii.register_trigger("queue", "order.notify", json!({ "topic": "order.notify" }))?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.notify".into(), config: json!({ "topic": "order.notify" }) })?;
 ```
 
   </Tab>
@@ -392,8 +401,8 @@ iii.register_trigger("queue", "order.notify", json!({ "topic": "order.notify" })
   <Tab value="Node / TypeScript">
 
 ```typescript
-// Pass otel config to init()
-const iii = init('ws://localhost:49134', {
+// Pass otel config to registerWorker()
+const iii = registerWorker('ws://localhost:49134', {
   otel: {
     enabled: true,
     serviceName: 'my-service',
@@ -414,7 +423,9 @@ The iii SDK exports traces and metrics automatically via the engine's OpenTeleme
 
 ```python
 # OTel is handled by the engine — just pass the worker name in InitOptions
-iii = III(address="ws://localhost:49134", options=InitOptions(worker_name="my-service"))
+from iii import register_worker, InitOptions, Logger, current_trace_id
+
+iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="my-service"))
 
 # Traces are automatically correlated via current_trace_id()
 # Access trace_id in any handler:
@@ -432,11 +443,13 @@ iii-sdk = { version = "0.1", features = ["telemetry"] }
 ```
 
 ```rust
+use iii_sdk::{register_worker, InitOptions, Logger};
+use serde_json::json;
+
 // Initialize OTLP before connecting
 iii_sdk::telemetry::init_otlp("my-service").await?;
 
-let iii = III::new("ws://127.0.0.1:49134");
-iii.connect().await?;
+let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 // current_trace_id() is available in every handler
 let logger = Logger();
@@ -459,5 +472,5 @@ logger.info("My message", Some(json!({ "traceId": current_trace_id() })));
 
 - `currentTraceId()` / `current_trace_id()` is the W3C trace-context ID for the current invocation. It is automatically propagated to all downstream workers when you emit an event — no manual header passing is needed.
 - All logs are emitted as structured JSON via the engine's `log.info` / `log.warn` / `log.error` functions.
-- The Node.js SDK supports OTel configuration directly in `init()`. Python and Rust use the engine's built-in OTLP pipeline.
+- The Node.js SDK supports OTel configuration directly in `registerWorker()`. Python and Rust use the engine's built-in OTLP pipeline.
 - Log every step at entry and exit with the `traceId` to make multi-step flows fully observable.

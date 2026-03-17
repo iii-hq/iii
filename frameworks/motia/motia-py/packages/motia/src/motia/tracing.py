@@ -26,9 +26,7 @@ except ImportError:
 _incoming_traceparent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "motia_incoming_traceparent", default=None
 )
-_incoming_baggage: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "motia_incoming_baggage", default=None
-)
+_incoming_baggage: contextvars.ContextVar[str | None] = contextvars.ContextVar("motia_incoming_baggage", default=None)
 
 _propagator = TraceContextTextMapPropagator() if HAS_OTEL else None
 _instrumented_bridges: set[int] = set()

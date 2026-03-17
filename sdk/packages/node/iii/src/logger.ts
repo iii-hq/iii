@@ -17,16 +17,29 @@ export type LoggerParams = {
 }
 
 /**
- * Structured logger that emits logs via OpenTelemetry. Falls back to
- * `console.*` when OTel is not initialized.
+ * Structured logger that emits logs as OpenTelemetry LogRecords.
+ *
+ * Every log call automatically captures the active trace and span context,
+ * correlating your logs with distributed traces without any manual wiring.
+ * When OTel is not initialized, Logger gracefully falls back to `console.*`.
+ *
+ * Pass structured data as the second argument to any log method. Using an
+ * object of key-value pairs (instead of string interpolation) lets you
+ * filter, aggregate, and build dashboards in your observability backend.
  *
  * @example
  * ```typescript
  * import { Logger } from 'iii-sdk'
  *
  * const logger = new Logger()
- * logger.info('Processing started')
- * logger.error('Something failed', { orderId: '123' })
+ *
+ * // Basic logging — trace context is injected automatically
+ * logger.info('Worker connected')
+ *
+ * // Structured context for dashboards and alerting
+ * logger.info('Order processed', { orderId: 'ord_123', amount: 49.99, currency: 'USD' })
+ * logger.warn('Retry attempt', { attempt: 3, maxRetries: 5, endpoint: '/api/charge' })
+ * logger.error('Payment failed', { orderId: 'ord_123', gateway: 'stripe', errorCode: 'card_declined' })
  * ```
  */
 export class Logger {
@@ -91,22 +104,70 @@ export class Logger {
     }
   }
 
-  /** Log an info-level message. */
+  /**
+   * Log an info-level message.
+   *
+   * @param message - Human-readable log message.
+   * @param data - Structured context attached as OTel log attributes.
+   *   Use key-value objects to enable filtering and aggregation in your
+   *   observability backend (e.g. Grafana, Datadog, New Relic).
+   *
+   * @example
+   * ```typescript
+   * logger.info('Order processed', { orderId: 'ord_123', status: 'completed' })
+   * ```
+   */
   info(message: string, data?: unknown): void {
     this.emit(message, SeverityNumber.INFO, data)
   }
 
-  /** Log a warning-level message. */
+  /**
+   * Log a warning-level message.
+   *
+   * @param message - Human-readable log message.
+   * @param data - Structured context attached as OTel log attributes.
+   *   Use key-value objects to enable filtering and aggregation in your
+   *   observability backend (e.g. Grafana, Datadog, New Relic).
+   *
+   * @example
+   * ```typescript
+   * logger.warn('Retry attempt', { attempt: 3, maxRetries: 5, endpoint: '/api/charge' })
+   * ```
+   */
   warn(message: string, data?: unknown): void {
     this.emit(message, SeverityNumber.WARN, data)
   }
 
-  /** Log an error-level message. */
+  /**
+   * Log an error-level message.
+   *
+   * @param message - Human-readable log message.
+   * @param data - Structured context attached as OTel log attributes.
+   *   Use key-value objects to enable filtering and aggregation in your
+   *   observability backend (e.g. Grafana, Datadog, New Relic).
+   *
+   * @example
+   * ```typescript
+   * logger.error('Payment failed', { orderId: 'ord_123', gateway: 'stripe', errorCode: 'card_declined' })
+   * ```
+   */
   error(message: string, data?: unknown): void {
     this.emit(message, SeverityNumber.ERROR, data)
   }
 
-  /** Log a debug-level message. */
+  /**
+   * Log a debug-level message.
+   *
+   * @param message - Human-readable log message.
+   * @param data - Structured context attached as OTel log attributes.
+   *   Use key-value objects to enable filtering and aggregation in your
+   *   observability backend (e.g. Grafana, Datadog, New Relic).
+   *
+   * @example
+   * ```typescript
+   * logger.debug('Cache lookup', { key: 'user:42', hit: false })
+   * ```
+   */
   debug(message: string, data?: unknown): void {
     this.emit(message, SeverityNumber.DEBUG, data)
   }

@@ -15,27 +15,25 @@ pip install iii-sdk
 ## Hello World
 
 ```python
-import asyncio
 from iii import register_worker
 
-async def main():
-    iii = register_worker("ws://localhost:49134")
+iii = register_worker("ws://localhost:49134")
 
-    async def greet(data):
-        return {"message": f"Hello, {data['name']}!"}
+def greet(data):
+    return {"message": f"Hello, {data['name']}!"}
 
-    iii.register_function("greet", greet)
+iii.register_function({"id": "greet"}, greet)
 
-    iii.register_trigger(
-        type="http",
-        function_id="greet",
-        config={"api_path": "/greet", "http_method": "POST"}
-    )
+iii.register_trigger({
+    "type": "http",
+    "function_id": "greet",
+    "config": {"api_path": "/greet", "http_method": "POST"},
+})
 
-    result = await iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
-    print(result)
+iii.connect()
 
-asyncio.run(main())
+result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
+print(result)  # {"message": "Hello, world!"}
 ```
 
 ## API
@@ -43,40 +41,37 @@ asyncio.run(main())
 | Operation                | Signature                                         | Description                                            |
 | ------------------------ | ------------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `register_worker(url, options?)`                  | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function(id, handler)`              | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger(type, function_id, config)` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `await iii.trigger({"function_id": id, "payload": data})` | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger({"function_id": id, "payload": data, "action": TriggerAction.Void()})` | Invoke a function without waiting (fire-and-forget)    |
+| Register function        | `iii.register_function({"id": id}, handler)`      | Register a function that can be invoked by name        |
+| Register trigger         | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await result)    | `iii.trigger({"function_id": id, "payload": data})` | Invoke a function and wait for the result           |
+| Invoke (fire-and-forget) | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Void()})` | Fire-and-forget |
+| Shutdown                 | `iii.shutdown()`                                  | Disconnect and stop background thread                  |
 
-`register_worker()` must be called inside an async context. It creates the SDK instance and auto-connects to the engine.
+`register_worker()` creates the SDK instance and auto-connects to the engine.
 
 ### Registering Functions
 
 ```python
-async def create_order(data):
+def create_order(data):
     return {"status_code": 201, "body": {"id": "123", "item": data["body"]["item"]}}
 
-iii.register_function("orders.create", create_order)
+iii.register_function({"id": "orders.create"}, create_order)
 ```
 
 ### Registering Triggers
 
 ```python
-iii.register_trigger(
-    type="http",
-    function_id="orders.create",
-    config={"api_path": "/orders", "http_method": "POST"}
-)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "orders.create",
+    "config": {"api_path": "/orders", "http_method": "POST"},
+})
 ```
 
 ### Invoking Functions
 
 ```python
-from iii import TriggerAction
-
-result = await iii.trigger({"function_id": "orders.create", "payload": {"body": {"item": "widget"}}})
-
-iii.trigger({"function_id": "analytics.track", "payload": {"event": "page_view"}, "action": TriggerAction.Void()})
+result = iii.trigger({"function_id": "orders.create", "payload": {"body": {"item": "widget"}}})
 ```
 
 ## Modules
@@ -106,10 +101,6 @@ mypy src
 ```bash
 ruff check src
 ```
-
-## Deprecated
-
-`call`, `call_void`, and `trigger_void` have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({"function_id": ..., "payload": ..., "action": TriggerAction.Void()})`.
 
 ## Resources
 

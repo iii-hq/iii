@@ -34,7 +34,7 @@ graph LR
 
 ```mermaid
 flowchart TD
-    Start(("init()")) --> Connecting
+    Start(("registerWorker()")) --> Connecting
     Connecting -->|WebSocket open| Connected
     Connected -->|"Register<br/>functions & triggers"| Registering
     Registering -->|All registered| Ready
@@ -64,7 +64,7 @@ functions within workers. Read below for Worker responsibilities and configurati
 
 ## Init Options
 
-The second argument to `init()` configures the Worker's behavior:
+The second argument to `registerWorker()` configures the Worker's behavior:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -86,8 +86,12 @@ Workers reconnect automatically on disconnect using exponential backoff:
 | `jitterFactor` | `0.3` | Random jitter 0–1 to prevent thundering herd |
 | `maxRetries` | `-1` | Maximum attempts. `-1` = infinite |
 
+> **Python naming:** Python uses snake_case for these fields: `initial_delay_ms`, `max_delay_ms`, `backoff_multiplier`, `jitter_factor`, `max_retries`.
+
 ```typescript
-const iii = init('ws://localhost:49134', {
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker('ws://localhost:49134', {
   workerName: 'user-service',
   invocationTimeoutMs: 10000,
   reconnectionConfig: {
@@ -125,6 +129,10 @@ You can inspect all connected Workers at runtime:
 const workers = await iii.listWorkers()
 // returns WorkerInfo[] with: id, name, runtime, version, os,
 // status, connected_at_ms, function_count, functions[], active_invocations
+```
+
+```python
+workers = iii.list_workers()
 ```
 
 <Callout title="See also" type="info">

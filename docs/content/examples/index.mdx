@@ -33,18 +33,18 @@ Each example uses the **iii SDK** directly. Every page shows the same pattern in
 
 All three SDKs share the same concepts with language-idiomatic initialization:
 
-- **TypeScript**: `init(url)` — named function, connection is automatic
-- **Python**: `III(address=url)` — class constructor (`__init__` convention), then call `await iii.connect()`
-- **Rust**: `III::new(url)` — `new` is the Rust convention for constructors, then call `iii.connect().await?`
+- **TypeScript**: `registerWorker(url)` — named function, connection is automatic
+- **Python**: `register_worker(address=url, options?)` — creates the client and auto-starts connection
+- **Rust**: `register_worker(url, InitOptions::default())?` — creates the client and auto-starts connection
 
 | Concept | TypeScript | Python | Rust |
 |---|---|---|---|
-| Init | `init(url)` | `III(address=url)` | `III::new(url)` |
-| Connect | Auto on `init()` | `await iii.connect()` | `iii.connect().await?` |
-| Register function | `iii.registerFunction({ id }, handler)` | `iii.register_function(function_id, handler)` | `iii.register_function(id, \|input\| ...)` |
-| Register trigger | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger(type, function_id, config)` | `iii.register_trigger(type, function_id, config)?` |
+| Init | `registerWorker(url)` | `register_worker(url, options?)` | `register_worker(url, InitOptions::default())?` |
+| Connect | Auto on `registerWorker()` | Auto on `register_worker()` | Auto on `register_worker()` |
+| Register function | `iii.registerFunction({ id }, handler)` | `iii.register_function({"id": ...}, handler)` | `iii.register_function(RegisterFunctionMessage { id, .. }, \|input\| ...)` |
+| Register trigger | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(RegisterTriggerInput { type_, function_id, config, .. })?` |
 | Context | `new Logger()` | `Logger()` | `iii_sdk::Logger()` |
-| Trigger (sync) | `await iii.trigger({ function_id, payload })` | `await iii.trigger({'function_id': id, 'payload': data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` |
+| Trigger (sync) | `await iii.trigger({ function_id, payload })` | `iii.trigger({'function_id': id, 'payload': data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` |
 | Trigger (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | `iii.trigger({'function_id': id, 'payload': data, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new(id, data).action(TriggerAction::void())).await?` |
 | Publish event | `iii.trigger({ function_id: 'enqueue', payload: { topic, data }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'enqueue', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new("enqueue", json!({...})).action(TriggerAction::void())).await?` |
 | State write | `iii.trigger({ function_id: 'state::set', payload: { scope, key, value }, action: TriggerAction.Void() })` | `iii.trigger({'function_id': 'state::set', 'payload': {...}, 'action': TriggerAction.Void()})` | `iii.trigger(TriggerRequest::new("state::set", json!({...})).action(TriggerAction::void())).await?` |

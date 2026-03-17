@@ -4,13 +4,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from iii.iii import III, InitOptions
+import iii.iii as iii_module
+from iii.iii import III
+from iii.iii_constants import InitOptions
 from iii.telemetry import init_otel, shutdown_otel
 from iii.telemetry_types import OtelConfig
 
 
 @pytest.fixture(autouse=True)
-def otel_setup():
+def otel_setup(monkeypatch):
+    # Prevent auto-connect from actually connecting
+    async def fake_do_connect(self):
+        return None
+
+    monkeypatch.setattr(iii_module.III, "_do_connect", fake_do_connect)
+
     init_otel(OtelConfig(enabled=True))
     yield
     shutdown_otel()
@@ -38,8 +46,7 @@ def otel_setup():
         pass
 
 
-@pytest.mark.asyncio
-async def test_handle_invoke_restores_trace_context_from_traceparent():
+def test_handle_invoke_restores_trace_context_from_traceparent():
     """Handler should run inside the parent OTel context extracted from traceparent."""
     from opentelemetry import trace
 
@@ -53,27 +60,28 @@ async def test_handle_invoke_restores_trace_context_from_traceparent():
         return {"ok": True}
 
     client = III(address="ws://localhost:9999", options=InitOptions(worker_name="test"))
-    client.register_function("test::fn", handler)
+    client.register_function({"id": "test::fn"}, handler)
 
     # Real W3C traceparent: trace_id = 4bf92f3577b34da6a3ce929d0e0e4736
     fake_traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
     # Use a non-None invocation_id with mocked _send so _invoke_with_otel_context is awaited
     with patch.object(client, "_send", new_callable=AsyncMock):
-        await client._handle_invoke(
+        client._run_on_loop(client._handle_invoke(
             invocation_id="test-invocation-id",
             path="test::fn",
             data={},
             traceparent=fake_traceparent,
-        )
+        ))
 
     expected_trace_id = 0x4BF92F3577B34DA6A3CE929D0E0E4736
     assert captured_trace_id, "handler did not capture an active span"
     assert captured_trace_id[0] == expected_trace_id
 
+    client.shutdown()
 
-@pytest.mark.asyncio
-async def test_handle_invoke_without_traceparent_runs_normally():
+
+def test_handle_invoke_without_traceparent_runs_normally():
     """Handler should run fine when no traceparent is provided."""
     called: list[bool] = []
 
@@ -82,14 +90,16 @@ async def test_handle_invoke_without_traceparent_runs_normally():
         return {"ok": True}
 
     client = III(address="ws://localhost:9999", options=InitOptions(worker_name="test"))
-    client.register_function("test::fn", handler)
+    client.register_function({"id": "test::fn"}, handler)
 
     with patch.object(client, "_send", new_callable=AsyncMock):
-        await client._handle_invoke(
+        client._run_on_loop(client._handle_invoke(
             invocation_id="test-invocation-id",
             path="test::fn",
             data={},
             traceparent=None,
-        )
+        ))
 
     assert called
+
+    client.shutdown()

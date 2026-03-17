@@ -13,35 +13,8 @@ npm install iii-sdk
 
 ## Initialization
 
-The Node.js SDK exports `registerWorker` that creates a connected SDK instance. The WebSocket connection is established automatically — there is no separate `connect()` call.
-
-```typescript
-import { registerWorker } from 'iii-sdk'
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134', {
-  workerName: 'my-worker',
-})
-```
-
-### registerWorker
-
 Creates and returns a connected SDK instance. The WebSocket connection is
 established automatically -- there is no separate `connect()` call.
-
-**Signature**
-
-```typescript
-registerWorker(address: string, options: InitOptions) => ISdk
-```
-
-#### Parameters
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `address` | `string` | Yes | WebSocket URL of the III engine (e.g. `ws://localhost:49134`). |
-| `options` | [`InitOptions`](#initoptions) | Yes | Optional InitOptions for worker name, timeouts, reconnection, and OTel. |
-
-#### Example
 
 ```typescript
 import { registerWorker } from 'iii-sdk'
@@ -391,6 +364,110 @@ The `iii-sdk` package provides additional entry points:
 | `iii-sdk/state` | `StateEventType`, `IState`, `StateEventData`, `DeleteResult`, `StateDeleteInput`, `StateDeleteResult`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, etc. |
 | `iii-sdk/telemetry` | `WorkerMetricsCollector`, `IIIReconnectionConfig`, `OtelConfig`, `ReconnectionConfig`, `WorkerGaugesOptions`, `WorkerMetricsCollectorOptions`, `FunctionInfo`, `FunctionsAvailableCallback`, `IIIConnectionState`, `OtelLogEvent`, etc. |
 
+## Logger
+
+Structured logger that emits logs as OpenTelemetry LogRecords.
+
+Every log call automatically captures the active trace and span context,
+correlating your logs with distributed traces without any manual wiring.
+When OTel is not initialized, Logger gracefully falls back to `console.*`.
+
+Pass structured data as the second argument to any log method. Using an
+object of key-value pairs (instead of string interpolation) lets you
+filter, aggregate, and build dashboards in your observability backend.
+
+### debug
+
+Log a debug-level message.
+
+**Signature**
+
+```typescript
+debug(message: string, data: unknown) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `string` | Yes | Human-readable log message. |
+| `data` | `unknown` | Yes | Structured context attached as OTel log attributes.<br />  Use key-value objects to enable filtering and aggregation in your<br />  observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```typescript
+logger.debug('Cache lookup', { key: 'user:42', hit: false })
+```
+
+### error
+
+Log an error-level message.
+
+**Signature**
+
+```typescript
+error(message: string, data: unknown) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `string` | Yes | Human-readable log message. |
+| `data` | `unknown` | Yes | Structured context attached as OTel log attributes.<br />  Use key-value objects to enable filtering and aggregation in your<br />  observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```typescript
+logger.error('Payment failed', { orderId: 'ord_123', gateway: 'stripe', errorCode: 'card_declined' })
+```
+
+### info
+
+Log an info-level message.
+
+**Signature**
+
+```typescript
+info(message: string, data: unknown) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `string` | Yes | Human-readable log message. |
+| `data` | `unknown` | Yes | Structured context attached as OTel log attributes.<br />  Use key-value objects to enable filtering and aggregation in your<br />  observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```typescript
+logger.info('Order processed', { orderId: 'ord_123', status: 'completed' })
+```
+
+### warn
+
+Log a warning-level message.
+
+**Signature**
+
+```typescript
+warn(message: string, data: unknown) => void
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `message` | `string` | Yes | Human-readable log message. |
+| `data` | `unknown` | Yes | Structured context attached as OTel log attributes.<br />  Use key-value objects to enable filtering and aggregation in your<br />  observability backend (e.g. Grafana, Datadog, New Relic). |
+
+#### Example
+
+```typescript
+logger.warn('Retry attempt', { attempt: 3, maxRetries: 5, endpoint: '/api/charge' })
+```
+
 ## Types
 
 [`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`FunctionInfo`](#functioninfo) · [`FunctionsAvailableCallback`](#functionsavailablecallback) · [`RegisterFunctionFormat`](#registerfunctionformat)
@@ -484,7 +561,7 @@ Configuration options passed to registerWorker.
 | --- | --- | --- | --- |
 | `enableMetricsReporting` | `boolean` | No | Enable worker metrics via OpenTelemetry. Defaults to `true`. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
-| `otel` | Omit&lt;[`OtelConfig`](#otelconfig), "engineWsUrl"&gt; | No | OpenTelemetry configuration. OTel is initialized automatically by default.<br />Set `\{ enabled: false \}` or env `OTEL_ENABLED=false/0/no/off` to disable.<br />The `engineWsUrl` is set automatically from the III address. |
+| `otel` | Omit&lt;[`OtelConfig`](#otelconfig), "engineWsUrl"&gt; | No | OpenTelemetry configuration. OTel is initialized automatically by default.<br />Set `{ enabled: false }` or env `OTEL_ENABLED=false/0/no/off` to disable.<br />The `engineWsUrl` is set automatically from the III address. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
 | `workerName` | `string` | No | Display name for this worker. Defaults to `hostname:pid`. |
 
@@ -723,14 +800,3 @@ type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 | `name` | `string` | Yes | - |
 | `required` | `boolean` | No | Whether the parameter is required |
 | `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map"` | Yes | The type of the parameter |
-
-## Context
-
-```typescript
-import { Logger } from 'iii-sdk'
-
-const logger = new Logger()
-logger.info('Processing started')
-```
-
-The `new Logger()` function returns the current `Context` (with `logger` and `trace`) from within a function handler.

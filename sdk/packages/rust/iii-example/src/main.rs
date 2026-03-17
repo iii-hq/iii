@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use iii_sdk::{
-    IIIError, InitOptions, OtelConfig, Streams, TriggerRequest, UpdateBuilder, UpdateOp,
-    register_worker,
+    IIIError, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput, Streams,
+    TriggerRequest, UpdateBuilder, UpdateOp, register_worker,
 };
 use serde_json::json;
 
@@ -17,40 +17,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             otel: Some(OtelConfig::default()),
             ..Default::default()
         },
-    )?;
+    );
 
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
 
-    // Error-test handler for verifying OTEL exception.stacktrace
-    iii.register_function("api::get::error-test", |_input| async move {
-        Err(IIIError::Handler(
-            "Intentional error for OTEL stacktrace testing".into(),
-        ))
-    });
-    iii.register_trigger(
-        "http",
-        "api::get::error-test",
-        json!({
+    iii.register_function(
+        RegisterFunctionMessage {
+            id: "api::get::error-test".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        |_input| async move {
+            Err(IIIError::Handler(
+                "Intentional error for OTEL stacktrace testing".into(),
+            ))
+        },
+    );
+    iii.register_trigger(RegisterTriggerInput {
+        trigger_type: "http".to_string(),
+        function_id: "api::get::error-test".to_string(),
+        config: json!({
             "api_path": "error-test",
             "http_method": "GET",
             "description": "Returns an error to test OTEL stack traces",
         }),
-    )
+    })
     .expect("failed to register error-test trigger");
 
     // Create a Streams instance for atomic updates
     let streams = Streams::new(iii.clone());
 
-    iii.register_function("example.echo", |input| async move {
-        Ok(json!({ "echo": input }))
-    });
+    iii.register_function(
+        RegisterFunctionMessage {
+            id: "example.echo".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        |input| async move { Ok(json!({ "echo": input })) },
+    );
 
     let result = iii
-        .trigger(TriggerRequest::new(
-            "example.echo",
-            json!({ "message": "hello" }),
-        ))
+        .trigger(TriggerRequest {
+            function_id: "example.echo".to_string(),
+            payload: json!({ "message": "hello" }),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
     println!("Echo result: {result}");
 

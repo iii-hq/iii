@@ -21,13 +21,13 @@ tokio = { version = "1", features = ["full"] }
 
 ```rust
 use iii_sdk::{register_worker, InitOptions, TriggerRequest};
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    iii.register_function("greet", |input| async move {
+    iii.register_function("greet", |input: Value| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
@@ -37,8 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "http_method": "POST"
     }))?;
 
-    let result: serde_json::Value = iii
-        .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
+    let result: Value = iii
+        .trigger(TriggerRequest {
+            function_id: "greet".to_string(),
+            payload: json!({ "name": "world" }),
+            action: None,
+            timeout_ms: None,
+        })
         .await?;
 
     println!("result: {result}");
@@ -48,20 +53,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## API
 
-| Operation                | Signature                                    | Description                                            |
-| ------------------------ | -------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
-| Register function        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
-| Register trigger         | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger(TriggerRequest::new(id, data).action(TriggerAction::void())).await?` | Invoke a function without waiting (fire-and-forget)    |
+| Operation                | Signature                                                         | Description                                            |
+| ------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------ |
+| Initialize               | `register_worker(address, options)`                               | Create an SDK instance and auto-connect                |
+| Register function        | `iii.register_function(id, \|input: Value\| ...)`                 | Register a function that can be invoked by name        |
+| Register trigger         | `iii.register_trigger(type, fn_id, config)?`                      | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Invoke (await)           | `iii.trigger(TriggerRequest { ... }).await?`                      | Invoke a function and wait for the result              |
+| Invoke (fire-and-forget) | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Void), ... }).await?` | Fire-and-forget invocation                  |
+| Invoke (enqueue)         | `iii.trigger(TriggerRequest { action: Some(TriggerAction::Enqueue { queue }), ... }).await?` | Route invocation through a named queue |
 
 `register_worker()` spawns a background task that handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation.
 
 ### Registering Functions
 
 ```rust
-iii.register_function("orders.create", |input| async move {
+use serde_json::{json, Value};
+
+iii.register_function("orders.create", |input: Value| async move {
     let item = input["body"]["item"].as_str().unwrap_or("");
     Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
 });
@@ -82,33 +90,76 @@ iii.register_trigger("http", "orders.create", json!({
 use iii_sdk::{TriggerRequest, TriggerAction};
 use serde_json::json;
 
-let result = iii
-    .trigger(TriggerRequest::new("orders.create", json!({ "body": { "item": "widget" } })))
-    .await?;
+// Synchronous -- waits for the result
+let result = iii.trigger(TriggerRequest {
+    function_id: "orders.create".to_string(),
+    payload: json!({ "body": { "item": "widget" } }),
+    action: None,
+    timeout_ms: None,
+}).await?;
 
-iii.trigger(
-    TriggerRequest::new("analytics.track", json!({ "event": "page_view" }))
-        .action(TriggerAction::void()),
-)
-.await?;
+// Fire-and-forget
+iii.trigger(TriggerRequest {
+    function_id: "analytics.track".to_string(),
+    payload: json!({ "event": "page_view" }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
+
+// Async via named queue
+iii.trigger(TriggerRequest {
+    function_id: "orders.process".to_string(),
+    payload: json!({ "order_id": "456" }),
+    action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
+    timeout_ms: None,
+}).await?;
 ```
 
 ### Streams
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, Streams};
+use iii_sdk::{register_worker, InitOptions, Streams, UpdateOp};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
     let streams = Streams::new(iii.clone());
-    streams.set_field("room::123", "users", json!(["alice", "bob"])).await?;
+
+    // Convenience methods
+    streams.set_field("users::active::user-1", "status", "online".into()).await?;
+    streams.increment("counters::daily::page-views", "count", 1).await?;
+
+    // Atomic multi-operation update
+    streams.update(
+        "orders::user-123::order-456",
+        vec![
+            UpdateOp::increment("total", 100),
+            UpdateOp::set("status", "processing".into()),
+        ],
+    ).await?;
+
+    // Merge an object into existing data
+    streams.merge(
+        "settings::user-1::preferences",
+        json!({"theme": "dark", "language": "en"}),
+    ).await?;
 
     Ok(())
 }
 ```
+
+### Logger
+
+```rust
+use iii_sdk::Logger;
+
+let logger = Logger::new(Some("my-function".to_string()));
+logger.info("Processing started", None);
+```
+
+The `Logger` struct emits OTel `LogRecord`s when OTel is active, otherwise falls back to the `tracing` crate.
 
 ### OpenTelemetry
 
@@ -121,15 +172,13 @@ iii-sdk = { version = "0.3", features = ["otel"] }
 
 ## Modules
 
-| Import               | What it provides                                    |
-| -------------------- | --------------------------------------------------- |
-| `iii_sdk`            | Core SDK (`III`, types)                             |
-| `iii_sdk::stream`    | Stream client (`Streams`, `UpdateBuilder`)          |
-| `iii_sdk::telemetry` | OpenTelemetry integration (requires `otel` feature) |
-
-## Deprecated
-
-`call`, `call_void`, and `trigger_void` have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger(TriggerRequest::new(fn_id, data).action(TriggerAction::void()))`.
+| Import               | What it provides                                            |
+| -------------------- | ----------------------------------------------------------- |
+| `iii_sdk`            | Core SDK (`III`, `register_worker`, `TriggerRequest`, etc.) |
+| `iii_sdk::stream`    | Stream client (`Streams`, `UpdateBuilder`)                  |
+| `iii_sdk::logger`    | Structured logging (`Logger`)                               |
+| `iii_sdk::telemetry` | OpenTelemetry integration (requires `otel` feature)         |
+| `iii_sdk::types`     | Shared types (`UpdateOp`, `Channel`, `ApiRequest`, etc.)    |
 
 ## Resources
 

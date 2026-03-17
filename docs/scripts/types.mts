@@ -28,6 +28,11 @@ export interface SubpathExport {
   exports: string[]
 }
 
+export interface LoggerDoc {
+  description: string
+  methods: FunctionDoc[]
+}
+
 export interface SdkDoc {
   metadata: {
     language: 'node' | 'python' | 'rust'
@@ -38,12 +43,10 @@ export interface SdkDoc {
     importExample: string
   }
   initialization: {
-    description: string
-    example: string
     entryPoint: FunctionDoc
   }
   methods: FunctionDoc[]
   types: TypeDoc[]
   subpathExports?: SubpathExport[]
-  contextSection?: string
+  loggerSection?: LoggerDoc
 }

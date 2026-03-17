@@ -2,10 +2,17 @@ import type { ParamDoc, TypeDoc } from '../types.mjs'
 
 function escapeTableCell(value: string): string {
   return value
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
-    .replace(/\|/g, '\\|')
     .replace(/\r?\n/g, '<br />')
+    .replace(/`[^`]*`|[{}|]/g, (match) => {
+      if (match.startsWith('`')) return match
+      if (match === '{') return '\\{'
+      if (match === '}') return '\\}'
+      return '\\|'
+    })
+}
+
+function escapeCodeInTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|')
 }
 
 export function slugify(name: string): string {
@@ -23,8 +30,8 @@ function escapeMdxFragment(value: string): string {
 }
 
 function renderTypeCell(typeStr: string, knownTypes?: Set<string>): string {
-  if (!knownTypes || knownTypes.size === 0) return `\`${escapeTableCell(typeStr)}\``
-  if (knownTypes.has(typeStr)) return `[\`${escapeTableCell(typeStr)}\`](#${slugify(typeStr)})`
+  if (!knownTypes || knownTypes.size === 0) return `\`${escapeCodeInTableCell(typeStr)}\``
+  if (knownTypes.has(typeStr)) return `[\`${escapeCodeInTableCell(typeStr)}\`](#${slugify(typeStr)})`
 
   const sorted = [...knownTypes].sort((a, b) => b.length - a.length)
   const pattern = sorted.map(n => `\\b${escapeRegExp(n)}\\b`).join('|')
@@ -36,7 +43,7 @@ function renderTypeCell(typeStr: string, knownTypes?: Set<string>): string {
     matches.push({ start: m.index, end: m.index + m[0].length, name: m[0] })
   }
 
-  if (matches.length === 0) return `\`${escapeTableCell(typeStr)}\``
+  if (matches.length === 0) return `\`${escapeCodeInTableCell(typeStr)}\``
 
   const parts: string[] = []
   let lastEnd = 0
@@ -45,7 +52,7 @@ function renderTypeCell(typeStr: string, knownTypes?: Set<string>): string {
     if (match.start > lastEnd) {
       parts.push(escapeMdxFragment(typeStr.slice(lastEnd, match.start)))
     }
-    parts.push(`[\`${escapeTableCell(match.name)}\`](#${slugify(match.name)})`)
+    parts.push(`[\`${escapeCodeInTableCell(match.name)}\`](#${slugify(match.name)})`)
     lastEnd = match.end
   }
 

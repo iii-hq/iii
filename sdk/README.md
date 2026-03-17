@@ -42,47 +42,43 @@ const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world
 ### Python
 
 ```python
-import asyncio
 from iii import register_worker
 
-async def main():
-    iii = register_worker("ws://localhost:49134")
+iii = register_worker("ws://localhost:49134")
 
-    async def greet(data):
-        return {"message": f"Hello, {data['name']}!"}
+def greet(data):
+    return {"message": f"Hello, {data['name']}!"}
 
-    iii.register_function("greet", greet)
+iii.register_function({"id": "greet"}, greet)
 
-    iii.register_trigger(
-        type="http",
-        function_id="greet",
-        config={"api_path": "/greet", "http_method": "POST"}
-    )
+iii.register_trigger({
+    "type": "http",
+    "function_id": "greet",
+    "config": {"api_path": "/greet", "http_method": "POST"}
+})
 
-    result = await iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
-
-asyncio.run(main())
+result = iii.trigger({"function_id": "greet", "payload": {"name": "world"}})
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("greet", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "greet".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });
 
-    iii.register_trigger("http", "greet", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "greet".into(), config: json!({
         "api_path": "/greet",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     let result: serde_json::Value = iii
         .trigger(TriggerRequest::new("greet", json!({ "name": "world" })))
@@ -98,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | Create an SDK instance and auto-connect                |
 | Register function        | `iii.registerFunction({ id }, handler)`              | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | Register a function that can be invoked by name        |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger(type, fn_id, config)` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | Invoke a function and wait for the result              |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | Invoke without waiting |
 

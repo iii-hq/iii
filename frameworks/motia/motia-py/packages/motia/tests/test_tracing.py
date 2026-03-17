@@ -1,6 +1,5 @@
 """Tests for motia.tracing – core utilities and bridge instrumentation."""
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -60,7 +59,7 @@ def _make_mock_bridge():
     return bridge
 
 
-# ── Core utility tests ──────────────────────────────────────────────────
+# -- Core utility tests --
 
 
 def test_has_otel_is_true():
@@ -141,7 +140,7 @@ def test_operation_span_creates_child_span(otel_exporter):
     assert child_span.parent.span_id == parent_span.context.span_id
 
 
-# ── Bridge instrumentation tests ────────────────────────────────────────
+# -- Bridge instrumentation tests --
 
 
 def test_instrument_bridge_patches_to_dict(otel_exporter):

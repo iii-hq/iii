@@ -8,9 +8,10 @@ const LANG_MAP: Record<string, string> = {
 }
 
 function escapeMdxText(value: string): string {
-  return value
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
+  return value.replace(/`[^`]*`|[{}]/g, (match) => {
+    if (match.startsWith('`')) return match
+    return match === '{' ? '\\{' : '\\}'
+  })
 }
 
 function formatMethodSignature(method: FunctionDoc): string {
@@ -81,14 +82,12 @@ export function renderSdkMdx(doc: SdkDoc): string {
 
   lines.push('## Initialization')
   lines.push('')
-  lines.push(escapeMdxText(doc.initialization.description))
-  lines.push('')
-  lines.push(codeBlock(codeLang, doc.initialization.example))
-  lines.push('')
-
   const entryFn = doc.initialization.entryPoint
-  if (entryFn) {
-    lines.push(renderMethod(entryFn, lang, knownTypes))
+  lines.push(escapeMdxText(entryFn.description))
+  lines.push('')
+  if (entryFn.examples.length > 0) {
+    lines.push(codeBlock(codeLang, entryFn.examples[0]))
+    lines.push('')
   }
 
   lines.push('## Methods')
@@ -111,6 +110,16 @@ export function renderSdkMdx(doc: SdkDoc): string {
       lines.push(`| \`${exp.path}\` | \`${exports}\`${suffix} |`)
     }
     lines.push('')
+  }
+
+  if (doc.loggerSection) {
+    lines.push('## Logger')
+    lines.push('')
+    lines.push(escapeMdxText(doc.loggerSection.description))
+    lines.push('')
+    for (const method of doc.loggerSection.methods) {
+      lines.push(renderMethod(method, lang, knownTypes))
+    }
   }
 
   if (doc.types.length > 0) {
@@ -141,13 +150,6 @@ export function renderSdkMdx(doc: SdkDoc): string {
         }
       }
     }
-  }
-
-  if (doc.contextSection) {
-    lines.push('## Context')
-    lines.push('')
-    lines.push(doc.contextSection)
-    lines.push('')
   }
 
   return lines.join('\n')

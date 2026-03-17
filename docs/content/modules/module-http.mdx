@@ -261,10 +261,10 @@ sequenceDiagram
 ## Example Handler
 
 ```typescript
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 import type { ApiRequest, ApiResponse } from 'iii-sdk'
 
-const iii = init('ws://localhost:49134')
+const iii = registerWorker('ws://localhost:49134')
 
 async function getUser(req: ApiRequest): Promise<ApiResponse> {
   const userId = req.path_params?.id

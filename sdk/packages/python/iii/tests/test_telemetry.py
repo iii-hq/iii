@@ -86,14 +86,15 @@ def test_shutdown_without_init_is_safe():
     shutdown_otel()  # must not raise
 
 
-def test_telemetry_apis_exported_from_package():
-    import iii
+def test_telemetry_apis_importable_from_submodules():
+    from iii.telemetry import get_tracer, init_otel, is_initialized, shutdown_otel
+    from iii.telemetry_types import OtelConfig
 
-    assert hasattr(iii, "init_otel")
-    assert hasattr(iii, "shutdown_otel")
-    assert hasattr(iii, "get_tracer")
-    assert hasattr(iii, "is_initialized")
-    assert hasattr(iii, "OtelConfig")
+    assert callable(init_otel)
+    assert callable(shutdown_otel)
+    assert callable(get_tracer)
+    assert callable(is_initialized)
+    assert OtelConfig is not None
 
 
 def test_init_configures_engine_span_exporter():

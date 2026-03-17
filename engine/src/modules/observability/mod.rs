@@ -656,10 +656,10 @@ impl OtelModule {
                         if let Some(ref n) = input.name {
                             if search_all {
                                 // When searching all spans, check if this root's trace_id was matched
-                                if let Some(ref matched_ids) = name_matched_trace_ids {
-                                    if !matched_ids.contains(&s.trace_id) {
-                                        return false;
-                                    }
+                                if let Some(ref matched_ids) = name_matched_trace_ids
+                                    && !matched_ids.contains(&s.trace_id)
+                                {
+                                    return false;
                                 }
                             } else {
                                 // Original behavior: filter root span name only

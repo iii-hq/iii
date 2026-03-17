@@ -78,7 +78,7 @@ impl AppState {
         std::fs::write(&temp_path, &content)?;
 
         // Atomic rename
-        std::fs::rename(&temp_path, path).inspect_err(|e| {
+        std::fs::rename(&temp_path, path).inspect_err(|_e| {
             // Clean up temp file on failure
             let _ = std::fs::remove_file(&temp_path);
         })?;

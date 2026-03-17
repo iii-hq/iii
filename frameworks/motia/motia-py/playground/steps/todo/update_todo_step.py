@@ -17,7 +17,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
     """Handle update todo request."""
     body = request.body or {}
     todo_id = body.get("todo_id")
@@ -28,14 +28,14 @@ async def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
         logger.error("todo_id is required")
         return ApiResponse(status=400, body={"error": "todo_id is required"})
 
-    existing_todo = await todo_stream.get("inbox", todo_id)
+    existing_todo = todo_stream.get("inbox", todo_id)
 
     if not existing_todo:
         logger.error("Todo not found")
         return ApiResponse(status=404, body={"error": "Todo not found"})
 
     updated_todo = {**existing_todo, **body}
-    todo = await todo_stream.set("inbox", todo_id, updated_todo)
+    todo = todo_stream.set("inbox", todo_id, updated_todo)
 
     logger.info("Todo updated successfully", {"todo_id": todo_id})
 

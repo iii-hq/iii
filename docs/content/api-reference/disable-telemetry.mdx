@@ -23,4 +23,8 @@ source ~/.zshrc
 
 ## Result
 
-iii will no longer send any telemetry data.
+iii will no longer send any anonymous usage data.
+
+<Callout type="info" title="This is not OpenTelemetry">
+  This setting controls anonymous usage data collection by the iii Engine. To disable OpenTelemetry observability instrumentation (traces, metrics, logs), set `OTEL_ENABLED=false` instead or pass `enabled=False` in your `OtelConfig`. See the [OpenTelemetry Integration](/docs/advanced/telemetry) page for details.
+</Callout>

@@ -14,7 +14,7 @@ config = {
 }
 
 
-async def handler(input: None) -> None:
+def handler(input: None) -> None:
     """Handle single cron trigger."""
     _ = input
     logger.info("Single cron trigger fired")

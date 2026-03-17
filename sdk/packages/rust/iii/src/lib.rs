@@ -1,5 +1,4 @@
 pub mod channels;
-pub mod context;
 pub mod error;
 pub mod iii;
 pub mod logger;
@@ -14,18 +13,16 @@ pub use channels::{
     ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
     extract_channel_refs, is_channel_ref,
 };
-pub use context::{Context, get_context, with_context};
 pub use error::IIIError;
 pub use iii::{
-    ConnectionStateCallback, ConnectionStateGuard, FunctionInfo, FunctionRef,
-    FunctionsAvailableGuard, III, IIIConnectionState, IntoFunctionHandler, TriggerInfo, WorkerInfo,
-    WorkerMetadata,
+    FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIConnectionState,
+    IntoFunctionHandler, TriggerInfo, WorkerInfo, WorkerMetadata,
 };
 pub use logger::Logger;
 pub use protocol::{
     EnqueueResult, ErrorBody, FunctionMessage, HttpAuthConfig, HttpInvocationConfig, HttpMethod,
-    Message, RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerMessage,
-    RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
+    Message, RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerInput,
+    RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream::{Streams, UpdateBuilder};
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
@@ -38,13 +35,10 @@ pub use serde_json::Value;
 /// Configuration options passed to [`register_worker`].
 ///
 /// # Examples
-/// ```rust
+/// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// #[tokio::main]
-/// async fn main() {
-///     let iii = register_worker("ws://localhost:49134", InitOptions::default()).unwrap();
-/// }
+/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
@@ -66,15 +60,12 @@ pub struct InitOptions {
 /// Returns [`IIIError::Runtime`] if no active Tokio runtime is found.
 ///
 /// # Examples
-/// ```rust
+/// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// #[tokio::main]
-/// async fn main() {
-///     let iii = register_worker("ws://localhost:49134", InitOptions::default()).unwrap();
-/// }
+/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
 /// ```
-pub fn register_worker(address: &str, options: InitOptions) -> Result<III, IIIError> {
+pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {
         metadata,
         #[cfg(feature = "otel")]
@@ -92,18 +83,16 @@ pub fn register_worker(address: &str, options: InitOptions) -> Result<III, IIIEr
         iii.set_otel_config(cfg);
     }
 
-    let handle = tokio::runtime::Handle::try_current().map_err(|_| {
-        IIIError::Runtime("iii_sdk::register_worker requires an active Tokio runtime".into())
-    })?;
+    if let Err(err) = tokio::runtime::Handle::try_current() {
+        panic!(
+            "iii_sdk::register_worker requires an active Tokio runtime: {}",
+            err
+        );
+    }
 
-    let client = iii.clone();
-    handle.spawn(async move {
-        if let Err(err) = client.connect().await {
-            tracing::warn!(error = %err, "iii_sdk::register_worker auto-connect failed");
-        }
-    });
+    iii.connect();
 
-    Ok(iii)
+    iii
 }
 
 // OpenTelemetry re-exports (behind "otel" feature flag)

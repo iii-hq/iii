@@ -6,7 +6,7 @@ import time
 import pytest
 import pytest_asyncio
 
-from iii import III
+from iii.iii import III
 
 SCOPE = "test-scope-py"
 
@@ -38,7 +38,7 @@ async def test_state_set_new_item(iii_client: III):
     key = _unique_key("set-new")
     test_data = {"name": "Test Item", "value": 42}
 
-    result = await iii_client.trigger(
+    result = iii_client.trigger(
         {
             "function_id": "state::set",
             "payload": {"scope": SCOPE, "key": key, "value": test_data},
@@ -56,14 +56,14 @@ async def test_state_set_overwrite(iii_client: III):
     initial_data = {"value": 1}
     updated_data = {"value": 2, "updated": True}
 
-    await iii_client.trigger(
+    iii_client.trigger(
         {
             "function_id": "state::set",
             "payload": {"scope": SCOPE, "key": key, "value": initial_data},
         }
     )
 
-    result = await iii_client.trigger(
+    result = iii_client.trigger(
         {
             "function_id": "state::set",
             "payload": {"scope": SCOPE, "key": key, "value": updated_data},
@@ -80,14 +80,14 @@ async def test_state_get_existing_item(iii_client: III):
     key = _unique_key("get-existing")
     data = {"name": "Test", "value": 100}
 
-    await iii_client.trigger(
+    iii_client.trigger(
         {
             "function_id": "state::set",
             "payload": {"scope": SCOPE, "key": key, "value": data},
         }
     )
 
-    result = await iii_client.trigger(
+    result = iii_client.trigger(
         {
             "function_id": "state::get",
             "payload": {"scope": SCOPE, "key": key},
@@ -100,7 +100,7 @@ async def test_state_get_existing_item(iii_client: III):
 @pytest.mark.asyncio
 async def test_state_get_non_existent_item(iii_client: III):
     """Getting a non-existent state item returns None."""
-    result = await iii_client.trigger(
+    result = iii_client.trigger(
         {
             "function_id": "state::get",
             "payload": {"scope": SCOPE, "key": "non-existent-item"},
@@ -115,20 +115,20 @@ async def test_state_delete_existing_item(iii_client: III):
     """Deleting an existing state item removes it."""
     key = _unique_key("delete-existing")
 
-    await iii_client.trigger(
+    iii_client.trigger(
         {
             "function_id": "state::set",
             "payload": {"scope": SCOPE, "key": key, "value": {"test": True}},
         }
     )
-    await iii_client.trigger(
+    iii_client.trigger(
         {
             "function_id": "state::delete",
             "payload": {"scope": SCOPE, "key": key},
         }
     )
 
-    result = await iii_client.trigger(
+    result = iii_client.trigger(
         {
             "function_id": "state::get",
             "payload": {"scope": SCOPE, "key": key},
@@ -140,7 +140,7 @@ async def test_state_delete_existing_item(iii_client: III):
 @pytest.mark.asyncio
 async def test_state_delete_non_existent_item(iii_client: III):
     """Deleting a non-existent state item does not raise an error."""
-    await iii_client.trigger(
+    iii_client.trigger(
         {
             "function_id": "state::delete",
             "payload": {"scope": SCOPE, "key": "non-existent"},
@@ -159,14 +159,14 @@ async def test_state_list_all_items_in_scope(iii_client: III):
     ]
 
     for item in items:
-        await iii_client.trigger(
+        iii_client.trigger(
             {
                 "function_id": "state::set",
                 "payload": {"scope": scope, "key": item["id"], "value": item},
             }
         )
 
-    result = await iii_client.trigger(
+    result = iii_client.trigger(
         {
             "function_id": "state::list",
             "payload": {"scope": scope},
@@ -189,7 +189,7 @@ async def test_reactive_state(iii_client: III):
     updated_data = {"name": "New Test Data", "value": 200}
     reactive_result: dict = {"called": False, "data": None}
 
-    await iii_client.trigger(
+    iii_client.trigger(
         {
             "function_id": "state::set",
             "payload": {"scope": SCOPE, "key": reactive_key, "value": data},
@@ -202,14 +202,18 @@ async def test_reactive_state(iii_client: III):
             reactive_result["called"] = True
         return {}
 
-    fn = iii_client.register_function("test.state.py.updated", state_updated_handler)
-    trigger = iii_client.register_trigger("state", fn.id, {"scope": SCOPE, "key": reactive_key})
+    fn = iii_client.register_function({"id": "test.state.py.updated"}, state_updated_handler)
+    trigger = iii_client.register_trigger({
+        "type": "state",
+        "function_id": fn.id,
+        "config": {"scope": SCOPE, "key": reactive_key},
+    })
 
     try:
         # Poll: re-trigger state::set each attempt until the handler fires.
         # Trigger registration is async so the first few sets may not be observed.
         for attempt in range(100):
-            await iii_client.trigger(
+            iii_client.trigger(
                 {
                     "function_id": "state::set",
                     "payload": {"scope": SCOPE, "key": reactive_key, "value": updated_data},

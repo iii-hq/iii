@@ -214,7 +214,7 @@ sequenceDiagram
     participant R as Function Registry
 
     Note over SDK,R: Initialization Phase
-    SDK->>WS: init(url)
+    SDK->>WS: registerWorker(url)
     WS->>E: WebSocket CONNECT
     E->>E: Generate worker_id
     E-->>WS: Connected (worker_id)

@@ -20,7 +20,7 @@ def stream(bridge) -> Stream:
     return s
 
 
-async def _check_streams_available(stream: Stream) -> bool:
+def _check_streams_available(stream: Stream) -> bool:
     """Check if streams functions are available in the engine.
 
     The streams.* functions may not be available in all engine configurations.
@@ -29,7 +29,7 @@ async def _check_streams_available(stream: Stream) -> bool:
     try:
         # Try to call get on a non-existent item
         # If streams module is not available, this will raise an exception
-        await stream.get("__check__", "__check__")
+        stream.get("__check__", "__check__")
         return True
     except Exception as e:
         if "function_not_found" in str(e):
@@ -38,75 +38,71 @@ async def _check_streams_available(stream: Stream) -> bool:
         raise
 
 
-@pytest.mark.asyncio
-async def test_stream_set_and_get(bridge, stream):
+def test_stream_set_and_get(bridge, stream):
     """Test setting and getting stream data."""
     with patch("motia.streams.get_instance", return_value=bridge):
-        if not await _check_streams_available(stream):
+        if not _check_streams_available(stream):
             pytest.skip("Streams module not available in engine configuration")
 
         group_id = f"group_{uuid.uuid4().hex[:8]}"
         item_id = f"item_{uuid.uuid4().hex[:8]}"
         data = {"name": "test", "value": 42}
 
-        await stream.set(group_id, item_id, data)
+        stream.set(group_id, item_id, data)
 
-        result = await stream.get(group_id, item_id)
+        result = stream.get(group_id, item_id)
 
         assert result is not None
         assert result["name"] == "test"
         assert result["value"] == 42
 
 
-@pytest.mark.asyncio
-async def test_stream_delete(bridge, stream):
+def test_stream_delete(bridge, stream):
     """Test deleting stream data."""
     with patch("motia.streams.get_instance", return_value=bridge):
-        if not await _check_streams_available(stream):
+        if not _check_streams_available(stream):
             pytest.skip("Streams module not available in engine configuration")
 
         group_id = f"group_delete_{uuid.uuid4().hex[:8]}"
         item_id = f"item_delete_{uuid.uuid4().hex[:8]}"
 
-        await stream.set(group_id, item_id, {"temp": True})
+        stream.set(group_id, item_id, {"temp": True})
 
         # Verify exists
-        result = await stream.get(group_id, item_id)
+        result = stream.get(group_id, item_id)
         assert result is not None
 
         # Delete
-        await stream.delete(group_id, item_id)
+        stream.delete(group_id, item_id)
 
         # Verify deleted
-        result = await stream.get(group_id, item_id)
+        result = stream.get(group_id, item_id)
         assert result is None
 
 
-@pytest.mark.asyncio
-async def test_stream_get_group(bridge, stream):
+def test_stream_get_group(bridge, stream):
     """Test getting all items in a group."""
     with patch("motia.streams.get_instance", return_value=bridge):
-        if not await _check_streams_available(stream):
+        if not _check_streams_available(stream):
             pytest.skip("Streams module not available in engine configuration")
 
         group_id = f"group_list_{uuid.uuid4().hex[:8]}"
 
         # Add items
         for i in range(3):
-            await stream.set(group_id, f"item_{i}", {"index": i})
+            stream.set(group_id, f"item_{i}", {"index": i})
 
         # Get group
-        items = await stream.get_group(group_id)
+        items = stream.get_group(group_id)
 
         assert len(items) == 3
 
 
-@pytest.mark.asyncio
-async def test_stream_get_nonexistent(bridge, stream):
+def test_stream_get_nonexistent(bridge, stream):
     """Test getting non-existent data returns None."""
     with patch("motia.streams.get_instance", return_value=bridge):
-        if not await _check_streams_available(stream):
+        if not _check_streams_available(stream):
             pytest.skip("Streams module not available in engine configuration")
 
-        result = await stream.get("nonexistent_group", "nonexistent_item")
+        result = stream.get("nonexistent_group", "nonexistent_item")
         assert result is None

@@ -25,6 +25,9 @@ class StreamAuthResult(BaseModel):
     context: Any | None = None
 
 
+StreamContext = Any
+
+
 class StreamJoinLeaveEvent(BaseModel):
     """Event for stream join/leave."""
 
@@ -92,7 +95,7 @@ class StreamSetResult(BaseModel, Generic[TData]):
     """Result of stream set operation."""
 
     old_value: TData | None = None
-    new_value: TData | None = None
+    new_value: TData
 
 
 class StreamUpdateResult(BaseModel, Generic[TData]):

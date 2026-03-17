@@ -6,25 +6,36 @@ import logging
 import os
 import platform
 import random
+import threading
 import traceback
 import uuid
-from dataclasses import dataclass
 from importlib.metadata import version
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
+from .iii_constants import (
+    DEFAULT_RECONNECTION_CONFIG,
+    MAX_QUEUE_SIZE,
+    FunctionRef,
+    IIIConnectionState,
+    InitOptions,
+)
 from .iii_types import (
     FunctionInfo,
     HttpInvocationConfig,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
+    RegisterFunctionInput,
     RegisterFunctionMessage,
+    RegisterServiceInput,
     RegisterServiceMessage,
+    RegisterTriggerInput,
     RegisterTriggerMessage,
+    RegisterTriggerTypeInput,
     RegisterTriggerTypeMessage,
     StreamChannelRef,
     TriggerActionEnqueue,
@@ -36,12 +47,20 @@ from .iii_types import (
     UnregisterTriggerTypeMessage,
     WorkerInfo,
 )
-from .stream import IStream
+from .stream import (
+    IStream,
+    StreamDeleteInput,
+    StreamGetInput,
+    StreamListGroupsInput,
+    StreamListInput,
+    StreamSetInput,
+)
 from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
 
 RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
+TResult = TypeVar("TResult")
 
 log = logging.getLogger("iii.iii")
 
@@ -53,89 +72,19 @@ class _TraceContextError(Exception):
         self.traceparent = traceparent
 
 
-IIIConnectionState = Literal["disconnected", "connecting", "connected", "reconnecting", "failed"]
-
-ConnectionStateCallback = Callable[["IIIConnectionState"], None]
-
-
-@dataclass
-class ReconnectionConfig:
-    """Configuration for WebSocket reconnection behavior.
-
-    Attributes:
-        initial_delay_ms: Starting delay in milliseconds. Default ``1000``.
-        max_delay_ms: Maximum delay cap in milliseconds. Default ``30000``.
-        backoff_multiplier: Exponential backoff multiplier. Default ``2.0``.
-        jitter_factor: Random jitter factor (0--1). Default ``0.3``.
-        max_retries: Maximum retry attempts. ``-1`` for infinite. Default ``-1``.
-    """
-
-    initial_delay_ms: int = 1000
-    max_delay_ms: int = 30000
-    backoff_multiplier: float = 2.0
-    jitter_factor: float = 0.3
-    max_retries: int = -1
-
-
-DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()
-DEFAULT_INVOCATION_TIMEOUT_MS = 30000
-MAX_QUEUE_SIZE = 1000
-
-
-@dataclass
-class FunctionRef:
-    """Reference to a registered function, allowing programmatic unregistration."""
-
-    id: str
-    unregister: Callable[[], None]
-
-
-@dataclass
-class TelemetryOptions:
-    """Telemetry metadata to be reported to the engine."""
-
-    language: str | None = None
-    project_name: str | None = None
-    framework: str | None = None
-    amplitude_api_key: str | None = None
-
-
-@dataclass
-class InitOptions:
-    """Options for configuring the III SDK.
-
-    Attributes:
-        worker_name: Display name for this worker. Defaults to ``hostname:pid``.
-        enable_metrics_reporting: Enable worker metrics via OpenTelemetry. Default ``True``.
-        invocation_timeout_ms: Default timeout for ``trigger()`` in milliseconds. Default ``30000``.
-        reconnection_config: WebSocket reconnection behavior.
-        otel: OpenTelemetry configuration. Enabled by default.
-            Set ``{'enabled': False}`` or env ``OTEL_ENABLED=false`` to disable.
-        telemetry: Internal telemetry metadata.
-    """
-
-    worker_name: str | None = None
-    enable_metrics_reporting: bool = True
-    invocation_timeout_ms: int = DEFAULT_INVOCATION_TIMEOUT_MS
-    reconnection_config: ReconnectionConfig | None = None
-    otel: OtelConfig | dict[str, Any] | None = None
-    telemetry: TelemetryOptions | None = None
-
-
 class III:
     """WebSocket client for communication with the III Engine.
 
-    Unlike the Node.js SDK which uses ``registerWorker()``, the Python SDK
-    exposes the ``III`` class directly. Call ``connect()`` to establish the
-    WebSocket connection, or use ``register_worker()`` for automatic connection.
+    Use ``register_worker(address, options)`` as the primary entry point.
+    It creates the client and blocks until the connection is established.
 
     Args:
         address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
         options: Optional configuration. See ``InitOptions``.
 
     Examples:
-        >>> iii = III('ws://localhost:49134', InitOptions(worker_name='my-worker'))
-        >>> await iii.connect()
+        >>> from iii import register_worker, InitOptions
+        >>> iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
     """
 
     def __init__(self, address: str, options: InitOptions | None = None) -> None:
@@ -159,13 +108,60 @@ class III:
         self._connection_state: IIIConnectionState = "disconnected"
         self._worker_id: str | None = None
 
+        # Background event loop thread
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
+
+        # Auto-connect (non-blocking, matches Node.js constructor behavior)
+        self._connected_event = threading.Event()
+        self._schedule_on_loop(self._async_connect())
+
+    def _run_on_loop(self, coro: Coroutine[Any, Any, TResult]) -> TResult:
+        if threading.current_thread() is self._thread:
+            raise RuntimeError(
+                "Cannot call sync SDK methods from the event loop thread. Use async handler methods instead."
+            )
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+
+    def _schedule_on_loop(self, coro: Coroutine[Any, Any, object]) -> None:
+        asyncio.run_coroutine_threadsafe(coro, self._loop)
+
     # Connection management
 
-    async def connect(self) -> None:
-        """Connect to the WebSocket server."""
+    def _wait_until_connected(self) -> None:
+        """Block until the WebSocket connection to the engine is established."""
+        if self._connection_state == "connected":
+            return
+        if self._connection_state == "failed":
+            raise ConnectionError(f"Connection to {self._address} failed")
+        self._connected_event.wait(timeout=30)
+        if cast(IIIConnectionState, self._connection_state) == "failed":
+            raise ConnectionError(f"Connection to {self._address} failed after max retries")
+
+    def shutdown(self) -> None:
+        """Gracefully shut down the client, releasing all resources.
+
+        Cancels any pending reconnection attempts, rejects all in-flight
+        invocations with an error, closes the WebSocket connection, and
+        stops the background event-loop thread.  After this call the
+        instance must not be reused.
+
+        Examples:
+            >>> iii = register_worker('ws://localhost:49134')
+            >>> # ... do work ...
+            >>> iii.shutdown()
+        """
+        self._run_on_loop(self._async_shutdown())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)
+
+    async def _async_connect(self) -> None:
         self._running = True
         try:
             from .telemetry import attach_event_loop, init_otel
+
             loop = asyncio.get_running_loop()
             otel_cfg: OtelConfig | None = None
             if self._options.otel:
@@ -176,12 +172,11 @@ class III:
             init_otel(config=otel_cfg, loop=loop)
             attach_event_loop(loop)
         except ImportError:
-            pass
+            log.debug("OpenTelemetry not available")
         self._set_connection_state("connecting")
         await self._do_connect()
 
-    async def shutdown(self) -> None:
-        """Disconnect from the WebSocket server."""
+    async def _async_shutdown(self) -> None:
         self._running = False
 
         for task in [self._reconnect_task, self._receiver_task]:
@@ -206,9 +201,10 @@ class III:
 
         try:
             from .telemetry import shutdown_otel_async
+
             await shutdown_otel_async()
         except ImportError:
-            pass
+            log.debug("OpenTelemetry not available")
 
     async def _do_connect(self) -> None:
         try:
@@ -216,7 +212,7 @@ class III:
             self._ws = await websockets.connect(self._address)
             log.info(f"Connected to {self._address}")
             await self._on_connected()
-        except Exception as e:
+        except (ConnectionError, OSError, TimeoutError, asyncio.TimeoutError) as e:
             log.warning(f"Connection failed: {e}")
             if self._running:
                 self._schedule_reconnect()
@@ -233,7 +229,7 @@ class III:
                 log.error(f"Max reconnection retries ({config.max_retries}) reached, giving up")
                 return
 
-            exponential_delay = config.initial_delay_ms * (config.backoff_multiplier ** self._reconnect_attempt)
+            exponential_delay = config.initial_delay_ms * (config.backoff_multiplier**self._reconnect_attempt)
             capped_delay = min(exponential_delay, config.max_delay_ms)
             jitter = capped_delay * config.jitter_factor * (2 * random.random() - 1)
             delay_ms = max(0, capped_delay + jitter)
@@ -248,14 +244,14 @@ class III:
     async def _on_connected(self) -> None:
         self._reconnect_attempt = 0
         self._set_connection_state("connected")
-        # Re-register all
-        for trigger_type_data in self._trigger_types.values():
+        # Re-register all (snapshot to avoid mutation from caller thread)
+        for trigger_type_data in list(self._trigger_types.values()):
             await self._send(trigger_type_data.message)
-        for svc in self._services.values():
+        for svc in list(self._services.values()):
             await self._send(svc)
-        for function_data in self._functions.values():
+        for function_data in list(self._functions.values()):
             await self._send(function_data.message)
-        for trigger in self._triggers.values():
+        for trigger in list(self._triggers.values()):
             await self._send(trigger)
 
         # Flush queue (swap to avoid O(n^2) pop(0))
@@ -315,11 +311,7 @@ class III:
     def _send_if_connected(self, msg: Any) -> None:
         if not (self._ws and self._ws.state.name == "OPEN"):
             return
-        try:
-            task = asyncio.get_running_loop().create_task(self._send(msg))
-            task.add_done_callback(self._log_task_exception)
-        except RuntimeError:
-            pass
+        self._schedule_on_loop(self._send(msg))
 
     @staticmethod
     def _log_task_exception(task: asyncio.Task[Any]) -> None:
@@ -371,10 +363,10 @@ class III:
             future.set_result(result)
 
     def _inject_traceparent(self) -> str | None:
-        """Return the current OTel span context as a W3C traceparent string, or None."""
         try:
             from opentelemetry import context as otel_context
             from opentelemetry import propagate
+
             carrier: dict[str, str] = {}
             propagate.inject(carrier, context=otel_context.get_current())
             return carrier.get("traceparent")
@@ -382,10 +374,10 @@ class III:
             return None
 
     def _inject_baggage(self) -> str | None:
-        """Return the current OTel baggage as a W3C baggage header string, or None."""
         try:
             from opentelemetry import context as otel_context
             from opentelemetry import propagate
+
             carrier: dict[str, str] = {}
             propagate.inject(carrier, context=otel_context.get_current())
             return carrier.get("baggage")
@@ -394,16 +386,11 @@ class III:
 
     async def _invoke_with_otel_context(
         self,
-        handler: Any,
+        handler: Callable[[Any], Awaitable[Any]],
         data: Any,
         traceparent: str | None,
         baggage: str | None,
     ) -> tuple[Any, str | None]:
-        """Run handler inside the OTel context extracted from traceparent/baggage.
-
-        Returns (result, response_traceparent) where response_traceparent is captured
-        inside the attached context so it reflects the handler's span.
-        """
         try:
             from opentelemetry import context as otel_context
             from opentelemetry import propagate, trace
@@ -439,14 +426,9 @@ class III:
                 raise _TraceContextError(response_traceparent) from e
 
     def _resolve_channels(self, data: Any) -> Any:
-        """Recursively resolve StreamChannelRef objects into ChannelReader/ChannelWriter instances."""
         if is_channel_ref(data):
             ref = StreamChannelRef(**data)
-            return (
-                ChannelReader(self._address, ref)
-                if ref.direction == "read"
-                else ChannelWriter(self._address, ref)
-            )
+            return ChannelReader(self._address, ref) if ref.direction == "read" else ChannelWriter(self._address, ref)
         if isinstance(data, dict):
             return {k: self._resolve_channels(v) for k, v in data.items()}
         if isinstance(data, list):
@@ -571,9 +553,18 @@ class III:
     def _set_connection_state(self, state: IIIConnectionState) -> None:
         if self._connection_state != state:
             self._connection_state = state
+            if state == "connected":
+                self._connected_event.set()
+            else:
+                self._connected_event.clear()
 
     def get_connection_state(self) -> IIIConnectionState:
-        """Get the current connection state."""
+        """Return the current WebSocket connection state.
+
+        Returns:
+            One of ``"disconnected"``, ``"connecting"``, ``"connected"``,
+            ``"reconnecting"``, or ``"failed"``.
+        """
         return self._connection_state
 
     @property
@@ -582,49 +573,75 @@ class III:
         return self._worker_id
 
     # Public API
-
-    def register_trigger_type(self, id: str, description: str, handler: TriggerHandler[Any]) -> None:
+    def register_trigger_type(
+        self,
+        trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
+        handler: TriggerHandler[Any],
+    ) -> None:
         """Register a custom trigger type with the engine.
 
         Args:
-            id: Unique trigger type identifier.
-            description: Human-readable description.
+            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and ``description``.
             handler: Handler implementing ``register_trigger`` and ``unregister_trigger``.
+
+        Examples:
+            >>> iii.register_trigger_type({"id": "webhook", "description": "Webhook trigger"}, handler)
+            >>> iii.register_trigger_type(
+            ...     RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"), handler
+            ... )
         """
-        msg = RegisterTriggerTypeMessage(id=id, description=description)
-        self._trigger_types[id] = RemoteTriggerTypeData(message=msg, handler=handler)
+        if isinstance(trigger_type, dict):
+            trigger_type = RegisterTriggerTypeInput(**trigger_type)
+        msg = RegisterTriggerTypeMessage(id=trigger_type.id, description=trigger_type.description)
+        self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(message=msg, handler=handler)
         self._send_if_connected(msg)
 
-    def unregister_trigger_type(self, id: str) -> None:
+    def unregister_trigger_type(self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]") -> None:
         """Unregister a previously registered trigger type.
 
         Args:
-            id: The trigger type ID to unregister.
-        """
-        self._trigger_types.pop(id, None)
-        self._send_if_connected(UnregisterTriggerTypeMessage(id=id))
+            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id`` and optional ``description``.
 
-    def register_trigger(self, type: str, function_id: str, config: Any) -> Trigger:
+        Examples:
+            >>> iii.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
+            >>> iii.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
+        """
+        if isinstance(trigger_type, dict):
+            type_id = trigger_type["id"]
+        else:
+            type_id = trigger_type.id
+        self._trigger_types.pop(type_id, None)
+        self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id))
+
+    def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger:
         """Bind a trigger configuration to a registered function.
 
         Args:
-            type: Trigger type (e.g. ``http``, ``queue``, ``cron``).
-            function_id: ID of the function to invoke.
-            config: Trigger-specific configuration.
+            trigger: A ``RegisterTriggerInput`` or dict with ``type``, ``function_id``, and optional ``config``.
 
         Returns:
             A Trigger handle with an ``unregister()`` method.
 
         Examples:
-            >>> trigger = iii.register_trigger('http', 'greet', {'api_path': '/greet', 'http_method': 'GET'})
+            >>> trigger = iii.register_trigger({
+            ...   'type': 'http',
+            ...   'function_id': 'greet',
+            ...   'config': {'api_path': '/greet', 'http_method': 'GET'}
+            ... })
+            >>> trigger = iii.register_trigger(RegisterTriggerInput(
+            ...     type="http", function_id="greet",
+            ...     config={'api_path': '/greet', 'http_method': 'GET'}
+            ... ))
             >>> trigger.unregister()
         """
+        if isinstance(trigger, dict):
+            trigger = RegisterTriggerInput(**trigger)
         trigger_id = str(uuid.uuid4())
         msg = RegisterTriggerMessage(
             id=trigger_id,
-            trigger_type=type,
-            function_id=function_id,
-            config=config,
+            trigger_type=trigger.type,
+            function_id=trigger.function_id,
+            config=trigger.config,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
@@ -637,10 +654,8 @@ class III:
 
     def register_function(
         self,
-        path: str,
+        func: RegisterFunctionInput | dict[str, Any],
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
-        description: str | None = None,
-        metadata: dict[str, Any] | None = None,
     ) -> FunctionRef:
         """Register a function with the engine.
 
@@ -648,68 +663,105 @@ class III:
         for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
 
         Args:
-            path: Unique function identifier.
-            handler_or_invocation: Async handler callable or HTTP invocation config.
-            description: Human-readable description.
-            metadata: Arbitrary metadata to attach to the function.
+            func: A ``RegisterFunctionInput`` or dict with ``id`` and optional
+                ``description``, ``metadata``, ``request_format``, ``response_format``.
+            handler_or_invocation: Handler callable or ``HttpInvocationConfig``.
 
         Returns:
             A FunctionRef with ``id`` and ``unregister()`` method.
 
         Raises:
-            ValueError: If ``path`` is empty or already registered.
+            ValueError: If ``id`` is empty or already registered.
             TypeError: If ``handler_or_invocation`` is not callable or HttpInvocationConfig.
 
         Examples:
-            >>> async def greet(data):
+            >>> def greet(data):
             ...     return {'message': f"Hello, {data['name']}!"}
-            >>> fn = iii.register_function('greet', greet, description='Greets a user')
+            >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
         """
-        if not path or not path.strip():
+        if isinstance(func, dict):
+            func = RegisterFunctionInput(**func)
+        if not func.id or not func.id.strip():
             raise ValueError("id is required")
-        if path in self._functions:
-            raise ValueError(f"function id '{path}' already registered")
+        if func.id in self._functions:
+            raise ValueError(f"function id '{func.id}' already registered")
 
         if isinstance(handler_or_invocation, HttpInvocationConfig):
             msg = RegisterFunctionMessage(
-                id=path, invocation=handler_or_invocation, description=description, metadata=metadata
+                id=func.id,
+                invocation=handler_or_invocation,
+                description=func.description,
+                metadata=func.metadata,
+                request_format=func.request_format,
+                response_format=func.response_format,
             )
             self._send_if_connected(msg)
-            self._functions[path] = RemoteFunctionData(message=msg)
+            self._functions[func.id] = RemoteFunctionData(message=msg)
         else:
             if not callable(handler_or_invocation):
                 actual_type = type(handler_or_invocation).__name__
-                raise TypeError(
-                    f"handler_or_invocation must be callable or HttpInvocationConfig, got {actual_type}"
-                )
+                raise TypeError(f"handler_or_invocation must be callable or HttpInvocationConfig, got {actual_type}")
             handler = handler_or_invocation
-            msg = RegisterFunctionMessage(id=path, description=description, metadata=metadata)
+            msg = RegisterFunctionMessage(
+                id=func.id,
+                description=func.description,
+                metadata=func.metadata,
+                request_format=func.request_format,
+                response_format=func.response_format,
+            )
             self._send_if_connected(msg)
 
-            async def wrapped(input_data: Any) -> Any:
-                return await handler(input_data)
+            if asyncio.iscoroutinefunction(handler):
 
-            self._functions[path] = RemoteFunctionData(message=msg, handler=wrapped)
+                async def wrapped(input_data: Any) -> Any:
+                    return await handler(input_data)
+
+            else:
+
+                async def wrapped(input_data: Any) -> Any:
+                    return await self._loop.run_in_executor(None, handler, input_data)
+
+            self._functions[func.id] = RemoteFunctionData(message=msg, handler=wrapped)
+
+        func_id = func.id
 
         def unregister() -> None:
-            self._functions.pop(path, None)
-            self._send_if_connected(UnregisterFunctionMessage(id=path))
+            self._functions.pop(func_id, None)
+            self._send_if_connected(UnregisterFunctionMessage(id=func_id))
 
-        return FunctionRef(id=path, unregister=unregister)
+        return FunctionRef(id=func_id, unregister=unregister)
 
-    def register_service(
-        self,
-        id: str,
-        description: str | None = None,
-        parent_id: str | None = None,
-        *,
-        name: str | None = None,
-    ) -> None:
-        msg = RegisterServiceMessage(id=id, name=name or id, description=description, parent_service_id=parent_id)
-        self._services[id] = msg
+    def register_service(self, service: RegisterServiceInput | dict[str, Any]) -> None:
+        """Register a logical service grouping with the engine.
+
+        Services provide an organisational hierarchy for functions.  A
+        service can optionally reference a ``parent_service_id`` to form
+        a tree visible in the engine dashboard.
+
+        Args:
+            service: A ``RegisterServiceInput`` or dict with ``id`` and
+                optional ``name``, ``description``, ``parent_service_id``.
+
+        Examples:
+            >>> iii.register_service({"id": "payments", "description": "Payment processing"})
+            >>> iii.register_service({
+            ...     "id": "payments::refunds",
+            ...     "description": "Refund sub-service",
+            ...     "parent_service_id": "payments",
+            ... })
+        """
+        if isinstance(service, dict):
+            service = RegisterServiceInput(**service)
+        msg = RegisterServiceMessage(
+            id=service.id,
+            name=service.name or service.id,
+            description=service.description,
+            parent_service_id=service.parent_service_id,
+        )
+        self._services[service.id] = msg
         self._send_if_connected(msg)
 
-    async def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
+    def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         """Invoke a remote function.
 
         The routing behavior and return type depend on the ``action`` field:
@@ -729,60 +781,47 @@ class III:
             TimeoutError: If the invocation times out.
 
         Examples:
-            >>> result = await iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> await iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+            >>> result = iii.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
         """
-        import warnings
+        return self._run_on_loop(self._async_trigger(request))
 
+    async def _async_trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
         req = request if isinstance(request, dict) else request.model_dump()
         function_id = req["function_id"]
         payload = req.get("payload")
         action = req.get("action")
 
-        if "timeout" in req and req["timeout"] is not None and "timeout_ms" not in req:
-            warnings.warn(
-                "TriggerRequest 'timeout' (seconds) is deprecated. Use 'timeout_ms' (milliseconds) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            timeout_ms: int = int(req["timeout"] * 1000)
-        else:
-            timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
+        timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
 
         timeout_secs = timeout_ms / 1000.0
 
-        if action is not None:
-            # Normalize raw dict actions
-            if isinstance(action, dict):
-                if action.get("type") == "enqueue":
-                    action = TriggerActionEnqueue(queue=action["queue"])
-                elif action.get("type") == "void":
-                    action = TriggerActionVoid()
+        if isinstance(action, dict):
+            if action.get("type") == "enqueue":
+                action = TriggerActionEnqueue(queue=action["queue"])
+            elif action.get("type") == "void":
+                action = TriggerActionVoid()
 
-            # Void is fire-and-forget — no invocation_id, no response
-            if isinstance(action, TriggerActionVoid):
-                msg = InvokeFunctionMessage(
+        # Void: fire-and-forget, no response expected
+        if isinstance(action, TriggerActionVoid):
+            await self._send(
+                InvokeFunctionMessage(
                     function_id=function_id,
                     data=payload,
                     traceparent=self._inject_traceparent(),
                     baggage=self._inject_baggage(),
                     action=action,
                 )
-                try:
-                    asyncio.get_running_loop().create_task(self._send(msg))
-                except RuntimeError:
-                    self._enqueue(msg)
-                return None
+            )
+            return None
 
         # Enqueue and default: send invocation_id, await response
         invocation_id = str(uuid.uuid4())
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[Any] = self._loop.create_future()
 
         self._pending[invocation_id] = future
 
-        enqueue_action: TriggerActionEnqueue | TriggerActionVoid | None = (
-            action if isinstance(action, (TriggerActionEnqueue, TriggerActionVoid)) else None
-        )
+        enqueue_action: TriggerActionEnqueue | None = action if isinstance(action, TriggerActionEnqueue) else None
 
         await self._send(
             InvokeFunctionMessage(
@@ -801,40 +840,94 @@ class III:
             self._pending.pop(invocation_id, None)
             raise TimeoutError(f"Invocation of '{function_id}' timed out after {timeout_ms}ms")
 
-    async def list_functions(self) -> list[FunctionInfo]:
-        """List all registered functions from the engine."""
-        result = await self.trigger({"function_id": "engine::functions::list", "payload": {}})
+    def list_functions(self) -> list[FunctionInfo]:
+        """List all functions registered with the engine across all workers.
+
+        Returns:
+            A list of ``FunctionInfo`` objects describing each function.
+
+        Examples:
+            >>> for fn in iii.list_functions():
+            ...     print(fn.function_id, fn.description)
+        """
+        return self._run_on_loop(self._async_list_functions())
+
+    async def _async_list_functions(self) -> list[FunctionInfo]:
+        result = await self._async_trigger({"function_id": "engine::functions::list", "payload": {}})
         functions_data = result.get("functions", [])
         return [FunctionInfo(**f) for f in functions_data]
 
-    async def list_workers(self) -> list[WorkerInfo]:
-        """List all connected workers from the engine."""
-        result = await self.trigger({"function_id": "engine::workers::list", "payload": {}})
+    def list_workers(self) -> list[WorkerInfo]:
+        """List all workers currently connected to the engine.
+
+        Returns:
+            A list of ``WorkerInfo`` objects with worker metadata.
+
+        Examples:
+            >>> for w in iii.list_workers():
+            ...     print(w.name, w.worker_id)
+        """
+        return self._run_on_loop(self._async_list_workers())
+
+    async def _async_list_workers(self) -> list[WorkerInfo]:
+        result = await self._async_trigger({"function_id": "engine::workers::list", "payload": {}})
         workers_data = result.get("workers", [])
         return [WorkerInfo(**w) for w in workers_data]
 
-    async def list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]:
-        """List all registered triggers from the engine."""
-        result = await self.trigger({
-            "function_id": "engine::triggers::list",
-            "payload": {"include_internal": include_internal},
-        })
+    def list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]:
+        """List all triggers registered with the engine.
+
+        Args:
+            include_internal: If ``True``, include engine-internal triggers
+                (e.g. ``functions-available``). Defaults to ``False``.
+
+        Returns:
+            A list of ``TriggerInfo`` objects.
+
+        Examples:
+            >>> triggers = iii.list_triggers()
+            >>> internal = iii.list_triggers(include_internal=True)
+        """
+        return self._run_on_loop(self._async_list_triggers(include_internal))
+
+    async def _async_list_triggers(self, include_internal: bool = False) -> list[TriggerInfo]:
+        result = await self._async_trigger(
+            {
+                "function_id": "engine::triggers::list",
+                "payload": {"include_internal": include_internal},
+            }
+        )
         triggers_data = result.get("triggers", [])
         return [TriggerInfo(**t) for t in triggers_data]
 
-    async def create_channel(self, buffer_size: int | None = None) -> Channel:
+    def create_channel(self, buffer_size: int | None = None) -> Channel:
         """Create a streaming channel pair for worker-to-worker data transfer.
 
-        Returns a Channel with writer, reader, and their serializable refs
-        that can be passed as fields in the invocation data to other functions.
+        The returned ``Channel`` contains a local ``writer`` / ``reader``
+        and their serializable refs (``writer_ref``, ``reader_ref``) that
+        can be passed as fields in invocation data to other functions.
 
         Args:
-            buffer_size: Optional buffer size for the channel (default: 64).
+            buffer_size: Buffer capacity for the channel. Defaults to ``64``.
+
+        Returns:
+            A ``Channel`` with ``writer``, ``reader``, ``writer_ref``, and
+            ``reader_ref`` attributes.
+
+        Examples:
+            >>> ch = iii.create_channel()
+            >>> fn = iii.register_function({"id": "producer"}, producer_handler)
+            >>> iii.trigger({"function_id": "producer", "payload": {"output": ch.writer_ref}})
         """
-        result = await self.trigger({
-            "function_id": "engine::channels::create",
-            "payload": {"buffer_size": buffer_size},
-        })
+        return self._run_on_loop(self._async_create_channel(buffer_size))
+
+    async def _async_create_channel(self, buffer_size: int | None = None) -> Channel:
+        result = await self._async_trigger(
+            {
+                "function_id": "engine::channels::create",
+                "payload": {"buffer_size": buffer_size},
+            }
+        )
         writer_ref = StreamChannelRef(**result["writer"])
         reader_ref = StreamChannelRef(**result["reader"])
         return Channel(
@@ -845,7 +938,6 @@ class III:
         )
 
     def _get_worker_metadata(self) -> dict[str, Any]:
-        """Get worker metadata for registration."""
         try:
             sdk_version = version("iii-sdk")
         except Exception:
@@ -855,9 +947,7 @@ class III:
 
         telemetry_opts = self._options.telemetry
         language = (
-            (telemetry_opts.language if telemetry_opts else None)
-            or os.environ.get("LANG", "").split(".")[0]
-            or None
+            (telemetry_opts.language if telemetry_opts else None) or os.environ.get("LANG", "").split(".")[0] or None
         )
 
         telemetry: dict[str, Any] = {
@@ -877,7 +967,6 @@ class III:
         }
 
     def _register_worker_metadata(self) -> None:
-        """Register this worker's metadata with the engine."""
         msg = InvokeFunctionMessage(
             function_id="engine::workers::register",
             data=self._get_worker_metadata(),
@@ -885,19 +974,30 @@ class III:
             baggage=self._inject_baggage(),
             action=TriggerActionVoid(),
         )
-        try:
-            asyncio.get_running_loop().create_task(self._send(msg))
-        except RuntimeError:
-            self._enqueue(msg)
+        asyncio.run_coroutine_threadsafe(self._send(msg), self._loop)
 
     def on_functions_available(self, callback: Callable[[list[FunctionInfo]], None]) -> Callable[[], None]:
-        """Subscribe to function availability events.
+        """Subscribe to function-availability events from the engine.
+
+        The callback fires whenever the set of available functions changes
+        (e.g. a new worker connects or a function is unregistered).
 
         Args:
-            callback: Function to call when functions become available. Receives list of FunctionInfo.
+            callback (Callable[[list[FunctionInfo]], None]): Receives the
+                current list of ``FunctionInfo`` objects each time
+                availability changes.
 
         Returns:
-            Unsubscribe function that removes the callback and cleans up the trigger if no callbacks remain.
+            A callable that unsubscribes when called.  Calling the
+            returned function removes the callback and, if no callbacks
+            remain, tears down the internal trigger.
+
+        Examples:
+            >>> def on_change(functions):
+            ...     print("Available:", [f.function_id for f in functions])
+            >>> unsub = iii.on_functions_available(on_change)
+            >>> # later ...
+            >>> unsub()
         """
         self._functions_available_callbacks.add(callback)
 
@@ -911,12 +1011,14 @@ class III:
                 async def handler(data: dict[str, Any]) -> None:
                     functions_data = data.get("functions", [])
                     functions = [FunctionInfo(**f) for f in functions_data]
-                    for cb in self._functions_available_callbacks:
+                    for cb in list(self._functions_available_callbacks):
                         cb(functions)
 
-                self.register_function(function_id, handler)
+                self.register_function({"id": function_id}, handler)
 
-            self._functions_available_trigger = self.register_trigger("engine::functions-available", function_id, {})
+            self._functions_available_trigger = self.register_trigger(
+                {"type": "engine::functions-available", "function_id": function_id, "config": {}}
+            )
 
         def unsubscribe() -> None:
             self._functions_available_callbacks.discard(callback)
@@ -930,45 +1032,52 @@ class III:
         """Register a custom stream implementation, overriding the engine default.
 
         Registers 5 of the 6 ``IStream`` methods (``get``, ``set``, ``delete``,
-        ``list``, ``list_groups``). The ``update`` method is **not** registered
+        ``list``, ``list_groups``).  The ``update`` method is **not** registered
         -- atomic updates are handled by the engine's built-in stream update logic.
 
         Args:
-            stream_name: The name of the stream.
-            stream: The stream implementation.
+            stream_name: Unique name for the stream.
+            stream: An object implementing the ``IStream`` interface.
+
+        Examples:
+            >>> from iii.stream import IStream
+            >>> class MyStream(IStream):
+            ...     async def get(self, input): ...
+            ...     async def set(self, input): ...
+            ...     async def delete(self, input): ...
+            ...     async def list(self, input): ...
+            ...     async def list_groups(self, input): ...
+            ...     async def update(self, input): ...
+            >>> iii.create_stream("my-stream", MyStream())
         """
+
         async def get_handler(data: Any) -> Any:
-            from .stream import StreamGetInput
             input_data = StreamGetInput(**data) if isinstance(data, dict) else data
             return await stream.get(input_data)
 
         async def set_handler(data: Any) -> Any:
-            from .stream import StreamSetInput
             input_data = StreamSetInput(**data) if isinstance(data, dict) else data
             result = await stream.set(input_data)
             return result.model_dump() if result else None
 
         async def delete_handler(data: Any) -> Any:
-            from .stream import StreamDeleteInput
             input_data = StreamDeleteInput(**data) if isinstance(data, dict) else data
             result = await stream.delete(input_data)
             return result.model_dump() if result else None
 
         async def list_handler(data: Any) -> list[Any]:
-            from .stream import StreamListInput
             input_data = StreamListInput(**data) if isinstance(data, dict) else data
             return await stream.list(input_data)
 
         async def list_groups_handler(data: Any) -> list[str]:
-            from .stream import StreamListGroupsInput
             input_data = StreamListGroupsInput(**data) if isinstance(data, dict) else data
             return await stream.list_groups(input_data)
 
-        self.register_function(f"stream::get({stream_name})", get_handler)
-        self.register_function(f"stream::set({stream_name})", set_handler)
-        self.register_function(f"stream::delete({stream_name})", delete_handler)
-        self.register_function(f"stream::list({stream_name})", list_handler)
-        self.register_function(f"stream::list_groups({stream_name})", list_groups_handler)
+        self.register_function({"id": f"stream::get({stream_name})"}, get_handler)
+        self.register_function({"id": f"stream::set({stream_name})"}, set_handler)
+        self.register_function({"id": f"stream::delete({stream_name})"}, delete_handler)
+        self.register_function({"id": f"stream::list({stream_name})"}, list_handler)
+        self.register_function({"id": f"stream::list_groups({stream_name})"}, list_groups_handler)
 
 
 class TriggerAction:
@@ -976,12 +1085,12 @@ class TriggerAction:
 
     Examples:
         >>> from iii import TriggerAction
-        >>> await iii.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue('jobs')})
-        >>> await iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+        >>> iii.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
+        >>> iii.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
     """
 
     @staticmethod
-    def Enqueue(queue: str) -> TriggerActionEnqueue:
+    def Enqueue(*, queue: str) -> TriggerActionEnqueue:
         """Route the invocation through a named queue for async processing.
 
         Args:
@@ -993,3 +1102,27 @@ class TriggerAction:
     def Void() -> TriggerActionVoid:
         """Fire-and-forget routing. No response is returned."""
         return TriggerActionVoid()
+
+
+def register_worker(address: str, options: InitOptions | None = None) -> III:
+    """Create an III client and connect to the engine.
+
+    Blocks until the WebSocket connection is established and ready.
+
+    Args:
+        address: WebSocket URL of the III engine (e.g. ``ws://localhost:49134``).
+        options: Optional configuration for worker name, timeouts, reconnection, and OTel.
+
+    Returns:
+        A connected III client instance ready to use.
+
+    Raises:
+        ConnectionError: If the connection fails or exceeds max retries.
+
+    Examples:
+        >>> from iii import register_worker, InitOptions
+        >>> iii = register_worker('ws://localhost:49134', InitOptions(worker_name='my-worker'))
+    """
+    client = III(address, options)
+    client._wait_until_connected()
+    return client

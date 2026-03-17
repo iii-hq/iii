@@ -1,21 +1,20 @@
-use iii_sdk::{IIIError, InitOptions, register_worker};
-
-#[test]
-fn register_worker_without_runtime_returns_runtime_error() {
-    match register_worker("ws://127.0.0.1:49134", InitOptions::default()) {
-        Err(IIIError::Runtime(_)) => {}
-        Err(other) => panic!("expected Runtime error, got {other:?}"),
-        Ok(_) => panic!("expected register_worker to fail without Tokio runtime"),
-    }
-}
+use iii_sdk::{InitOptions, RegisterFunctionMessage, register_worker};
 
 #[tokio::test]
 async fn init_with_runtime_returns_sdk_instance() {
-    let client = register_worker("ws://127.0.0.1:49134", InitOptions::default())
-        .expect("register_worker should succeed inside Tokio runtime");
-
+    let client = register_worker("ws://127.0.0.1:49134", InitOptions::default());
     // API should remain usable immediately after register_worker()
-    client.register_function("test.echo", |input| async move { Ok(input) });
+    client.register_function(
+        RegisterFunctionMessage {
+            id: "test.echo".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        |input| async move { Ok(input) },
+    );
 }
 
 #[cfg(feature = "otel")]
@@ -32,8 +31,17 @@ async fn init_applies_otel_config_before_auto_connect() {
             }),
             ..Default::default()
         },
-    )
-    .expect("register_worker should succeed");
+    );
 
-    client.register_function("test.echo.otel", |input| async move { Ok(input) });
+    client.register_function(
+        RegisterFunctionMessage {
+            id: "test.echo.otel".to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        |input| async move { Ok(input) },
+    );
 }

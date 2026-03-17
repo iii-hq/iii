@@ -20,9 +20,9 @@ graph LR
   <Tab value="Node / TypeScript">
 
 ```typescript
-import {Logger, TriggerAction} from 'iii-sdk'
+import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
 
-const iii = init(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction(
   { id: 'orders.handle', description: 'Handles orders from API, queue, or cron' },
@@ -36,7 +36,7 @@ iii.registerFunction(
 
       logger.info('Processing manual order via API', { amount: req.body?.amount })
 
-      iii.trigger({
+      await iii.trigger({
         function_id: 'state::set',
         payload: {
           scope: 'orders',
@@ -46,7 +46,7 @@ iii.registerFunction(
         action: TriggerAction.Void(),
       })
 
-      iii.trigger({
+      await iii.trigger({
         function_id: 'enqueue',
         payload: { topic: 'order.processed', data: { orderId, source: 'api' } },
         action: TriggerAction.Void(),
@@ -62,7 +62,7 @@ iii.registerFunction(
 
       logger.info('Processing order from queue', { amount })
 
-      iii.trigger({
+      await iii.trigger({
         function_id: 'state::set',
         payload: {
           scope: 'orders',
@@ -72,7 +72,7 @@ iii.registerFunction(
         action: TriggerAction.Void(),
       })
 
-      iii.trigger({
+      await iii.trigger({
         function_id: 'enqueue',
         payload: { topic: 'order.processed', data: { orderId, amount, source: 'queue' } },
         action: TriggerAction.Void(),
@@ -90,7 +90,7 @@ iii.registerFunction(
     })
 
     for (const order of pendingOrders ?? []) {
-      iii.trigger({
+      await iii.trigger({
         function_id: 'enqueue',
         payload: { topic: 'order.processed', data: { orderId: order.id, amount: order.amount, source: 'cron' } },
         action: TriggerAction.Void(),
@@ -125,13 +125,12 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-import asyncio
-from iii import III, InitOptions, ApiRequest, ApiResponse, TriggerAction
+from iii import register_worker, InitOptions, Logger, ApiRequest, ApiResponse, TriggerAction
 
-iii = III(address="ws://localhost:49134", options=InitOptions(worker_name="orders-worker"))
+iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="orders-worker"))
+logger = Logger()
 
-
-async def orders_handle(data, ctx) -> dict | None:
+def orders_handle(data) -> dict | None:
     # HTTP trigger — data has 'path_params', 'body', etc.
     if isinstance(data, dict) and "path_params" in data:
         req = ApiRequest(**data)
@@ -141,12 +140,19 @@ async def orders_handle(data, ctx) -> dict | None:
 
         iii.trigger({
             "function_id": "state::set",
-            "payload": {"scope": "orders", "key": order_id, "value": {**req.body, "id": order_id, "source": "api"}},
+            "payload": {
+                "scope": "orders",
+                "key": order_id,
+                "data": {**req.body, "id": order_id, "source": "api"},
+            },
             "action": TriggerAction.Void(),
         })
         iii.trigger({
             "function_id": "enqueue",
-            "payload": {"topic": "order.processed", "data": {"orderId": order_id, "source": "api"}},
+            "payload": {
+                "topic": "order.processed",
+                "data": {"orderId": order_id, "source": "api"},
+            },
             "action": TriggerAction.Void(),
         })
 
@@ -163,12 +169,19 @@ async def orders_handle(data, ctx) -> dict | None:
 
         iii.trigger({
             "function_id": "state::set",
-            "payload": {"scope": "orders", "key": order_id, "value": {**data, "id": order_id, "source": "queue"}},
+            "payload": {
+                "scope": "orders",
+                "key": order_id,
+                "data": {**data, "id": order_id, "source": "queue"},
+            },
             "action": TriggerAction.Void(),
         })
         iii.trigger({
             "function_id": "enqueue",
-            "payload": {"topic": "order.processed", "data": {"orderId": order_id, "source": "queue"}},
+            "payload": {
+                "topic": "order.processed",
+                "data": {"orderId": order_id, "source": "queue"},
+            },
             "action": TriggerAction.Void(),
         })
         return None
@@ -176,98 +189,156 @@ async def orders_handle(data, ctx) -> dict | None:
     # Cron trigger — data is None or empty
     logger.info("Processing scheduled order batch")
 
-    pending = await iii.trigger({"function_id": "state::list", "payload": {"scope": "pending-orders"}}) or []
+    pending = iii.trigger({
+        "function_id": "state::list",
+        "payload": {"scope": "pending-orders"},
+    }) or []
     for order in pending:
         iii.trigger({
             "function_id": "enqueue",
-            "payload": {"topic": "order.processed", "data": {"orderId": order["id"], "source": "cron"}},
+            "payload": {
+                "topic": "order.processed",
+                "data": {"orderId": order["id"], "source": "cron"},
+            },
             "action": TriggerAction.Void(),
         })
 
     logger.info("Batch complete", {"count": len(pending)})
     return None
 
+iii.register_function({"id": "orders.handle"}, orders_handle)
 
-iii.register_function("orders.handle", lambda data: orders_handle(data, Logger()))
-
-iii.register_trigger(type="http", function_id="orders.handle",
-                     config={"api_path": "orders/manual", "http_method": "POST"})
-iii.register_trigger(type="queue", function_id="orders.handle",
-                     config={"topic": "order.created"})
-iii.register_trigger(type="cron", function_id="orders.handle",
-                     config={"expression": "* * * * *"})
+iii.register_trigger({"type": "http", "function_id": "orders.handle",
+                      "config": {"api_path": "orders/manual", "http_method": "POST"}})
+iii.register_trigger({"type": "queue", "function_id": "orders.handle",
+                      "config": {"topic": "order.created"}})
+iii.register_trigger({"type": "cron", "function_id": "orders.handle",
+                      "config": {"expression": "* * * * *"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Logger, TriggerRequest, TriggerAction, types::ApiRequest};
-use serde_json::json;
+use iii_sdk::{
+    register_worker, InitOptions, Logger, RegisterFunctionMessage,
+    RegisterTriggerInput, TriggerAction, TriggerRequest,
+};
+use serde_json::{json, Value};
 
-iii.register_function("orders.handle", |input| async move {
-    let logger = Logger();
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-    // HTTP trigger — try to parse as ApiRequest
-    if let Ok(req) = serde_json::from_value::<ApiRequest>(input.clone()) {
-        let order_id = format!("order-{}", chrono::Utc::now().timestamp_millis());
+let iii_clone = iii.clone();
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "orders.handle".into(),
+        description: Some("Handles orders from API, queue, or cron".into()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    },
+    move |input: Value| {
+        let iii = iii_clone.clone();
+        async move {
+            let logger = Logger::new();
 
-        logger.info("Processing manual order via API", Some(json!({
-            "amount": req.body["amount"]
-        })));
+            // HTTP trigger — try to parse as ApiRequest
+            if input.get("path_params").is_some() {
+                let order_id = format!("order-{}", chrono::Utc::now().timestamp_millis());
 
-        iii.trigger(TriggerRequest::new("state::set", json!({
-            "scope": "orders",
-            "key": order_id,
-            "value": { "id": order_id, "source": "api", "amount": req.body["amount"] },
-        })).action(TriggerAction::void())).await?;
+                logger.info("Processing manual order via API", Some(json!({
+                    "amount": input["body"]["amount"]
+                })));
 
-        iii.trigger(TriggerRequest::new("enqueue", json!({
-            "topic": "order.processed",
-            "data": { "orderId": order_id, "source": "api" },
-        })).action(TriggerAction::void())).await?;
+                iii.trigger(TriggerRequest {
+                    function_id: "state::set".into(),
+                    payload: json!({
+                        "scope": "orders",
+                        "key": order_id,
+                        "value": { "id": order_id, "source": "api", "amount": input["body"]["amount"] },
+                    }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                }).await?;
 
-        return Ok(json!({ "status_code": 200, "body": { "orderId": order_id } }));
-    }
+                iii.trigger(TriggerRequest {
+                    function_id: "enqueue".into(),
+                    payload: json!({
+                        "topic": "order.processed",
+                        "data": { "orderId": order_id, "source": "api" },
+                    }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                }).await?;
 
-    // Queue trigger — input has "amount"
-    if input.get("amount").is_some() {
-        let amount = input["amount"].as_f64().unwrap_or(0.0);
-        let order_id = format!("order-{}", chrono::Utc::now().timestamp_millis());
+                return Ok(json!({ "status_code": 200, "body": { "orderId": order_id } }));
+            }
 
-        logger.info("Processing order from queue", Some(json!({ "amount": amount })));
+            // Queue trigger — input has "amount"
+            if input.get("amount").is_some() {
+                let amount = input["amount"].as_f64().unwrap_or(0.0);
+                let order_id = format!("order-{}", chrono::Utc::now().timestamp_millis());
 
-        iii.trigger(TriggerRequest::new("enqueue", json!({
-            "topic": "order.processed",
-            "data": { "orderId": order_id, "source": "queue" },
-        })).action(TriggerAction::void())).await?;
+                logger.info("Processing order from queue", Some(json!({ "amount": amount })));
 
-        return Ok(json!(null));
-    }
+                iii.trigger(TriggerRequest {
+                    function_id: "enqueue".into(),
+                    payload: json!({
+                        "topic": "order.processed",
+                        "data": { "orderId": order_id, "source": "queue" },
+                    }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                }).await?;
 
-    // Cron trigger
-    logger.info("Processing scheduled batch", None);
+                return Ok(json!(null));
+            }
 
-    let pending = iii.trigger(TriggerRequest::new("state::list", json!({ "scope": "pending-orders" }))).await?;
-    let orders = pending.as_array().cloned().unwrap_or_default();
+            // Cron trigger
+            logger.info("Processing scheduled batch", None);
 
-    for order in &orders {
-        iii.trigger(TriggerRequest::new("enqueue", json!({
-            "topic": "order.processed",
-            "data": { "orderId": order["id"], "source": "cron" },
-        })).action(TriggerAction::void())).await?;
-    }
+            let pending = iii.trigger(TriggerRequest {
+                function_id: "state::list".into(),
+                payload: json!({ "scope": "pending-orders" }),
+                action: None,
+                timeout_ms: None,
+            }).await?;
+            let orders = pending.as_array().cloned().unwrap_or_default();
 
-    logger.info("Batch complete", Some(json!({ "count": orders.len() })));
-    Ok(json!(null))
-});
+            for order in &orders {
+                iii.trigger(TriggerRequest {
+                    function_id: "enqueue".into(),
+                    payload: json!({
+                        "topic": "order.processed",
+                        "data": { "orderId": order["id"], "source": "cron" },
+                    }),
+                    action: Some(TriggerAction::Void),
+                    timeout_ms: None,
+                }).await?;
+            }
 
-iii.register_trigger("http", "orders.handle", json!({
-    "api_path": "orders/manual",
-    "http_method": "POST",
-}))?;
-iii.register_trigger("queue", "orders.handle", json!({ "topic": "order.created" }))?;
-iii.register_trigger("cron", "orders.handle", json!({ "expression": "* * * * *" }))?;
+            logger.info("Batch complete", Some(json!({ "count": orders.len() })));
+            Ok(json!(null))
+        }
+    },
+);
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "orders.handle".into(),
+    config: json!({ "api_path": "orders/manual", "http_method": "POST" }),
+})?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "queue".into(),
+    function_id: "orders.handle".into(),
+    config: json!({ "topic": "order.created" }),
+})?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "cron".into(),
+    function_id: "orders.handle".into(),
+    config: json!({ "expression": "* * * * *" }),
+})?;
 ```
 
   </Tab>
@@ -289,16 +360,24 @@ iii.registerTrigger({ type: 'http', function_id: 'my.fn', config: { api_path: 'e
   <Tab value="Python">
 
 ```python
-iii.register_trigger(type="queue", function_id="my.fn", config={"topic": "events"})
-iii.register_trigger(type="http", function_id="my.fn", config={"api_path": "events", "http_method": "POST"})
+iii.register_trigger({"type": "queue", "function_id": "my.fn", "config": {"topic": "events"}})
+iii.register_trigger({"type": "http", "function_id": "my.fn", "config": {"api_path": "events", "http_method": "POST"}})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_trigger("queue", "my.fn", json!({ "topic": "events" }))?;
-iii.register_trigger("http", "my.fn", json!({ "api_path": "events", "http_method": "POST" }))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "queue".into(),
+    function_id: "my.fn".into(),
+    config: json!({ "topic": "events" }),
+})?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "my.fn".into(),
+    config: json!({ "api_path": "events", "http_method": "POST" }),
+})?;
 ```
 
   </Tab>

@@ -30,7 +30,7 @@ requires-dist = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.8.0"
+version = "0.8.3"
 source = { editable = "../iii" }
 dependencies = [
     { name = "pydantic" },
@@ -41,6 +41,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'dev'", specifier = ">=3.9" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "griffe", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "opentelemetry-api", marker = "extra == 'dev'", specifier = ">=1.25" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.25" },
@@ -49,6 +50,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.2" },
     { name = "websockets", specifier = ">=12.0" },
 ]

@@ -2,15 +2,13 @@
 
 import asyncio
 import json
+import time
 
-import pytest
-
-from iii import III
+from iii.iii import III
 from iii.channels import ChannelReader, ChannelWriter
 
 
-@pytest.mark.asyncio
-async def test_stream_data_from_sender_to_processor(iii_client: III):
+def test_stream_data_from_sender_to_processor(iii_client: III):
     """Sender writes records via a channel, processor reads and computes stats."""
 
     async def processor_handler(input_data):
@@ -37,28 +35,26 @@ async def test_stream_data_from_sender_to_processor(iii_client: III):
 
     async def sender_handler(input_data):
         records = input_data["records"]
-        channel = await iii_client.create_channel()
+        channel = await iii_client._async_create_channel()
 
         payload = json.dumps(records).encode("utf-8")
         await channel.writer.write(payload)
         await channel.writer.close_async()
 
-        result = await iii_client.trigger(
-            {
-                "function_id": "test.data.processor",
-                "payload": {
-                    "label": "metrics-batch",
-                    "reader": channel.reader_ref.model_dump(),
-                },
-            }
-        )
+        result = await iii_client._async_trigger({
+            "function_id": "test.data.processor",
+            "payload": {
+                "label": "metrics-batch",
+                "reader": channel.reader_ref.model_dump(),
+            },
+        })
 
         return result
 
-    proc_ref = iii_client.register_function("test.data.processor", processor_handler)
-    sender_ref = iii_client.register_function("test.data.sender", sender_handler)
+    proc_ref = iii_client.register_function({"id": "test.data.processor"}, processor_handler)
+    sender_ref = iii_client.register_function({"id": "test.data.sender"}, sender_handler)
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     try:
         records = [
@@ -69,12 +65,10 @@ async def test_stream_data_from_sender_to_processor(iii_client: III):
             {"name": "latency_ms", "value": 12},
         ]
 
-        result = await iii_client.trigger(
-            {
-                "function_id": "test.data.sender",
-                "payload": {"records": records},
-            }
-        )
+        result = iii_client.trigger({
+            "function_id": "test.data.sender",
+            "payload": {"records": records},
+        })
 
         assert result["label"] == "metrics-batch"
         assert len(result["messages"]) == 5
@@ -90,8 +84,7 @@ async def test_stream_data_from_sender_to_processor(iii_client: III):
         proc_ref.unregister()
 
 
-@pytest.mark.asyncio
-async def test_bidirectional_streaming(iii_client: III):
+def test_bidirectional_streaming(iii_client: III):
     """Worker reads input, sends progress messages, writes binary result back."""
 
     async def worker_handler(input_data):
@@ -140,23 +133,11 @@ async def test_bidirectional_streaming(iii_client: III):
         text = input_data["text"]
         chunk_size = input_data["chunkSize"]
 
-        input_channel = await iii_client.create_channel()
-        output_channel = await iii_client.create_channel()
+        input_channel = await iii_client._async_create_channel()
+        output_channel = await iii_client._async_create_channel()
 
         messages = []
         output_channel.reader.on_message(lambda msg: messages.append(json.loads(msg)))
-
-        call_task = asyncio.create_task(
-            iii_client.trigger(
-                {
-                    "function_id": "test.stream.worker",
-                    "payload": {
-                        "reader": input_channel.reader_ref.model_dump(),
-                        "writer": output_channel.writer_ref.model_dump(),
-                    },
-                }
-            )
-        )
 
         text_bytes = text.encode("utf-8")
         offset = 0
@@ -166,9 +147,15 @@ async def test_bidirectional_streaming(iii_client: III):
             offset = end
         await input_channel.writer.close_async()
 
-        result_data = await output_channel.reader.read_all()
+        worker_result = await iii_client._async_trigger({
+            "function_id": "test.stream.worker",
+            "payload": {
+                "reader": input_channel.reader_ref.model_dump(),
+                "writer": output_channel.writer_ref.model_dump(),
+            },
+        })
 
-        worker_result = await call_task
+        result_data = await output_channel.reader.read_all()
         binary_result = json.loads(result_data.decode("utf-8"))
 
         return {
@@ -177,23 +164,21 @@ async def test_bidirectional_streaming(iii_client: III):
             "workerResult": worker_result,
         }
 
-    worker_ref = iii_client.register_function("test.stream.worker", worker_handler)
-    coord_ref = iii_client.register_function("test.stream.coordinator", coordinator_handler)
+    worker_ref = iii_client.register_function({"id": "test.stream.worker"}, worker_handler)
+    coord_ref = iii_client.register_function({"id": "test.stream.coordinator"}, coordinator_handler)
 
-    await asyncio.sleep(0.3)
+    time.sleep(0.3)
 
     try:
         text = "The quick brown fox jumps over the lazy dog and then runs around the park"
 
-        result = await iii_client.trigger(
-            {
-                "function_id": "test.stream.coordinator",
-                "payload": {
-                    "text": text,
-                    "chunkSize": 10,
-                },
-            }
-        )
+        result = iii_client.trigger({
+            "function_id": "test.stream.coordinator",
+            "payload": {
+                "text": text,
+                "chunkSize": 10,
+            },
+        })
 
         progress_msgs = [m for m in result["messages"] if m["type"] == "progress"]
         complete_msg = next((m for m in result["messages"] if m["type"] == "complete"), None)

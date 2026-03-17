@@ -14,6 +14,6 @@ config = {
 }
 
 
-async def handler(input: Any) -> None:
+def handler(input: Any) -> None:
     """Handle single event trigger."""
     logger.info("Single event trigger fired", {"data": input})

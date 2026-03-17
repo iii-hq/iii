@@ -27,7 +27,7 @@ config = {
 }
 
 
-async def handler(request: Any) -> dict[str, Any]:
+def handler(request: Any) -> dict[str, Any]:
     """Create a new todo item."""
     todo_id = str(uuid.uuid4())
     body = request.body or {}
@@ -40,7 +40,7 @@ async def handler(request: Any) -> dict[str, Any]:
         "completed": False,
     }
 
-    await todo_stream.set(group_id, todo_id, todo)
+    todo_stream.set(group_id, todo_id, todo)
 
     logger.info(f"Created todo {todo_id} in group {group_id}")
 

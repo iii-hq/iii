@@ -1,7 +1,6 @@
-use iii_sdk::III;
+use iii_sdk::{RegisterFunctionMessage, TriggerRequest, III};
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bridge::error::{error_response, success_response};
@@ -35,7 +34,12 @@ fn parse_bool_param(input: &Value, key: &str) -> bool {
 
 async fn handle_health(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("engine::health::check", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "engine::health::check".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(health_data) => success_response(health_data),
@@ -45,7 +49,12 @@ async fn handle_health(bridge: &III) -> Value {
 
 async fn handle_workers(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("engine::workers::list", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(workers_data) => success_response(workers_data),
@@ -57,11 +66,12 @@ async fn handle_triggers_list(bridge: &III, input: Value) -> Value {
     let include_internal = parse_bool_param(&input, "include_internal");
     let effective_input = json!({ "include_internal": include_internal });
     match bridge
-        .call_with_timeout(
-            "engine::triggers::list",
-            effective_input,
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::triggers::list".to_string(),
+            payload: effective_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(triggers_data) => success_response(triggers_data),
@@ -73,11 +83,12 @@ async fn handle_functions_list(bridge: &III, input: Value) -> Value {
     let include_internal = parse_bool_param(&input, "include_internal");
     let effective_input = json!({ "include_internal": include_internal });
     match bridge
-        .call_with_timeout(
-            "engine::functions::list",
-            effective_input,
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: effective_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(functions_data) => success_response(functions_data),
@@ -87,13 +98,24 @@ async fn handle_functions_list(bridge: &III, input: Value) -> Value {
 
 async fn handle_status(bridge: &III) -> Value {
     let (workers_result, functions_result, metrics_result) = tokio::join!(
-        bridge.call_with_timeout("engine::workers::list", json!({}), Duration::from_secs(5)),
-        bridge.call_with_timeout(
-            "engine::functions::list",
-            json!({ "include_internal": true }),
-            Duration::from_secs(5)
-        ),
-        bridge.call_with_timeout("engine::metrics::list", json!({}), Duration::from_secs(5))
+        bridge.trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        }),
+        bridge.trigger(TriggerRequest {
+            function_id: "engine::functions::list".to_string(),
+            payload: json!({ "include_internal": true }),
+            action: None,
+            timeout_ms: Some(5000),
+        }),
+        bridge.trigger(TriggerRequest {
+            function_id: "engine::metrics::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
     );
 
     let workers_count = workers_result
@@ -138,11 +160,12 @@ async fn handle_trigger_types(bridge: &III) -> Value {
     ];
 
     match bridge
-        .call_with_timeout(
-            "engine::triggers::list",
-            json!({ "include_internal": true }),
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::triggers::list".to_string(),
+            payload: json!({ "include_internal": true }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(triggers_data) => {
@@ -176,7 +199,12 @@ async fn handle_trigger_types(bridge: &III) -> Value {
 
 async fn handle_alerts_list(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("engine::alerts::list", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "engine::alerts::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -186,7 +214,12 @@ async fn handle_alerts_list(bridge: &III) -> Value {
 
 async fn handle_sampling_rules(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("engine::sampling::rules", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "engine::sampling::rules".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -197,11 +230,12 @@ async fn handle_sampling_rules(bridge: &III) -> Value {
 async fn handle_otel_logs_list(bridge: &III, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
-        .call_with_timeout(
-            "engine::logs::list",
-            effective_input,
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::logs::list".to_string(),
+            payload: effective_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -211,7 +245,12 @@ async fn handle_otel_logs_list(bridge: &III, input: Value) -> Value {
 
 async fn handle_otel_logs_clear(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("engine::logs::clear", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "engine::logs::clear".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -222,11 +261,12 @@ async fn handle_otel_logs_clear(bridge: &III) -> Value {
 async fn handle_otel_traces_list(bridge: &III, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
-        .call_with_timeout(
-            "engine::traces::list",
-            effective_input,
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::traces::list".to_string(),
+            payload: effective_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -236,7 +276,12 @@ async fn handle_otel_traces_list(bridge: &III, input: Value) -> Value {
 
 async fn handle_otel_traces_clear(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("engine::traces::clear", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "engine::traces::clear".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -265,7 +310,12 @@ async fn handle_otel_traces_tree(bridge: &III, input: Value) -> Value {
     let tree_input = json!({ "trace_id": trace_id });
 
     match bridge
-        .call_with_timeout("engine::traces::tree", tree_input, Duration::from_secs(10))
+        .trigger(TriggerRequest {
+            function_id: "engine::traces::tree".to_string(),
+            payload: tree_input,
+            action: None,
+            timeout_ms: Some(10000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -276,11 +326,12 @@ async fn handle_otel_traces_tree(bridge: &III, input: Value) -> Value {
 async fn handle_metrics_detailed(bridge: &III, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
-        .call_with_timeout(
-            "engine::metrics::list",
-            effective_input,
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::metrics::list".to_string(),
+            payload: effective_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -291,11 +342,12 @@ async fn handle_metrics_detailed(bridge: &III, input: Value) -> Value {
 async fn handle_rollups_list(bridge: &III, input: Value) -> Value {
     let effective_input = input.get("body").cloned().unwrap_or(input);
     match bridge
-        .call_with_timeout(
-            "engine::rollups::list",
-            effective_input,
-            Duration::from_secs(5),
-        )
+        .trigger(TriggerRequest {
+            function_id: "engine::rollups::list".to_string(),
+            payload: effective_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -306,7 +358,12 @@ async fn handle_rollups_list(bridge: &III, input: Value) -> Value {
 async fn handle_state_groups_list(bridge: &III, _input: Value) -> Value {
     // Always use state::list_groups - no filtering by stream_name needed
     match bridge
-        .call_with_timeout("state::list_groups", json!({}), Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "state::list_groups".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => {
@@ -342,7 +399,12 @@ async fn handle_state_group_items(bridge: &III, input: Value) -> Value {
             let state_input = json!({ "scope": scope });
 
             match bridge
-                .call_with_timeout("state::list", state_input, Duration::from_secs(5))
+                .trigger(TriggerRequest {
+                    function_id: "state::list".to_string(),
+                    payload: state_input,
+                    action: None,
+                    timeout_ms: Some(5000),
+                })
                 .await
             {
                 Ok(data) => {
@@ -422,7 +484,12 @@ async fn handle_state_item_set(bridge: &III, input: Value) -> Value {
     });
 
     match bridge
-        .call_with_timeout("state::set", state_input, Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "state::set".to_string(),
+            payload: state_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -469,7 +536,12 @@ async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
     });
 
     match bridge
-        .call_with_timeout("state::delete", state_input, Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "state::delete".to_string(),
+            payload: state_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => success_response(data),
@@ -479,13 +551,24 @@ async fn handle_state_item_delete(bridge: &III, input: Value) -> Value {
 
 async fn handle_adapters(bridge: &III) -> Value {
     let (workers_result, triggers_result, health_result) = tokio::join!(
-        bridge.call_with_timeout("engine::workers::list", json!({}), Duration::from_secs(5)),
-        bridge.call_with_timeout(
-            "engine::triggers::list",
-            json!({ "include_internal": true }),
-            Duration::from_secs(5)
-        ),
-        bridge.call_with_timeout("engine::health::check", json!({}), Duration::from_secs(5))
+        bridge.trigger(TriggerRequest {
+            function_id: "engine::workers::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        }),
+        bridge.trigger(TriggerRequest {
+            function_id: "engine::triggers::list".to_string(),
+            payload: json!({ "include_internal": true }),
+            action: None,
+            timeout_ms: Some(5000),
+        }),
+        bridge.trigger(TriggerRequest {
+            function_id: "engine::health::check".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
     );
 
     let mut adapters: Vec<Value> = Vec::new();
@@ -623,7 +706,12 @@ async fn handle_adapters(bridge: &III) -> Value {
 
 async fn handle_streams_list(bridge: &III) -> Value {
     match bridge
-        .call_with_timeout("stream::list_all", json!({}), Duration::from_secs(10))
+        .trigger(TriggerRequest {
+            function_id: "stream::list_all".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10000),
+        })
         .await
     {
         Ok(data) => {
@@ -704,7 +792,12 @@ async fn handle_flow_config_get(bridge: &III, input: Value) -> Value {
     });
 
     match bridge
-        .call_with_timeout("state::get", state_input, Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "state::get".to_string(),
+            payload: state_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(data) => {
@@ -745,7 +838,12 @@ async fn handle_invoke(bridge: &III, input: Value) -> Value {
         .unwrap_or(json!({}));
 
     match bridge
-        .call_with_timeout(&function_id, data, Duration::from_secs(30))
+        .trigger(TriggerRequest {
+            function_id: function_id.clone(),
+            payload: data,
+            action: None,
+            timeout_ms: Some(30000),
+        })
         .await
     {
         Ok(result) => success_response(result),
@@ -780,11 +878,12 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
         function_id
     } else {
         let triggers_data = match bridge
-            .call_with_timeout(
-                "engine::triggers::list",
-                json!({ "include_internal": true }),
-                Duration::from_secs(5),
-            )
+            .trigger(TriggerRequest {
+                function_id: "engine::triggers::list".to_string(),
+                payload: json!({ "include_internal": true }),
+                action: None,
+                timeout_ms: Some(5000),
+            })
             .await
         {
             Ok(data) => data,
@@ -851,7 +950,12 @@ async fn handle_cron_trigger(bridge: &III, input: Value) -> Value {
     });
 
     match bridge
-        .call_with_timeout(&function_id, payload, Duration::from_secs(30))
+        .trigger(TriggerRequest {
+            function_id: function_id.clone(),
+            payload,
+            action: None,
+            timeout_ms: Some(30000),
+        })
         .await
     {
         Ok(result) => success_response(json!({
@@ -896,7 +1000,12 @@ async fn handle_flow_config_save(bridge: &III, input: Value) -> Value {
     });
 
     match bridge
-        .call_with_timeout("state::set", state_input, Duration::from_secs(5))
+        .trigger(TriggerRequest {
+            function_id: "state::set".to_string(),
+            payload: state_input,
+            action: None,
+            timeout_ms: Some(5000),
+        })
         .await
     {
         Ok(_) => success_response(json!({ "message": "Flow config saved successfully" })),
@@ -904,153 +1013,206 @@ async fn handle_flow_config_save(bridge: &III, input: Value) -> Value {
     }
 }
 
+fn reg_fn_msg(id: &str) -> RegisterFunctionMessage {
+    RegisterFunctionMessage {
+        id: id.to_string(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    }
+}
+
 pub fn register_functions(bridge: &III) {
     let b = bridge.clone();
-    bridge.register_function("engine::console::health", move |_input| {
+    bridge.register_function(reg_fn_msg("engine::console::health"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_health(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::workers", move |_input| {
+    bridge.register_function(reg_fn_msg("engine::console::workers"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_workers(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::functions", move |input| {
+    bridge.register_function(reg_fn_msg("engine::console::functions"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_functions_list(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::triggers", move |input| {
+    bridge.register_function(reg_fn_msg("engine::console::triggers"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_triggers_list(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::status", move |_input| {
+    bridge.register_function(reg_fn_msg("engine::console::status"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_status(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::trigger_types", move |_input| {
-        let bridge = b.clone();
-        async move { Ok(handle_trigger_types(&bridge).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::trigger_types"),
+        move |_input| {
+            let bridge = b.clone();
+            async move { Ok(handle_trigger_types(&bridge).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::alerts_list", move |_input| {
+    bridge.register_function(reg_fn_msg("engine::console::alerts_list"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_alerts_list(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::sampling_rules", move |_input| {
-        let bridge = b.clone();
-        async move { Ok(handle_sampling_rules(&bridge).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::sampling_rules"),
+        move |_input| {
+            let bridge = b.clone();
+            async move { Ok(handle_sampling_rules(&bridge).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::otel_logs_list", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_otel_logs_list(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::otel_logs_list"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_otel_logs_list(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::otel_logs_clear", move |_input| {
-        let bridge = b.clone();
-        async move { Ok(handle_otel_logs_clear(&bridge).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::otel_logs_clear"),
+        move |_input| {
+            let bridge = b.clone();
+            async move { Ok(handle_otel_logs_clear(&bridge).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::otel_traces_list", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_otel_traces_list(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::otel_traces_list"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_otel_traces_list(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::otel_traces_clear", move |_input| {
-        let bridge = b.clone();
-        async move { Ok(handle_otel_traces_clear(&bridge).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::otel_traces_clear"),
+        move |_input| {
+            let bridge = b.clone();
+            async move { Ok(handle_otel_traces_clear(&bridge).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::otel_traces_tree", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_otel_traces_tree(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::otel_traces_tree"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_otel_traces_tree(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::metrics_detailed", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_metrics_detailed(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::metrics_detailed"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_metrics_detailed(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::rollups_list", move |input| {
+    bridge.register_function(reg_fn_msg("engine::console::rollups_list"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_rollups_list(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::state_groups_list", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_state_groups_list(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::state_groups_list"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_state_groups_list(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::state_group_items", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_state_group_items(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::state_group_items"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_state_group_items(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::state_item_set", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_state_item_set(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::state_item_set"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_state_item_set(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::state_item_delete", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_state_item_delete(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::state_item_delete"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_state_item_delete(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::adapters", move |_input| {
+    bridge.register_function(reg_fn_msg("engine::console::adapters"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_adapters(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::streams_list", move |_input| {
+    bridge.register_function(reg_fn_msg("engine::console::streams_list"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_streams_list(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::flow_config_get", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_flow_config_get(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::flow_config_get"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_flow_config_get(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::flow_config_save", move |input| {
-        let bridge = b.clone();
-        async move { Ok(handle_flow_config_save(&bridge, input).await) }
-    });
+    bridge.register_function(
+        reg_fn_msg("engine::console::flow_config_save"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_flow_config_save(&bridge, input).await) }
+        },
+    );
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::invoke", move |input| {
+    bridge.register_function(reg_fn_msg("engine::console::invoke"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_invoke(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function("engine::console::cron_trigger", move |input| {
+    bridge.register_function(reg_fn_msg("engine::console::cron_trigger"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_cron_trigger(&bridge, input).await) }
     });

@@ -1,8 +1,9 @@
 """Worker metrics collection for the III Python SDK.
 
-Collects CPU, memory (RSS, VMS), and process uptime metrics.
+Collects CPU, memory (RSS, VMS, heap), and process uptime metrics.
 Uses stdlib `os` and `resource` modules -- no psutil dependency required.
 """
+
 from __future__ import annotations
 
 import os
@@ -20,6 +21,11 @@ class WorkerMetrics:
     cpu_percent: float  # 0-100
     uptime_seconds: float
     timestamp_ms: int
+    memory_heap_used: int = 0  # bytes (tracemalloc if active)
+    memory_heap_total: int = 0  # bytes (not directly available in Python)
+    memory_external: int = 0  # bytes (Node.js concept, always 0 in Python)
+    cpu_user_micros: int = 0  # microseconds
+    cpu_system_micros: int = 0  # microseconds
     runtime: str = "python"
 
 
@@ -108,6 +114,8 @@ class WorkerMetricsCollector:
 
         # CPU percentage since last collection
         cpu_percent = 0.0
+        cpu_user_micros = 0
+        cpu_system_micros = 0
         try:
             cpu_times = os.times()
             cpu_user = cpu_times.user + cpu_times.children_user
@@ -118,10 +126,24 @@ class WorkerMetricsCollector:
                 cpu_delta = (cpu_user - self._last_cpu_user) + (cpu_system - self._last_cpu_system)
                 cpu_percent = min((cpu_delta / elapsed) * 100.0, 100.0)
 
+            cpu_user_micros = int(cpu_user * 1_000_000)
+            cpu_system_micros = int(cpu_system * 1_000_000)
+
             self._last_cpu_user = cpu_user
             self._last_cpu_system = cpu_system
             self._last_cpu_time = now
         except (AttributeError, OSError):
+            pass
+
+        # Heap metrics via tracemalloc (if active)
+        memory_heap_used = 0
+        try:
+            import tracemalloc
+
+            if tracemalloc.is_tracing():
+                current, _ = tracemalloc.get_traced_memory()
+                memory_heap_used = current
+        except Exception:
             pass
 
         uptime = now - self._start_time
@@ -132,4 +154,9 @@ class WorkerMetricsCollector:
             cpu_percent=cpu_percent,
             uptime_seconds=uptime,
             timestamp_ms=int(time.time() * 1000),
+            memory_heap_used=memory_heap_used,
+            memory_heap_total=0,
+            memory_external=0,
+            cpu_user_micros=cpu_user_micros,
+            cpu_system_micros=cpu_system_micros,
         )

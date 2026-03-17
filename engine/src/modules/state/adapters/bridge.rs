@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use iii_sdk::{III, UpdateOp, UpdateResult, types::SetResult};
+use iii_sdk::{
+    III, InitOptions, TriggerRequest, UpdateOp, UpdateResult, register_worker, types::SetResult,
+};
 use serde_json::Value;
 
 use crate::{
@@ -30,12 +32,7 @@ impl BridgeAdapter {
     pub async fn new(bridge_url: String) -> anyhow::Result<Self> {
         tracing::info!(bridge_url = %bridge_url, "Connecting to bridge");
 
-        let bridge = Arc::new(III::new(&bridge_url));
-        let res = bridge.connect().await;
-
-        if let Err(error) = res {
-            panic!("Failed to connect to bridge: {}", error);
-        }
+        let bridge = Arc::new(register_worker(&bridge_url, InitOptions::default()));
 
         Ok(Self { bridge })
     }
@@ -57,7 +54,12 @@ impl StateAdapter for BridgeAdapter {
 
         let result = self
             .bridge
-            .trigger(iii_sdk::TriggerRequest::new("state::update", data))
+            .trigger(TriggerRequest {
+                function_id: "state::update".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update value via bridge: {}", e))?;
 
@@ -78,7 +80,12 @@ impl StateAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(iii_sdk::TriggerRequest::new("state::set", data))
+            .trigger(TriggerRequest {
+                function_id: "state::set".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to set value via bridge: {}", e))?;
 
@@ -93,7 +100,12 @@ impl StateAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(iii_sdk::TriggerRequest::new("state::get", data))
+            .trigger(TriggerRequest {
+                function_id: "state::get".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get value via bridge: {}", e))?;
 
@@ -107,7 +119,12 @@ impl StateAdapter for BridgeAdapter {
             key: key.to_string(),
         };
         self.bridge
-            .trigger(iii_sdk::TriggerRequest::new("state::delete", data))
+            .trigger(TriggerRequest {
+                function_id: "state::delete".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete value via bridge: {}", e))?;
         Ok(())
@@ -120,7 +137,12 @@ impl StateAdapter for BridgeAdapter {
 
         let result = self
             .bridge
-            .trigger(iii_sdk::TriggerRequest::new("state::list", data))
+            .trigger(TriggerRequest {
+                function_id: "state::list".to_string(),
+                payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list values via bridge: {}", e))?;
 
@@ -131,10 +153,13 @@ impl StateAdapter for BridgeAdapter {
     async fn list_groups(&self) -> anyhow::Result<Vec<String>> {
         let result = self
             .bridge
-            .trigger(iii_sdk::TriggerRequest::new(
-                "state::list_groups",
-                StateListGroupsInput {},
-            ))
+            .trigger(TriggerRequest {
+                function_id: "state::list_groups".to_string(),
+                payload: serde_json::to_value(StateListGroupsInput {})
+                    .unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list groups via bridge: {}", e))?;
 

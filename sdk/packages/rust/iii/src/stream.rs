@@ -5,10 +5,9 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use iii::{III, Streams, UpdateOp};
+//! use iii_sdk::{register_worker, InitOptions, Streams, UpdateOp};
 //!
-//! let iii = III::new("ws://localhost:49134");
-//! iii.connect().await?;
+//! let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
 //!
 //! let streams = Streams::new(iii.clone());
 //!
@@ -26,6 +25,7 @@
 //! ```
 
 use crate::{
+    TriggerRequest,
     error::IIIError,
     iii::III,
     types::{StreamUpdateInput, UpdateOp, UpdateResult},
@@ -93,10 +93,12 @@ impl Streams {
 
         let result = self
             .iii
-            .trigger(crate::protocol::TriggerRequest::new(
-                "stream::update",
-                input,
-            ))
+            .trigger(TriggerRequest {
+                function_id: "stream::update".to_string(),
+                payload: serde_json::to_value(input).unwrap_or(serde_json::Value::Null),
+                action: None,
+                timeout_ms: None,
+            })
             .await?;
 
         serde_json::from_value(result).map_err(|e| IIIError::Serde(e.to_string()))

@@ -89,42 +89,37 @@ async fn main() -> Result<()> {
         args.engine_host, args.engine_port, args.ws_port
     );
 
-    // Initialize bridge connection to iii engine
     let bridge_url = format!("ws://{}:{}", args.engine_host, args.bridge_port);
-    let bridge = iii_sdk::III::new(&bridge_url);
 
-    // Configure OpenTelemetry (enabled by default, use --no-otel to disable)
-    if !args.no_otel {
+    let otel_config = if !args.no_otel {
         info!(
             "OpenTelemetry enabled (service: {})",
             args.otel_service_name
         );
-        bridge.set_otel_config(iii_sdk::OtelConfig {
+        Some(iii_sdk::OtelConfig {
             enabled: Some(true),
             service_name: Some(args.otel_service_name),
             service_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             engine_ws_url: Some(bridge_url.clone()),
             ..Default::default()
-        });
+        })
     } else {
         info!("OpenTelemetry disabled");
-    }
+        None
+    };
 
-    // Register ALL functions and triggers BEFORE connecting
-    // This ensures they're queued for sending when connection establishes
+    let bridge = iii_sdk::register_worker(
+        &bridge_url,
+        iii_sdk::InitOptions {
+            metadata: None,
+            otel: otel_config,
+        },
+    );
+
     bridge::register_functions(&bridge);
 
     if let Err(e) = bridge::register_triggers(&bridge) {
         tracing::warn!("Trigger registration failed: {}", e);
-    }
-
-    // Now connect - SDK handles reconnection internally
-    // If OTEL is configured, the SDK initializes it during connect()
-    if let Err(e) = bridge.connect().await {
-        tracing::warn!(
-            "Initial bridge connection failed: {}. Will retry automatically.",
-            e
-        );
     }
 
     let config = server::ServerConfig {

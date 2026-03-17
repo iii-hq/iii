@@ -20,7 +20,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
     """Handle create todo request."""
     logger.info("Creating new todo", request.body)
 
@@ -43,7 +43,7 @@ async def handler(request: ApiRequest[dict[str, Any]]) -> ApiResponse[Any]:
         "completed_at": None,
     }
 
-    todo = await todo_stream.set("inbox", todo_id, new_todo)
+    todo = todo_stream.set("inbox", todo_id, new_todo)
 
     logger.info("Todo created successfully", {"todo_id": todo_id})
 

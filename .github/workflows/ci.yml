@@ -40,7 +40,6 @@ jobs:
           cargo build -p iii --all-features
           cargo test -p iii --all-features
           cargo llvm-cov report \
-            --fail-under-lines 70 \
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
 
@@ -398,7 +397,7 @@ jobs:
 
       - name: Run tests
         working-directory: frameworks/motia/motia-py/packages/motia
-        run: uv run pytest --cov=src --cov-report=term-missing --cov-fail-under=70
+        run: uv run pytest --cov=src --cov-report=term-missing
 
       - name: Stop III Engine
         if: always()

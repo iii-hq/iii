@@ -23,7 +23,7 @@ The iii SDK lets you register a custom stream backed by any storage — in-memor
 
 ```typescript
 // stream.ts
-import { init } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
 export type Todo = {
   id: string
@@ -34,7 +34,7 @@ export type Todo = {
   completedAt: string | null
 }
 
-const iii = init(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 let todos: Todo[] = []
 
@@ -81,12 +81,13 @@ export { iii }
 # stream.py
 from __future__ import annotations
 from typing import Any
-from iii import (
-    IStream, StreamGetInput, StreamSetInput, StreamDeleteInput,
-    StreamListInput, StreamListGroupsInput, StreamSetResult, StreamUpdateInput,
+from iii import IStream
+from iii.stream import (
+    StreamDeleteInput, StreamDeleteResult, StreamGetInput, StreamListGroupsInput,
+    StreamListInput, StreamSetInput, StreamSetResult, StreamUpdateInput,
+    StreamUpdateResult,
 )
 from .iii import iii
-
 
 class TodoStream(IStream[dict[str, Any]]):
     def __init__(self) -> None:
@@ -113,8 +114,10 @@ class TodoStream(IStream[dict[str, Any]]):
         self._todos.append(new_todo)
         return StreamSetResult(old_value=None, new_value=new_todo)
 
-    async def delete(self, input: StreamDeleteInput) -> None:
+    async def delete(self, input: StreamDeleteInput) -> StreamDeleteResult:
+        old_value = next((t for t in self._todos if t["id"] == input.item_id), None)
         self._todos = [t for t in self._todos if t["id"] != input.item_id]
+        return StreamDeleteResult(old_value=old_value)
 
     async def list(self, input: StreamListInput) -> list[dict[str, Any]]:
         return [t for t in self._todos if t.get("groupId") == input.group_id]
@@ -122,9 +125,8 @@ class TodoStream(IStream[dict[str, Any]]):
     async def list_groups(self, input: StreamListGroupsInput) -> list[str]:
         return list({t["groupId"] for t in self._todos if "groupId" in t})
 
-    async def update(self, input: StreamUpdateInput) -> StreamSetResult[dict[str, Any]] | None:
+    async def update(self, input: StreamUpdateInput) -> StreamUpdateResult[dict[str, Any]] | None:
         return None
-
 
 iii.create_stream("todo", TodoStream())
 ```
@@ -134,8 +136,9 @@ iii.create_stream("todo", TodoStream())
 
 ```rust
 // In Rust, use the Streams helper for atomic stream operations
-use iii_sdk::{III, Streams, UpdateOp};
+use iii_sdk::{register_worker, InitOptions, Streams, UpdateOp};
 
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
 let streams = Streams::new(iii.clone());
 // Stream items are addressed as "stream_name::group_id::item_id"
 ```
@@ -201,23 +204,24 @@ iii.registerTrigger({
 ```python
 import random, string, time
 from datetime import datetime, timezone
-from iii import ApiRequest, ApiResponse, TriggerAction
+from iii import ApiRequest, ApiResponse, Logger, TriggerAction
 from .iii import iii
 
-
-async def _create_todo(req: ApiRequest, ctx) -> ApiResponse:
+def _create_todo(data) -> ApiResponse:
+    logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     description = req.body.get("description") if req.body else None
     due_date = req.body.get("dueDate") if req.body else None
 
     if not description:
-        return ApiResponse(statusCode=400, body={"error": "Description is required"})
+        return ApiResponse(status_code=400, body={"error": "Description is required"})
 
     suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
     todo_id = f"todo-{int(time.time() * 1000)}-{suffix}"
 
     logger.info("Creating todo", {"todoId": todo_id})
 
-    todo = await iii.trigger({
+    todo = iii.trigger({
         "function_id": "stream::set",
         "payload": {
             "stream_name": "todo",
@@ -234,59 +238,68 @@ async def _create_todo(req: ApiRequest, ctx) -> ApiResponse:
     })
 
     logger.info("Todo created", {"todoId": todo_id})
-    return ApiResponse(statusCode=201, body=todo, headers={"Content-Type": "application/json"})
+    return ApiResponse(status_code=201, body=todo, headers={"Content-Type": "application/json"})
 
-
-iii.register_function("api.post.todo", lambda data: _create_todo(
-    ApiRequest(**data) if isinstance(data, dict) else data, Logger()
-))
-iii.register_trigger(
-    type="http", function_id="api.post.todo",
-    config={"api_path": "todo", "http_method": "POST", "description": "Create a new todo"},
-)
+iii.register_function({"id": "api.post.todo"}, _create_todo)
+iii.register_trigger({
+    "type": "http", "function_id": "api.post.todo",
+    "config": {"api_path": "todo", "http_method": "POST", "description": "Create a new todo"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Streams, UpdateOp, Logger, types::ApiRequest};
+use iii_sdk::{
+    Logger, RegisterFunctionMessage, RegisterTriggerInput,
+    Streams, UpdateOp, ApiRequest,
+};
 use serde_json::json;
 
-iii.register_function("api.post.todo", |input| async move {
-    let logger = Logger();
-    let req: ApiRequest = serde_json::from_value(input)?;
-    let description = req.body["description"].as_str().unwrap_or("").to_string();
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "api.post.todo".into(),
+        description: Some("Create a new todo".into()),
+        request_format: None, response_format: None,
+        metadata: None, invocation: None,
+    },
+    |input| async move {
+        let logger = Logger::new();
+        let req: ApiRequest = serde_json::from_value(input)?;
+        let description = req.body["description"].as_str().unwrap_or("").to_string();
 
-    if description.is_empty() {
-        return Ok(json!({
-            "status_code": 400,
-            "body": { "error": "Description is required" },
-        }));
-    }
+        if description.is_empty() {
+            return Ok(json!({
+                "status_code": 400,
+                "body": { "error": "Description is required" },
+            }));
+        }
 
-    let todo_id = format!("todo-{}", chrono::Utc::now().timestamp_millis());
-    logger.info("Creating todo", Some(json!({ "todoId": todo_id })));
+        let todo_id = format!("todo-{}", chrono::Utc::now().timestamp_millis());
+        logger.info("Creating todo", Some(json!({ "todoId": todo_id })));
 
-    let result = streams.update(
-        &format!("todo::inbox::{}", todo_id),
-        vec![
-            UpdateOp::set("id", json!(todo_id.clone())),
-            UpdateOp::set("description", json!(description)),
-            UpdateOp::set("createdAt", json!(chrono::Utc::now().to_rfc3339())),
-            UpdateOp::set("completedAt", json!(null)),
-        ],
-    ).await?;
+        let result = streams.update(
+            &format!("todo::inbox::{}", todo_id),
+            vec![
+                UpdateOp::set("id", json!(todo_id.clone())),
+                UpdateOp::set("description", json!(description)),
+                UpdateOp::set("createdAt", json!(chrono::Utc::now().to_rfc3339())),
+                UpdateOp::set("completedAt", json!(null)),
+            ],
+        ).await?;
 
-    logger.info("Todo created", Some(json!({ "todoId": todo_id })));
+        logger.info("Todo created", Some(json!({ "todoId": todo_id })));
 
-    Ok(json!({ "status_code": 201, "body": result.new_value }))
-});
+        Ok(json!({ "status_code": 201, "body": result.new_value }))
+    },
+);
 
-iii.register_trigger("http", "api.post.todo", json!({
-    "api_path": "todo",
-    "http_method": "POST",
-}))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "api.post.todo".into(),
+    config: json!({ "api_path": "todo", "http_method": "POST" }),
+})?;
 ```
 
   </Tab>
@@ -347,71 +360,79 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def _update_todo(req: ApiRequest, ctx) -> ApiResponse:
+def _update_todo(data) -> ApiResponse:
+    logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     todo_id = req.path_params.get("id") if req.path_params else None
 
-    existing = await iii.trigger({
+    existing = iii.trigger({
         "function_id": "stream::get",
         "payload": {"stream_name": "todo", "group_id": "inbox", "item_id": todo_id},
     }) if todo_id else None
 
     if not existing:
-        return ApiResponse(statusCode=404, body={"error": "Todo not found"})
+        return ApiResponse(status_code=404, body={"error": "Todo not found"})
 
     logger.info("Updating todo", {"todoId": todo_id})
 
     merged = {**existing, **(req.body or {})}
-    updated = await iii.trigger({
+    updated = iii.trigger({
         "function_id": "stream::set",
         "payload": {"stream_name": "todo", "group_id": "inbox", "item_id": todo_id, "data": merged},
     })
 
     logger.info("Todo updated", {"todoId": todo_id})
-    return ApiResponse(statusCode=200, body=updated, headers={"Content-Type": "application/json"})
+    return ApiResponse(status_code=200, body=updated, headers={"Content-Type": "application/json"})
 
-
-iii.register_function("api.put.todo", lambda data: _update_todo(
-    ApiRequest(**data) if isinstance(data, dict) else data, Logger()
-))
-iii.register_trigger(
-    type="http", function_id="api.put.todo",
-    config={"api_path": "todo/:id", "http_method": "PUT", "description": "Update a todo"},
-)
+iii.register_function({"id": "api.put.todo"}, _update_todo)
+iii.register_trigger({
+    "type": "http", "function_id": "api.put.todo",
+    "config": {"api_path": "todo/:id", "http_method": "PUT", "description": "Update a todo"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("api.put.todo", |input| async move {
-    let logger = Logger();
-    let req: ApiRequest = serde_json::from_value(input)?;
-    let todo_id = req.path_params.get("id").cloned().unwrap_or_default();
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "api.put.todo".into(),
+        description: Some("Update a todo".into()),
+        request_format: None, response_format: None,
+        metadata: None, invocation: None,
+    },
+    |input| async move {
+        let logger = Logger::new();
+        let req: ApiRequest = serde_json::from_value(input)?;
+        let todo_id = req.path_params.get("id").cloned().unwrap_or_default();
 
-    let mut ops = vec![];
-    if let Some(desc) = req.body.get("description") {
-        ops.push(UpdateOp::set("description", desc.clone()));
-    }
-    if let Some(checked) = req.body["checked"].as_bool() {
-        let completed_at = if checked { json!(chrono::Utc::now().to_rfc3339()) } else { json!(null) };
-        ops.push(UpdateOp::set("completedAt", completed_at));
-    }
+        let mut ops = vec![];
+        if let Some(desc) = req.body.get("description") {
+            ops.push(UpdateOp::set("description", desc.clone()));
+        }
+        if let Some(checked) = req.body["checked"].as_bool() {
+            let completed_at = if checked { json!(chrono::Utc::now().to_rfc3339()) } else { json!(null) };
+            ops.push(UpdateOp::set("completedAt", completed_at));
+        }
 
-    if ops.is_empty() {
-        return Ok(json!({ "status_code": 400, "body": { "error": "No fields to update" } }));
-    }
+        if ops.is_empty() {
+            return Ok(json!({ "status_code": 400, "body": { "error": "No fields to update" } }));
+        }
 
-    logger.info("Updating todo", Some(json!({ "todoId": todo_id })));
-    let result = streams.update(&format!("todo::inbox::{}", todo_id), ops).await?;
-    logger.info("Todo updated", Some(json!({ "todoId": todo_id })));
+        logger.info("Updating todo", Some(json!({ "todoId": todo_id })));
+        let result = streams.update(&format!("todo::inbox::{}", todo_id), ops).await?;
+        logger.info("Todo updated", Some(json!({ "todoId": todo_id })));
 
-    Ok(json!({ "status_code": 200, "body": result.new_value }))
-});
+        Ok(json!({ "status_code": 200, "body": result.new_value }))
+    },
+);
 
-iii.register_trigger("http", "api.put.todo", json!({
-    "api_path": "todo/:id",
-    "http_method": "PUT",
-}))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "api.put.todo".into(),
+    config: json!({ "api_path": "todo/:id", "http_method": "PUT" }),
+})?;
 ```
 
   </Tab>
@@ -461,31 +482,30 @@ iii.registerTrigger({
   <Tab value="Python">
 
 ```python
-async def _delete_todo(req: ApiRequest, ctx) -> ApiResponse:
+def _delete_todo(data) -> ApiResponse:
+    logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     todo_id = req.body.get("todoId") if req.body else None
 
     if not todo_id:
-        return ApiResponse(statusCode=400, body={"error": "todoId is required"})
+        return ApiResponse(status_code=400, body={"error": "todoId is required"})
 
     logger.info("Deleting todo", {"todoId": todo_id})
 
-    iii.trigger_void({
+    iii.trigger({
         "function_id": "stream::delete",
         "payload": {"stream_name": "todo", "group_id": "inbox", "item_id": todo_id},
         "action": TriggerAction.Void(),
     })
 
     logger.info("Todo deleted", {"todoId": todo_id})
-    return ApiResponse(statusCode=200, body={"success": True}, headers={"Content-Type": "application/json"})
+    return ApiResponse(status_code=200, body={"success": True}, headers={"Content-Type": "application/json"})
 
-
-iii.register_function("api.delete.todo", lambda data: _delete_todo(
-    ApiRequest(**data) if isinstance(data, dict) else data, Logger()
-))
-iii.register_trigger(
-    type="http", function_id="api.delete.todo",
-    config={"api_path": "todo", "http_method": "DELETE", "description": "Delete a todo"},
-)
+iii.register_function({"id": "api.delete.todo"}, _delete_todo)
+iii.register_trigger({
+    "type": "http", "function_id": "api.delete.todo",
+    "config": {"api_path": "todo", "http_method": "DELETE", "description": "Delete a todo"},
+})
 ```
 
   </Tab>
@@ -494,32 +514,46 @@ iii.register_trigger(
 ```rust
 use iii_sdk::{TriggerRequest, TriggerAction};
 
-iii.register_function("api.delete.todo", |input| async move {
-    let logger = Logger();
-    let req: ApiRequest = serde_json::from_value(input)?;
-    let todo_id = req.body["todoId"].as_str().unwrap_or("").to_string();
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "api.delete.todo".into(),
+        description: Some("Delete a todo".into()),
+        request_format: None, response_format: None,
+        metadata: None, invocation: None,
+    },
+    |input| async move {
+        let logger = Logger::new();
+        let req: ApiRequest = serde_json::from_value(input)?;
+        let todo_id = req.body["todoId"].as_str().unwrap_or("").to_string();
 
-    if todo_id.is_empty() {
-        return Ok(json!({ "status_code": 400, "body": { "error": "todoId is required" } }));
-    }
+        if todo_id.is_empty() {
+            return Ok(json!({ "status_code": 400, "body": { "error": "todoId is required" } }));
+        }
 
-    logger.info("Deleting todo", Some(json!({ "todoId": todo_id })));
+        logger.info("Deleting todo", Some(json!({ "todoId": todo_id })));
 
-    iii.trigger(TriggerRequest::new("stream::delete", json!({
-        "stream_name": "todo",
-        "group_id": "inbox",
-        "item_id": todo_id,
-    })).action(TriggerAction::void())).await?;
+        iii.trigger(TriggerRequest {
+            function_id: "stream::delete".into(),
+            payload: json!({
+                "stream_name": "todo",
+                "group_id": "inbox",
+                "item_id": todo_id,
+            }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }).await?;
 
-    logger.info("Todo deleted", Some(json!({ "todoId": todo_id })));
+        logger.info("Todo deleted", Some(json!({ "todoId": todo_id })));
 
-    Ok(json!({ "status_code": 200, "body": { "success": true } }))
-});
+        Ok(json!({ "status_code": 200, "body": { "success": true } }))
+    },
+);
 
-iii.register_trigger("http", "api.delete.todo", json!({
-    "api_path": "todo",
-    "http_method": "DELETE",
-}))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "http".into(),
+    function_id: "api.delete.todo".into(),
+    config: json!({ "api_path": "todo", "http_method": "DELETE" }),
+})?;
 ```
 
   </Tab>

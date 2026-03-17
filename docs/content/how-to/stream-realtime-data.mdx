@@ -29,14 +29,6 @@ modules:
 
 ### 2. Write to a stream
 
-{/* TODO: Remove once addressed */}
-<TabsConditional groupId="language" persist values={["Python", "Rust"]}>
-  <Callout title="Persistence in Python & Rust APIs" type="info">
-  You may notice that currently the Node API has no code around persistence while Python and Rust do.
-  This will be addressed shortly so that a single initialization step is all that will be required in all languages.
-  </Callout>
-</TabsConditional>
-
 <Tabs groupId="language" persist items={["Node / TypeScript", "Python", "Rust"]}>
 <Tab value="Node / TypeScript">
 ```typescript title="stream-writer.ts"
@@ -72,85 +64,90 @@ logger.info('Sent message', { messageId })
 </Tab>
 <Tab value="Python">
 ```python title="stream_writer.py"
-import asyncio
 import os
-import signal
 import uuid
-from iii import III
-from iii import Logger
 
-iii = III(os.environ.get('III_URL', 'ws://localhost:49134'))
+from iii import Logger, register_worker
 
-async def send_message(input):
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+def send_message(input):
     logger = Logger()
     message_id = str(uuid.uuid4())
 
-    await iii.trigger({
-        'function_id': 'stream::set',
-        'payload': {
-            'stream_name': 'chat',
-            'group_id': input['roomId'],
-            'item_id': message_id,
-            'data': {'text': input['text'], 'author': input['author']},
+    iii.trigger({
+        "function_id": "stream::set",
+        "payload": {
+            "stream_name": "chat",
+            "group_id": input["roomId"],
+            "item_id": message_id,
+            "data": {"text": input["text"], "author": input["author"]},
         },
     })
 
-    logger.info('Message sent to stream', {'messageId': message_id})
-    return {'messageId': message_id}
+    logger.info("Message sent to stream", {"messageId": message_id})
+    return {"messageId": message_id}
 
-iii.register_function('chat::send', send_message)
 
-async def main():
-    await iii.connect()
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
-    await stop.wait()
-
-asyncio.run(main())
+iii.register_function({"id": "chat::send"}, send_message)
 
 # Then call from another function or worker
-result = await iii.trigger({
-    'function_id': 'chat::send',
-    'payload': {'roomId': 'room-123', 'text': 'Hello world', 'author': 'alice'},
+result = iii.trigger({
+    "function_id": "chat::send",
+    "payload": {"roomId": "room-123", "text": "Hello world", "author": "alice"},
 })
-print('Sent message:', result['messageId'])
+print("Sent message:", result["messageId"])
 ```
 </Tab>
 <Tab value="Rust">
 ```rust title="stream_writer.rs"
-use iii_sdk::{Logger, TriggerRequest, III, TriggerRequest};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, TriggerRequest};
+use serde_json::{json, Value};
 use tokio::signal;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
-    let iii = III::new(&url);
-    iii.connect().await?;
+    let iii = register_worker(&url, InitOptions::default());
 
     let iii_clone = iii.clone();
-    iii.register_function("chat::send", move |input| {
-        let iii = iii_clone.clone();
-        async move {
-            let logger = Logger();
-            let message_id = uuid::Uuid::new_v4().to_string();
-            let room_id = input["roomId"].as_str().unwrap_or("");
-            let text = input["text"].as_str().unwrap_or("");
-            let author = input["author"].as_str().unwrap_or("");
+    iii.register_function(
+        RegisterFunctionMessage {
+            id: "chat::send".into(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        move |input: Value| {
+            let iii = iii_clone.clone();
+            async move {
+                let logger = Logger::new();
+                let message_id = uuid::Uuid::new_v4().to_string();
+                let room_id = input["roomId"].as_str().unwrap_or("");
+                let text = input["text"].as_str().unwrap_or("");
+                let author = input["author"].as_str().unwrap_or("");
 
-            iii.trigger(TriggerRequest::new("stream::set", json!({
-                "stream_name": "chat",
-                "group_id": room_id,
-                "item_id": message_id,
-                "data": { "text": text, "author": author },
-            }))).await?;
+                iii.trigger(TriggerRequest {
+                    function_id: "stream::set".into(),
+                    payload: json!({
+                        "stream_name": "chat",
+                        "group_id": room_id,
+                        "item_id": message_id,
+                        "data": { "text": text, "author": author },
+                    }),
+                    action: None,
+                    timeout_ms: None,
+                })
+                .await?;
 
-            logger.info("Message sent to stream", Some(json!({ "messageId": message_id })));
-            Ok(json!({ "messageId": message_id }))
-        }
-    });
+                logger.info("Message sent to stream", Some(json!({ "messageId": message_id })));
+                Ok(json!({ "messageId": message_id }))
+            }
+        },
+    );
 
     signal::ctrl_c().await?;
     Ok(())
@@ -158,10 +155,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // Then call from another function or worker
 let result = iii
-    .trigger(TriggerRequest::new(
-        "chat::send",
-        json!({ "roomId": "room-123", "text": "Hello world", "author": "alice" }),
-    ))
+    .trigger(TriggerRequest {
+        function_id: "chat::send".into(),
+        payload: json!({ "roomId": "room-123", "text": "Hello world", "author": "alice" }),
+        action: None,
+        timeout_ms: None,
+    })
     .await?;
 println!("Sent message: {}", result["messageId"]);
 ```
@@ -195,51 +194,69 @@ logger.info('Messages', { messages })
 </Tab>
 <Tab value="Python">
 ```python title="stream_reader.py"
-async def list_messages(input):
+def list_messages(input):
     logger = Logger()
 
-    messages = await iii.trigger({
-        'function_id': 'stream::list',
-        'payload': {'stream_name': 'chat', 'group_id': input['roomId']},
+    messages = iii.trigger({
+        "function_id": "stream::list",
+        "payload": {"stream_name": "chat", "group_id": input["roomId"]},
     })
 
-    logger.info('Messages retrieved', {'count': len(messages)})
+    logger.info("Messages retrieved", {"count": len(messages)})
     return messages
 
-iii.register_function('chat::list', list_messages)
+
+iii.register_function({"id": "chat::list"}, list_messages)
 
 # Then call from another function or worker
-messages = await iii.trigger({
-    'function_id': 'chat::list',
-    'payload': {'roomId': 'room-123'},
+messages = iii.trigger({
+    "function_id": "chat::list",
+    "payload": {"roomId": "room-123"},
 })
-print('Messages:', messages)
+print("Messages:", messages)
 ```
 </Tab>
 <Tab value="Rust">
 ```rust title="stream_reader.rs"
 let iii_clone = iii.clone();
-iii.register_function("chat::list", move |input| {
-    let iii = iii_clone.clone();
-    async move {
-        let logger = Logger();
-        let room_id = input["roomId"].as_str().unwrap_or("");
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "chat::list".into(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    },
+    move |input: Value| {
+        let iii = iii_clone.clone();
+        async move {
+            let logger = Logger::new();
+            let room_id = input["roomId"].as_str().unwrap_or("");
 
-        let messages = iii
-            .trigger(TriggerRequest::new(
-                "stream::list",
-                json!({ "stream_name": "chat", "group_id": room_id }),
-            ))
-            .await?;
+            let messages = iii
+                .trigger(TriggerRequest {
+                    function_id: "stream::list".into(),
+                    payload: json!({ "stream_name": "chat", "group_id": room_id }),
+                    action: None,
+                    timeout_ms: None,
+                })
+                .await?;
 
-        logger.info("Messages retrieved", Some(json!({ "count": messages.as_array().map(|a| a.len()).unwrap_or(0) })));
-        Ok(messages)
-    }
-});
+            logger.info("Messages retrieved", Some(json!({ "count": messages.as_array().map(|a| a.len()).unwrap_or(0) })));
+            Ok(messages)
+        }
+    },
+);
 
 // Then call from another function or worker
 let messages = iii
-    .trigger(TriggerRequest::new("chat::list", json!({ "roomId": "room-123" })))
+    .trigger(TriggerRequest {
+        function_id: "chat::list".into(),
+        payload: json!({ "roomId": "room-123" }),
+        action: None,
+        timeout_ms: None,
+    })
     .await?;
 println!("Messages: {:?}", messages);
 ```

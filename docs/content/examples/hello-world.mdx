@@ -9,7 +9,7 @@ This example shows the two-step pattern at the heart of most iii workflows: an *
 ```mermaid
 graph LR
     Client -->|"GET /hello"| HelloHandler
-    HelloHandler -->|"enqueue: greet.process"| ProcessHandler
+    HelloHandler -->|"enqueue: greet::process"| ProcessHandler
     ProcessHandler -->|"state::set"| State[(State)]
 ```
 
@@ -22,9 +22,9 @@ Every iii worker starts by initialising the SDK and connecting to the engine.
 
 ```typescript
 // worker.ts
-import { registerWorker, Logger, TriggerAction } from 'iii-sdk'
+import { registerWorker, Logger } from 'iii-sdk'
 
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+const iii = await registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 ```
 
   </Tab>
@@ -32,10 +32,9 @@ const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 ```python
 # worker.py
-import asyncio
-from iii import III, InitOptions, ApiRequest, ApiResponse, Logger, TriggerAction
+from iii import register_worker, InitOptions, ApiRequest, ApiResponse
 
-iii = III(
+iii = register_worker(
     address="ws://localhost:49134",
     options=InitOptions(worker_name="hello-worker"),
 )
@@ -46,13 +45,12 @@ iii = III(
 
 ```rust
 // main.rs
-use iii_sdk::{III, Logger};
+use iii_sdk::{register_worker, InitOptions, Logger};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = III::new("ws://127.0.0.1:49134");
-    iii.connect().await?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
     // ... register functions
     loop { tokio::time::sleep(std::time::Duration::from_secs(60)).await; }
 }
@@ -69,7 +67,7 @@ Registers a function and binds it to an HTTP trigger. Returns immediately after 
   <Tab value="Node / TypeScript">
 
 ```typescript
-iii.registerFunction(
+await iii.registerFunction(
   { id: 'hello::api', description: 'Receives hello request' },
   async (req: ApiRequest) => {
     const logger = new Logger()
@@ -78,7 +76,7 @@ iii.registerFunction(
 
     logger.info('Hello API called', { appName, requestId })
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'greet::process',
       payload: {
         requestId,
@@ -100,7 +98,7 @@ iii.registerFunction(
   },
 )
 
-iii.registerTrigger({
+await iii.registerTrigger({
   type: 'http',
   function_id: 'hello::api',
   config: { api_path: 'hello', http_method: 'GET' },
@@ -115,24 +113,27 @@ import os
 import random
 import string
 from datetime import datetime, timezone
+from iii import Logger
 
-
-async def hello_api(req: ApiRequest) -> ApiResponse:
+def hello_api(data) -> ApiResponse:
     logger = Logger()
+    req = ApiRequest(**data) if isinstance(data, dict) else data
     app_name = "III App"
     request_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=7))
 
     logger.info("Hello API called", {"appName": app_name, "requestId": request_id})
 
-    await iii.trigger({
-        "function_id": "greet::process",
+    iii.trigger({
+        "function_id": "enqueue",
         "payload": {
-            "requestId": request_id,
-            "appName": app_name,
-            "greetingPrefix": os.environ.get("GREETING_PREFIX", "Hello"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "topic": "greet::process",
+            "data": {
+                "requestId": request_id,
+                "appName": app_name,
+                "greetingPrefix": os.environ.get("GREETING_PREFIX", "Hello"),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
         },
-        "action": TriggerAction.Enqueue(queue="default"),
     })
 
     return ApiResponse(
@@ -144,24 +145,21 @@ async def hello_api(req: ApiRequest) -> ApiResponse:
         },
     )
 
-
-iii.register_function("hello::api", lambda data: hello_api(
-    ApiRequest(**data) if isinstance(data, dict) else data,
-))
-iii.register_trigger(
-    type="http",
-    function_id="hello::api",
-    config={"api_path": "hello", "http_method": "GET"},
-)
+iii.register_function({"id": "hello::api"}, hello_api)
+iii.register_trigger({
+    "type": "http",
+    "function_id": "hello::api",
+    "config": {"api_path": "hello", "http_method": "GET"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-use iii_sdk::{III, Logger, TriggerAction, TriggerRequest, types::ApiRequest};
+use iii_sdk::{Logger, TriggerAction, TriggerRequest, types::ApiRequest, RegisterFunctionMessage, RegisterTriggerInput};
 
-iii.register_function("hello::api", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "hello::api".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let app_name = "III App";
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -192,10 +190,10 @@ iii.register_function("hello::api", |input| async move {
     }))
 });
 
-iii.register_trigger("http", "hello::api", json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::api".into(), config: json!({
     "api_path": "hello",
     "http_method": "GET",
-}))?;
+}) })?;
 ```
 
   </Tab>
@@ -209,7 +207,7 @@ Consumes the event, builds the greeting, and persists it to state.
   <Tab value="Node / TypeScript">
 
 ```typescript
-iii.registerFunction(
+await iii.registerFunction(
   { id: 'greet::process', description: 'Processes greeting in background' },
   async (data) => {
     const logger = new Logger()
@@ -224,7 +222,7 @@ iii.registerFunction(
 
     const greeting = `${greetingPrefix} ${appName}!`
 
-    iii.trigger({
+    await iii.trigger({
       function_id: 'state::set',
       payload: {
         scope: 'greetings',
@@ -235,7 +233,6 @@ iii.registerFunction(
           originalTimestamp: timestamp,
         },
       },
-      action: TriggerAction.Void(),
     })
 
     logger.info('Greeting processed', { requestId, greeting })
@@ -248,9 +245,9 @@ iii.registerFunction(
 
 ```python
 from datetime import datetime, timezone
+from iii import Logger
 
-
-async def greet_process(data: dict) -> None:
+def greet_process(data: dict) -> None:
     logger = Logger()
     request_id = data.get("requestId", "unknown")
     app_name = data.get("appName", "III App")
@@ -261,31 +258,34 @@ async def greet_process(data: dict) -> None:
 
     greeting = f"{greeting_prefix} {app_name}!"
 
-    await iii.trigger({
+    iii.trigger({
         "function_id": "state::set",
         "payload": {
             "scope": "greetings",
             "key": request_id,
-            "value": {
+            "data": {
                 "greeting": greeting,
                 "processedAt": datetime.now(timezone.utc).isoformat(),
                 "originalTimestamp": timestamp,
             },
         },
-        "action": TriggerAction.Void(),
     })
 
     logger.info("Greeting processed", {"requestId": request_id, "greeting": greeting})
 
-
-iii.register_function("greet::process", greet_process)
+iii.register_function({"id": "greet::process"}, greet_process)
+iii.register_trigger({
+    "type": "queue",
+    "function_id": "greet::process",
+    "config": {"topic": "greet::process"},
+})
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-iii.register_function("greet::process", |input| async move {
+iii.register_function(RegisterFunctionMessage { id: "greet::process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
     let logger = Logger();
     let request_id = input["requestId"].as_str().unwrap_or("unknown");
     let app_name = input["appName"].as_str().unwrap_or("III App");
@@ -317,6 +317,10 @@ iii.register_function("greet::process", |input| async move {
 
     Ok(json!(null))
 });
+
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "greet::process".into(), config: json!({
+    "topic": "greet::process",
+}) })?;
 ```
 
   </Tab>
@@ -340,20 +344,17 @@ await new Promise(() => {})
   <Tab value="Python">
 
 ```python
-async def main() -> None:
-    await iii.connect()
+import time
+def main() -> None:
     while True:
-        await asyncio.sleep(60)
-
-asyncio.run(main())
+        time.sleep(60)
 ```
 
   </Tab>
   <Tab value="Rust">
 
 ```rust
-// Already in the main() above — connect then event loop
-iii.connect().await?;
+// Already in the main() above — register_worker auto-connects
 loop {
     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 }

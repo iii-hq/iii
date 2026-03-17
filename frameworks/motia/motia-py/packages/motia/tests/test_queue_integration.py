@@ -1,6 +1,5 @@
 """Integration tests for queue enqueue and subscribe."""
 
-import asyncio
 import time
 
 import pytest
@@ -10,86 +9,84 @@ from tests.conftest import flush_bridge_queue, wait_for_registration
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.asyncio
-async def test_enqueue_delivers_message_to_subscribed_handler(bridge):
+def test_enqueue_delivers_message_to_subscribed_handler(bridge):
     """Enqueue delivers message to subscribed handler."""
     function_id = f"test.queue.basic.{int(time.time() * 1000)}"
     topic = f"test-topic-{int(time.time() * 1000)}"
     received = []
 
-    async def handler(data):
+    def handler(data):
         received.append(data)
 
-    bridge.register_function(function_id, handler)
-    bridge.register_trigger("queue", function_id, {"topic": topic})
+    bridge.register_function({"id": function_id}, handler)
+    bridge.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(bridge)
+    time.sleep(0.5)
 
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"order": "abc"}}})
-    await asyncio.sleep(1.5)
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"order": "abc"}}})
+    time.sleep(1.5)
 
     assert received == [{"order": "abc"}]
 
 
-@pytest.mark.asyncio
-async def test_handler_receives_exact_data_payload_from_enqueue(bridge):
+def test_handler_receives_exact_data_payload_from_enqueue(bridge):
     """Handler receives exact data payload from enqueue."""
     function_id = f"test.queue.payload.{int(time.time() * 1000)}"
     topic = f"test-topic-payload-{int(time.time() * 1000)}"
     payload = {"id": "x1", "count": 42, "nested": {"a": 1}}
     received = []
 
-    async def handler(data):
+    def handler(data):
         received.append(data)
 
-    bridge.register_function(function_id, handler)
-    bridge.register_trigger("queue", function_id, {"topic": topic})
+    bridge.register_function({"id": function_id}, handler)
+    bridge.register_trigger({"type": "queue", "function_id": function_id, "config": {"topic": topic}})
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(bridge)
+    time.sleep(0.5)
 
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
-    await asyncio.sleep(1.5)
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": payload}})
+    time.sleep(1.5)
 
     assert received == [payload]
 
 
-@pytest.mark.asyncio
-async def test_subscription_with_queue_config_receives_messages(bridge):
+def test_subscription_with_queue_config_receives_messages(bridge):
     """Subscription with queue config receives messages."""
     function_id = f"test.queue.infra.{int(time.time() * 1000)}"
     topic = f"test-topic-infra-{int(time.time() * 1000)}"
     received = []
 
-    async def handler(data):
+    def handler(data):
         received.append(data)
 
-    bridge.register_function(function_id, handler)
+    bridge.register_function({"id": function_id}, handler)
     bridge.register_trigger(
-        "queue",
-        function_id,
         {
-            "topic": topic,
-            "queue_config": {
-                "maxRetries": 5,
-                "type": "standard",
-                "concurrency": 2,
+            "type": "queue",
+            "function_id": function_id,
+            "config": {
+                "topic": topic,
+                "queue_config": {
+                    "maxRetries": 5,
+                    "type": "standard",
+                    "concurrency": 2,
+                },
             },
-        },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(bridge)
+    time.sleep(0.5)
 
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"infra": True}}})
-    await asyncio.sleep(1.5)
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"infra": True}}})
+    time.sleep(1.5)
 
     assert received == [{"infra": True}]
 
 
-@pytest.mark.asyncio
-async def test_multiple_subscribers_on_same_topic_messages_delivered_to_one(bridge):
+def test_multiple_subscribers_on_same_topic_messages_delivered_to_one(bridge):
     """Multiple subscribers on same topic - messages delivered to exactly one subscriber."""
     topic = f"test-topic-multi-{int(time.time() * 1000)}"
     function_id1 = f"test.queue.multi1.{int(time.time() * 1000)}"
@@ -97,23 +94,23 @@ async def test_multiple_subscribers_on_same_topic_messages_delivered_to_one(brid
     received1 = []
     received2 = []
 
-    async def handler1(data):
+    def handler1(data):
         received1.append(data)
 
-    async def handler2(data):
+    def handler2(data):
         received2.append(data)
 
-    bridge.register_function(function_id1, handler1)
-    bridge.register_function(function_id2, handler2)
-    bridge.register_trigger("queue", function_id1, {"topic": topic})
-    bridge.register_trigger("queue", function_id2, {"topic": topic})
+    bridge.register_function({"id": function_id1}, handler1)
+    bridge.register_function({"id": function_id2}, handler2)
+    bridge.register_trigger({"type": "queue", "function_id": function_id1, "config": {"topic": topic}})
+    bridge.register_trigger({"type": "queue", "function_id": function_id2, "config": {"topic": topic}})
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.5)
+    flush_bridge_queue(bridge)
+    time.sleep(0.5)
 
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"msg": 1}}})
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"msg": 2}}})
-    await asyncio.sleep(2.0)
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"msg": 1}}})
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"msg": 2}}})
+    time.sleep(2.0)
 
     total = len(received1) + len(received2)
     assert total == 2
@@ -122,38 +119,39 @@ async def test_multiple_subscribers_on_same_topic_messages_delivered_to_one(brid
     assert {"msg": 2} in all_received
 
 
-@pytest.mark.asyncio
-async def test_condition_function_filters_messages(bridge):
+def test_condition_function_filters_messages(bridge):
     """Condition function filters messages."""
     topic = f"test-topic-cond-{int(time.time() * 1000)}"
     function_id = f"test.queue.cond.{int(time.time() * 1000)}"
     condition_path = f"{function_id}::conditions::0"
     handler_calls = []
 
-    async def handler(data):
+    def handler(data):
         handler_calls.append(data)
 
-    async def condition(input_data):
+    def condition(input_data):
         return input_data.get("accept") is True
 
-    bridge.register_function(function_id, handler)
-    bridge.register_function(condition_path, condition)
+    bridge.register_function({"id": function_id}, handler)
+    bridge.register_function({"id": condition_path}, condition)
     bridge.register_trigger(
-        "queue",
-        function_id,
         {
-            "topic": topic,
-            "condition_function_id": condition_path,
-        },
+            "type": "queue",
+            "function_id": function_id,
+            "config": {
+                "topic": topic,
+                "condition_function_id": condition_path,
+            },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await wait_for_registration(bridge, function_id)
-    await wait_for_registration(bridge, condition_path)
+    flush_bridge_queue(bridge)
+    wait_for_registration(bridge, function_id)
+    wait_for_registration(bridge, condition_path)
 
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"accept": False}}})
-    await bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"accept": True}}})
-    await asyncio.sleep(2.0)
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"accept": False}}})
+    bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"accept": True}}})
+    time.sleep(2.0)
 
     assert len(handler_calls) == 1
     assert handler_calls[0] == {"accept": True}

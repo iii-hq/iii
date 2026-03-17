@@ -1,7 +1,6 @@
 # motia/tests/test_api_triggers.py
 """Integration tests for API triggers (HTTP endpoints)."""
 
-import asyncio
 import json
 import time
 
@@ -22,24 +21,26 @@ pytestmark = pytest.mark.integration
 async def test_api_trigger_get_endpoint(bridge, api_url):
     """Test registering a GET endpoint via API trigger."""
 
-    async def get_handler(data):
+    def get_handler(data):
         return {
             "status_code": 200,
             "body": {"message": "Hello from GET"},
         }
 
-    bridge.register_function("test.api.get", get_handler)
+    bridge.register_function({"id": "test.api.get"}, get_handler)
     bridge.register_trigger(
-        "http",
-        "test.api.get",
         {
-            "api_path": "test/hello",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.get",
+            "config": {
+                "api_path": "test/hello",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/test/hello")
@@ -52,25 +53,27 @@ async def test_api_trigger_get_endpoint(bridge, api_url):
 async def test_api_trigger_post_with_body(bridge, api_url):
     """Test POST endpoint with request body."""
 
-    async def post_handler(data):
+    def post_handler(data):
         body = data.get("body", {})
         return {
             "status_code": 201,
             "body": {"received": body, "created": True},
         }
 
-    bridge.register_function("test.api.post", post_handler)
+    bridge.register_function({"id": "test.api.post"}, post_handler)
     bridge.register_trigger(
-        "http",
-        "test.api.post",
         {
-            "api_path": "test/items",
-            "http_method": "POST",
-        },
+            "type": "http",
+            "function_id": "test.api.post",
+            "config": {
+                "api_path": "test/items",
+                "http_method": "POST",
+            },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -88,25 +91,27 @@ async def test_api_trigger_post_with_body(bridge, api_url):
 async def test_api_trigger_path_params(bridge, api_url):
     """Test endpoint with path parameters."""
 
-    async def get_by_id_handler(data):
+    def get_by_id_handler(data):
         path_params = data.get("path_params", {})
         return {
             "status_code": 200,
             "body": {"id": path_params.get("id")},
         }
 
-    bridge.register_function("test.api.getById", get_by_id_handler)
+    bridge.register_function({"id": "test.api.getById"}, get_by_id_handler)
     bridge.register_trigger(
-        "http",
-        "test.api.getById",
         {
-            "api_path": "test/items/:id",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.getById",
+            "config": {
+                "api_path": "test/items/:id",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/test/items/abc123")
@@ -119,25 +124,27 @@ async def test_api_trigger_path_params(bridge, api_url):
 async def test_api_trigger_query_params(bridge, api_url):
     """Test endpoint with query parameters."""
 
-    async def search_handler(data):
+    def search_handler(data):
         query_params = data.get("query_params", {})
         return {
             "status_code": 200,
             "body": {"query": query_params.get("q"), "limit": query_params.get("limit")},
         }
 
-    bridge.register_function("test.api.search", search_handler)
+    bridge.register_function({"id": "test.api.search"}, search_handler)
     bridge.register_trigger(
-        "http",
-        "test.api.search",
         {
-            "api_path": "test/search",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.search",
+            "config": {
+                "api_path": "test/search",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/test/search?q=hello&limit=10")
@@ -152,24 +159,26 @@ async def test_api_trigger_query_params(bridge, api_url):
 async def test_api_trigger_custom_status_code(bridge, api_url):
     """Test returning custom status codes."""
 
-    async def not_found_handler(data):
+    def not_found_handler(data):
         return {
             "status_code": 404,
             "body": {"error": "Not found"},
         }
 
-    bridge.register_function("test.api.notfound", not_found_handler)
+    bridge.register_function({"id": "test.api.notfound"}, not_found_handler)
     bridge.register_trigger(
-        "http",
-        "test.api.notfound",
         {
-            "api_path": "test/missing",
-            "http_method": "GET",
-        },
+            "type": "http",
+            "function_id": "test.api.notfound",
+            "config": {
+                "api_path": "test/missing",
+                "http_method": "GET",
+            },
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/test/missing")
@@ -192,15 +201,17 @@ async def test_streaming_response_via_channels(bridge, api_url):
         response.writer.stream.write(json.dumps({"streamed": True, "message": "hello from stream"}).encode("utf-8"))
         response.close()
 
-    bridge.register_function(function_id, stream_handler)
+    bridge.register_function({"id": function_id}, stream_handler)
     bridge.register_trigger(
-        "http",
-        function_id,
-        {"api_path": "test/stream/response", "http_method": "GET"},
+        {
+            "type": "http",
+            "function_id": function_id,
+            "config": {"api_path": "test/stream/response", "http_method": "GET"},
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{api_url}/test/stream/response")
@@ -235,15 +246,17 @@ async def test_streaming_request_body_via_channels(bridge, api_url):
         response.writer.stream.write(json.dumps({"received": body, "size": len(body)}).encode("utf-8"))
         response.close()
 
-    bridge.register_function(function_id, upload_handler)
+    bridge.register_function({"id": function_id}, upload_handler)
     bridge.register_trigger(
-        "http",
-        function_id,
-        {"api_path": "test/stream/upload", "http_method": "POST"},
+        {
+            "type": "http",
+            "function_id": function_id,
+            "config": {"api_path": "test/stream/upload", "http_method": "POST"},
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     payload = json.dumps({"data": "streamed content", "items": [1, 2, 3]})
     async with httpx.AsyncClient() as client:
@@ -303,24 +316,22 @@ async def test_multipart_form_data_via_channels(bridge, api_url):
         )
         response.close()
 
-    bridge.register_function(function_id, multipart_handler)
+    bridge.register_function({"id": function_id}, multipart_handler)
     bridge.register_trigger(
-        "http",
-        function_id,
-        {"api_path": "test/form/multipart", "http_method": "POST"},
+        {
+            "type": "http",
+            "function_id": function_id,
+            "config": {"api_path": "test/form/multipart", "http_method": "POST"},
+        }
     )
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     boundary = "----TestBoundary12345"
     body_parts = [
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="title"\r\n\r\n'
-        "Test Document\r\n",
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="description"\r\n\r\n'
-        "A test upload\r\n",
+        f"--{boundary}\r\n" 'Content-Disposition: form-data; name="title"\r\n\r\n' "Test Document\r\n",
+        f"--{boundary}\r\n" 'Content-Disposition: form-data; name="description"\r\n\r\n' "A test upload\r\n",
         f"--{boundary}\r\n"
         'Content-Disposition: form-data; name="file"; filename="test.txt"\r\n'
         "Content-Type: text/plain\r\n\r\n"
@@ -370,25 +381,27 @@ async def test_data_channels_worker_to_worker(bridge, api_url):
 
     async def sender_handler(input_data):
         records = input_data.get("records", []) if isinstance(input_data, dict) else getattr(input_data, "records", [])
-        channel = await bridge.create_channel()
+        channel = await bridge._async_create_channel()
         payload = json.dumps(records).encode("utf-8")
         await channel.writer.write(payload)
         await channel.writer.close_async()
 
-        result = await bridge.trigger({
-            "function_id": processor_id,
-            "payload": {"label": "test-batch", "reader": channel.reader_ref.__dict__},
-        })
+        result = await bridge._async_trigger(
+            {
+                "function_id": processor_id,
+                "payload": {"label": "test-batch", "reader": channel.reader_ref.__dict__},
+            }
+        )
         return result
 
-    bridge.register_function(processor_id, processor_handler)
-    bridge.register_function(sender_id, sender_handler)
+    bridge.register_function({"id": processor_id}, processor_handler)
+    bridge.register_function({"id": sender_id}, sender_handler)
 
-    await flush_bridge_queue(bridge)
-    await asyncio.sleep(0.3)
+    flush_bridge_queue(bridge)
+    time.sleep(0.3)
 
     records = [{"value": 10}, {"value": 20}, {"value": 30}]
-    result = await bridge.trigger({"function_id": sender_id, "payload": {"records": records}})
+    result = bridge.trigger({"function_id": sender_id, "payload": {"records": records}})
 
     assert result["label"] == "test-batch"
     assert result["count"] == 3

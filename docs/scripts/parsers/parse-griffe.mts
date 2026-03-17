@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { FunctionDoc, ParamDoc, SdkDoc, TypeDoc } from '../types.mjs'
+import type { FunctionDoc, LoggerDoc, ParamDoc, SdkDoc, TypeDoc } from '../types.mjs'
 
 interface GriffeDocstring {
   value?: string
@@ -218,7 +218,26 @@ export function parseGriffe(jsonPath: string): SdkDoc {
     }
   }
 
-  const skipClasses = new Set(['III'])
+  const loggerModule = rootMembers['logger']
+  const loggerClass: GriffeObject | undefined = loggerModule?.members?.['Logger']
+  let loggerSection: LoggerDoc | undefined
+  if (loggerClass) {
+    const loggerMethods: FunctionDoc[] = []
+    if (loggerClass.members) {
+      for (const [name, member] of Object.entries(loggerClass.members)) {
+        if (name.startsWith('_')) continue
+        if (member.kind === 'function') {
+          loggerMethods.push(griffeToFunction(member))
+        }
+      }
+    }
+    const description = extractDocstring(loggerClass)
+    if (description || loggerMethods.length > 0) {
+      loggerSection = { description, methods: loggerMethods }
+    }
+  }
+
+  const skipClasses = new Set(['III', 'Logger'])
   const types: TypeDoc[] = []
 
   for (const [, member] of Object.entries(rootMembers)) {
@@ -250,12 +269,10 @@ export function parseGriffe(jsonPath: string): SdkDoc {
       importExample: 'from iii import III, register_worker',
     },
     initialization: {
-      description: 'The Python SDK exposes the `III` class. Use `register_worker()` for automatic connection, or create an `III` instance and call `connect()` manually.',
-      example: `from iii import III, InitOptions\n\niii = III('ws://localhost:49134', InitOptions(worker_name='my-worker'))\nawait iii.connect()`,
       entryPoint: entryFn,
     },
     methods,
     types,
-    contextSection: "```python\nfrom iii import Logger\n\nlogger = Logger()\nlogger.info('Processing started')\n```\n\nThe `Logger` class emits OTel LogRecords when OTel is active, otherwise falls back to Python `logging`.",
+    loggerSection,
   }
 }

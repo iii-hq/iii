@@ -56,7 +56,7 @@ def test_logger_emits_otel_record_when_initialized():
     log_exporter = _setup_in_memory_log_provider()
     init_otel(OtelConfig(enabled=True, logs_enabled=False))  # skip EngineLogExporter
 
-    logger = Logger(function_name="fn1")
+    logger = Logger(service_name="fn1")
     logger.info("hello world", {"key": "val"})
 
     records = log_exporter.get_finished_logs()
@@ -96,7 +96,7 @@ def test_logger_attaches_trace_context_from_active_span():
 
     with patch("iii.logger.is_initialized", return_value=True):
         with tracer.start_as_current_span("test-span") as span:
-            logger = Logger(function_name="fn1")
+            logger = Logger(service_name="fn1")
             logger.info("inside span")
 
             span_ctx = span.get_span_context()
@@ -115,7 +115,7 @@ def test_logger_no_trace_context_outside_span():
     log_exporter = _setup_in_memory_log_provider()
 
     with patch("iii.logger.is_initialized", return_value=True):
-        logger = Logger(function_name="fn1")
+        logger = Logger(service_name="fn1")
         logger.info("outside span")
 
     records = log_exporter.get_finished_logs()

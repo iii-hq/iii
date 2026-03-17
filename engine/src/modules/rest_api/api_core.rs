@@ -106,7 +106,9 @@ impl Module for RestApiCoreModule {
             .await;
 
         let addr = format!("{}:{}", self.config.host, self.config.port);
-        let listener = TcpListener::bind(&addr).await?;
+        let listener = TcpListener::bind(&addr)
+            .await
+            .map_err(|err| crate::modules::module::bind_address_error(&addr, err))?;
 
         // Build initial router from registry
         self.update_routes().await?;
@@ -921,6 +923,35 @@ mod tests {
         module.initialize().await.expect("module should initialize");
 
         assert!(engine.trigger_registry.trigger_types.contains_key("http"));
+    }
+
+    #[tokio::test]
+    async fn rest_api_initialize_returns_addr_in_use_error_with_address() {
+        ensure_default_meter();
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let port = occupied.local_addr().expect("local addr").port();
+        let engine = Arc::new(crate::engine::Engine::new());
+
+        let module = <RestApiCoreModule as Module>::create(
+            engine,
+            Some(json!({
+                "host": "127.0.0.1",
+                "port": port,
+                "default_timeout": 250,
+                "concurrency_request_limit": 8
+            })),
+        )
+        .await
+        .expect("module should be created");
+
+        let err = module
+            .initialize()
+            .await
+            .expect_err("REST API init should fail when the port is occupied");
+
+        let message = err.to_string();
+        assert!(message.contains(&format!("127.0.0.1:{port}")));
+        assert!(message.contains("already in use"));
     }
 
     #[tokio::test]

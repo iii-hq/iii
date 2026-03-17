@@ -50,8 +50,7 @@ class MultiTriggerStepBuilder:
                 return await handlers["stream"](input_data, ctx)
 
             raise RuntimeError(
-                f"No handler defined for trigger type: {trigger_type}. "
-                f"Available handlers: {', '.join(handlers.keys())}"
+                f"No handler defined for trigger type: {trigger_type}. Available handlers: {', '.join(handlers.keys())}"
             )
 
         return unified_handler

@@ -21,14 +21,6 @@ modules:
 
 ### 2. Register the Function
 
-{/* TODO: Remove once addressed */}
-<TabsConditional groupId="language" persist values={["Python", "Rust"]}>
-  <Callout title="Persistence in Python & Rust APIs" type="info">
-  You may notice that currently the Node API has no code around persistence while Python and Rust do.
-  This will be addressed shortly so that a single initialization step is all that will be required in all languages.
-  </Callout>
-</TabsConditional>
-
 <Tabs groupId="language" persist items={["Node / TypeScript", "Python", "Rust"]}>
 <Tab value="Node / TypeScript">
 ```typescript title="cron-task.ts"
@@ -42,61 +34,55 @@ iii.registerFunction({ id: 'cleanup::expired-sessions' }, async () => {
   logger.info('Cleanup ran', { timestamp: new Date().toISOString() })
   return { deleted: 0 }
 })
-
 ```
 </Tab>
 <Tab value="Python">
 ```python title="cron_task.py"
-import asyncio
 import os
-import signal
-from iii import III
-from iii import Logger
 
-iii = III(os.environ.get('III_URL', 'ws://localhost:49134'))
+from iii import Logger, register_worker
 
-async def cleanup_sessions(_):
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+def cleanup_sessions(_):
     logger = Logger()
     # ...cleanup logic here...
-    logger.info('Cleanup ran')
-    print('Cleanup ran')
-    return {'deleted': 0}
+    logger.info("Cleanup ran")
+    return {"deleted": 0}
 
-iii.register_function('cleanup::expired-sessions', cleanup_sessions)
 
-async def main():
-    await iii.connect()
-    print('Cron task registered')
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
-    await stop.wait()
-
-asyncio.run(main())
+iii.register_function({"id": "cleanup::expired-sessions"}, cleanup_sessions)
 ```
 </Tab>
 <Tab value="Rust">
 ```rust title="cron_task.rs"
-use iii_sdk::{Logger, III};
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 use tokio::signal;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
-    let iii = III::new(&url);
-    iii.connect().await?;
+    let iii = register_worker(&url, InitOptions::default());
 
-    iii.register_function("cleanup::expired-sessions", |_| async move {
-        let logger = Logger();
-        // ...cleanup logic here...
-        logger.info("Cleanup ran", None);
-        println!("Cleanup ran");
-        Ok(json!({ "deleted": 0 }))
-    });
+    iii.register_function(
+        RegisterFunctionMessage {
+            id: "cleanup::expired-sessions".into(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        },
+        |_| async move {
+            let logger = Logger::new();
+            // ...cleanup logic here...
+            logger.info("Cleanup ran", None);
+            Ok(json!({ "deleted": 0 }))
+        },
+    );
 
-    println!("Cron task registered");
     signal::ctrl_c().await?;
     Ok(())
 }
@@ -118,18 +104,20 @@ iii.registerTrigger({
 </Tab>
 <Tab value="Python">
 ```python title="cron_trigger.py"
-iii.register_trigger(
-    type="cron",
-    function_id="cleanup::expired-sessions",
-    config={"expression": "* * * * * * *"},  # runs every second
-)
+iii.register_trigger({
+    "type": "cron",
+    "function_id": "cleanup::expired-sessions",
+    "config": {"expression": "* * * * * * *"},  # runs every second
+})
 ```
 </Tab>
 <Tab value="Rust">
 ```rust title="cron_trigger.rs"
-iii.register_trigger("cron", "cleanup::expired-sessions", json!({
-    "expression": "* * * * * * *" // runs every second
-}))?;
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "cron".into(),
+    function_id: "cleanup::expired-sessions".into(),
+    config: json!({ "expression": "* * * * * * *" }), // runs every second
+})?;
 ```
 </Tab>
 </Tabs>

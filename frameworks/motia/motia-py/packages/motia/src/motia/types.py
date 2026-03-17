@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Awaitable, Callable, Generic, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -86,20 +87,29 @@ class FlowContext(BaseModel, Generic[TEnqueueData]):
         - stream: async (input) -> Any
         - default: async (input) -> Any
         """
-        if self.is_queue() and handlers.get("queue"):
-            return await handlers["queue"](self.input_value)
-        if self.is_api():
-            handler = handlers.get("http") or handlers.get("api")
-            if handler:
-                return await handler(self.input_value)
-        if self.is_cron() and handlers.get("cron"):
-            return await handlers["cron"]()
-        if self.is_state() and handlers.get("state"):
-            return await handlers["state"](self.input_value)
-        if self.is_stream() and handlers.get("stream"):
-            return await handlers["stream"](self.input_value)
+
+        async def _call(handler: Callable[..., Any], *args: Any) -> Any:
+            result = handler(*args)
+            if inspect.iscoroutine(result):
+                return await result
+            return result
+
+        checks = [
+            (self.is_queue, ["queue"], True),
+            (self.is_api, ["http", "api"], True),
+            (self.is_cron, ["cron"], False),
+            (self.is_state, ["state"], True),
+            (self.is_stream, ["stream"], True),
+        ]
+
+        for check, keys, has_input in checks:
+            if check():
+                handler = next((handlers[k] for k in keys if k in handlers), None)
+                if handler:
+                    return await _call(handler, self.input_value) if has_input else await _call(handler)
+
         if handlers.get("default"):
-            return await handlers["default"](self.input_value)
+            return await _call(handlers["default"], self.input_value)
 
         raise RuntimeError(
             f"No handler matched for trigger type: {self.trigger.type}. "

@@ -42,16 +42,26 @@ A Module has two responsibilities:
 
 2. **Supply Context**: A Module can add capabilities to the Context object that gets passed to every Function. For example, the State module adds `state::get`, `state::set`, and other state operations.
 
-Modules are configured in `iii-config.yaml`:
+Modules are configured in `config.yaml` (the engine default). Use `-c iii-config.yaml` to specify a custom path:
 
 ```yaml
 modules:
-  rest_api:
-    port: 3000
-  state:
-    adapter: memory
-  queue:
-    adapter: memory
+  - class: modules::api::RestApiModule
+    config:
+      port: 3111
+      host: 0.0.0.0
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::KvStore
+        config:
+          store_method: in_memory
+  - class: modules::queue::QueueModule
+    config:
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
+        config:
+          store_method: in_memory
 ```
 
 <Callout title="Custom Modules" type="info">

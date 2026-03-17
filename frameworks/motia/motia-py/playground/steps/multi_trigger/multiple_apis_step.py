@@ -16,7 +16,7 @@ config = {
 }
 
 
-async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     """Handle multiple API triggers."""
     logger.info("Multiple APIs trigger fired", {"path": ctx.trigger.path, "method": ctx.trigger.method})
     return ApiResponse(status=200, body={"message": "Multiple APIs trigger works"})
