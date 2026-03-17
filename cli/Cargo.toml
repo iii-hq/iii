@@ -27,8 +27,10 @@ zip = "2"
 dirs = "6"
 sha2 = "0.10"
 futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+serial_test = "3"

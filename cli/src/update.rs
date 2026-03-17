@@ -7,7 +7,7 @@ use crate::error::RegistryError;
 use crate::github::{self, IiiGithubError};
 use crate::registry::{self, BinarySpec};
 use crate::state::AppState;
-use crate::{download, platform};
+use crate::{download, platform, telemetry};
 
 /// Information about an available update.
 #[derive(Debug)]
@@ -185,19 +185,34 @@ pub async fn update_binary(
         eprintln!("  Installing {} v{}...", spec.name, latest_version);
     }
 
+    let from_version_str = previous_version
+        .as_ref()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    telemetry::send_cli_update_started(spec.name, &from_version_str);
+
     // Download and install
     let target_path = platform::binary_path(spec.name);
-    download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path)
-        .await?;
-
-    // Update state
-    state.record_install(spec.name, latest_version.clone(), asset_name);
-
-    Ok(UpdateResult::Updated {
-        binary: spec.name.to_string(),
-        from: previous_version,
-        to: latest_version,
-    })
+    match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path).await {
+        Ok(()) => {
+            state.record_install(spec.name, latest_version.clone(), asset_name);
+            telemetry::send_cli_update_succeeded(
+                spec.name,
+                &from_version_str,
+                &latest_version.to_string(),
+            );
+            Ok(UpdateResult::Updated {
+                binary: spec.name.to_string(),
+                from: previous_version,
+                to: latest_version,
+            })
+        }
+        Err(e) => {
+            telemetry::send_cli_update_failed(spec.name, &from_version_str, &e.to_string());
+            Err(UpdateError::Download(e))
+        }
+    }
 }
 
 /// Update iii-cli itself to the latest version.
@@ -253,20 +268,33 @@ pub async fn self_update(
 
     eprintln!("  Updating {} to v{}...", spec.name, latest_version);
 
+    let from_version_str = current_version.to_string();
+
+    telemetry::send_cli_update_started(spec.name, &from_version_str);
+
     // Install to the standard managed location (~/.local/bin/iii-cli),
     // consistent with install.sh and other managed binaries.
     let target_path = platform::binary_path(spec.name);
 
-    download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path)
-        .await?;
-
-    state.record_install(spec.name, latest_version.clone(), asset_name);
-
-    Ok(UpdateResult::Updated {
-        binary: spec.name.to_string(),
-        from: Some(current_version),
-        to: latest_version,
-    })
+    match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path).await {
+        Ok(()) => {
+            state.record_install(spec.name, latest_version.clone(), asset_name);
+            telemetry::send_cli_update_succeeded(
+                spec.name,
+                &from_version_str,
+                &latest_version.to_string(),
+            );
+            Ok(UpdateResult::Updated {
+                binary: spec.name.to_string(),
+                from: Some(current_version),
+                to: latest_version,
+            })
+        }
+        Err(e) => {
+            telemetry::send_cli_update_failed(spec.name, &from_version_str, &e.to_string());
+            Err(UpdateError::Download(e))
+        }
+    }
 }
 
 /// Update all installed binaries (including iii-cli itself).

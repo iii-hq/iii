@@ -7,6 +7,7 @@ mod github;
 mod platform;
 mod registry;
 mod state;
+mod telemetry;
 mod update;
 
 use std::process;
