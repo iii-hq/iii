@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Terminal } from "./components/Terminal";
 import { ExampleCodeSection } from "./components/sections/ExampleCodeSection";
 import { HeroSection } from "./components/sections/HeroSection";
+import { InteractiveDemoFlowSection } from "./components/sections/InteractiveDemoFlowSection";
 import { HelloWorldSection } from "./components/sections/HelloWorldSection";
 import { EngineSection } from "./components/sections/EngineSection";
 import { AgentReadySection } from "./components/sections/AgentReadySection";
@@ -195,6 +196,10 @@ const App: React.FC = () => {
         {/* Section 1: Hero - One Engine. Any Language. Anywhere. */}
         <div className="w-full">
           <HeroSection isDarkMode={isDarkMode} />
+        </div>
+
+        <div className="w-full">
+          <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 2: Hello World - Polyglot proof with IPC */}
