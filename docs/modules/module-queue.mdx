@@ -10,10 +10,10 @@ modules::queue::QueueModule
 ```
 
 <Info title="How-to guidance">
-  For step-by-step instructions, see [Use Queues](../how-to/use-queues) and [Manage Failed Triggers](../how-to/dead-letter-queues).
+  For step-by-step instructions on configuring and using queues, see [Use Queues](../how-to/use-queues). For DLQ management, see [Manage Failed Triggers](../how-to/dead-letter-queues).
 </Info>
 
-## Queue modes
+## Queue Modes
 
 ### Topic-based queues
 
@@ -27,13 +27,13 @@ The producer knows the topic name; consumers register to receive it. Queue setti
 
 ### Named queues
 
-Define queues in `iii-config.yaml`, then enqueue function calls directly. No trigger registration.
+Define queues in `iii-config.yaml`, then enqueue function calls directly. No trigger registration needed.
 
 1. **Define queues** in `queue_configs` (see [Configuration](#configuration)).
 2. **Enqueue a function call** with `trigger({ function_id: 'orders::process', payload, action: TriggerAction.Enqueue({ queue: 'payment' }) })`. The engine routes the job to the named queue and invokes the function when a worker consumes it.
-3. **Action on the trigger**: the target function receives `payload` as its input. Retries, concurrency, and FIFO are configured in `iii-config.yaml`.
+3. **Action on the trigger**: the target function receives `payload` as its input. Retries, concurrency, and FIFO are configured centrally in `iii-config.yaml`.
 
-The producer targets the function and queue explicitly. Queue configuration is centralized.
+The producer targets the function and queue explicitly. Queue configuration is centralized. For a hands-on walkthrough, see [Use Queues](../how-to/use-queues).
 
 ### When to use which
 
@@ -44,7 +44,11 @@ The producer targets the function and queue explicitly. Queue configuration is c
 | **Config** | Optional `queue_config` on trigger | `queue_configs` in `iii-config.yaml` |
 | **Use case** | Pub/sub, multiple subscribers per topic | Direct function invocation with retries, FIFO, DLQ |
 
-Both modes are valid. Named queues offer config-driven retries, concurrency, and FIFO. See [Queue System](../architecture/queue-system) for design rationale.
+Both modes are valid. Named queues offer config-driven retries, concurrency, and FIFO ordering.
+
+<Info title="Trigger actions">
+  Named queues use the `Enqueue` trigger action. For a full comparison of synchronous, Void, and Enqueue invocation modes, see [Trigger Actions](../how-to/trigger-actions).
+</Info>
 
 ## Sample Configuration
 
@@ -87,7 +91,7 @@ Each entry in `queue_configs` defines an independent named queue with its own re
 </ResponseField>
 
 <ResponseField name="concurrency" type="u32">
-  Maximum number of jobs processed simultaneously from this queue. Defaults to `10`.
+  Maximum number of jobs processed simultaneously from this queue. Defaults to `10`. For FIFO queues, the engine overrides this to `prefetch=1` to guarantee ordering — see the note below.
 </ResponseField>
 
 <ResponseField name="type" type="string">
@@ -105,6 +109,10 @@ Each entry in `queue_configs` defines an independent named queue with its own re
 <ResponseField name="poll_interval_ms" type="u64">
   Worker poll interval in milliseconds. Defaults to `100`.
 </ResponseField>
+
+<Warning title="FIFO and concurrency">
+  When `type` is `fifo`, the engine sets `prefetch=1` regardless of the `concurrency` value. This ensures only one job is in-flight at a time, which is required for strict ordering. FIFO queues also retry failed jobs inline (blocking the queue) rather than in parallel. For the design rationale, see [Why FIFO uses prefetch=1](../architecture/queue-system#why-fifo-uses-prefetch1).
+</Warning>
 
 ## Adapters
 
@@ -129,7 +137,11 @@ config:
 
 ### modules::queue::RedisAdapter
 
-Uses Redis as the queue backend. Enables message distribution across multiple engine instances. Does not support retries or dead-letter queues.
+Uses Redis as the queue backend for topic-based pub/sub. Enables message distribution across multiple engine instances.
+
+<Warning title="Limited named queue support">
+  The Redis adapter supports publishing to named queues but does not implement named queue consumption, retries, or dead-letter queues. It is suitable for topic-based pub/sub only. For full named queue support in multi-instance deployments, use the [RabbitMQ adapter](#modulesqueuerabbitmqadapter).
+</Warning>
 
 ```yaml
 class: modules::queue::RedisAdapter
@@ -145,7 +157,7 @@ config:
 
 Uses RabbitMQ as the queue backend. Supports durable delivery, retries, and dead-letter queues across multiple engine instances.
 
-The engine owns consumer loops, retry acknowledgement, and backoff logic — RabbitMQ is used as a transport only. Retry uses explicit ack + republish to a retry exchange with an `x-attempt` header, keeping compatibility with both classic and quorum queues.
+The engine owns consumer loops, retry acknowledgement, and backoff logic — RabbitMQ is used as a transport only. Retry uses explicit ack + republish to a retry exchange with an `x-attempt` header, keeping compatibility with both classic and quorum queues. See [Why the RabbitMQ topology was redesigned](../architecture/queue-system#why-the-rabbitmq-topology-was-redesigned) for details.
 
 ```yaml
 class: modules::queue::RabbitMQAdapter
@@ -159,13 +171,21 @@ config:
 
 ## Adapter Comparison
 
-|  | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
+| | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
 |---|---|---|---|
 | **Retries** | Yes | Yes | No |
 | **Dead-letter queue** | Yes | Yes | No |
 | **FIFO ordering** | Yes | Yes | No |
-| **Named queues** | Yes | Yes | No |
+| **Named queue consumption** | Yes | Yes | No (publish only) |
+| **Topic-based pub/sub** | Yes | Yes | Yes |
 | **Multi-instance** | No | Yes | Yes |
+| **External dependency** | None | RabbitMQ | Redis |
+
+Regardless of adapter, retry semantics, concurrency enforcement, and FIFO ordering behave identically because the engine owns the consumer loop and controls these behaviors. See [Why the engine owns the consumer loop](../architecture/queue-system#why-the-engine-owns-the-consumer-loop) for the architectural reasoning.
+
+<Info title="Choosing an adapter">
+  For practical guidance on which adapter to use in different deployment scenarios, see [Use Queues — Choosing an Adapter](../how-to/use-queues#choosing-an-adapter).
+</Info>
 
 ## Queue Flow
 
