@@ -11,13 +11,34 @@ iii.registerFunction(
   { id: "video::enqueue-transcode" },
   async (request: any) => {
     const logger = new Logger();
-    const jobId = `job-${Date.now()}`;
+    const prepared = await iii.trigger({
+      function_id: "media-service::prepare-transcode",
+      payload: {
+        assetId: request.body.assetId,
+        profile: request.body.profile ?? "1080p",
+      },
+    });
+    const jobId = prepared.jobId ?? `job-${Date.now()}`;
+    await iii.trigger({
+      function_id: "state::set",
+      payload: {
+        scope: "jobs",
+        key: jobId,
+        value: {
+          _key: jobId,
+          jobId,
+          assetId: prepared.assetId,
+          profile: prepared.profile,
+          status: "queued",
+        },
+      },
+    });
     iii.trigger({
       function_id: "video::transcode",
       payload: {
         jobId,
-        assetId: request.body.assetId,
-        profile: request.body.profile ?? "1080p",
+        assetId: prepared.assetId,
+        profile: prepared.profile,
       },
       action: TriggerAction.Enqueue({
         queue: "video-transcode",
@@ -37,19 +58,19 @@ iii.registerFunction({ id: "video::transcode" }, async (data: any) => {
     jobId: data.jobId,
     assetId: data.assetId,
   });
-  const result = {
-    jobId: data.jobId,
-    assetId: data.assetId,
-    profile: data.profile,
-    output: `${data.assetId}.mp4`,
-    status: "completed",
-  };
+  const result = await iii.trigger({
+    function_id: "media-worker::transcode",
+    payload: data,
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
       scope: "jobs",
       key: data.jobId,
-      value: { _key: data.jobId, ...result },
+      value: {
+        _key: data.jobId,
+        ...result,
+      },
     },
   });
   logger.info("jobs.video_transcode.completed", {
@@ -61,13 +82,21 @@ iii.registerFunction({ id: "video::transcode" }, async (data: any) => {
 
 iii.registerFunction({ id: "video::job-status" }, async (request: any) => {
   const logger = new Logger();
-  const job = await iii.trigger({
+  let job = await iii.trigger({
     function_id: "state::get",
     payload: {
       scope: "jobs",
       key: request.params.jobId,
     },
   });
+  if (!job) {
+    job = await iii.trigger({
+      function_id: "jobs-service::lookup",
+      payload: {
+        jobId: request.params.jobId,
+      },
+    });
+  }
   if (!job) {
     logger.warn("jobs.lookup.not_found", {
       jobId: request.params.jobId,

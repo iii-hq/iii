@@ -11,6 +11,13 @@ iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
   const logger = new Logger();
   const roomId = request.body.roomId;
   const userId = request.body.userId;
+  const presence = await iii.trigger({
+    function_id: "presence-service::join-room",
+    payload: {
+      roomId,
+      userId,
+    },
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -18,12 +25,11 @@ iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
       key: `${roomId}:${userId}`,
       value: {
         _key: `${roomId}:${userId}`,
-        roomId,
-        userId,
+        ...presence,
       },
     },
   });
-  const count = 1; // ...compute from shared state...
+  const count = presence.count;
   iii.trigger({
     function_id: "stream::send",
     payload: {
@@ -46,11 +52,14 @@ iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
 iii.registerFunction({ id: "rooms::update-score" }, async (request: any) => {
   const logger = new Logger();
   const roomId = request.params.roomId;
-  const update = {
-    roomId,
-    playerId: request.body.playerId,
-    score: request.body.score,
-  };
+  const update = await iii.trigger({
+    function_id: "scoring-service::apply-score-update",
+    payload: {
+      roomId,
+      playerId: request.body.playerId,
+      score: request.body.score,
+    },
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -68,7 +77,15 @@ iii.registerFunction({ id: "rooms::update-score" }, async (request: any) => {
 
 iii.registerFunction({ id: "rooms::on-score-change" }, async (event: any) => {
   const logger = new Logger();
-  // ...fan out to subscribers...
+  iii.trigger({
+    function_id: "leaderboard-service::recompute-room",
+    payload: {
+      roomId: event.new_value.roomId,
+      playerId: event.new_value.playerId,
+      score: event.new_value.score,
+    },
+    action: TriggerAction.Void(),
+  });
   iii.trigger({
     function_id: "stream::send",
     payload: {

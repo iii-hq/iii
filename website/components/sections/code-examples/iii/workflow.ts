@@ -1,63 +1,83 @@
-import { registerWorker, Logger, TriggerAction } from 'iii-sdk';
+import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
 const iii = registerWorker(
-  process.env.III_ENGINE_URL || 'ws://localhost:49134',
+  process.env.III_ENGINE_URL || "ws://localhost:49134",
   {
-    workerName: 'workflow-iii',
+    workerName: "workflow-iii",
   },
 );
 
-async function track(orderId: string, step: string, status: string) {
+async function trackStep(
+  orderId: string,
+  step: string,
+  status: string,
+  extra: Record<string, any> = {},
+) {
   await iii.trigger({
-    function_id: 'state::update',
+    function_id: "state::update",
     payload: {
-      scope: 'workflow-orders',
+      scope: "workflow-orders",
       key: orderId,
       ops: [
         {
-          type: 'set',
-          path: 'currentStep',
+          type: "set",
+          path: "currentStep",
           value: step,
         },
         {
-          type: 'set',
-          path: 'status',
+          type: "set",
+          path: "status",
           value: status,
         },
         {
-          type: 'set',
-          path: 'updatedAt',
+          type: "set",
+          path: "updatedAt",
           value: new Date().toISOString(),
         },
+        ...Object.entries(extra).map(([path, value]) => ({
+          type: "set",
+          path,
+          value,
+        })),
       ],
     },
   });
 }
 
-iii.registerFunction({ id: 'orders::start' }, async (request: any) => {
+iii.registerFunction({ id: "orders::start" }, async (request: any) => {
   const logger = new Logger();
   const orderId = request.body.orderId ?? `ord-${Date.now()}`;
-  await iii.trigger({
-    function_id: 'state::set',
+  const orderDraft = await iii.trigger({
+    function_id: "checkout-service::normalize-order",
     payload: {
-      scope: 'workflow-orders',
+      orderId,
+      items: request.body.items ?? [],
+      accountId: request.body.accountId ?? "anonymous",
+    },
+  });
+  await iii.trigger({
+    function_id: "state::set",
+    payload: {
+      scope: "workflow-orders",
       key: orderId,
       value: {
         _key: orderId,
         orderId,
-        status: 'queued',
-        currentStep: 'created',
+        status: "queued",
+        currentStep: "created",
+        items: orderDraft.items,
+        accountId: orderDraft.accountId,
         updatedAt: new Date().toISOString(),
       },
     },
   });
   await iii.trigger({
-    function_id: 'orders::validate',
+    function_id: "orders::validate",
     payload: {
       orderId,
     },
     action: TriggerAction.Enqueue({
-      queue: 'orders-workflow',
+      queue: "orders-workflow",
     }),
   });
   logger.info('workflow.start_order_fulfillment.queued', {
@@ -66,72 +86,117 @@ iii.registerFunction({ id: 'orders::start' }, async (request: any) => {
   return { orderId };
 });
 
-iii.registerFunction({ id: 'orders::validate' }, async (data: any) => {
+iii.registerFunction({ id: "orders::validate" }, async (data: any) => {
   const logger = new Logger();
-  await track(data.orderId, 'validate', 'running');
-  // ...validation and enrichment...
-  await track(data.orderId, 'validate', 'complete');
+  await trackStep(data.orderId, "validate", "running");
+  const snapshot = await iii.trigger({
+    function_id: "state::get",
+    payload: {
+      scope: "workflow-orders",
+      key: data.orderId,
+    },
+  });
+  if (!snapshot) {
+    const error = new Error("Workflow order not found") as Error & {
+      status: number;
+    };
+    error.status = 404;
+    throw error;
+  }
+  const validation = await iii.trigger({
+    function_id: "validation-service::validate-order",
+    payload: {
+      orderId: data.orderId,
+      items: snapshot.items,
+      accountId: snapshot.accountId,
+    },
+  });
+  if (!validation.ok) {
+    await trackStep(data.orderId, "validate", "failed", {
+      failureReason: validation.reason,
+    });
+    const error = new Error(validation.reason ?? "Order validation failed") as Error & {
+      status: number;
+    };
+    error.status = 422;
+    throw error;
+  }
+  const payment = await iii.trigger({
+    function_id: "billing-service::charge-order",
+    payload: {
+      orderId: data.orderId,
+      accountId: snapshot.accountId,
+      amount: validation.totalAmount,
+    },
+  });
+  await trackStep(data.orderId, "validate", "complete", {
+    paymentId: payment.paymentId,
+  });
   await iii.trigger({
-    function_id: 'orders::ship',
+    function_id: "orders::ship",
     payload: { orderId: data.orderId },
     action: TriggerAction.Enqueue({
-      queue: 'orders-workflow',
+      queue: "orders-workflow",
     }),
   });
-  logger.info('workflow.step.validate', {
+  logger.info("workflow.step.validate", {
     orderId: data.orderId,
+    paymentId: payment.paymentId,
   });
   return { ok: true };
 });
 
-iii.registerFunction({ id: 'orders::ship' }, async (data: any) => {
+iii.registerFunction({ id: "orders::ship" }, async (data: any) => {
   const logger = new Logger();
-  await track(data.orderId, 'ship', 'running');
-  const trackingNumber = `trk-${Date.now()}`; // ...call carrier...
+  await trackStep(data.orderId, "ship", "running");
+  const shipment = await iii.trigger({
+    function_id: "shipping-service::create-shipment",
+    payload: { orderId: data.orderId },
+  });
   await iii.trigger({
-    function_id: 'state::update',
+    function_id: "state::update",
     payload: {
-      scope: 'workflow-orders',
+      scope: "workflow-orders",
       key: data.orderId,
       ops: [
         {
-          type: 'set',
-          path: 'trackingNumber',
-          value: trackingNumber,
+          type: "set",
+          path: "trackingNumber",
+          value: shipment.trackingNumber,
         },
         {
-          type: 'set',
-          path: 'status',
-          value: 'fulfilled',
+          type: "set",
+          path: "status",
+          value: "fulfilled",
         },
       ],
     },
   });
-  await track(data.orderId, 'ship', 'fulfilled');
+  await trackStep(data.orderId, "ship", "fulfilled");
   iii.trigger({
-    function_id: 'publish',
+    function_id: "publish",
     payload: {
-      topic: 'order.fulfilled',
+      topic: "order.fulfilled",
       data: {
         orderId: data.orderId,
-        trackingNumber,
+        trackingNumber: shipment.trackingNumber,
       },
     },
     action: TriggerAction.Void(),
   });
-  logger.info('workflow.step.ship', {
+  logger.info("workflow.step.ship", {
     orderId: data.orderId,
-    trackingNumber,
+    trackingNumber: shipment.trackingNumber,
   });
-  return { trackingNumber };
+  return { trackingNumber: shipment.trackingNumber };
 });
 
-iii.registerFunction({ id: 'orders::snapshot' }, async (request: any) => {
+iii.registerFunction({ id: "orders::snapshot" }, async (request: any) => {
   const logger = new Logger();
   const snapshot = await iii.trigger({
-    function_id: 'state::get',
+    function_id: "state::get",
     payload: {
-      scope: 'workflow-orders',
+      scope: "workflow-orders",
       key: request.params.orderId,
     },
   });
@@ -150,19 +215,19 @@ iii.registerFunction({ id: 'orders::snapshot' }, async (request: any) => {
 });
 
 iii.registerTrigger({
-  type: 'http',
-  function_id: 'orders::start',
+  type: "http",
+  function_id: "orders::start",
   config: {
-    api_path: '/workflows/order',
-    http_method: 'POST',
+    api_path: "/workflows/order",
+    http_method: "POST",
   },
 });
 
 iii.registerTrigger({
-  type: 'http',
-  function_id: 'orders::snapshot',
+  type: "http",
+  function_id: "orders::snapshot",
   config: {
-    api_path: '/workflows/order/:orderId',
-    http_method: 'GET',
+    api_path: "/workflows/order/:orderId",
+    http_method: "GET",
   },
 });

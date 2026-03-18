@@ -10,35 +10,48 @@ const iii = registerWorker(
 iii.registerFunction({ id: "carts::add-item" }, async (request: any) => {
   const logger = new Logger();
   const cartId = request.params.cartId;
-  const current = await iii.trigger({
-    function_id: "state::get",
-    payload: { scope: "carts", key: cartId },
+  const lineItem = await iii.trigger({
+    function_id: "catalog-service::validate-line-item",
+    payload: {
+      sku: request.body.sku,
+      qty: request.body.qty,
+    },
   });
-  const cart = current ?? {
-    _key: cartId,
-    id: cartId,
-    items: [],
-  };
-  cart.items.push({ sku: request.body.sku, qty: request.body.qty });
-  // ...pricing rules, inventory checks...
+  const cart = await iii.trigger({
+    function_id: "cart-service::add-item",
+    payload: {
+      cartId,
+      item: lineItem,
+    },
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
       scope: "carts",
       key: cartId,
-      value: cart,
+      value: {
+        _key: cartId,
+        ...cart,
+      },
+    },
+  });
+  const quote = await iii.trigger({
+    function_id: "pricing-service::quote-cart",
+    payload: {
+      cartId,
+      items: cart.items,
     },
   });
   logger.info("state.cart_add_item", {
     cartId,
-    sku: request.body.sku,
+    sku: lineItem.sku,
   });
-  return cart;
+  return { cart, quote };
 });
 
 iii.registerFunction({ id: "carts::get" }, async (request: any) => {
   const logger = new Logger();
-  const cart = await iii.trigger({
+  let cart = await iii.trigger({
     function_id: "state::get",
     payload: {
       scope: "carts",
@@ -46,33 +59,39 @@ iii.registerFunction({ id: "carts::get" }, async (request: any) => {
     },
   });
   if (!cart) {
-    logger.warn("state.cart_get.not_found", {
-      cartId: request.params.cartId,
+    cart = await iii.trigger({
+      function_id: "cart-service::get-cart",
+      payload: {
+        cartId: request.params.cartId,
+      },
     });
-    const error = new Error("Cart not found") as Error & {
-      status: number;
-    };
-    error.status = 404;
-    throw error;
+    if (!cart) {
+      logger.warn("state.cart_get.not_found", {
+        cartId: request.params.cartId,
+      });
+      const error = new Error("Cart not found") as Error & {
+        status: number;
+      };
+      error.status = 404;
+      throw error;
+    }
+    await iii.trigger({
+      function_id: "state::set",
+      payload: {
+        scope: "carts",
+        key: request.params.cartId,
+        value: {
+          _key: request.params.cartId,
+          ...cart,
+        },
+      },
+    });
   }
   logger.info("state.cart_get.found", {
     cartId: request.params.cartId,
-    itemCount: cart.items.length,
+    itemCount: cart.items?.length ?? 0,
   });
   return cart;
-});
-
-iii.registerFunction({ id: "carts::on-change" }, async (event: any) => {
-  const logger = new Logger();
-  // ...reactive projections/metrics...
-  logger.info("state.carts.changed", { cartId: event.new_value?.id });
-  return { observed: true };
-});
-
-iii.registerTrigger({
-  type: "state",
-  function_id: "carts::on-change",
-  config: { scope: "carts" },
 });
 
 iii.registerTrigger({

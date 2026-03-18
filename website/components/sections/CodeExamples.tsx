@@ -26,7 +26,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.api,
     },
     iii: {
-      title: 'iii Worker + HTTP Triggers',
+      title: 'iii',
       language: 'typescript',
       code: iii.api,
     },
@@ -42,7 +42,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.pubsub,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.pubsub,
     },
@@ -58,7 +58,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.realtime,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.realtime,
     },
@@ -66,7 +66,7 @@ export const codeExamples: Record<string, CodeExample> = {
 
   state: {
     description:
-      'Use shared state with built-in reactions so reads, writes, and side effects stay in one model.',
+      'Use shared state as a cache-backed read/write model while delegating domain logic to worker services.',
     traditional: {
       title: 'Redis Cache + Store',
       tools: ['Redis'],
@@ -74,7 +74,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.state,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.state,
     },
@@ -90,7 +90,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.cron,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.cron,
     },
@@ -106,7 +106,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.workflow,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.workflow,
     },
@@ -122,7 +122,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional['ai-agents'],
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii['ai-agents'],
     },
@@ -138,7 +138,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional['feature-flags'],
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii['feature-flags'],
     },
@@ -154,7 +154,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.etl,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.etl,
     },
@@ -162,7 +162,7 @@ export const codeExamples: Record<string, CodeExample> = {
 
   reactive: {
     description:
-      'Trigger downstream work from state changes instead of hand-wiring listeners across services.',
+      'Trigger downstream fanout and async orchestration from state changes instead of wiring listeners by hand.',
     traditional: {
       title: 'Change Feed + Subscribers',
       tools: ['Postgres', 'Redis Pub/Sub', 'ws'],
@@ -170,7 +170,7 @@ export const codeExamples: Record<string, CodeExample> = {
       code: traditional.reactive,
     },
     iii: {
-      title: 'iii Engine',
+      title: 'iii',
       language: 'typescript',
       code: iii.reactive,
     },

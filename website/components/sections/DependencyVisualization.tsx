@@ -1,295 +1,295 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Highlight, themes } from "prism-react-renderer";
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Highlight, themes } from 'prism-react-renderer';
 
 type AnimationPhase =
-  | "idle"
-  | "highlighting"
-  | "moving"
-  | "linking"
-  | "connected"
-  | "outputting"
-  | "legendVisible" // Legend appears first
-  | "spotlight"; // Code highlighting animates in
+  | 'idle'
+  | 'highlighting'
+  | 'moving'
+  | 'linking'
+  | 'connected'
+  | 'outputting'
+  | 'legendVisible' // Legend appears first
+  | 'spotlight'; // Code highlighting animates in
 
 // Keywords/patterns that indicate architecture/infrastructure code
 // Covers: JS/TS, Python, Rust
 const architectureKeywords = [
   // Imports & modules
-  "import",
-  "require",
-  "from",
-  "use ",
-  "mod ",
-  "extern crate",
-  "include",
+  'import',
+  'require',
+  'from',
+  'use ',
+  'mod ',
+  'extern crate',
+  'include',
 
   // Environment & config
-  "process.env",
-  "os.environ",
-  "std::env",
-  "dotenv",
-  "env::",
-  "env.",
-  "getenv",
-  "config",
-  "settings",
-  "options",
-  ".env",
+  'process.env',
+  'os.environ',
+  'std::env',
+  'dotenv',
+  'env::',
+  'env.',
+  'getenv',
+  'config',
+  'settings',
+  'options',
+  '.env',
 
   // Connection & initialization
-  "connect",
-  "connection",
-  "initialize",
-  "init",
-  "setup",
-  "bootstrap",
-  "createclient",
-  "createconnection",
-  "createpool",
-  "createadapter",
-  "client(",
-  "pool(",
-  "getconnection",
+  'connect',
+  'connection',
+  'initialize',
+  'init',
+  'setup',
+  'bootstrap',
+  'createclient',
+  'createconnection',
+  'createpool',
+  'createadapter',
+  'client(',
+  'pool(',
+  'getconnection',
 
   // Message queues & brokers
-  "redis",
-  "bull",
-  "queue",
-  "kafka",
-  "rabbit",
-  "amqp",
-  "celery",
-  "rq",
-  "pubsub",
-  "nats",
-  "zeromq",
-  "zmq",
-  "sqs",
-  "sns",
-  "eventbridge",
+  'redis',
+  'bull',
+  'queue',
+  'kafka',
+  'rabbit',
+  'amqp',
+  'celery',
+  'rq',
+  'pubsub',
+  'nats',
+  'zeromq',
+  'zmq',
+  'sqs',
+  'sns',
+  'eventbridge',
 
   // Real-time & sockets
-  "socket",
-  "websocket",
-  "io(",
-  "pusher",
-  "ably",
-  "centrifugo",
-  "subscribe",
-  "unsubscribe",
-  "on(",
-  "once(",
-  "addeventlistener",
-  "removelistener",
-  "listener",
-  "handler",
-  "middleware",
-  "interceptor",
+  'socket',
+  'websocket',
+  'io(',
+  'pusher',
+  'ably',
+  'centrifugo',
+  'subscribe',
+  'unsubscribe',
+  'on(',
+  'once(',
+  'addeventlistener',
+  'removelistener',
+  'listener',
+  'handler',
+  'middleware',
+  'interceptor',
 
   // Scheduling & workflows
-  "temporal",
-  "cron",
-  "agenda",
-  "schedule",
-  "scheduler",
-  "celerybeat",
-  "airflow",
-  "dag",
-  "workflow",
-  "step function",
+  'temporal',
+  'cron',
+  'agenda',
+  'schedule',
+  'scheduler',
+  'celerybeat',
+  'airflow',
+  'dag',
+  'workflow',
+  'step function',
 
   // Logging & tracing
-  "winston",
-  "pino",
-  "logger",
-  "logging",
-  "log.",
-  "tracer",
-  "tracing",
-  "opentelemetry",
-  "datadog",
-  "sentry",
-  "newrelic",
-  "span",
+  'winston',
+  'pino',
+  'logger',
+  'logging',
+  'log.',
+  'tracer',
+  'tracing',
+  'opentelemetry',
+  'datadog',
+  'sentry',
+  'newrelic',
+  'span',
 
   // Database clients
-  "prisma",
-  "sequelize",
-  "typeorm",
-  "mongoose",
-  "sqlalchemy",
-  "diesel",
-  "pg.",
-  "mysql",
-  "mongodb",
-  "dynamodb",
-  "ioredis",
-  "knex",
+  'prisma',
+  'sequelize',
+  'typeorm',
+  'mongoose',
+  'sqlalchemy',
+  'diesel',
+  'pg.',
+  'mysql',
+  'mongodb',
+  'dynamodb',
+  'ioredis',
+  'knex',
 
   // HTTP/Server setup
-  "express",
-  "fastify",
-  "koa",
-  "flask",
-  "django",
-  "actix",
-  "axum",
-  "rocket",
-  "app.use",
-  "app.get",
-  "app.post",
-  "router.",
-  "listen(",
-  "bind(",
-  "createserver",
-  "httpserver",
+  'express',
+  'fastify',
+  'koa',
+  'flask',
+  'django',
+  'actix',
+  'axum',
+  'rocket',
+  'app.use',
+  'app.get',
+  'app.post',
+  'router.',
+  'listen(',
+  'bind(',
+  'createserver',
+  'httpserver',
 
   // Auth & security
-  "passport",
-  "jwt",
-  "oauth",
-  "auth0",
-  "cognito",
-  "firebase.auth",
-  "bcrypt",
-  "argon",
-  "crypto",
+  'passport',
+  'jwt',
+  'oauth',
+  'auth0',
+  'cognito',
+  'firebase.auth',
+  'bcrypt',
+  'argon',
+  'crypto',
 
   // Cloud & infrastructure
-  "aws.",
-  "s3.",
-  "lambda",
-  "cloudformation",
-  "terraform",
-  "docker",
-  "kubernetes",
-  "k8s",
+  'aws.',
+  's3.',
+  'lambda',
+  'cloudformation',
+  'terraform',
+  'docker',
+  'kubernetes',
+  'k8s',
 
   // Error handling boilerplate (when it's setup, not business logic)
-  "try {",
-  "try:",
-  "catch(",
-  "except",
-  "finally",
-  "error::",
-  ".catch(",
-  ".then(",
+  'try {',
+  'try:',
+  'catch(',
+  'except',
+  'finally',
+  'error::',
+  '.catch(',
+  '.then(',
 
   // Decorators & annotations (infrastructure)
-  "@app.",
-  "@celery",
-  "@task",
-  "@route",
-  "@middleware",
-  "@inject",
-  "#[tokio",
-  "#[async",
-  "#[derive",
+  '@app.',
+  '@celery',
+  '@task',
+  '@route',
+  '@middleware',
+  '@inject',
+  '#[tokio',
+  '#[async',
+  '#[derive',
 
   // Exports of infrastructure
-  "export default",
-  "module.exports",
-  "pub mod",
-  "pub use",
+  'export default',
+  'module.exports',
+  'pub mod',
+  'pub use',
 ];
 
 // Keywords/patterns that indicate business logic
 const businessLogicKeywords = [
   // Function definitions with business meaning
-  "async fn",
-  "fn ",
-  "def ",
-  "function ",
-  "=>",
+  'async fn',
+  'fn ',
+  'def ',
+  'function ',
+  '=>',
 
   // Business operations
-  "create",
-  "update",
-  "delete",
-  "save",
-  "find",
-  "fetch",
-  "load",
-  "send",
-  "notify",
-  "process",
-  "handle",
-  "validate",
-  "transform",
-  "calculate",
-  "compute",
-  "generate",
-  "parse",
-  "format",
-  "convert",
-  "filter",
-  "map",
-  "reduce",
-  "sort",
-  "group",
-  "aggregate",
+  'create',
+  'update',
+  'delete',
+  'save',
+  'find',
+  'fetch',
+  'load',
+  'send',
+  'notify',
+  'process',
+  'handle',
+  'validate',
+  'transform',
+  'calculate',
+  'compute',
+  'generate',
+  'parse',
+  'format',
+  'convert',
+  'filter',
+  'map',
+  'reduce',
+  'sort',
+  'group',
+  'aggregate',
 
   // API/service calls (the actual work)
-  "await ",
-  ".await",
-  "trigger",
-  "execute",
-  "call",
-  "request",
-  "getuser",
-  "createuser",
-  "updateuser",
-  "deleteuser",
-  "sendemail",
-  "sendnotification",
-  "publishevent",
+  'await ',
+  '.await',
+  'trigger',
+  'execute',
+  'call',
+  'request',
+  'getuser',
+  'createuser',
+  'updateuser',
+  'deleteuser',
+  'sendemail',
+  'sendnotification',
+  'publishevent',
 
   // Control flow for business rules
-  "if ",
-  "else ",
-  "match ",
-  "switch",
-  "case ",
-  "for ",
-  "while ",
-  "loop ",
-  ".foreach",
-  ".map(",
+  'if ',
+  'else ',
+  'match ',
+  'switch',
+  'case ',
+  'for ',
+  'while ',
+  'loop ',
+  '.foreach',
+  '.map(',
 
   // Return values (actual results)
-  "return ",
-  "ok(",
-  "err(",
-  "some(",
-  "none",
+  'return ',
+  'ok(',
+  'err(',
+  'some(',
+  'none',
 
   // Data manipulation
-  "json",
-  "serialize",
-  "deserialize",
-  "encode",
-  "decode",
-  "push",
-  "pop",
-  "insert",
-  "append",
-  "extend",
+  'json',
+  'serialize',
+  'deserialize',
+  'encode',
+  'decode',
+  'push',
+  'pop',
+  'insert',
+  'append',
+  'extend',
 
   // iii/Motia specific patterns
-  "emit(",
-  "getcontext",
-  "registerfunction",
-  "invokefunctionasync",
-  "bridge.",
-  "step.",
-  "flow.",
+  'emit(',
+  'getcontext',
+  'registerfunction',
+  'invokefunctionasync',
+  'bridge.',
+  'step.',
+  'flow.',
 ];
 
 interface HighlightedCodeBlockProps {
   code: string;
   title: string;
   tools?: string[];
-  variant: "traditional" | "iii";
+  variant: 'traditional' | 'iii';
   isDarkMode: boolean;
   language?: string;
   animationPhase: AnimationPhase;
@@ -302,7 +302,7 @@ interface IIIHeaderGraphProps {
 
 interface HeaderOrbParticle {
   id: number;
-  direction: "right" | "left";
+  direction: 'right' | 'left';
   duration: number;
   delay: number;
   sizePx: number;
@@ -315,10 +315,10 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
   dependencies,
 }) => {
   const boxClasses = isDarkMode
-    ? "border-iii-light/60 bg-iii-dark text-iii-light"
-    : "border-iii-dark/40 bg-white text-iii-black";
-  const lineClasses = isDarkMode ? "bg-iii-light/45" : "bg-iii-dark/35";
-  const dotClasses = isDarkMode ? "bg-iii-info" : "bg-iii-accent-light";
+    ? 'border-iii-light/60 bg-iii-dark text-iii-light'
+    : 'border-iii-dark/40 bg-white text-iii-black';
+  const lineClasses = isDarkMode ? 'bg-iii-light/45' : 'bg-iii-dark/35';
+  const dotClasses = isDarkMode ? 'bg-iii-info' : 'bg-iii-accent-light';
   const nodes = dependencies.slice(0, 2);
   const [orbs, setOrbs] = useState<HeaderOrbParticle[]>([]);
   const orbIdRef = useRef(0);
@@ -339,7 +339,7 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
         for (let i = 0; i < spawnCount; i++) {
           next.push({
             id: orbIdRef.current++,
-            direction: Math.random() > 0.5 ? "right" : "left",
+            direction: Math.random() > 0.5 ? 'right' : 'left',
             duration: 1.1 + Math.random() * 1.2,
             delay: Math.random() * 0.08,
             sizePx: 4 + Math.floor(Math.random() * 3),
@@ -372,7 +372,7 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
       }
       setOrbs([]);
     };
-  }, [nodes.length, dependencies.join("|")]);
+  }, [nodes.length, dependencies.join('|')]);
 
   if (nodes.length === 0) {
     return null;
@@ -391,7 +391,7 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
               marginTop: `${orb.offsetY}px`,
               opacity: orb.opacity,
               animation: `${
-                orb.direction === "right" ? "orbTravelRight" : "orbTravelLeft"
+                orb.direction === 'right' ? 'orbTravelRight' : 'orbTravelLeft'
               } ${orb.duration}s cubic-bezier(0.42, 0, 0.58, 1) ${orb.delay}s 1`,
             }}
             onAnimationEnd={() =>
@@ -406,7 +406,7 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
           <div
             key={`${node}-${index}`}
             className={`px-2 sm:px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold text-center truncate ${boxClasses}`}
-            style={{ width: "clamp(68px, 10vw, 132px)" }}
+            style={{ width: 'clamp(68px, 10vw, 132px)' }}
             title={node}
           >
             {node}
@@ -422,53 +422,82 @@ const lineContainsTool = (lineText: string, tools: string[]): boolean => {
   const lowerLine = lineText.toLowerCase();
   // Check for import statements or tool names
   if (
-    lowerLine.includes("import ") ||
-    lowerLine.includes("require(") ||
-    lowerLine.includes("from ")
+    lowerLine.includes('import ') ||
+    lowerLine.includes('require(') ||
+    lowerLine.includes('from ')
   ) {
     return true;
   }
   // Check for common setup patterns
   if (
-    lowerLine.includes("new ") &&
-    (lowerLine.includes("redis") ||
-      lowerLine.includes("bull") ||
-      lowerLine.includes("queue") ||
-      lowerLine.includes("client"))
+    lowerLine.includes('new ') &&
+    (lowerLine.includes('redis') ||
+      lowerLine.includes('bull') ||
+      lowerLine.includes('queue') ||
+      lowerLine.includes('client'))
   ) {
     return true;
   }
   // Check for tool-specific keywords
   const toolKeywords = [
-    "redis",
-    "bull",
-    "queue",
-    "kafka",
-    "rabbit",
-    "socket",
-    "io",
-    "pusher",
-    "temporal",
-    "cron",
-    "agenda",
-    "winston",
-    "pino",
-    "logger",
-    "tracer",
-    "langchain",
-    "openai",
-    "celery",
-    "airflow",
-    "dag",
-    "convex",
-    "launchdarkly",
-    "colyseus",
-    "photon",
-    "createclient",
-    "createadapter",
-    "ioredis",
+    'redis',
+    'bull',
+    'queue',
+    'kafka',
+    'rabbit',
+    'socket',
+    'io',
+    'pusher',
+    'temporal',
+    'cron',
+    'agenda',
+    'winston',
+    'pino',
+    'logger',
+    'tracer',
+    'langchain',
+    'openai',
+    'celery',
+    'airflow',
+    'dag',
+    'convex',
+    'launchdarkly',
+    'colyseus',
+    'photon',
+    'createclient',
+    'createadapter',
+    'ioredis',
   ];
   return toolKeywords.some((keyword) => lowerLine.includes(keyword));
+};
+
+const iiiBuiltInPrefixes = ['state::', 'stream::', 'engine::'];
+
+const extractWorkerServiceDependencies = (code: string): string[] => {
+  const localFunctionIds = new Set<string>();
+  const functionIdPattern = /function_id\s*:\s*["']([^"']+)["']/g;
+  const localIdPattern = /registerFunction\(\s*\{\s*id:\s*["']([^"']+)["']/g;
+
+  for (const match of code.matchAll(localIdPattern)) {
+    localFunctionIds.add(match[1]);
+  }
+
+  const dependencies = new Set<string>();
+  for (const match of code.matchAll(functionIdPattern)) {
+    const functionId = match[1];
+    if (
+      !functionId.includes('::') ||
+      functionId === 'publish' ||
+      localFunctionIds.has(functionId) ||
+      iiiBuiltInPrefixes.some((prefix) => functionId.startsWith(prefix))
+    ) {
+      continue;
+    }
+    const [service] = functionId.split('::');
+    dependencies.add(service);
+  }
+
+  return Array.from(dependencies);
 };
 
 const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
@@ -477,11 +506,12 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   tools = [],
   variant,
   isDarkMode,
-  language = "typescript",
+  language = 'typescript',
   animationPhase,
 }) => {
-  const isTraditional = variant === "traditional";
-  const isIII = variant === "iii";
+  const isTraditional = variant === 'traditional';
+  const isIII = variant === 'iii';
+  const headerTitle = isIII ? 'iii' : title;
 
   // Track revealed lines for animation
   const [revealedLine, setRevealedLine] = useState(0);
@@ -489,12 +519,12 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   const totalLinesRef = useRef(0);
 
   // Animation phases
-  const isOutputting = ["outputting", "legendVisible", "spotlight"].includes(
+  const isOutputting = ['outputting', 'legendVisible', 'spotlight'].includes(
     animationPhase,
   );
-  const isSpotlight = animationPhase === "spotlight";
+  const isSpotlight = animationPhase === 'spotlight';
 
-  const lines = code.trim().split("\n");
+  const lines = code.trim().split('\n');
   totalLinesRef.current = lines.length;
 
   // Animate lines revealing from bottom to top when spotlight starts
@@ -533,13 +563,13 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
     // Skip empty lines, comments, and pure braces
     if (
       lowerLine.length < 2 ||
-      lowerLine === "}" ||
-      lowerLine === "};" ||
-      lowerLine === "{" ||
-      lowerLine.startsWith("//") ||
-      lowerLine.startsWith("/*") ||
-      lowerLine.startsWith("*") ||
-      (lowerLine.startsWith("#") && !lowerLine.startsWith("#[")) // Python comments, but not Rust attributes
+      lowerLine === '}' ||
+      lowerLine === '};' ||
+      lowerLine === '{' ||
+      lowerLine.startsWith('//') ||
+      lowerLine.startsWith('/*') ||
+      lowerLine.startsWith('*') ||
+      (lowerLine.startsWith('#') && !lowerLine.startsWith('#[')) // Python comments, but not Rust attributes
     ) {
       return;
     }
@@ -556,58 +586,58 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
 
     // Strong architecture indicators (these always win)
     const isStrongArchitecture =
-      lowerLine.startsWith("import ") ||
-      lowerLine.startsWith("from ") ||
-      lowerLine.startsWith("use ") ||
-      lowerLine.startsWith("extern ") ||
-      lowerLine.includes("require(") ||
-      lowerLine.includes("process.env") ||
-      lowerLine.includes("os.environ") ||
-      lowerLine.includes("std::env") ||
-      lowerLine.includes(".env") ||
-      lowerLine.startsWith("try ") ||
-      lowerLine.startsWith("try:") ||
-      lowerLine.startsWith("try{") ||
-      lowerLine.includes("catch(") ||
-      lowerLine.includes("catch (") ||
-      lowerLine.startsWith("except") ||
-      lowerLine.startsWith("finally") ||
-      lowerLine.includes(".on(") ||
-      lowerLine.includes(".once(") ||
-      lowerLine.includes(".subscribe(") ||
-      lowerLine.includes("addeventlistener") ||
-      lowerLine.includes(".then(") ||
-      lowerLine.includes(".catch(") ||
-      lowerLine.includes("new redis") ||
-      lowerLine.includes("new bull") ||
-      lowerLine.includes("createclient") ||
-      lowerLine.includes("connect(") ||
-      lowerLine.includes("init(") ||
-      lowerLine.startsWith("@") || // Decorators
-      lowerLine.startsWith("#["); // Rust attributes
+      lowerLine.startsWith('import ') ||
+      lowerLine.startsWith('from ') ||
+      lowerLine.startsWith('use ') ||
+      lowerLine.startsWith('extern ') ||
+      lowerLine.includes('require(') ||
+      lowerLine.includes('process.env') ||
+      lowerLine.includes('os.environ') ||
+      lowerLine.includes('std::env') ||
+      lowerLine.includes('.env') ||
+      lowerLine.startsWith('try ') ||
+      lowerLine.startsWith('try:') ||
+      lowerLine.startsWith('try{') ||
+      lowerLine.includes('catch(') ||
+      lowerLine.includes('catch (') ||
+      lowerLine.startsWith('except') ||
+      lowerLine.startsWith('finally') ||
+      lowerLine.includes('.on(') ||
+      lowerLine.includes('.once(') ||
+      lowerLine.includes('.subscribe(') ||
+      lowerLine.includes('addeventlistener') ||
+      lowerLine.includes('.then(') ||
+      lowerLine.includes('.catch(') ||
+      lowerLine.includes('new redis') ||
+      lowerLine.includes('new bull') ||
+      lowerLine.includes('createclient') ||
+      lowerLine.includes('connect(') ||
+      lowerLine.includes('init(') ||
+      lowerLine.startsWith('@') || // Decorators
+      lowerLine.startsWith('#['); // Rust attributes
 
     // Strong business logic indicators
     const isStrongBusinessLogic =
-      lowerLine.includes("emit(") ||
-      lowerLine.includes("getcontext") ||
-      lowerLine.includes("registerfunction") ||
-      lowerLine.includes("registertrigger") ||
-      lowerLine.includes("triggervoid") ||
-      lowerLine.includes("iii.trigger(") ||
-      lowerLine.includes("invokefunctionasync") ||
-      lowerLine.includes("state::") ||
-      lowerLine.includes("stream::") ||
+      lowerLine.includes('emit(') ||
+      lowerLine.includes('getcontext') ||
+      lowerLine.includes('registerfunction') ||
+      lowerLine.includes('registertrigger') ||
+      lowerLine.includes('triggervoid') ||
+      lowerLine.includes('iii.trigger(') ||
+      lowerLine.includes('invokefunctionasync') ||
+      lowerLine.includes('state::') ||
+      lowerLine.includes('stream::') ||
       lowerLine.includes("'publish'") ||
       lowerLine.includes('"publish"') ||
       lowerLine.includes("'enqueue'") ||
       lowerLine.includes('"enqueue"') ||
-      (lowerLine.includes("await ") &&
-        !lowerLine.includes("connect") &&
-        !lowerLine.includes("subscribe")) ||
-      (lowerLine.includes("return ") && !lowerLine.includes("error")) ||
-      lowerLine.includes("createuser") ||
-      lowerLine.includes("sendemail") ||
-      lowerLine.includes("sendnotification");
+      (lowerLine.includes('await ') &&
+        !lowerLine.includes('connect') &&
+        !lowerLine.includes('subscribe')) ||
+      (lowerLine.includes('return ') && !lowerLine.includes('error')) ||
+      lowerLine.includes('createuser') ||
+      lowerLine.includes('sendemail') ||
+      lowerLine.includes('sendnotification');
 
     // Categorize the line
     if (isStrongArchitecture) {
@@ -622,9 +652,9 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
       // Both present - use heuristics
       // If it's defining a handler/listener, it's architecture
       if (
-        lowerLine.includes("handler") ||
-        lowerLine.includes("listener") ||
-        lowerLine.includes("middleware")
+        lowerLine.includes('handler') ||
+        lowerLine.includes('listener') ||
+        lowerLine.includes('middleware')
       ) {
         architectureLines.add(lineNum);
       } else {
@@ -636,8 +666,8 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   // For traditional: during early phases, highlight architecture as "bad" (alert)
   const shouldHighlight =
     isTraditional &&
-    (animationPhase === "highlighting" || animationPhase === "moving");
-  const shouldShowExtracted = isTraditional && animationPhase === "moving";
+    (animationPhase === 'highlighting' || animationPhase === 'moving');
+  const shouldShowExtracted = isTraditional && animationPhase === 'moving';
 
   const inferredDependencies = Array.from(
     new Set(
@@ -647,7 +677,7 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
             .toLowerCase()
             .split(/[^a-z0-9]+/)
             .filter(
-              (token) => token.length >= 3 && token !== "sdk" && token !== "js",
+              (token) => token.length >= 3 && token !== 'sdk' && token !== 'js',
             );
           if (tokens.length === 0) {
             return false;
@@ -660,51 +690,48 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
             return tokens.some((token) => lowerLine.includes(token));
           });
         })
-        .map((tool) => tool.replace(/\s*\+.*$/, "").trim())
+        .map((tool) => tool.replace(/\s*\+.*$/, '').trim())
         .filter(Boolean),
     ),
   );
-  const baseDependencies =
-    inferredDependencies.length > 0
+  const baseDependencies = isIII
+    ? extractWorkerServiceDependencies(code)
+    : inferredDependencies.length > 0
       ? inferredDependencies
       : tools
-          .map((tool) => tool.replace(/\s*\+.*$/, "").trim())
+          .map((tool) => tool.replace(/\s*\+.*$/, '').trim())
           .filter(Boolean);
   const dependencyCount =
-    animationPhase === "highlighting"
-      ? 0
-      : animationPhase === "moving"
-        ? 1
-        : 2;
+    animationPhase === 'highlighting' ? 0 : animationPhase === 'moving' ? 1 : 2;
   const headerDependencies = baseDependencies.slice(0, dependencyCount);
 
   // Border styling for iii code block - transforms to dashed accent when outputting
   const getBorderClasses = () => {
     if (isIII && isOutputting) {
       return isDarkMode
-        ? "border-iii-accent border-dashed"
-        : "border-iii-accent-light border-dashed";
+        ? 'border-iii-accent border-dashed'
+        : 'border-iii-accent-light border-dashed';
     }
-    return isDarkMode ? "border-iii-light" : "border-iii-dark";
+    return isDarkMode ? 'border-iii-light' : 'border-iii-dark';
   };
   return (
     <div
       className={`rounded-lg overflow-hidden border-2 h-full flex flex-col transition-all duration-700 ${getBorderClasses()} ${
-        isDarkMode ? "bg-iii-black" : "bg-white"
+        isDarkMode ? 'bg-iii-black' : 'bg-white'
       } ${
         isIII && isOutputting
           ? isDarkMode
-            ? "shadow-lg shadow-iii-accent/20"
-            : "shadow-lg shadow-iii-accent-light/20"
-          : ""
+            ? 'shadow-lg shadow-iii-accent/20'
+            : 'shadow-lg shadow-iii-accent-light/20'
+          : ''
       }`}
     >
       {/* Header */}
       <div
         className={`flex flex-col gap-2 px-3 sm:px-4 py-2 sm:py-3 border-b transition-colors duration-300 flex-shrink-0 ${
           isDarkMode
-            ? "border-iii-light bg-iii-dark/50"
-            : "border-iii-dark bg-iii-light/50"
+            ? 'border-iii-light bg-iii-dark/50'
+            : 'border-iii-dark bg-iii-light/50'
         }`}
       >
         <div className="flex items-center gap-2">
@@ -712,18 +739,18 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
             <div
               className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                 isTraditional
-                  ? "bg-iii-light"
+                  ? 'bg-iii-light'
                   : isDarkMode
-                    ? "bg-iii-accent"
-                    : "bg-iii-accent-light"
+                    ? 'bg-iii-accent'
+                    : 'bg-iii-accent-light'
               }`}
             />
             <span
               className={`text-xs sm:text-sm font-medium transition-colors duration-300 truncate ${
-                isDarkMode ? "text-iii-light" : "text-iii-black"
+                isDarkMode ? 'text-iii-light' : 'text-iii-black'
               }`}
             >
-              {title}
+              {headerTitle}
             </span>
           </div>
           {isIII && (
@@ -738,7 +765,7 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
       {/* Code */}
       <div
         className={`p-2 sm:p-3 md:p-4 overflow-auto flex-1 max-h-[400px] sm:max-h-[500px] relative ${
-          isDarkMode ? "scrollbar-brand-dark" : "scrollbar-brand-light"
+          isDarkMode ? 'scrollbar-brand-dark' : 'scrollbar-brand-light'
         }`}
       >
         {/* Scan line effect during spotlight - constrained to marker area */}
@@ -749,12 +776,12 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
               className="absolute left-0 w-1 h-1 pointer-events-none z-10"
               style={{
                 bottom: `${(revealedLine / totalLinesRef.current) * 100}%`,
-                width: "4px",
-                height: "3px",
-                borderRadius: "2px",
+                width: '4px',
+                height: '3px',
+                borderRadius: '2px',
                 background: isDarkMode
-                  ? "var(--color-accent)"
-                  : "var(--color-accent-light)",
+                  ? 'var(--color-accent)'
+                  : 'var(--color-accent-light)',
               }}
             />
           )}
@@ -795,14 +822,14 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
                       {...getLineProps({ line })}
                       className={`
                       whitespace-pre relative transition-all duration-300
-                      ${extracted ? "translate-x-2 scale-[0.98]" : ""}
+                      ${extracted ? 'translate-x-2 scale-[0.98]' : ''}
                       ${
                         showTraditionalHighlight
-                          ? "rounded-sm bg-iii-alert/10"
-                          : ""
+                          ? 'rounded-sm bg-iii-alert/10'
+                          : ''
                       }
-                      ${showArchHighlight ? "rounded-sm bg-iii-warn/10" : ""}
-                      ${showBizHighlight ? "rounded-sm bg-iii-success/10" : ""}
+                      ${showArchHighlight ? 'rounded-sm bg-iii-warn/10' : ''}
+                      ${showBizHighlight ? 'rounded-sm bg-iii-success/10' : ''}
                     `}
                     >
                       {/* Initial push: alert (red) */}
@@ -814,7 +841,7 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
                       {showArchHighlight && (
                         <span
                           className={`absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-iii-warn ${
-                            !scanComplete ? "animate-pulse" : ""
+                            !scanComplete ? 'animate-pulse' : ''
                           }`}
                         />
                       )}
@@ -823,7 +850,7 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
                       {showBizHighlight && (
                         <span
                           className={`absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-iii-success ${
-                            !scanComplete ? "animate-pulse" : ""
+                            !scanComplete ? 'animate-pulse' : ''
                           }`}
                         />
                       )}
@@ -831,8 +858,8 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
                       <span
                         className={`inline-block w-6 sm:w-8 text-right mr-2 sm:mr-3 select-none ${
                           isDarkMode
-                            ? "text-iii-light/30"
-                            : "text-iii-medium/40"
+                            ? 'text-iii-light/30'
+                            : 'text-iii-medium/40'
                         }`}
                       >
                         {lineNum}
@@ -877,33 +904,33 @@ export const DependencyVisualization: React.FC<
   categoryId,
   isDarkMode,
 }) => {
-  const [animationPhase, setAnimationPhase] = useState<AnimationPhase>("idle");
+  const [animationPhase, setAnimationPhase] = useState<AnimationPhase>('idle');
   const [hasAnimatedOnScroll, setHasAnimatedOnScroll] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const runAnimation = useCallback(() => {
-    setAnimationPhase("idle");
+    setAnimationPhase('idle');
 
     // Phase 1: Highlight dependency code in traditional block
-    const timer1 = setTimeout(() => setAnimationPhase("highlighting"), 300);
+    const timer1 = setTimeout(() => setAnimationPhase('highlighting'), 300);
 
     // Phase 2: Transition dependency emphasis
-    const timer2 = setTimeout(() => setAnimationPhase("moving"), 1500);
+    const timer2 = setTimeout(() => setAnimationPhase('moving'), 1500);
 
     // Phase 3: Activate linked visualization state
-    const timer3 = setTimeout(() => setAnimationPhase("linking"), 3200);
+    const timer3 = setTimeout(() => setAnimationPhase('linking'), 3200);
 
     // Phase 4: Show fully connected state (color change completes)
-    const timer4 = setTimeout(() => setAnimationPhase("connected"), 4500);
+    const timer4 = setTimeout(() => setAnimationPhase('connected'), 4500);
 
     // Phase 5: Output to iii code (decoupled connection)
-    const timer5 = setTimeout(() => setAnimationPhase("outputting"), 5800);
+    const timer5 = setTimeout(() => setAnimationPhase('outputting'), 5800);
 
     // Phase 6: Legend appears first
-    const timer6 = setTimeout(() => setAnimationPhase("legendVisible"), 7000);
+    const timer6 = setTimeout(() => setAnimationPhase('legendVisible'), 7000);
 
     // Phase 7: Spotlight - code markers animate in from bottom to top
-    const timer7 = setTimeout(() => setAnimationPhase("spotlight"), 8500);
+    const timer7 = setTimeout(() => setAnimationPhase('spotlight'), 8500);
 
     return () => {
       clearTimeout(timer1);
@@ -947,8 +974,8 @@ export const DependencyVisualization: React.FC<
   }, [categoryId, hasAnimatedOnScroll, runAnimation]);
 
   const isLegendVisible =
-    animationPhase === "legendVisible" || animationPhase === "spotlight";
-  const isSpotlight = animationPhase === "spotlight";
+    animationPhase === 'legendVisible' || animationPhase === 'spotlight';
+  const isSpotlight = animationPhase === 'spotlight';
 
   return (
     <div ref={containerRef} className="space-y-4">
@@ -1008,7 +1035,7 @@ export const DependencyVisualization: React.FC<
         className={`
           hidden lg:grid grid-cols-2 gap-4 xl:gap-6
           transition-all duration-1000 ease-out overflow-hidden
-          ${isLegendVisible ? "max-h-32 opacity-100" : "max-h-0 opacity-0"}
+          ${isLegendVisible ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'}
         `}
       >
         {/* Architecture legend - below traditional code (left) */}
@@ -1019,18 +1046,18 @@ export const DependencyVisualization: React.FC<
               transition-all duration-700 ease-out
               ${
                 isLegendVisible
-                  ? "opacity-100 translate-y-0"
-                  : "opacity-0 translate-y-4"
+                  ? 'opacity-100 translate-y-0'
+                  : 'opacity-0 translate-y-4'
               }
               ${
                 isDarkMode
-                  ? "bg-iii-dark/80 shadow-lg shadow-black/20"
-                  : "bg-white/80 shadow-lg shadow-black/5"
+                  ? 'bg-iii-dark/80 shadow-lg shadow-black/20'
+                  : 'bg-white/80 shadow-lg shadow-black/5'
               }
             `}
             style={{
-              transitionDelay: isLegendVisible ? "400ms" : "0ms",
-              backdropFilter: "blur(8px)",
+              transitionDelay: isLegendVisible ? '400ms' : '0ms',
+              backdropFilter: 'blur(8px)',
             }}
           >
             <div className="w-4 h-4 rounded bg-iii-warn" />
@@ -1040,7 +1067,7 @@ export const DependencyVisualization: React.FC<
               </span>
               <span
                 className={`text-[10px] ${
-                  isDarkMode ? "text-iii-light/50" : "text-iii-medium/70"
+                  isDarkMode ? 'text-iii-light/50' : 'text-iii-medium/70'
                 }`}
               >
                 Infrastructure & setup code
@@ -1057,18 +1084,18 @@ export const DependencyVisualization: React.FC<
               transition-all duration-700 ease-out
               ${
                 isLegendVisible
-                  ? "opacity-100 translate-y-0"
-                  : "opacity-0 translate-y-4"
+                  ? 'opacity-100 translate-y-0'
+                  : 'opacity-0 translate-y-4'
               }
               ${
                 isDarkMode
-                  ? "bg-iii-dark/80 shadow-lg shadow-black/20"
-                  : "bg-white/80 shadow-lg shadow-black/5"
+                  ? 'bg-iii-dark/80 shadow-lg shadow-black/20'
+                  : 'bg-white/80 shadow-lg shadow-black/5'
               }
             `}
             style={{
-              transitionDelay: isLegendVisible ? "600ms" : "0ms",
-              backdropFilter: "blur(8px)",
+              transitionDelay: isLegendVisible ? '600ms' : '0ms',
+              backdropFilter: 'blur(8px)',
             }}
           >
             <div className="w-4 h-4 rounded bg-iii-success" />
@@ -1078,7 +1105,7 @@ export const DependencyVisualization: React.FC<
               </span>
               <span
                 className={`text-[10px] ${
-                  isDarkMode ? "text-iii-light/50" : "text-iii-medium/70"
+                  isDarkMode ? 'text-iii-light/50' : 'text-iii-medium/70'
                 }`}
               >
                 Your application code
@@ -1092,17 +1119,17 @@ export const DependencyVisualization: React.FC<
       <div
         className={`
           lg:hidden flex justify-center transition-all duration-1000 ease-out overflow-hidden
-          ${isLegendVisible ? "max-h-32 opacity-100" : "max-h-0 opacity-0"}
+          ${isLegendVisible ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'}
         `}
       >
         <div
           className={`
             flex flex-col sm:flex-row items-center gap-4 sm:gap-6 px-5 py-3 rounded-lg
             transition-all duration-700 ease-out
-            ${isLegendVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}
-            ${isDarkMode ? "bg-iii-dark/80 shadow-lg shadow-black/20" : "bg-white/80 shadow-lg shadow-black/5"}
+            ${isLegendVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
+            ${isDarkMode ? 'bg-iii-dark/80 shadow-lg shadow-black/20' : 'bg-white/80 shadow-lg shadow-black/5'}
           `}
-          style={{ backdropFilter: "blur(8px)" }}
+          style={{ backdropFilter: 'blur(8px)' }}
         >
           <div className="flex items-center gap-3">
             <div className="w-4 h-4 rounded bg-iii-warn" />

@@ -10,13 +10,14 @@ const iii = registerWorker(
 iii.registerFunction({ id: "flags::set-override" }, async (request: any) => {
   const logger = new Logger();
   const flagKey = request.params.flagKey;
-  const value = Boolean(request.body.value);
-  const record = {
-    _key: flagKey,
-    flagKey,
-    value,
-    updatedAt: new Date().toISOString(),
-  };
+  const record = await iii.trigger({
+    function_id: "flags-service::normalize-override",
+    payload: {
+      flagKey,
+      value: request.body.value,
+      actorId: request.body.actorId ?? "system",
+    },
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -40,36 +41,36 @@ iii.registerFunction({ id: "flags::evaluate" }, async (request: any) => {
       key: flagKey,
     },
   });
-  if (override) {
-    logger.info("flags.evaluate.override", {
+  const evaluation = await iii.trigger({
+    function_id: "flags-service::evaluate",
+    payload: {
       flagKey,
       userId,
-      value: override.value,
-    });
-    return {
-      flagKey,
-      userId,
-      value: override.value,
-      source: "override",
-    };
-  }
-  const value = false; // ...default targeting decision...
-  logger.info("flags.evaluate.default", {
-    flagKey,
-    userId,
-    value,
+      override: override?.value,
+      attributes: request.query,
+    },
   });
-  return {
+  logger.info("flags.evaluate.completed", {
     flagKey,
     userId,
-    value,
-    source: "default",
-  };
+    value: evaluation.value,
+    source: evaluation.source,
+  });
+  return evaluation;
 });
 
 iii.registerFunction({ id: "flags::on-updated" }, async (event: any) => {
   const logger = new Logger();
-  // ...fan out to subscribed clients...
+  iii.trigger({
+    function_id: "release-service::invalidate-flag-caches",
+    payload: {
+      flagKey: event.new_value?.flagKey,
+      value: event.new_value?.value,
+    },
+    action: TriggerAction.Enqueue({
+      queue: "release-cache",
+    }),
+  });
   iii.trigger({
     function_id: "stream::send",
     payload: {

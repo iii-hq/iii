@@ -1,4 +1,4 @@
-import { registerWorker, Logger } from "iii-sdk";
+import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
 const iii = registerWorker(
   process.env.III_ENGINE_URL || "ws://localhost:49134",
@@ -21,9 +21,21 @@ iii.registerFunction({ id: "reports::generate" }, async () => {
     logger.info("cron.reports_generate.skipped", {});
     return { skipped: true };
   }
-  // ...scheduled job work...
-  logger.info("cron.reports_generate.run", { task: "reports::generate" });
-  return { ran: true };
+  const enqueueReceipt = await iii.trigger({
+    function_id: "reporting-service::generate-daily-report",
+    payload: {
+      reportId: "reports",
+      requestedAt: new Date().toISOString(),
+    },
+    action: TriggerAction.Enqueue({
+      queue: "reports",
+    }),
+  });
+  logger.info("cron.reports_generate.run", {
+    task: "reports::generate",
+    receipt: enqueueReceipt?.messageReceiptId,
+  });
+  return { queued: true };
 });
 
 iii.registerFunction({ id: "cron::reports-start" }, async () => {
@@ -76,7 +88,12 @@ iii.registerFunction({ id: "cron::tasks-list" }, async () => {
     enabled: true,
     expression: "0 0 3 * * * *",
   };
-  // ...merge static and dynamic schedules...
+  const metadata = await iii.trigger({
+    function_id: "reporting-service::describe-report",
+    payload: {
+      reportId: "reports",
+    },
+  });
   logger.info("cron.tasks.list", { count: 1 });
   return {
     tasks: [
@@ -84,6 +101,7 @@ iii.registerFunction({ id: "cron::tasks-list" }, async () => {
         id: "reports",
         expression: task.expression,
         enabled: task.enabled,
+        owner: metadata.owner ?? "reporting-service",
       },
     ],
   };

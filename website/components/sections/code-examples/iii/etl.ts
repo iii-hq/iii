@@ -24,7 +24,7 @@ iii.registerFunction({ id: "etl::start" }, async () => {
     },
   });
   iii.trigger({
-    function_id: "etl::extract",
+    function_id: "etl::extract-step",
     payload: { runId },
     action: TriggerAction.Enqueue({
       queue: "etl",
@@ -36,9 +36,12 @@ iii.registerFunction({ id: "etl::start" }, async () => {
   return { runId, status: "queued" };
 });
 
-iii.registerFunction({ id: "etl::extract" }, async (data: any) => {
+iii.registerFunction({ id: "etl::extract-step" }, async (data: any) => {
   const logger = new Logger();
-  const extracted = [{ id: "1", value: 10 }];
+  const extracted = await iii.trigger({
+    function_id: "extract-service::extract-batch",
+    payload: { runId: data.runId },
+  });
   await iii.trigger({
     function_id: "state::update",
     payload: {
@@ -69,7 +72,7 @@ iii.registerFunction({ id: "etl::extract" }, async (data: any) => {
     count: extracted.length,
   });
   iii.trigger({
-    function_id: "etl::transform",
+    function_id: "etl::transform-step",
     payload: { runId: data.runId, extracted },
     action: TriggerAction.Enqueue({
       queue: "etl",
@@ -78,9 +81,15 @@ iii.registerFunction({ id: "etl::extract" }, async (data: any) => {
   return { extractedCount: extracted.length };
 });
 
-iii.registerFunction({ id: "etl::transform" }, async (data: any) => {
+iii.registerFunction({ id: "etl::transform-step" }, async (data: any) => {
   const logger = new Logger();
-  const transformed = data.extracted.map((row: any) => ({ ...row, value: row.value * 2 }));
+  const transformed = await iii.trigger({
+    function_id: "transform-service::normalize-batch",
+    payload: {
+      runId: data.runId,
+      rows: data.extracted,
+    },
+  });
   await iii.trigger({
     function_id: "state::update",
     payload: {
@@ -110,7 +119,7 @@ iii.registerFunction({ id: "etl::transform" }, async (data: any) => {
     count: transformed.length,
   });
   iii.trigger({
-    function_id: "etl::load",
+    function_id: "etl::load-step",
     payload: { runId: data.runId, transformed },
     action: TriggerAction.Enqueue({
       queue: "etl",
@@ -121,9 +130,15 @@ iii.registerFunction({ id: "etl::transform" }, async (data: any) => {
   };
 });
 
-iii.registerFunction({ id: "etl::load" }, async (data: any) => {
+iii.registerFunction({ id: "etl::load-step" }, async (data: any) => {
   const logger = new Logger();
-  // ...write transformed rows...
+  const loaded = await iii.trigger({
+    function_id: "warehouse-service::load-batch",
+    payload: {
+      runId: data.runId,
+      rows: data.transformed,
+    },
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -131,7 +146,8 @@ iii.registerFunction({ id: "etl::load" }, async (data: any) => {
       key: data.runId,
       value: {
         _key: data.runId,
-        rows: data.transformed,
+        destination: loaded.destination,
+        loadedCount: loaded.loadedCount,
       },
     },
   });
@@ -161,10 +177,10 @@ iii.registerFunction({ id: "etl::load" }, async (data: any) => {
   });
   logger.info("etl.load.completed", {
     runId: data.runId,
-    count: data.transformed.length,
+    count: loaded.loadedCount,
   });
   return {
-    loadedCount: data.transformed.length,
+    loadedCount: loaded.loadedCount,
   };
 });
 

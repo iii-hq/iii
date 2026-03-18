@@ -8,33 +8,25 @@ const iii = registerWorker(
 );
 
 iii.registerFunction({ id: "agents::plan" }, async (data: any) => {
-  const logger = new Logger();
-  const needsDocs = /docs|policy|reference/i.test(data.input);
-  logger.info("agents.plan.completed", {
-    sessionId: data.sessionId,
-    needsDocs,
+  return iii.trigger({
+    function_id: "planner-service::plan",
+    payload: data,
   });
-  return { needsDocs };
 });
 
 iii.registerFunction({ id: "agents::retrieve" }, async (data: any) => {
-  const logger = new Logger();
-  const docs = await iii.trigger({
-    function_id: "state::list",
-    payload: { scope: "knowledge-base" },
+  return iii.trigger({
+    function_id: "knowledge-service::retrieve-context",
+    payload: data,
   });
-  const selected = docs.slice(0, 3).map((item: any) => item.content || item._key);
-  logger.info("agents.retrieve.completed", {
-    sessionId: data.sessionId,
-    count: selected.length,
-  });
-  return { docs: selected };
 });
 
 iii.registerFunction({ id: "agents::respond" }, async (data: any) => {
-  const logger = new Logger();
-  const answer = `I can help with "${data.input}". ${data.docs.join(" ")}`.trim();
-  for (const token of answer.split(" ").slice(0, 3)) {
+  const result = await iii.trigger({
+    function_id: "llm-service::respond",
+    payload: data,
+  });
+  for (const token of result.previewTokens ?? []) {
     iii.trigger({
       function_id: "stream::send",
       payload: {
@@ -47,35 +39,14 @@ iii.registerFunction({ id: "agents::respond" }, async (data: any) => {
       action: TriggerAction.Void(),
     });
   }
-  // ...model/tool call path...
-  logger.info("agents.respond.completed", {
-    sessionId: data.sessionId,
-    outputLength: answer.length,
-  });
-  return { answer };
+  return { answer: result.answer };
 });
 
 iii.registerFunction({ id: "agents::persist" }, async (data: any) => {
-  const logger = new Logger();
-  const userKey = `${data.sessionId}:user:${Date.now()}`;
-  await iii.trigger({
-    function_id: "state::set",
-    payload: {
-      scope: "chat-memory",
-      key: userKey,
-      value: {
-        _key: userKey,
-        sessionId: data.sessionId,
-        role: "user",
-        content: data.input,
-      },
-    },
+  return iii.trigger({
+    function_id: "memory-service::persist-turn",
+    payload: data,
   });
-  // ...persist assistant output and metadata...
-  logger.info("agents.persist.completed", {
-    sessionId: data.sessionId,
-  });
-  return { ok: true };
 });
 
 iii.registerFunction({ id: "agents::chat" }, async (request: any) => {
@@ -107,6 +78,15 @@ iii.registerFunction({ id: "agents::chat" }, async (request: any) => {
       input,
       answer: response.answer,
     },
+  });
+  iii.trigger({
+    function_id: "analytics-service::track-chat",
+    payload: {
+      sessionId,
+      inputLength: input.length,
+      answerLength: response.answer.length,
+    },
+    action: TriggerAction.Void(),
   });
   logger.info("agents.chat.completed", {
     sessionId,

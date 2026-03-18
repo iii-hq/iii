@@ -10,7 +10,13 @@ const iii = registerWorker(
 iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
   const logger = new Logger();
   const accountId = request.params.accountId;
-  const status = String(request.body.status);
+  const account = await iii.trigger({
+    function_id: "accounts-service::set-status",
+    payload: {
+      accountId,
+      status: request.body.status,
+    },
+  });
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -18,40 +24,30 @@ iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
       key: accountId,
       value: {
         _key: accountId,
-        id: accountId,
-        status,
+        ...account,
       },
     },
   });
   logger.info("reactive.status_update", {
     accountId,
-    status,
+    status: account.status,
   });
-  return { accountId, status };
-});
-
-iii.registerFunction({ id: "accounts::get" }, async (request: any) => {
-  const account = await iii.trigger({
-    function_id: "state::get",
-    payload: {
-      scope: "accounts",
-      key: request.params.accountId,
-    },
-  });
-  if (!account) {
-    const error = new Error("Account not found") as Error & {
-      status: number;
-    };
-    error.status = 404;
-    throw error;
-  }
-  return account;
+  return { accountId, status: account.status };
 });
 
 iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
   const logger = new Logger();
   const update = event.new_value;
-  // ...publish for async consumers...
+  iii.trigger({
+    function_id: "crm-service::sync-account",
+    payload: {
+      accountId: update.id,
+      status: update.status,
+    },
+    action: TriggerAction.Enqueue({
+      queue: "crm-sync",
+    }),
+  });
   iii.trigger({
     function_id: "publish",
     payload: {
@@ -90,14 +86,5 @@ iii.registerTrigger({
   config: {
     api_path: "/reactive/accounts/:accountId/status",
     http_method: "POST",
-  },
-});
-
-iii.registerTrigger({
-  type: "http",
-  function_id: "accounts::get",
-  config: {
-    api_path: "/reactive/accounts/:accountId",
-    http_method: "GET",
   },
 });
