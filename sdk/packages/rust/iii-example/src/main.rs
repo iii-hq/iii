@@ -1,10 +1,34 @@
 use std::time::Duration;
 
 use iii_sdk::{
-    IIIError, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput, Streams,
-    TriggerRequest, UpdateBuilder, UpdateOp, register_worker,
+    IIIError, InitOptions, OtelConfig, RegisterFunction, RegisterFunctionMessage,
+    RegisterTriggerInput, Streams, TriggerRequest, UpdateBuilder, UpdateOp, register_worker,
 };
 use serde_json::json;
+
+#[derive(serde::Deserialize)]
+struct EchoOptions {
+    uppercase: bool,
+    prefix: String,
+}
+
+fn echo_message(message: String, repeat: i32, options: EchoOptions) -> Result<serde_json::Value, String> {
+    let mut result = message.repeat(repeat as usize);
+    if options.uppercase {
+        result = result.to_uppercase();
+    }
+    Ok(json!({ "echo": format!("{}{}", options.prefix, result) }))
+}
+
+#[derive(serde::Deserialize)]
+struct DelayEchoOptions {
+    suffix: String,
+}
+
+async fn delay_echo(message: String, delay_ms: u64, options: DelayEchoOptions) -> Result<serde_json::Value, String> {
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    Ok(json!({ "echo": format!("{}{}", message, options.suffix), "delayed_ms": delay_ms }))
+}
 
 mod http_example;
 
@@ -51,22 +75,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a Streams instance for atomic updates
     let streams = Streams::new(iii.clone());
 
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "example.echo".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        |input| async move { Ok(json!({ "echo": input })) },
+    iii.register(
+        RegisterFunction::new("example.echo", echo_message)
+            .description("Echo a message with repeat and formatting options"),
+    );
+
+    iii.register(
+        RegisterFunction::new_async("example.delay_echo", delay_echo)
+            .description("Echo with configurable delay"),
     );
 
     let result = iii
         .trigger(TriggerRequest {
             function_id: "example.echo".to_string(),
-            payload: json!({ "message": "hello" }),
+            payload: json!(["hello", 2, {"uppercase": false, "prefix": "> "}]),
             action: None,
             timeout_ms: None,
         })

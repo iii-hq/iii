@@ -217,6 +217,457 @@ where
     }
 }
 
+// =============================================================================
+// iii_fn — sync function wrapper
+// =============================================================================
+
+/// Wrapper for registering sync functions as III handlers via [`iii_fn`].
+///
+/// Created by [`iii_fn`]. Stores a pre-erased handler so that a single
+/// [`IntoFunctionHandler`] impl covers all supported arities.
+pub struct IIIFn<F = ()> {
+    handler: RemoteFunctionHandler,
+    request_format: Option<Value>,
+    response_format: Option<Value>,
+    _marker: std::marker::PhantomData<F>,
+}
+
+fn short_type_name<T: ?Sized>() -> &'static str {
+    let full = std::any::type_name::<T>();
+    full.rsplit("::").next().unwrap_or(full)
+}
+
+/// Maps a Rust type name to a RegisterFunctionFormat-compatible type string.
+fn format_type_name<T: ?Sized>() -> &'static str {
+    let name = short_type_name::<T>();
+    match name {
+        "String" | "str" => "string",
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
+        | "u128" | "usize" | "f32" | "f64" => "number",
+        "bool" => "boolean",
+        "Value" => "object",
+        _ => "object",
+    }
+}
+
+fn make_format(name: &str, type_str: &str) -> Value {
+    serde_json::json!({ "name": name, "type": type_str })
+}
+
+fn make_response_format<R: ?Sized>() -> Option<Value> {
+    Some(serde_json::json!({
+        "name": "response",
+        "type": format_type_name::<R>()
+    }))
+}
+
+/// Helper trait used internally to convert a sync function into a
+/// [`RemoteFunctionHandler`]. The `Marker` type parameter disambiguates
+/// overlapping `Fn` arities so that the coherence checker accepts all impls.
+#[doc(hidden)]
+pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
+    fn into_handler(self) -> RemoteFunctionHandler;
+    fn request_format() -> Option<Value> { None }
+    fn response_format() -> Option<Value> { None }
+}
+
+// 0-arg sync — input is ignored
+impl<F, R, E> IntoSyncHandler<(R, E)> for F
+where
+    F: Fn() -> Result<R, E> + Send + Sync + 'static,
+    R: serde::Serialize + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    fn into_handler(self) -> RemoteFunctionHandler {
+        Arc::new(move |_input: Value| {
+            let output = (self)()
+                .map_err(|e| IIIError::Handler(e.to_string()))
+                .and_then(|val| {
+                    serde_json::to_value(&val).map_err(|e| IIIError::Handler(e.to_string()))
+                });
+            Box::pin(async move { output })
+        })
+    }
+
+    fn response_format() -> Option<Value> {
+        make_response_format::<R>()
+    }
+}
+
+// 1-arg sync — deserializes the entire JSON input as T
+impl<F, T, R, E> IntoSyncHandler<(T, R, E)> for F
+where
+    F: Fn(T) -> Result<R, E> + Send + Sync + 'static,
+    T: serde::de::DeserializeOwned + Send + 'static,
+    R: serde::Serialize + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    fn into_handler(self) -> RemoteFunctionHandler {
+        Arc::new(move |input: Value| {
+            let output = serde_json::from_value::<T>(input)
+                .map_err(|e| IIIError::Handler(e.to_string()))
+                .and_then(|arg| (self)(arg).map_err(|e| IIIError::Handler(e.to_string())))
+                .and_then(|val| {
+                    serde_json::to_value(&val).map_err(|e| IIIError::Handler(e.to_string()))
+                });
+            Box::pin(async move { output })
+        })
+    }
+
+    fn request_format() -> Option<Value> {
+        Some(make_format("request", format_type_name::<T>()))
+    }
+
+    fn response_format() -> Option<Value> {
+        make_response_format::<R>()
+    }
+}
+
+// 2–8 arg sync — deserializes JSON array as tuple
+macro_rules! impl_sync_handler_tuple {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<Func, $($T,)+ Res, Err> IntoSyncHandler<($($T,)+ Res, Err)> for Func
+        where
+            Func: Fn($($T),+) -> Result<Res, Err> + Send + Sync + 'static,
+            $($T: serde::de::DeserializeOwned + Send + 'static,)+
+            Res: serde::Serialize + Send + 'static,
+            Err: std::fmt::Display + Send + 'static,
+        {
+            fn into_handler(self) -> RemoteFunctionHandler {
+                Arc::new(move |input: Value| {
+                    let output = serde_json::from_value::<($($T,)+)>(input)
+                        .map_err(|e| IIIError::Handler(e.to_string()))
+                        .and_then(|($($T,)+)| {
+                            (self)($($T),+).map_err(|e| IIIError::Handler(e.to_string()))
+                        })
+                        .and_then(|val| {
+                            serde_json::to_value(&val).map_err(|e| IIIError::Handler(e.to_string()))
+                        });
+                    Box::pin(async move { output })
+                })
+            }
+
+            fn request_format() -> Option<Value> {
+                let mut _idx = 0u32;
+                let body: Vec<Value> = vec![
+                    $({
+                        let item = make_format(&_idx.to_string(), format_type_name::<$T>());
+                        _idx += 1;
+                        item
+                    }),+
+                ];
+                Some(serde_json::json!({ "name": "request", "type": "array", "body": body }))
+            }
+
+            fn response_format() -> Option<Value> {
+                make_response_format::<Res>()
+            }
+        }
+    };
+}
+
+impl_sync_handler_tuple!(T1, T2);
+impl_sync_handler_tuple!(T1, T2, T3);
+impl_sync_handler_tuple!(T1, T2, T3, T4);
+impl_sync_handler_tuple!(T1, T2, T3, T4, T5);
+impl_sync_handler_tuple!(T1, T2, T3, T4, T5, T6);
+impl_sync_handler_tuple!(T1, T2, T3, T4, T5, T6, T7);
+impl_sync_handler_tuple!(T1, T2, T3, T4, T5, T6, T7, T8);
+
+/// Wraps a **sync** function into an III-compatible handler.
+///
+/// Supports 0–8 parameters. Each parameter must implement
+/// [`serde::de::DeserializeOwned`]. The function must return `Result<R, E>`
+/// where `R: Serialize` and `E: Display`.
+///
+/// - **1 arg:** the entire JSON input is deserialized as the argument type.
+///   Use a `#[derive(Deserialize)]` struct for named JSON keys.
+/// - **2–8 args:** the JSON input must be an array, deserialized positionally
+///   as a tuple (e.g. `[1, "hello"]` for `fn f(a: i32, b: String)`).
+///
+/// For async functions, use [`iii_async_fn`] instead.
+pub fn iii_fn<F, M>(f: F) -> IIIFn<F>
+where
+    F: IntoSyncHandler<M>,
+{
+    IIIFn {
+        request_format: F::request_format(),
+        response_format: F::response_format(),
+        handler: f.into_handler(),
+        _marker: std::marker::PhantomData,
+    }
+}
+
+impl<F> IntoFunctionHandler for IIIFn<F> {
+    fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
+        if message.request_format.is_none() {
+            message.request_format = self.request_format;
+        }
+        if message.response_format.is_none() {
+            message.response_format = self.response_format;
+        }
+        Some(self.handler)
+    }
+}
+
+// =============================================================================
+// iii_async_fn — async function wrapper
+// =============================================================================
+
+/// Wrapper for registering async functions as III handlers via [`iii_async_fn`].
+///
+/// Created by [`iii_async_fn`]. Stores a pre-erased handler so that a single
+/// [`IntoFunctionHandler`] impl covers all supported arities.
+pub struct IIIAsyncFn<F = ()> {
+    handler: RemoteFunctionHandler,
+    request_format: Option<Value>,
+    response_format: Option<Value>,
+    _marker: std::marker::PhantomData<F>,
+}
+
+/// Helper trait used internally to convert an async function into a
+/// [`RemoteFunctionHandler`]. The `Marker` type parameter disambiguates
+/// overlapping `Fn` arities so that the coherence checker accepts all impls.
+#[doc(hidden)]
+pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
+    fn into_handler(self) -> RemoteFunctionHandler;
+    fn request_format() -> Option<Value> { None }
+    fn response_format() -> Option<Value> { None }
+}
+
+// 0-arg async — input is ignored
+impl<F, Fut, R, E> IntoAsyncHandler<(Fut, R, E)> for F
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<R, E>> + Send + 'static,
+    R: serde::Serialize + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    fn into_handler(self) -> RemoteFunctionHandler {
+        Arc::new(move |_input: Value| {
+            let fut = (self)();
+            Box::pin(async move {
+                fut.await
+                    .map_err(|e| IIIError::Handler(e.to_string()))
+                    .and_then(|val| {
+                        serde_json::to_value(&val)
+                            .map_err(|e| IIIError::Handler(e.to_string()))
+                    })
+            })
+        })
+    }
+
+    fn response_format() -> Option<Value> {
+        make_response_format::<R>()
+    }
+}
+
+// 1-arg async — deserializes the entire JSON input as T
+impl<F, T, Fut, R, E> IntoAsyncHandler<(T, Fut, R, E)> for F
+where
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+    T: serde::de::DeserializeOwned + Send + 'static,
+    Fut: std::future::Future<Output = Result<R, E>> + Send + 'static,
+    R: serde::Serialize + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    fn into_handler(self) -> RemoteFunctionHandler {
+        Arc::new(
+            move |input: Value|
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>>
+            {
+                match serde_json::from_value::<T>(input) {
+                    Ok(arg) => {
+                        let fut = (self)(arg);
+                        Box::pin(async move {
+                            fut.await
+                                .map_err(|e| IIIError::Handler(e.to_string()))
+                                .and_then(|val| {
+                                    serde_json::to_value(&val)
+                                        .map_err(|e| IIIError::Handler(e.to_string()))
+                                })
+                        })
+                    }
+                    Err(e) => Box::pin(async move { Err(IIIError::Handler(e.to_string())) }),
+                }
+            },
+        )
+    }
+
+    fn request_format() -> Option<Value> {
+        Some(make_format("request", format_type_name::<T>()))
+    }
+
+    fn response_format() -> Option<Value> {
+        make_response_format::<R>()
+    }
+}
+
+// 2–8 arg async — deserializes JSON array as tuple
+macro_rules! impl_async_handler_tuple {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<Func, $($T,)+ Fut, Res, Err> IntoAsyncHandler<($($T,)+ Fut, Res, Err)> for Func
+        where
+            Func: Fn($($T),+) -> Fut + Send + Sync + 'static,
+            $($T: serde::de::DeserializeOwned + Send + 'static,)+
+            Fut: std::future::Future<Output = Result<Res, Err>> + Send + 'static,
+            Res: serde::Serialize + Send + 'static,
+            Err: std::fmt::Display + Send + 'static,
+        {
+            fn into_handler(self) -> RemoteFunctionHandler {
+                Arc::new(
+                    move |input: Value|
+                        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>>
+                    {
+                        match serde_json::from_value::<($($T,)+)>(input) {
+                            Ok(($($T,)+)) => {
+                                let fut = (self)($($T),+);
+                                Box::pin(async move {
+                                    fut.await
+                                        .map_err(|e| IIIError::Handler(e.to_string()))
+                                        .and_then(|val| {
+                                            serde_json::to_value(&val)
+                                                .map_err(|e| IIIError::Handler(e.to_string()))
+                                        })
+                                })
+                            }
+                            Err(e) => Box::pin(async move { Err(IIIError::Handler(e.to_string())) }),
+                        }
+                    },
+                )
+            }
+
+            fn request_format() -> Option<Value> {
+                let mut _idx = 0u32;
+                let body: Vec<Value> = vec![
+                    $({
+                        let item = make_format(&_idx.to_string(), format_type_name::<$T>());
+                        _idx += 1;
+                        item
+                    }),+
+                ];
+                Some(serde_json::json!({ "name": "request", "type": "array", "body": body }))
+            }
+
+            fn response_format() -> Option<Value> {
+                make_response_format::<Res>()
+            }
+        }
+    };
+}
+
+impl_async_handler_tuple!(T1, T2);
+impl_async_handler_tuple!(T1, T2, T3);
+impl_async_handler_tuple!(T1, T2, T3, T4);
+impl_async_handler_tuple!(T1, T2, T3, T4, T5);
+impl_async_handler_tuple!(T1, T2, T3, T4, T5, T6);
+impl_async_handler_tuple!(T1, T2, T3, T4, T5, T6, T7);
+impl_async_handler_tuple!(T1, T2, T3, T4, T5, T6, T7, T8);
+
+/// Wraps an **async** function into an III-compatible handler.
+///
+/// Same semantics as [`iii_fn`] but for async functions. Each parameter must
+/// implement [`serde::de::DeserializeOwned`]. The function must return
+/// `impl Future<Output = Result<R, E>>` where `R: Serialize` and `E: Display`.
+pub fn iii_async_fn<F, M>(f: F) -> IIIAsyncFn<F>
+where
+    F: IntoAsyncHandler<M>,
+{
+    IIIAsyncFn {
+        request_format: F::request_format(),
+        response_format: F::response_format(),
+        handler: f.into_handler(),
+        _marker: std::marker::PhantomData,
+    }
+}
+
+impl<F> IntoFunctionHandler for IIIAsyncFn<F> {
+    fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
+        if message.request_format.is_none() {
+            message.request_format = self.request_format;
+        }
+        if message.response_format.is_none() {
+            message.response_format = self.response_format;
+        }
+        Some(self.handler)
+    }
+}
+
+// =============================================================================
+// RegisterFunction — one-step registration builder
+// =============================================================================
+
+/// One-step function registration combining ID, handler, and auto-generated schemas.
+///
+/// Use [`RegisterFunction::new`] for sync functions or [`RegisterFunction::new_async`]
+/// for async functions, then register with [`III::register`].
+pub struct RegisterFunction {
+    message: RegisterFunctionMessage,
+    handler: RemoteFunctionHandler,
+}
+
+impl RegisterFunction {
+    /// Create a registration for a **sync** function.
+    pub fn new<F, M>(id: impl Into<String>, f: F) -> Self
+    where
+        F: IntoSyncHandler<M>,
+    {
+        Self {
+            message: RegisterFunctionMessage {
+                id: id.into(),
+                description: None,
+                request_format: F::request_format(),
+                response_format: F::response_format(),
+                metadata: None,
+                invocation: None,
+            },
+            handler: f.into_handler(),
+        }
+    }
+
+    /// Create a registration for an **async** function.
+    pub fn new_async<F, M>(id: impl Into<String>, f: F) -> Self
+    where
+        F: IntoAsyncHandler<M>,
+    {
+        Self {
+            message: RegisterFunctionMessage {
+                id: id.into(),
+                description: None,
+                request_format: F::request_format(),
+                response_format: F::response_format(),
+                metadata: None,
+                invocation: None,
+            },
+            handler: f.into_handler(),
+        }
+    }
+
+    /// Set the function description.
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
+        self.message.description = Some(desc.into());
+        self
+    }
+
+    /// Set function metadata.
+    pub fn metadata(mut self, meta: Value) -> Self {
+        self.message.metadata = Some(meta);
+        self
+    }
+
+    /// Get the auto-generated request format.
+    pub fn request_format(&self) -> Option<&Value> {
+        self.message.request_format.as_ref()
+    }
+
+    /// Get the auto-generated response format.
+    pub fn response_format(&self) -> Option<&Value> {
+        self.message.response_format.as_ref()
+    }
+}
+
 struct IIIInner {
     address: String,
     outbound: mpsc::UnboundedSender<Outbound>,
@@ -455,6 +906,11 @@ impl III {
     ///     },
     /// );
     /// ```
+    /// Register a function using a [`RegisterFunction`] builder.
+    pub fn register(&self, reg: RegisterFunction) -> FunctionRef {
+        self.register_function_inner(reg.message, Some(reg.handler))
+    }
+
     pub fn register_function<H: IntoFunctionHandler>(
         &self,
         mut message: RegisterFunctionMessage,

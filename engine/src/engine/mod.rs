@@ -113,6 +113,7 @@ pub enum Outbound {
     Raw(WsMessage),
 }
 
+#[derive(Debug)]
 pub struct RegisterFunctionRequest {
     pub function_id: String,
     pub description: Option<String>,
