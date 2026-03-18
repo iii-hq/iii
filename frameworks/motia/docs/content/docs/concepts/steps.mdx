@@ -3,9 +3,11 @@ title: Steps
 description: One primitive to build any backend. Simple, composable, and multi-language.
 ---
 
-{/* <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/3-motia-steps.gif">
+```html
+<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/3-motia-steps.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/3-motia-steps.mp4" type="video/mp4" />
-</video> */}
+</video>
+```
 
 ## One Primitive for Any Backend
 
@@ -533,7 +535,7 @@ Runs on a schedule. Use for periodic tasks.
 
 The iii engine uses a **7-field cron expression** that includes seconds and an optional year:
 
-```
+```text
 ┌──────────── second (0-59)
 │ ┌────────── minute (0-59)
 │ │ ┌──────── hour (0-23)
@@ -934,4 +936,4 @@ Use `ctx.match()` to handle each trigger type differently, or `ctx.getData()` to
   Steps are all you need to know to start building. Go to the Quickstart and start building right away.
 </Card>
 
-[Explore examples](/docs/examples)
+[Explore examples](https://github.com/MotiaDev/motia-examples)

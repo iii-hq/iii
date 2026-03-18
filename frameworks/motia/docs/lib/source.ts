@@ -10,7 +10,7 @@ export const baseSource = loader({
 
 const isProduction = process.env.NODE_ENV === 'production'
 
-function isLegacyExamplesSlug(slug?: string[]) {
+export function isLegacyExamplesSlug(slug?: string[]) {
   return slug?.[0] === 'examples'
 }
 

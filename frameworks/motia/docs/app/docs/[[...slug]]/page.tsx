@@ -10,14 +10,10 @@ import { createRelativeLink } from 'fumadocs-ui/mdx'
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from 'fumadocs-ui/page'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { baseSource, source } from '@/lib/source'
+import { baseSource, isLegacyExamplesSlug, source } from '@/lib/source'
 import { getMDXComponents } from '@/mdx-components'
 
 const isProduction = process.env.NODE_ENV === 'production'
-
-function isLegacyExamplesSlug(slug?: string[]) {
-  return slug?.[0] === 'examples'
-}
 
 export default async function Page(props: { params: Promise<{ slug?: string[] }> }) {
   const params = await props.params
@@ -79,11 +75,7 @@ export default async function Page(props: { params: Promise<{ slug?: string[] }>
 
 export async function generateStaticParams() {
   const params = source.generateParams()
-
-  if (!isProduction) return params
-
-  // Keep legacy examples files in-repo, but hide all example routes in production.
-  return params.filter((item) => !isLegacyExamplesSlug(item.slug))
+  return params
 }
 
 export async function generateMetadata(props: { params: Promise<{ slug?: string[] }> }) {

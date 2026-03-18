@@ -14,7 +14,7 @@ motia build
 This will build your project and create a `dist` directory with your production-ready code.
 It should be just two files: `index-production.js` and `index-production.js.map`.
 
-```
+```text
 dist/
 ├── index-production.js
 └── index-production.js.map

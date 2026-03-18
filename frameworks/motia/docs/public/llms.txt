@@ -281,9 +281,9 @@ export const config = {
   flows: ['orders'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
-  logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
-  await enqueue({ topic: 'order.premium-processed', data: input })
+export const handler: Handlers<typeof config> = async (input, ctx) => {
+  ctx.logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
+  await ctx.enqueue({ topic: 'order.premium-processed', data: input })
 }
 ```
 
@@ -377,7 +377,7 @@ Motia supports writing Steps in multiple languages within the same project. Each
 
 Each language has its own Motia SDK and its own process. The iii engine coordinates between them through shared infrastructure (queues, state, streams). A TypeScript Step can enqueue a message that a Python Step processes, and vice versa.
 
-```
+```text
 ┌──────────────────────────────────┐
 │            iii Engine            │
 │                                  │
@@ -505,7 +505,7 @@ The mixed template structure:
 | `nodejs/src/` | HTTP API endpoints (`create-ticket`, `list-tickets`) |
 | `python/steps/` | Queue and cron triggers (`triage`, `notify`, `sla-monitor`, `escalate`) |
 
-The `iii-config.yaml` uses two ExecModules — one for each runtime:
+The `config.yaml` uses two ExecModules — one for each runtime:
 
 ```yaml
 modules:
@@ -704,7 +704,7 @@ State triggers fire when data in Motia's state store changes. The `condition` fu
 A common use case is triggering a Step when all parallel tasks complete:
 
 ```typescript
-import type { Handlers, StepConfig, StateTriggerInput } from 'motia'
+import { enqueue, logger, type Handlers, type StateTriggerInput, type StepConfig } from 'motia'
 
 type TaskProgress = {
   totalSteps: number
@@ -731,7 +731,7 @@ export const config = {
   flows: ['parallel-merge'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   logger.info('All parallel steps complete', {
     taskId: input.item_id,
     results: input.new_value.results,
@@ -780,7 +780,7 @@ Stream triggers fire when stream items are created, updated, deleted, or when cu
 ### Basic Stream Trigger
 
 ```typescript
-import type { Handlers, StepConfig, StreamWrapperMessage } from 'motia'
+import { enqueue, logger, type Handlers, type StepConfig, type StreamWrapperMessage } from 'motia'
 
 export const config = {
   name: 'OnDeploymentUpdate',
@@ -797,7 +797,7 @@ export const config = {
   flows: ['deployments'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   logger.info('Deployment updated', {
     streamName: input.streamName,
     groupId: input.groupId,
@@ -1381,7 +1381,7 @@ export const config = {
   name: 'DailyReport',
   description: 'Generates daily reports at 9 AM',
   triggers: [
-    cron('0 9 * * *'),
+    cron('0 0 9 * * * *'),
   ],
   enqueues: ['report.generated'],
   virtualEnqueues: ['email.sent'],
@@ -1401,7 +1401,7 @@ export const config = {
   name: 'DailyReport',
   description: 'Generates daily reports at 9 AM',
   triggers: [
-    cron('0 9 * * *'),
+    cron('0 0 9 * * * *'),
   ],
   enqueues: ['report.generated'],
   virtualEnqueues: ['email.sent'],
@@ -1419,7 +1419,7 @@ config = {
     "name": "DailyReport",
     "description": "Generates daily reports at 9 AM",
     "triggers": [
-        {"type": "cron", "expression": "0 9 * * *"},
+        {"type": "cron", "expression": "0 0 9 * * * *"},
     ],
     "enqueues": ["report.generated"],
     "virtualEnqueues": ["email.sent"],
@@ -1450,7 +1450,7 @@ export const config = {
   triggers: [
     http('POST', '/users/sync'),
     queue('user.updated'),
-    cron('0 */6 * * *'),
+    cron('0 0 */6 * * * *'),
   ],
   enqueues: ['user.synced'],
   flows: ['user-management'],
@@ -1469,7 +1469,7 @@ export const config = {
   triggers: [
     { type: 'http', method: 'POST', path: '/users/sync' },
     { type: 'queue', topic: 'user.updated' },
-    cron('0 */6 * * *'),
+    cron('0 0 */6 * * * *'),
   ],
   enqueues: ['user.synced'],
   flows: ['user-management'],
@@ -1685,7 +1685,7 @@ import { StepConfig, Handlers, cron, logger, stateManager } from 'motia'
 
 export const config = {
   name: 'DailyCleanup',
-  triggers: [cron('0 0 * * *')],
+  triggers: [cron('0 0 0 * * * *')],
   enqueues: [],
 } as const satisfies StepConfig
 
@@ -1761,7 +1761,7 @@ export const config = {
   triggers: [
     http('POST', '/users/sync'),
     queue('user.updated'),
-    cron('0 */6 * * *'),
+    cron('0 0 */6 * * * *'),
   ],
   enqueues: ['user.synced'],
 } as const satisfies StepConfig
@@ -1870,7 +1870,7 @@ await enqueue({
 
 await enqueue({
   topic: 'order.processing',
-  data: { orderId: '123', items: [...] },
+  data: { orderId: '123', items: ['item1', 'item2'] },
   messageGroupId: 'user-456'
 })
 ```
@@ -1890,7 +1890,7 @@ await enqueue({
 
 await enqueue({
   topic: 'order.processing',
-  data: { orderId: '123', items: [...] },
+  data: { orderId: '123', items: ['item1', 'item2'] },
   messageGroupId: 'user-456'
 })
 ```
@@ -2821,7 +2821,7 @@ Files are copied into the deployment bundle and accessible at runtime.
     Authentication patterns for HTTP and stream endpoints
   </Card>
 
-  <Card href="/docs/examples" title="Examples">
+  <Card href="https://github.com/MotiaDev/motia-examples" title="Examples">
     See these APIs in action
   </Card>
 </Cards>
@@ -2985,7 +2985,7 @@ Watch video tutorials, live streams, and learn from the Motia team and community
 ### Documentation
 - **[Quick Start](/docs/getting-started/quick-start)** - Get up and running with Motia in minutes
 - **[Core Concepts](/docs/concepts/overview)** - Learn the basics of Motia
-- **[Examples](/docs/examples)** - Real-world use cases and implementations
+- **[Motia Examples repository](https://github.com/MotiaDev/motia-examples)** - Real-world use cases and implementations
 - **[API Reference](/docs/api-reference)** - Complete API documentation
 
 ### Community Guidelines
@@ -3038,7 +3038,7 @@ Motia is the application framework — you write Steps in TypeScript, Python, or
 
 ## How Motia and iii Work Together
 
-```
+```text
 ┌─────────────────────────────────────────────┐
 │                 iii Engine                  │
 │                                             │
@@ -3323,9 +3323,11 @@ title: Overview
 description: Build production-grade backends with a single primitive - APIs, background jobs, workflows, and AI agents unified
 ---
 
-{/* <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
+<!--
+<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/2-motia-overview-core-concepts.mp4" type="video/mp4" />
-</video> */}
+</video>
+-->
 
 **Build production-grade backends with a single primitive.**
 
@@ -3342,7 +3344,7 @@ Write each Step in whatever language makes sense — TypeScript, Python, or Java
 | Name | Role |
 |---|---|
 | **Motia** | The framework/SDK you import in application code (`import { step, enqueue, stateManager } from 'motia'`) |
-| **iii** | The runtime engine that runs infrastructure modules (queue, state, stream, cron, API, observability) |
+| **iii** | The runtime engine that runs infrastructure modules (queue, state, stream, cron, HTTP, observability) |
 
 In short: **you write Motia code, and iii runs it**.
 
@@ -3618,8 +3620,6 @@ Visual interface for building and debugging flows:
 
 ![iii Console Dashboard](/console/dashboard.png)
 
-![Flow diagram in iii Console](/console/flow-view.png)
-
 [Learn about the iii development console](/docs/development-guide/observability)
 
 ---
@@ -3647,9 +3647,11 @@ title: Steps
 description: One primitive to build any backend. Simple, composable, and multi-language.
 ---
 
-{/* <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/3-motia-steps.gif">
+```html
+<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/3-motia-steps.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/3-motia-steps.mp4" type="video/mp4" />
-</video> */}
+</video>
+```
 
 ## One Primitive for Any Backend
 
@@ -4177,7 +4179,7 @@ Runs on a schedule. Use for periodic tasks.
 
 The iii engine uses a **7-field cron expression** that includes seconds and an optional year:
 
-```
+```text
 ┌──────────── second (0-59)
 │ ┌────────── minute (0-59)
 │ │ ┌──────── hour (0-23)
@@ -4578,7 +4580,7 @@ Use `ctx.match()` to handle each trigger type differently, or `ctx.getData()` to
   Steps are all you need to know to start building. Go to the Quickstart and start building right away.
 </Card>
 
-[Explore examples](/docs/examples)
+[Explore examples](https://github.com/MotiaDev/motia-examples)
 
 
 -   [contribution](/docs/contribution): Documentation for contribution.
@@ -4614,7 +4616,7 @@ Improving the documentation is a great way to contribute to Motia. If you find a
 
 ## Sharing Examples and Use Cases
 
-If you have built something interesting with Motia or have a real-world use case to share, we would love to showcase it in our [Examples](/docs/examples) section. You can contribute your examples by submitting a pull request to the [Motia Examples repository](https://github.com/MotiaDev/motia-examples).
+If you have built something interesting with Motia or have a real-world use case to share, we would love to showcase it in the [Motia Examples repository](https://github.com/MotiaDev/motia-examples). You can contribute your examples by submitting a pull request there.
 
 ## Spreading the Word
 
@@ -4642,7 +4644,7 @@ motia build
 
 This produces optimized production files:
 
-```
+```text
 dist/
 ├── index-production.js
 └── index-production.js.map
@@ -4830,7 +4832,7 @@ COPY --from=iii-builder /root/.local/bin/iii /usr/local/bin/iii
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && \
-    uv pip install --system -r pyproject.toml
+    uv pip install --system .
 
 COPY steps ./steps
 COPY config.yaml ./config.yaml
@@ -4940,6 +4942,10 @@ Build your Motia project first:
 ```bash
 motia build
 ```
+
+<Callout type="warn">
+This Docker recipe is for JavaScript/TypeScript projects built with `motia build` (Bun runtime image). For Python-only or mixed projects, use the Python runtime pattern from the [Docker guide](/docs/deployment-guide/docker#python-steps) and include a Python ExecModule alongside the Node/Bun runtime as needed.
+</Callout>
 
 Then create a `Dockerfile` in your project root:
 
@@ -5363,7 +5369,7 @@ railway service my-app
 # Set environment variables
 railway variables --set "NODE_ENV=production"
 railway variables --set "USE_REDIS=true"
-railway variables --set 'REDIS_URL=${{Redis.REDIS_URL}}'
+railway variables --set 'REDIS_URL=${{Redis.REDIS_PRIVATE_URL}}'
 railway variables --set 'REDIS_PRIVATE_URL=${{Redis.REDIS_PRIVATE_URL}}'
 ```
 
@@ -5401,6 +5407,10 @@ Before creating the Docker image, build your Motia project:
 ```bash
 motia build
 ```
+
+<Callout type="warn">
+This section is JavaScript/TypeScript focused: it assumes `motia build` output and a Bun runtime image. For Python-only or mixed projects, use the Python runtime pattern in [Docker guide - Python Steps](/docs/deployment-guide/docker#python-steps) and include Python entry points/dependencies in your container.
+</Callout>
 
 This creates optimized production files in `dist/`.
 
@@ -5460,7 +5470,7 @@ Create a `railway.json` in your project root:
 
 ## Configure Redis
 
-Create a production `config.yaml` with Redis adapters for all modules. Railway auto-injects `REDIS_URL` when you link the Redis service to your app:
+Create a production `config.yaml` with Redis adapters for all modules. Configure `REDIS_URL` to point at Railway's private Redis endpoint:
 
 ```yaml title="config-production.yaml"
 modules:
@@ -5546,11 +5556,11 @@ Select your app service (not Redis).
 ```bash
 railway variables --set "NODE_ENV=production"
 railway variables --set "USE_REDIS=true"
-railway variables --set 'REDIS_URL=${{Redis.REDIS_URL}}'
+railway variables --set 'REDIS_URL=${{Redis.REDIS_PRIVATE_URL}}'
 railway variables --set 'REDIS_PRIVATE_URL=${{Redis.REDIS_PRIVATE_URL}}'
 ```
 
-The `${{Redis.REDIS_URL}}` syntax tells Railway to inject the actual Redis URL at runtime.
+The `${{Redis.REDIS_PRIVATE_URL}}` syntax maps `REDIS_URL` to the internal Redis endpoint so your adapter config consumes the private URL.
 
 </Step>
 <Step>
@@ -5714,7 +5724,7 @@ motia build
 This will build your project and create a `dist` directory with your production-ready code.
 It should be just two files: `index-production.js` and `index-production.js.map`.
 
-```
+```text
 dist/
 ├── index-production.js
 └── index-production.js.map
@@ -6018,13 +6028,20 @@ import jwt from 'jsonwebtoken'
 type TokenData = { userId: string; role: string }
 
 export async function requireAuth(request: ApiRequest<any>): Promise<TokenData> {
-  const authHeader = request.headers['authorization'] as string
+  const authHeaderEntry = Object.entries(request.headers).find(
+    ([key]) => key.toLowerCase() === 'authorization'
+  )
+  const authHeader = authHeaderEntry?.[1]
 
-  if (!authHeader) {
+  if (typeof authHeader !== 'string') {
     throw new HttpError(401, 'Missing authorization header')
   }
 
-  const [, token] = authHeader.split(' ')
+  const [scheme, token] = authHeader.split(' ')
+  if (!token || scheme.toLowerCase() !== 'bearer') {
+    throw new HttpError(401, 'Invalid authorization header')
+  }
+
   return jwt.verify(token, process.env.JWT_SECRET!) as TokenData
 }
 
@@ -6156,7 +6173,7 @@ brew install motia-cli
 
 ### `motia-cli create [name]`
 
-Scaffold a new Motia project with sensible defaults including `iii-config.yaml`, example Steps, and the appropriate dependency files for your chosen language.
+Scaffold a new Motia project with sensible defaults including `config.yaml`, example Steps, and the appropriate dependency files for your chosen language.
 
 ```bash
 motia-cli create my-project
@@ -6295,10 +6312,10 @@ npx motia rules pull --force  # Overwrite existing
 ```bash
 motia-cli create my-project   # Scaffold a new project (choose Node.js, Python, or Mixed)
 cd my-project
-iii -c iii-config.yaml        # Starts the iii engine and your Motia Steps
+iii                           # Starts the iii engine and your Motia Steps
 ```
 
-The `iii` engine reads `iii-config.yaml`, starts all modules, and uses the ExecModule to build and run your Motia Steps automatically. File changes trigger hot-reload.
+The `iii` engine reads `config.yaml`, starts all modules, and uses the ExecModule to build and run your Motia Steps automatically. File changes trigger hot-reload.
 
 ---
 
@@ -6308,7 +6325,7 @@ The `iii` engine reads `iii-config.yaml`, starts all modules, and uses the ExecM
   <Card href="/docs/concepts/overview" title="Core Concepts">
     Learn about Steps, triggers, and the event-driven architecture
   </Card>
-  <Card href="/docs/examples" title="Examples">
+  <Card href="https://github.com/MotiaDev/motia-examples" title="Examples">
     Explore real-world patterns and use cases
   </Card>
 </Cards>
@@ -7371,7 +7388,7 @@ export const config = {
     Learn more about Triggers
   </Card>
 
-  <Card href="/docs/examples" title="Examples">
+  <Card href="https://github.com/MotiaDev/motia-examples" title="Examples">
     Explore real-world examples and patterns
   </Card>
 </Cards>
@@ -7559,6 +7576,8 @@ These are exported from the root package:
 - `step`
 - `multiTriggerStep`
 - `http`, `queue`, `cron`, `state`, `stream`, `api`
+
+`api` is a legacy alias kept for backward compatibility. Prefer `http` for all new code.
 
 ### Runtime services
 
@@ -8265,6 +8284,7 @@ export const handler: Handlers<typeof config> = async ({ request }) => {
 ### Example 2: Python Queue Step
 
 ```python title="src/data-processor_step.py"
+from datetime import datetime
 from motia import enqueue
 
 config = {
@@ -8277,10 +8297,10 @@ config = {
     "flows": ["user-management"]
 }
 
-async def handler(input_data, ctx):
+async def handler(input_data):
     processed_data = {
         "original": input_data,
-        "processed_at": ctx.utils.dates.now().isoformat(),
+        "processed_at": datetime.utcnow().isoformat(),
         "count": len(input_data.get("users", []))
     }
 
@@ -8619,7 +8639,7 @@ When enqueuing to FIFO queues, pass a `messageGroupId`:
 <Tab value='TypeScript'>
 
 ```typescript
-import { enqueue } from 'motia'
+import { enqueue, type Handlers } from 'motia'
 
 export const handler: Handlers<typeof config> = async ({ request }) => {
   const { orderId, customerId } = request.body
@@ -9065,9 +9085,9 @@ export const handler: Handlers<typeof config> = async ({ request }) => {
 import uuid
 from datetime import datetime
 from typing import Any
-from motia import ApiRequest, ApiResponse, FlowContext, enqueue, logger, state_manager
+from motia import ApiRequest, ApiResponse, enqueue, logger, state_manager
 
-async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
     order_id = str(uuid.uuid4())
 
     order = {
@@ -9148,16 +9168,12 @@ export const config = {
 export const handler: Handlers<typeof config> = async (input) => {
   const { orderId } = input
 
-  // Get order from state
-  const order = await stateManager.get('orders', orderId)
-
-  if (!order) {
+  const updatedOrder = await stateManager.update('orders', orderId, [
+    { type: 'set', path: 'status', value: 'paid' },
+  ])
+  if (!updatedOrder) {
     throw new Error(`Order ${orderId} not found`)
   }
-
-  // Update status
-  order.status = 'paid'
-  await stateManager.set('orders', orderId, order)
 
   logger.info('Payment processed', { orderId })
 
@@ -9177,15 +9193,11 @@ from motia import enqueue, logger, state_manager
 async def handler(input):
     order_id = input.get("orderId")
 
-    # Get order from state
-    order = await state_manager.get("orders", order_id)
-
-    if not order:
+    updated_order = await state_manager.update("orders", order_id, [
+        {"type": "set", "path": "status", "value": "paid"}
+    ])
+    if not updated_order:
         raise Exception(f"Order {order_id} not found")
-
-    # Update status
-    order["status"] = "paid"
-    await state_manager.set("orders", order_id, order)
 
     logger.info("Payment processed", {"orderId": order_id})
 
@@ -9204,16 +9216,12 @@ import { enqueue, logger, stateManager } from 'motia'
 export const handler = async (input) => {
   const { orderId } = input
 
-  // Get order from state
-  const order = await stateManager.get('orders', orderId)
-
-  if (!order) {
+  const updatedOrder = await stateManager.update('orders', orderId, [
+    { type: 'set', path: 'status', value: 'paid' },
+  ])
+  if (!updatedOrder) {
     throw new Error(`Order ${orderId} not found`)
   }
-
-  // Update status
-  order.status = 'paid'
-  await stateManager.set('orders', orderId, order)
 
   logger.info('Payment processed', { orderId })
 
@@ -9708,7 +9716,7 @@ import { useMemo } from 'react'
 import { MotiaStreamProvider } from '@motiadev/stream-client-react'
 
 function AppShell({ session }: { session?: { streamToken?: string } }) {
-  const streamAddress = useMemo(() => new URL('ws://localhost:3000').toString(), [])
+  const streamAddress = useMemo(() => new URL('ws://localhost:3112').toString(), [])
   const protocols = useMemo(() => {
     return session?.streamToken ? ['Authorization', session.streamToken] : undefined
   }, [session?.streamToken])
@@ -10607,9 +10615,9 @@ async def handler(args: MotiaHttpArgs[Any]) -> None:
 
 ### Python
 
-- Add imports: `from motia import ApiRequest, ApiResponse, FlowContext, http`
+- Add imports: `from motia import ApiRequest, ApiResponse, http` (and `FlowContext` only if your handler needs `ctx`)
 - Use `http()` helper in trigger definitions
-- Change handler signature to `handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]`
+- Change handler signature to `handler(request: ApiRequest[Any]) -> ApiResponse[Any]` (or include `ctx: FlowContext[Any]` when needed)
 - Replace `req.get("body", {})` with `request.body`
 - Replace `req.get("pathParams", {}).get("id")` with `request.path_params.get("id")`
 - Replace `req.get("queryParams", {})` with `request.query_params`
@@ -11219,7 +11227,7 @@ export const handler: Handlers<typeof config> = async () => {
 
 The new engine uses a 7-field cron expression:
 
-```
+```text
 ┌──────────── second (0-59)
 │ ┌────────── minute (0-59)
 │ │ ┌──────── hour (0-23)
@@ -11850,11 +11858,11 @@ Select your preferred language when prompted:
 <Step>
 ### 4. Start the Project
 
-The `iii-config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
+The `config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
 
 ```bash
 cd my-project
-iii -c iii-config.yaml
+iii
 ```
 
 </Step>
@@ -11980,7 +11988,7 @@ You have successfully run your first Motia workflow. Here is where to go next:
   <Card title="Core Concepts" href="/docs/concepts/overview">
     Understand Steps, triggers, and the event-driven architecture that powers Motia.
   </Card>
-  <Card title="Examples" href="/docs/examples">
+  <Card title="Examples" href="https://github.com/MotiaDev/motia-examples">
     Explore real-world examples covering APIs, AI agents, workflows, and more.
   </Card>
   <Card title="The iii Engine" href="/docs/concepts/iii-engine">
@@ -12002,7 +12010,7 @@ description: "Build production-grade backends with a single primitive. APIs, bac
 **Motia** is a unified backend framework where everything is built around one core primitive: **the Step**. Instead of juggling separate frameworks for APIs, queues, cron jobs, AI agents, and real-time streaming, you write Steps — simple files with a `config` and a `handler` — and Motia connects them automatically.
 
 ```typescript
-import type { Handlers, StepConfig } from 'motia'
+import { enqueue, logger, type Handlers, type StepConfig } from 'motia'
 
 export const config = {
   name: 'CreateUser',
@@ -12011,7 +12019,7 @@ export const config = {
   flows: ['onboarding'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async ({ request }, { enqueue, logger }) => {
+export const handler: Handlers<typeof config> = async ({ request }) => {
   logger.info('Creating user', { email: request.body.email })
   await enqueue({ topic: 'user.created', data: request.body })
   return { status: 201, body: { success: true } }
@@ -12068,7 +12076,7 @@ Motia runs on the [iii engine](https://iii.dev), which manages all infrastructur
   <Card title="Why Motia?" href="/docs/why-motia">
     Learn why Motia exists and what problems it solves.
   </Card>
-  <Card title="Examples" href="/docs/examples">
+  <Card title="Examples" href="https://github.com/MotiaDev/motia-examples">
     Explore real-world examples covering APIs, AI agents, workflows, and more.
   </Card>
 </Cards>
@@ -12094,7 +12102,7 @@ Repository: [MotiaDev/chessarena-ai](https://github.com/MotiaDev/chessarena-ai)
 ChessArena demonstrates a practical Motia architecture with:
 
 - Real-time streaming updates for games and scores
-- Event-driven orchestration across API and worker logic
+- Event-driven orchestration across HTTP entrypoints and worker logic
 - Multi-language runtime support (TypeScript + Python)
 - Objective move grading using Stockfish
 
@@ -12112,7 +12120,7 @@ The current repository includes:
 
 - `api/` for backend and worker logic
 - `app/` for frontend
-- `types/` shared types
+- `types/` for shared types
 - `public/images/` assets and demo media
 
 This aligns with a split architecture where UI and workflow execution are separated, while streams/events keep state synchronized.
@@ -12121,9 +12129,9 @@ This aligns with a split architecture where UI and workflow execution are separa
 
 ## Tech and runtime prerequisites
 
-Based on the latest README and package scripts, local setup requires:
+According to the project README and package scripts, local setup requires:
 
-- Node.js 18+
+- Node.js 22+
 - PNPM
 - Python 3
 - `uv`
@@ -12226,7 +12234,7 @@ Have you built something amazing with Motia? We'd love to feature your productio
 -   [video-showcase](/docs/video-showcase): Documentation for video-showcase.
 ---
 title: Video Showcase
-description: Watch Motia in action through our video demonstrations and tutorials
+description: Archived page for older video showcase links that are currently unavailable.
 ---
 
 # Video Showcase

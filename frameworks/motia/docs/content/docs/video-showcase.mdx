@@ -1,6 +1,6 @@
 ---
 title: Video Showcase
-description: Watch Motia in action through our video demonstrations and tutorials
+description: Archived page for older video showcase links that are currently unavailable.
 ---
 
 # Video Showcase

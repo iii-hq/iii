@@ -3,9 +3,11 @@ title: Overview
 description: Build production-grade backends with a single primitive - APIs, background jobs, workflows, and AI agents unified
 ---
 
-{/* <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
+<!--
+<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/2-motia-overview-core-concepts.mp4" type="video/mp4" />
-</video> */}
+</video>
+-->
 
 **Build production-grade backends with a single primitive.**
 
@@ -22,7 +24,7 @@ Write each Step in whatever language makes sense — TypeScript, Python, or Java
 | Name | Role |
 |---|---|
 | **Motia** | The framework/SDK you import in application code (`import { step, enqueue, stateManager } from 'motia'`) |
-| **iii** | The runtime engine that runs infrastructure modules (queue, state, stream, cron, API, observability) |
+| **iii** | The runtime engine that runs infrastructure modules (queue, state, stream, cron, HTTP, observability) |
 
 In short: **you write Motia code, and iii runs it**.
 
@@ -297,8 +299,6 @@ Visual interface for building and debugging flows:
 - View stream updates in real-time
 
 ![iii Console Dashboard](/console/dashboard.png)
-
-![Flow diagram in iii Console](/console/flow-view.png)
 
 [Learn about the iii development console](/docs/development-guide/observability)
 

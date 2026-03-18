@@ -240,9 +240,9 @@ export const handler: Handlers<typeof config> = async ({ request }) => {
 import uuid
 from datetime import datetime
 from typing import Any
-from motia import ApiRequest, ApiResponse, FlowContext, enqueue, logger, state_manager
+from motia import ApiRequest, ApiResponse, enqueue, logger, state_manager
 
-async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
     order_id = str(uuid.uuid4())
 
     order = {
@@ -323,16 +323,12 @@ export const config = {
 export const handler: Handlers<typeof config> = async (input) => {
   const { orderId } = input
 
-  // Get order from state
-  const order = await stateManager.get('orders', orderId)
-
-  if (!order) {
+  const updatedOrder = await stateManager.update('orders', orderId, [
+    { type: 'set', path: 'status', value: 'paid' },
+  ])
+  if (!updatedOrder) {
     throw new Error(`Order ${orderId} not found`)
   }
-
-  // Update status
-  order.status = 'paid'
-  await stateManager.set('orders', orderId, order)
 
   logger.info('Payment processed', { orderId })
 
@@ -352,15 +348,11 @@ from motia import enqueue, logger, state_manager
 async def handler(input):
     order_id = input.get("orderId")
 
-    # Get order from state
-    order = await state_manager.get("orders", order_id)
-
-    if not order:
+    updated_order = await state_manager.update("orders", order_id, [
+        {"type": "set", "path": "status", "value": "paid"}
+    ])
+    if not updated_order:
         raise Exception(f"Order {order_id} not found")
-
-    # Update status
-    order["status"] = "paid"
-    await state_manager.set("orders", order_id, order)
 
     logger.info("Payment processed", {"orderId": order_id})
 
@@ -379,16 +371,12 @@ import { enqueue, logger, stateManager } from 'motia'
 export const handler = async (input) => {
   const { orderId } = input
 
-  // Get order from state
-  const order = await stateManager.get('orders', orderId)
-
-  if (!order) {
+  const updatedOrder = await stateManager.update('orders', orderId, [
+    { type: 'set', path: 'status', value: 'paid' },
+  ])
+  if (!updatedOrder) {
     throw new Error(`Order ${orderId} not found`)
   }
-
-  // Update status
-  order.status = 'paid'
-  await stateManager.set('orders', orderId, order)
 
   logger.info('Payment processed', { orderId })
 

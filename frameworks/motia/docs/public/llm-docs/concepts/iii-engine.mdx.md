@@ -7,7 +7,7 @@ Motia is the application framework — you write Steps in TypeScript, Python, or
 
 ## How Motia and iii Work Together
 
-```
+```text
 ┌─────────────────────────────────────────────┐
 │                 iii Engine                  │
 │                                             │

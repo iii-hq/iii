@@ -346,7 +346,7 @@ export const config = {
   name: 'DailyReport',
   description: 'Generates daily reports at 9 AM',
   triggers: [
-    cron('0 9 * * *'),
+    cron('0 0 9 * * * *'),
   ],
   enqueues: ['report.generated'],
   virtualEnqueues: ['email.sent'],
@@ -366,7 +366,7 @@ export const config = {
   name: 'DailyReport',
   description: 'Generates daily reports at 9 AM',
   triggers: [
-    cron('0 9 * * *'),
+    cron('0 0 9 * * * *'),
   ],
   enqueues: ['report.generated'],
   virtualEnqueues: ['email.sent'],
@@ -384,7 +384,7 @@ config = {
     "name": "DailyReport",
     "description": "Generates daily reports at 9 AM",
     "triggers": [
-        {"type": "cron", "expression": "0 9 * * *"},
+        {"type": "cron", "expression": "0 0 9 * * * *"},
     ],
     "enqueues": ["report.generated"],
     "virtualEnqueues": ["email.sent"],
@@ -415,7 +415,7 @@ export const config = {
   triggers: [
     http('POST', '/users/sync'),
     queue('user.updated'),
-    cron('0 */6 * * *'),
+    cron('0 0 */6 * * * *'),
   ],
   enqueues: ['user.synced'],
   flows: ['user-management'],
@@ -434,7 +434,7 @@ export const config = {
   triggers: [
     { type: 'http', method: 'POST', path: '/users/sync' },
     { type: 'queue', topic: 'user.updated' },
-    cron('0 */6 * * *'),
+    cron('0 0 */6 * * * *'),
   ],
   enqueues: ['user.synced'],
   flows: ['user-management'],
@@ -650,7 +650,7 @@ import { StepConfig, Handlers, cron, logger, stateManager } from 'motia'
 
 export const config = {
   name: 'DailyCleanup',
-  triggers: [cron('0 0 * * *')],
+  triggers: [cron('0 0 0 * * * *')],
   enqueues: [],
 } as const satisfies StepConfig
 
@@ -726,7 +726,7 @@ export const config = {
   triggers: [
     http('POST', '/users/sync'),
     queue('user.updated'),
-    cron('0 */6 * * *'),
+    cron('0 0 */6 * * * *'),
   ],
   enqueues: ['user.synced'],
 } as const satisfies StepConfig
@@ -835,7 +835,7 @@ await enqueue({
 
 await enqueue({
   topic: 'order.processing',
-  data: { orderId: '123', items: [...] },
+  data: { orderId: '123', items: ['item1', 'item2'] },
   messageGroupId: 'user-456'
 })
 ```
@@ -855,7 +855,7 @@ await enqueue({
 
 await enqueue({
   topic: 'order.processing',
-  data: { orderId: '123', items: [...] },
+  data: { orderId: '123', items: ['item1', 'item2'] },
   messageGroupId: 'user-456'
 })
 ```
@@ -1786,7 +1786,7 @@ Files are copied into the deployment bundle and accessible at runtime.
     Authentication patterns for HTTP and stream endpoints
   </Card>
 
-  <Card href="/docs/examples" title="Examples">
+  <Card href="https://github.com/MotiaDev/motia-examples" title="Examples">
     See these APIs in action
   </Card>
 </Cards>

@@ -5,7 +5,7 @@ const { GET: baseGET } = createFromSource(baseSource)
 const isProduction = process.env.NODE_ENV === 'production'
 
 function isLegacyExamplesUrl(value: unknown) {
-  return typeof value === 'string' && value.includes('/docs/examples')
+  return typeof value === 'string' && /^\/docs\/examples(?:\/|$)/.test(value)
 }
 
 function removeLegacyExamples(data: unknown): unknown {
@@ -37,9 +37,11 @@ export async function GET(request: Request) {
   try {
     const payload = await response.json()
     const filteredPayload = removeLegacyExamples(payload)
+    const headers = new Headers(response.headers)
+    headers.set('Content-Type', 'application/json')
     return new Response(JSON.stringify(filteredPayload), {
       status: response.status,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
     })
   } catch {
     return responseClone

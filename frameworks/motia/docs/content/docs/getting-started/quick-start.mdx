@@ -85,11 +85,11 @@ Select your preferred language when prompted:
 <Step>
 ### 4. Start the Project
 
-The `iii-config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
+The `config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
 
 ```bash
 cd my-project
-iii -c iii-config.yaml
+iii
 ```
 
 </Step>
@@ -215,7 +215,7 @@ You have successfully run your first Motia workflow. Here is where to go next:
   <Card title="Core Concepts" href="/docs/concepts/overview">
     Understand Steps, triggers, and the event-driven architecture that powers Motia.
   </Card>
-  <Card title="Examples" href="/docs/examples">
+  <Card title="Examples" href="https://github.com/MotiaDev/motia-examples">
     Explore real-world examples covering APIs, AI agents, workflows, and more.
   </Card>
   <Card title="The iii Engine" href="/docs/concepts/iii-engine">

@@ -155,7 +155,7 @@ Watch video tutorials, live streams, and learn from the Motia team and community
 ### Documentation
 - **[Quick Start](/docs/getting-started/quick-start)** - Get up and running with Motia in minutes
 - **[Core Concepts](/docs/concepts/overview)** - Learn the basics of Motia
-- **[Examples](/docs/examples)** - Real-world use cases and implementations
+- **[Motia Examples repository](https://github.com/MotiaDev/motia-examples)** - Real-world use cases and implementations
 - **[API Reference](/docs/api-reference)** - Complete API documentation
 
 ### Community Guidelines

@@ -103,13 +103,20 @@ import jwt from 'jsonwebtoken'
 type TokenData = { userId: string; role: string }
 
 export async function requireAuth(request: ApiRequest<any>): Promise<TokenData> {
-  const authHeader = request.headers['authorization'] as string
+  const authHeaderEntry = Object.entries(request.headers).find(
+    ([key]) => key.toLowerCase() === 'authorization'
+  )
+  const authHeader = authHeaderEntry?.[1]
 
-  if (!authHeader) {
+  if (typeof authHeader !== 'string') {
     throw new HttpError(401, 'Missing authorization header')
   }
 
-  const [, token] = authHeader.split(' ')
+  const [scheme, token] = authHeader.split(' ')
+  if (!token || scheme.toLowerCase() !== 'bearer') {
+    throw new HttpError(401, 'Invalid authorization header')
+  }
+
   return jwt.verify(token, process.env.JWT_SECRET!) as TokenData
 }
 

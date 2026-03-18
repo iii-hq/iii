@@ -17,7 +17,7 @@ Repository: [MotiaDev/chessarena-ai](https://github.com/MotiaDev/chessarena-ai)
 ChessArena demonstrates a practical Motia architecture with:
 
 - Real-time streaming updates for games and scores
-- Event-driven orchestration across API and worker logic
+- Event-driven orchestration across HTTP entrypoints and worker logic
 - Multi-language runtime support (TypeScript + Python)
 - Objective move grading using Stockfish
 
@@ -35,7 +35,7 @@ The current repository includes:
 
 - `api/` for backend and worker logic
 - `app/` for frontend
-- `types/` shared types
+- `types/` for shared types
 - `public/images/` assets and demo media
 
 This aligns with a split architecture where UI and workflow execution are separated, while streams/events keep state synchronized.
@@ -44,9 +44,9 @@ This aligns with a split architecture where UI and workflow execution are separa
 
 ## Tech and runtime prerequisites
 
-Based on the latest README and package scripts, local setup requires:
+According to the project README and package scripts, local setup requires:
 
-- Node.js 18+
+- Node.js 22+
 - PNPM
 - Python 3
 - `uv`

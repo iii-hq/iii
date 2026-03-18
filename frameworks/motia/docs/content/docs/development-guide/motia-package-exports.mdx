@@ -30,6 +30,8 @@ These are exported from the root package:
 - `multiTriggerStep`
 - `http`, `queue`, `cron`, `state`, `stream`, `api`
 
+`api` is a legacy alias kept for backward compatibility. Prefer `http` for all new code.
+
 ### Runtime services
 
 - `enqueue`

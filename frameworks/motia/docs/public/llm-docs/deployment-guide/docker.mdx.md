@@ -17,7 +17,7 @@ motia build
 
 This produces optimized production files:
 
-```
+```text
 dist/
 ├── index-production.js
 └── index-production.js.map
@@ -205,7 +205,7 @@ COPY --from=iii-builder /root/.local/bin/iii /usr/local/bin/iii
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && \
-    uv pip install --system -r pyproject.toml
+    uv pip install --system .
 
 COPY steps ./steps
 COPY config.yaml ./config.yaml

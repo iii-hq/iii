@@ -665,9 +665,9 @@ async def handler(args: MotiaHttpArgs[Any]) -> None:
 
 ### Python
 
-- Add imports: `from motia import ApiRequest, ApiResponse, FlowContext, http`
+- Add imports: `from motia import ApiRequest, ApiResponse, http` (and `FlowContext` only if your handler needs `ctx`)
 - Use `http()` helper in trigger definitions
-- Change handler signature to `handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]`
+- Change handler signature to `handler(request: ApiRequest[Any]) -> ApiResponse[Any]` (or include `ctx: FlowContext[Any]` when needed)
 - Replace `req.get("body", {})` with `request.body`
 - Replace `req.get("pathParams", {}).get("id")` with `request.path_params.get("id")`
 - Replace `req.get("queryParams", {})` with `request.query_params`

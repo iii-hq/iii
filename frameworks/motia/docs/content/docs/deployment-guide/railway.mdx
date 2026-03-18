@@ -89,7 +89,7 @@ railway service my-app
 # Set environment variables
 railway variables --set "NODE_ENV=production"
 railway variables --set "USE_REDIS=true"
-railway variables --set 'REDIS_URL=${{Redis.REDIS_URL}}'
+railway variables --set 'REDIS_URL=${{Redis.REDIS_PRIVATE_URL}}'
 railway variables --set 'REDIS_PRIVATE_URL=${{Redis.REDIS_PRIVATE_URL}}'
 ```
 
@@ -127,6 +127,10 @@ Before creating the Docker image, build your Motia project:
 ```bash
 motia build
 ```
+
+<Callout type="warn">
+This section is JavaScript/TypeScript focused: it assumes `motia build` output and a Bun runtime image. For Python-only or mixed projects, use the Python runtime pattern in [Docker guide - Python Steps](/docs/deployment-guide/docker#python-steps) and include Python entry points/dependencies in your container.
+</Callout>
 
 This creates optimized production files in `dist/`.
 
@@ -186,7 +190,7 @@ Create a `railway.json` in your project root:
 
 ## Configure Redis
 
-Create a production `config.yaml` with Redis adapters for all modules. Railway auto-injects `REDIS_URL` when you link the Redis service to your app:
+Create a production `config.yaml` with Redis adapters for all modules. Configure `REDIS_URL` to point at Railway's private Redis endpoint:
 
 ```yaml title="config-production.yaml"
 modules:
@@ -272,11 +276,11 @@ Select your app service (not Redis).
 ```bash
 railway variables --set "NODE_ENV=production"
 railway variables --set "USE_REDIS=true"
-railway variables --set 'REDIS_URL=${{Redis.REDIS_URL}}'
+railway variables --set 'REDIS_URL=${{Redis.REDIS_PRIVATE_URL}}'
 railway variables --set 'REDIS_PRIVATE_URL=${{Redis.REDIS_PRIVATE_URL}}'
 ```
 
-The `${{Redis.REDIS_URL}}` syntax tells Railway to inject the actual Redis URL at runtime.
+The `${{Redis.REDIS_PRIVATE_URL}}` syntax maps `REDIS_URL` to the internal Redis endpoint so your adapter config consumes the private URL.
 
 </Step>
 <Step>

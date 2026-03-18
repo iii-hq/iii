@@ -320,6 +320,7 @@ export const handler: Handlers<typeof config> = async ({ request }) => {
 ### Example 2: Python Queue Step
 
 ```python title="src/data-processor_step.py"
+from datetime import datetime
 from motia import enqueue
 
 config = {
@@ -332,10 +333,10 @@ config = {
     "flows": ["user-management"]
 }
 
-async def handler(input_data, ctx):
+async def handler(input_data):
     processed_data = {
         "original": input_data,
-        "processed_at": ctx.utils.dates.now().isoformat(),
+        "processed_at": datetime.utcnow().isoformat(),
         "count": len(input_data.get("users", []))
     }
 

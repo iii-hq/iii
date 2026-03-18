@@ -598,7 +598,7 @@ export const handler: Handlers<typeof config> = async () => {
 
 The new engine uses a 7-field cron expression:
 
-```
+```text
 ┌──────────── second (0-59)
 │ ┌────────── minute (0-59)
 │ │ ┌──────── hour (0-23)

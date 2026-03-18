@@ -36,9 +36,9 @@ export const config = {
   flows: ['orders'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
-  logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
-  await enqueue({ topic: 'order.premium-processed', data: input })
+export const handler: Handlers<typeof config> = async (input, ctx) => {
+  ctx.logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
+  await ctx.enqueue({ topic: 'order.premium-processed', data: input })
 }
 ```
 

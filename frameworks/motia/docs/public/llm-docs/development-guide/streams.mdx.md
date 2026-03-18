@@ -339,7 +339,7 @@ import { useMemo } from 'react'
 import { MotiaStreamProvider } from '@motiadev/stream-client-react'
 
 function AppShell({ session }: { session?: { streamToken?: string } }) {
-  const streamAddress = useMemo(() => new URL('ws://localhost:3000').toString(), [])
+  const streamAddress = useMemo(() => new URL('ws://localhost:3112').toString(), [])
   const protocols = useMemo(() => {
     return session?.streamToken ? ['Authorization', session.streamToken] : undefined
   }, [session?.streamToken])
