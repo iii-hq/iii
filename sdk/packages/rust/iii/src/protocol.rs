@@ -274,6 +274,16 @@ pub struct RegisterFunctionMessage {
 }
 
 impl RegisterFunctionMessage {
+    pub fn with_id(name: String) -> Self {
+        RegisterFunctionMessage {
+            id: name,
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+        }
+    }
     pub fn to_message(&self) -> Message {
         Message::RegisterFunction {
             id: self.id.clone(),
