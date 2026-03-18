@@ -381,12 +381,12 @@ async def test_data_channels_worker_to_worker(bridge, api_url):
 
     async def sender_handler(input_data):
         records = input_data.get("records", []) if isinstance(input_data, dict) else getattr(input_data, "records", [])
-        channel = await bridge._async_create_channel()
+        channel = await bridge.create_channel_async()
         payload = json.dumps(records).encode("utf-8")
         await channel.writer.write(payload)
         await channel.writer.close_async()
 
-        result = await bridge._async_trigger(
+        result = await bridge.trigger_async(
             {
                 "function_id": processor_id,
                 "payload": {"label": "test-batch", "reader": channel.reader_ref.__dict__},

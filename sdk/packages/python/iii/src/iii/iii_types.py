@@ -10,22 +10,22 @@ class HttpAuthHmac(BaseModel):
     """HMAC signature verification using a shared secret."""
 
     type: Literal["hmac"] = "hmac"
-    secret_key: str
+    secret_key: str = Field(description="Environment variable name containing the HMAC shared secret.")
 
 
 class HttpAuthBearer(BaseModel):
     """Bearer token authentication."""
 
     type: Literal["bearer"] = "bearer"
-    token_key: str
+    token_key: str = Field(description="Environment variable name containing the bearer token.")
 
 
 class HttpAuthApiKey(BaseModel):
     """API key sent via a custom header."""
 
     type: Literal["api_key"] = "api_key"
-    header: str
-    value_key: str
+    header: str = Field(description="HTTP header name for the API key.")
+    value_key: str = Field(description="Environment variable name containing the API key value.")
 
 
 HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
@@ -33,13 +33,29 @@ HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
 
 
 class HttpInvocationConfig(BaseModel):
-    """Config for HTTP external function invocation."""
+    """Config for HTTP external function invocation.
 
-    url: str
-    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
-    timeout_ms: int | None = None
-    headers: dict[str, str] | None = None
-    auth: HttpAuthConfig | None = None
+    Attributes:
+        url: Target URL for the HTTP invocation.
+        method: HTTP method. Defaults to ``'POST'``.
+        timeout_ms: Request timeout in milliseconds.
+        headers: Additional HTTP headers to include in the request.
+        auth: Authentication configuration (bearer, HMAC, or API key).
+    """
+
+    url: str = Field(description="Target URL for the HTTP invocation.")
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = Field(
+        default="POST", description="HTTP method. Defaults to ``'POST'``."
+    )
+    timeout_ms: int | None = Field(default=None, description="Request timeout in milliseconds.")
+    headers: dict[str, str] | None = Field(
+        default=None,
+        description="Additional HTTP headers to include in the request.",
+    )
+    auth: HttpAuthConfig | None = Field(
+        default=None,
+        description="Authentication configuration (bearer, HMAC, or API key).",
+    )
 
 
 class MessageType(str, Enum):
@@ -93,27 +109,48 @@ class TriggerRegistrationResultMessage(BaseModel):
 
 
 class RegisterTriggerTypeInput(BaseModel):
-    """Input for registering a trigger type (matches Node SDK's RegisterTriggerTypeInput)."""
+    """Input for registering a trigger type (matches Node SDK's RegisterTriggerTypeInput).
 
-    id: str
-    description: str
+    Attributes:
+        id: Unique identifier for the trigger type.
+        description: Human-readable description of the trigger type.
+    """
+
+    id: str = Field(description="Unique identifier for the trigger type.")
+    description: str = Field(description="Human-readable description of the trigger type.")
 
 
 class RegisterTriggerInput(BaseModel):
-    """Input for registering a trigger (matches Node SDK's RegisterTriggerInput)."""
+    """Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 
-    type: str
-    function_id: str
-    config: Any = None
+    Attributes:
+        type: Trigger type identifier (e.g. ``http``, ``queue``, ``cron``).
+        function_id: ID of the function this trigger invokes.
+        config: Trigger-type-specific configuration.
+    """
+
+    type: str = Field(description="Trigger type identifier.")
+    function_id: str = Field(description="ID of the function this trigger invokes.")
+    config: Any = Field(default=None, description="Trigger-type-specific configuration.")
 
 
 class RegisterServiceInput(BaseModel):
-    """Input for registering a service (matches Node SDK's RegisterServiceInput)."""
+    """Input for registering a service (matches Node SDK's RegisterServiceInput).
 
-    id: str
-    name: str | None = None
-    description: str | None = None
-    parent_service_id: str | None = None
+    Attributes:
+        id: Unique service identifier.
+        name: Human-readable service name.
+        description: Description of the service.
+        parent_service_id: ID of the parent service for hierarchical grouping.
+    """
+
+    id: str = Field(description="Unique service identifier.")
+    name: str | None = Field(default=None, description="Human-readable service name.")
+    description: str | None = Field(default=None, description="Description of the service.")
+    parent_service_id: str | None = Field(
+        default=None,
+        description="ID of the parent service for hierarchical grouping.",
+    )
 
 
 class RegisterTriggerMessage(BaseModel):
@@ -137,7 +174,16 @@ class RegisterServiceMessage(BaseModel):
 
 
 class RegisterFunctionFormat(BaseModel):
-    """Format definition for function parameters."""
+    """Format definition for function parameters.
+
+    Attributes:
+        name: Parameter name.
+        type: Type string (``string``, ``number``, ``boolean``, ``object``, ``array``, ``null``, ``map``).
+        description: Human-readable description of the parameter.
+        body: Nested fields for object types.
+        items: Item schema for array types.
+        required: Whether the parameter is required.
+    """
 
     name: str
     type: str  # 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map'
@@ -148,14 +194,28 @@ class RegisterFunctionFormat(BaseModel):
 
 
 class RegisterFunctionInput(BaseModel):
-    """Input for registering a function — matches Node.js RegisterFunctionInput."""
+    """Input for registering a function — matches Node.js RegisterFunctionInput.
 
-    id: str
-    description: str | None = None
-    request_format: RegisterFunctionFormat | None = None
-    response_format: RegisterFunctionFormat | None = None
-    metadata: dict[str, Any] | None = None
-    invocation: HttpInvocationConfig | None = None
+    Attributes:
+        id: Unique function identifier.
+        description: Human-readable description.
+        request_format: Schema describing expected input.
+        response_format: Schema describing expected output.
+        metadata: Arbitrary metadata attached to the function.
+        invocation: HTTP invocation config for externally hosted functions.
+    """
+
+    id: str = Field(description="Unique function identifier.")
+    description: str | None = Field(default=None, description="Human-readable description.")
+    request_format: RegisterFunctionFormat | None = Field(default=None, description="Schema describing expected input.")
+    response_format: RegisterFunctionFormat | None = Field(
+        default=None, description="Schema describing expected output."
+    )
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    invocation: HttpInvocationConfig | None = Field(
+        default=None,
+        description="HTTP invocation config for externally hosted functions.",
+    )
 
 
 class RegisterFunctionMessage(BaseModel):
@@ -171,14 +231,23 @@ class RegisterFunctionMessage(BaseModel):
 
 
 class TriggerActionEnqueue(BaseModel):
-    """Routes the invocation through a named queue for async processing."""
+    """Routes the invocation through a named queue for async processing.
+
+    Attributes:
+        type: Always ``'enqueue'``.
+        queue: Name of the target queue.
+    """
 
     type: Literal["enqueue"] = "enqueue"
     queue: str
 
 
 class TriggerActionVoid(BaseModel):
-    """Fire-and-forget routing. No response is returned."""
+    """Fire-and-forget routing. No response is returned.
+
+    Attributes:
+        type: Always ``'void'``.
+    """
 
     type: Literal["void"] = "void"
 
@@ -188,10 +257,13 @@ TriggerAction = TriggerActionEnqueue | TriggerActionVoid
 
 
 class EnqueueResult(BaseModel):
-    """Result returned when a function is invoked with ``TriggerAction.Enqueue``."""
+    """Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 
-    messageReceiptId: str
-    """Unique receipt ID for the enqueued message."""
+    Attributes:
+        messageReceiptId: UUID assigned by the engine to the enqueued job.
+    """
+
+    messageReceiptId: str = Field(description="UUID assigned by the engine to the enqueued job.")
 
 
 class TriggerRequest(BaseModel):
@@ -199,15 +271,23 @@ class TriggerRequest(BaseModel):
 
     Attributes:
         function_id: ID of the function to invoke.
-        payload: Payload to pass to the function.
-        action: Routing action. Omit for synchronous request/response.
-        timeout_ms: Override the default invocation timeout in milliseconds.
+        payload: Data to pass to the function.
+        action: Routing action — ``None`` for sync, ``TriggerAction.Enqueue(...)``
+            for queue, ``TriggerAction.Void()`` for fire-and-forget.
+        timeout_ms: Override the default invocation timeout.
     """
 
-    function_id: str
-    payload: Any = None
-    action: TriggerActionEnqueue | TriggerActionVoid | None = None
-    timeout_ms: int | None = None
+    function_id: str = Field(description="ID of the function to invoke.")
+    payload: Any = Field(default=None, description="Data to pass to the function.")
+    action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
+        default=None,
+        description=(
+            "Routing action: ``None`` for sync, "
+            "``TriggerAction.Enqueue(...)`` for queue, "
+            "``TriggerAction.Void()`` for fire-and-forget."
+        ),
+    )
+    timeout_ms: int | None = Field(default=None, description="Override the default invocation timeout.")
 
 
 class InvokeFunctionMessage(BaseModel):
@@ -249,49 +329,94 @@ class UnregisterFunctionMessage(BaseModel):
 
 
 class FunctionInfo(BaseModel):
-    """Information about a registered function."""
+    """Information about a registered function.
 
-    function_id: str
-    description: str | None = None
-    request_format: RegisterFunctionFormat | None = None
-    response_format: RegisterFunctionFormat | None = None
-    metadata: dict[str, Any] | None = None
+    Attributes:
+        function_id: Unique identifier of the function.
+        description: Human-readable description.
+        request_format: Schema describing expected input.
+        response_format: Schema describing expected output.
+        metadata: Arbitrary metadata attached to the function.
+    """
+
+    function_id: str = Field(description="Unique identifier of the function.")
+    description: str | None = Field(default=None, description="Human-readable description.")
+    request_format: RegisterFunctionFormat | None = Field(default=None, description="Schema describing expected input.")
+    response_format: RegisterFunctionFormat | None = Field(
+        default=None, description="Schema describing expected output."
+    )
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
 
 
 class TriggerInfo(BaseModel):
-    """Information about a registered trigger."""
+    """Information about a registered trigger.
 
-    id: str
-    trigger_type: str
-    function_id: str
-    config: Any = None
+    Attributes:
+        id: Unique trigger identifier.
+        trigger_type: Type of trigger (e.g. ``http``, ``queue``, ``cron``).
+        function_id: ID of the function this trigger invokes.
+        config: Trigger-type-specific configuration.
+    """
+
+    id: str = Field(description="Unique trigger identifier.")
+    trigger_type: str = Field(description="Type of trigger (e.g. ``http``, ``queue``, ``cron``).")
+    function_id: str = Field(description="ID of the function this trigger invokes.")
+    config: Any = Field(default=None, description="Trigger-type-specific configuration.")
 
 
 WorkerStatus = Literal["connected", "available", "busy", "disconnected"]
 
 
 class WorkerInfo(BaseModel):
-    """Information about a connected worker."""
+    """Information about a connected worker.
 
-    id: str
-    name: str | None = None
-    runtime: str | None = None
-    version: str | None = None
-    os: str | None = None
-    ip_address: str | None = None
-    status: WorkerStatus
-    connected_at_ms: int
-    function_count: int
-    functions: list[str]
-    active_invocations: int
+    Attributes:
+        id: Engine-assigned unique worker ID.
+        name: Worker name from InitOptions.
+        runtime: SDK runtime (``python``, ``node``, ``rust``).
+        version: SDK version string.
+        os: Operating system identifier.
+        ip_address: Worker's IP address as seen by the engine.
+        status: Current status (``connected``, ``available``, ``busy``, ``disconnected``).
+        connected_at_ms: Connection timestamp in milliseconds since epoch.
+        function_count: Number of registered functions.
+        functions: List of registered function IDs.
+        active_invocations: Number of currently executing invocations.
+    """
+
+    id: str = Field(description="Engine-assigned unique worker ID.")
+    name: str | None = Field(default=None, description="Worker name from InitOptions.")
+    runtime: str | None = Field(
+        default=None,
+        description="SDK runtime (``python``, ``node``, ``rust``).",
+    )
+    version: str | None = Field(default=None, description="SDK version string.")
+    os: str | None = Field(default=None, description="Operating system identifier.")
+    ip_address: str | None = Field(
+        default=None,
+        description="Worker's IP address as seen by the engine.",
+    )
+    status: WorkerStatus = Field(
+        description="Current status (``connected``, ``available``, ``busy``, ``disconnected``)."
+    )
+    connected_at_ms: int = Field(description="Connection timestamp in milliseconds since epoch.")
+    function_count: int = Field(description="Number of registered functions.")
+    functions: list[str] = Field(description="List of registered function IDs.")
+    active_invocations: int = Field(description="Number of currently executing invocations.")
 
 
 class StreamChannelRef(BaseModel):
-    """Reference to a streaming channel for worker-to-worker data transfer."""
+    """Reference to a streaming channel for worker-to-worker data transfer.
 
-    channel_id: str
-    access_key: str
-    direction: Literal["read", "write"]
+    Attributes:
+        channel_id: Unique channel identifier.
+        access_key: Secret key for authenticating channel access.
+        direction: Channel direction (``read`` or ``write``).
+    """
+
+    channel_id: str = Field(description="Unique channel identifier.")
+    access_key: str = Field(description="Secret key for authenticating channel access.")
+    direction: Literal["read", "write"] = Field(description="Channel direction (``reader`` or ``writer``).")
 
 
 class OtelLogEvent(BaseModel):
