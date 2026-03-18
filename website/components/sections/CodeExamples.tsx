@@ -144,22 +144,6 @@ export const codeExamples: Record<string, CodeExample> = {
     },
   },
 
-  multiplayer: {
-    description:
-      'Coordinate rooms, player state, and live updates with shared state, events, and streams.',
-    traditional: {
-      title: 'Game Server + Realtime State',
-      tools: ['Colyseus', 'Redis'],
-      language: 'typescript',
-      code: traditional.multiplayer,
-    },
-    iii: {
-      title: 'iii Engine',
-      language: 'typescript',
-      code: iii.multiplayer,
-    },
-  },
-
   etl: {
     description:
       'Move data through scheduled or event-driven steps with shared progress and retryable handoffs.',
@@ -192,19 +176,4 @@ export const codeExamples: Record<string, CodeExample> = {
     },
   },
 
-  remote: {
-    description:
-      'Register external HTTP services as functions so remote calls participate in the same trigger model.',
-    traditional: {
-      title: 'HTTP Client + Retries',
-      tools: ['axios', 'p-retry'],
-      language: 'typescript',
-      code: traditional.remote,
-    },
-    iii: {
-      title: 'iii Engine',
-      language: 'typescript',
-      code: iii.remote,
-    },
-  },
 };

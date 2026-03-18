@@ -171,11 +171,11 @@ iii.register_function("users::create", create_user)`,
 const capabilities = [
   {
     title: "Unified Invocation",
-    description: "Same interface for local and remote functions.",
+    description: "Same interface for all functions.",
     icon: ArrowRight,
     details: [
       "Call any function by string ID — pure address-based routing",
-      "Local and remote functions share the same trigger interface",
+      "Every function uses the same trigger interface",
       "Language-agnostic: TypeScript calls Rust calls Python seamlessly",
     ],
   },

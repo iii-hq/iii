@@ -13,10 +13,8 @@ const designPatterns = [
   { id: 'workflow', label: 'Workflows' },
   { id: 'ai-agents', label: 'AI Agents' },
   { id: 'feature-flags', label: 'Feature Flags' },
-  { id: 'multiplayer', label: 'Multiplayer' },
   { id: 'etl', label: 'ETL' },
   { id: 'reactive', label: 'Reactive State' },
-  { id: 'remote', label: 'Remote Invoke' },
 ];
 
 interface ToolBadgeProps {

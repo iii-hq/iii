@@ -185,7 +185,7 @@ When it disconnects, its functions vanish. No config files. No service registrie
 | AI Agents         | Tool discovery           |
 
 ## Engine Properties
-- Unified Invocation — same interface for local and remote functions
+- Unified Invocation — same interface for all functions
 - Request-Response Correlation — sync-style triggers across async boundaries via invocation IDs
 - Lifecycle Management — auto-cleanup of functions, triggers, invocations on disconnect
 - Recursive Orchestration — engines can nest as workers of other engines`}</pre>
@@ -399,7 +399,6 @@ iii.registerTrigger({
 |-----------------------|--------------------------------------------------------------|
 | AI Agent Runtime      | Functions = Tools, State = Memory, Streams = Responses       |
 | Feature Flag System   | State + Streams = Real-time Toggles                          |
-| Multiplayer Games     | Streams = Game State, Events = Actions                       |
 | ETL Pipelines         | Events = Data Flow, State = Checkpoints                      |
 | Reactive Backend      | Triggers + Events + State                                    |`}</pre>
 

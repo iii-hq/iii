@@ -6,10 +6,8 @@ import traditionalCron from "./traditional/cron.ts?raw";
 import traditionalWorkflow from "./traditional/workflow.ts?raw";
 import traditionalAiAgents from "./traditional/ai-agents.ts?raw";
 import traditionalFeatureFlags from "./traditional/feature-flags.ts?raw";
-import traditionalMultiplayer from "./traditional/multiplayer.ts?raw";
 import traditionalEtl from "./traditional/etl.ts?raw";
 import traditionalReactive from "./traditional/reactive.ts?raw";
-import traditionalRemote from "./traditional/remote.ts?raw";
 
 import iiiApi from "./iii/api.ts?raw";
 import iiiPubsub from "./iii/pubsub.ts?raw";
@@ -19,10 +17,8 @@ import iiiCron from "./iii/cron.ts?raw";
 import iiiWorkflow from "./iii/workflow.ts?raw";
 import iiiAiAgents from "./iii/ai-agents.ts?raw";
 import iiiFeatureFlags from "./iii/feature-flags.ts?raw";
-import iiiMultiplayer from "./iii/multiplayer.ts?raw";
 import iiiEtl from "./iii/etl.ts?raw";
 import iiiReactive from "./iii/reactive.ts?raw";
-import iiiRemote from "./iii/remote.ts?raw";
 
 export const traditional = {
   api: traditionalApi,
@@ -33,10 +29,8 @@ export const traditional = {
   workflow: traditionalWorkflow,
   "ai-agents": traditionalAiAgents,
   "feature-flags": traditionalFeatureFlags,
-  multiplayer: traditionalMultiplayer,
   etl: traditionalEtl,
   reactive: traditionalReactive,
-  remote: traditionalRemote,
 };
 
 export const iii = {
@@ -48,8 +42,6 @@ export const iii = {
   workflow: iiiWorkflow,
   "ai-agents": iiiAiAgents,
   "feature-flags": iiiFeatureFlags,
-  multiplayer: iiiMultiplayer,
   etl: iiiEtl,
   reactive: iiiReactive,
-  remote: iiiRemote,
 };
