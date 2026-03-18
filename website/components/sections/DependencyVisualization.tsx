@@ -300,6 +300,16 @@ interface IIIHeaderGraphProps {
   dependencies: string[];
 }
 
+interface HeaderOrbParticle {
+  id: number;
+  direction: "right" | "left";
+  duration: number;
+  delay: number;
+  sizePx: number;
+  offsetY: number;
+  opacity: number;
+}
+
 const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
   isDarkMode,
   dependencies,
@@ -307,27 +317,102 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
   const boxClasses = isDarkMode
     ? "border-iii-light/60 bg-iii-dark text-iii-light"
     : "border-iii-dark/40 bg-white text-iii-black";
-  const lineClasses = isDarkMode ? "bg-iii-light/60" : "bg-iii-dark/40";
+  const lineClasses = isDarkMode ? "bg-iii-light/45" : "bg-iii-dark/35";
+  const dotClasses = isDarkMode ? "bg-iii-info" : "bg-iii-accent-light";
   const nodes = dependencies.slice(0, 2);
+  const [orbs, setOrbs] = useState<HeaderOrbParticle[]>([]);
+  const orbIdRef = useRef(0);
+
+  useEffect(() => {
+    if (nodes.length === 0) {
+      setOrbs([]);
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const spawnOrbs = () => {
+      const spawnCount = 1 + Math.floor(Math.random() * 3);
+      setOrbs((prev) => {
+        const next = [...prev];
+        for (let i = 0; i < spawnCount; i++) {
+          next.push({
+            id: orbIdRef.current++,
+            direction: Math.random() > 0.5 ? "right" : "left",
+            duration: 1.1 + Math.random() * 1.2,
+            delay: Math.random() * 0.08,
+            sizePx: 4 + Math.floor(Math.random() * 3),
+            offsetY: -2 + Math.random() * 4,
+            opacity: 0.65 + Math.random() * 0.35,
+          });
+        }
+        return next.slice(-64);
+      });
+    };
+
+    const schedule = () => {
+      const nextInMs = 90 + Math.random() * 170;
+      timeoutId = setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        spawnOrbs();
+        schedule();
+      }, nextInMs);
+    };
+
+    spawnOrbs();
+    schedule();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      setOrbs([]);
+    };
+  }, [nodes.length, dependencies.join("|")]);
 
   if (nodes.length === 0) {
     return null;
   }
 
   return (
-    <div className="flex items-center flex-shrink-0">
-      {nodes.map((node, index) => (
-        <React.Fragment key={`${node}-${index}`}>
+    <div className="relative flex items-center gap-2 min-w-0 flex-1">
+      <div className={`absolute left-0 right-0 top-1/2 h-px ${lineClasses}`}>
+        {orbs.map((orb) => (
           <div
-            className={`min-w-[84px] px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold text-center ${boxClasses}`}
+            key={orb.id}
+            className={`absolute top-1/2 -translate-y-1/2 rounded-full ${dotClasses}`}
+            style={{
+              width: `${orb.sizePx}px`,
+              height: `${orb.sizePx}px`,
+              marginTop: `${orb.offsetY}px`,
+              opacity: orb.opacity,
+              animation: `${
+                orb.direction === "right" ? "orbTravelRight" : "orbTravelLeft"
+              } ${orb.duration}s cubic-bezier(0.42, 0, 0.58, 1) ${orb.delay}s 1`,
+            }}
+            onAnimationEnd={() =>
+              setOrbs((prev) => prev.filter((item) => item.id !== orb.id))
+            }
+          />
+        ))}
+      </div>
+
+      <div className="relative z-10 ml-auto flex items-center gap-2 min-w-0 flex-nowrap">
+        {nodes.map((node, index) => (
+          <div
+            key={`${node}-${index}`}
+            className={`px-2 sm:px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold text-center truncate ${boxClasses}`}
+            style={{ width: "clamp(68px, 10vw, 132px)" }}
+            title={node}
           >
             {node}
           </div>
-          {index < nodes.length - 1 && (
-            <div className={`h-px w-5 sm:w-6 ${lineClasses}`} />
-          )}
-        </React.Fragment>
-      ))}
+        ))}
+      </div>
     </div>
   );
 };
@@ -641,20 +726,6 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
               {title}
             </span>
           </div>
-          {isIII && headerDependencies.length > 0 && (
-            <div
-              className={`relative h-px flex-1 min-w-6 ${
-                isDarkMode ? "bg-iii-light/35" : "bg-iii-dark/30"
-              }`}
-            >
-              <div
-                className={`absolute top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full ${
-                  isDarkMode ? "bg-iii-info" : "bg-iii-accent-light"
-                }`}
-                style={{ animation: "orbTravelRight 1.8s ease-in-out infinite" }}
-              />
-            </div>
-          )}
           {isIII && (
             <IIIHeaderGraph
               isDarkMode={isDarkMode}
