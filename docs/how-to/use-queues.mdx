@@ -925,6 +925,10 @@ Regardless of which adapter you choose, retry semantics, concurrency enforcement
   See the [Queue module reference](/modules/module-queue#adapters) for adapter configuration and the [adapter comparison table](/modules/module-queue#adapter-comparison) for a feature matrix.
 </Info>
 
+<Info title="RabbitMQ queue naming">
+  When using the RabbitMQ adapter, iii creates exchanges and queues using a predictable naming convention. For a queue named `payment`, the main queue is `iii.__fn_queue::payment`, the retry queue is `iii.__fn_queue::payment::retry.queue`, and the DLQ is `iii.__fn_queue::payment::dlq.queue`. See [Dead Letter Queues](./dead-letter-queues#dlq-naming-convention) for the full resource map.
+</Info>
+
 ## Queue Config Reference
 
 | Field | Type | Default | Description |

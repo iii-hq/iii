@@ -169,6 +169,19 @@ config:
   The AMQP URL of the RabbitMQ instance to connect to.
 </ResponseField>
 
+#### Queue naming in RabbitMQ
+
+For each named queue defined in `queue_configs`, iii creates the following RabbitMQ resources:
+
+| Resource | Format | Example (`payment`) |
+|----------|--------|---------------------|
+| Main exchange | `iii.__fn_queue::<name>` | `iii.__fn_queue::payment` |
+| Main queue | `iii.__fn_queue::<name>.queue` | `iii.__fn_queue::payment.queue` |
+| Retry exchange | `iii.__fn_queue::<name>::retry` | `iii.__fn_queue::payment::retry` |
+| Retry queue | `iii.__fn_queue::<name>::retry.queue` | `iii.__fn_queue::payment::retry.queue` |
+| DLQ exchange | `iii.__fn_queue::<name>::dlq` | `iii.__fn_queue::payment::dlq` |
+| DLQ queue | `iii.__fn_queue::<name>::dlq.queue` | `iii.__fn_queue::payment::dlq.queue` |
+
 ## Adapter Comparison
 
 | | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
