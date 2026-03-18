@@ -85,11 +85,11 @@ Select your preferred language when prompted:
 <Step>
 ### 4. Start the Project
 
-The `config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
+The `iii-config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
 
 ```bash
 cd my-project
-iii
+iii -c iii-config.yaml
 ```
 
 </Step>
