@@ -18,12 +18,9 @@ iii.registerFunction({ id: "carts::add-item" }, async (request: any) => {
     _key: cartId,
     id: cartId,
     items: [],
-    checkedOut: false,
   };
-  cart.items.push({
-    sku: request.body.sku,
-    qty: request.body.qty,
-  });
+  cart.items.push({ sku: request.body.sku, qty: request.body.qty });
+  // ...pricing rules, inventory checks...
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -65,62 +62,10 @@ iii.registerFunction({ id: "carts::get" }, async (request: any) => {
   return cart;
 });
 
-iii.registerFunction({ id: "carts::checkout" }, async (request: any) => {
-  const logger = new Logger();
-  const cart = await iii.trigger({
-    function_id: "state::get",
-    payload: {
-      scope: "carts",
-      key: request.params.cartId,
-    },
-  });
-  if (!cart) {
-    logger.warn("state.checkout.not_found", {
-      cartId: request.params.cartId,
-    });
-    const error = new Error("Cart not found") as Error & {
-      status: number;
-    };
-    error.status = 404;
-    throw error;
-  }
-  cart.checkedOut = true;
-  await iii.trigger({
-    function_id: "state::set",
-    payload: {
-      scope: "carts",
-      key: request.params.cartId,
-      value: cart,
-    },
-  });
-  logger.info("state.checkout.completed", {
-    cartId: request.params.cartId,
-  });
-  return cart;
-});
-
 iii.registerFunction({ id: "carts::on-change" }, async (event: any) => {
   const logger = new Logger();
-  const newCart = event.new_value;
-  if (newCart?.checkedOut === true && event.old_value?.checkedOut !== true) {
-    await iii.trigger({
-      function_id: "state::update",
-      payload: {
-        scope: "metrics",
-        key: "global",
-        ops: [
-          {
-            type: "increment",
-            path: "checkedout_carts",
-            by: 1,
-          },
-        ],
-      },
-    });
-    logger.info("state.metrics.checkedout_incremented", {
-      cartId: newCart.id,
-    });
-  }
+  // ...reactive projections/metrics...
+  logger.info("state.carts.changed", { cartId: event.new_value?.id });
   return { observed: true };
 });
 
@@ -145,14 +90,5 @@ iii.registerTrigger({
   config: {
     api_path: "/state/carts/:cartId",
     http_method: "GET",
-  },
-});
-
-iii.registerTrigger({
-  type: "http",
-  function_id: "carts::checkout",
-  config: {
-    api_path: "/state/carts/:cartId/checkout",
-    http_method: "POST",
   },
 });

@@ -20,7 +20,6 @@ iii.registerFunction({ id: "etl::start" }, async () => {
         runId,
         step: "extract",
         status: "queued",
-        createdAt: new Date().toISOString(),
       },
     },
   });
@@ -39,10 +38,7 @@ iii.registerFunction({ id: "etl::start" }, async () => {
 
 iii.registerFunction({ id: "etl::extract" }, async (data: any) => {
   const logger = new Logger();
-  const extracted = [
-    { id: "1", value: 10 },
-    { id: "2", value: 20 },
-  ];
+  const extracted = [{ id: "1", value: 10 }];
   await iii.trigger({
     function_id: "state::update",
     payload: {
@@ -67,6 +63,7 @@ iii.registerFunction({ id: "etl::extract" }, async (data: any) => {
       ],
     },
   });
+  // ...pull source data...
   logger.info("etl.extract.completed", {
     runId: data.runId,
     count: extracted.length,
@@ -83,10 +80,7 @@ iii.registerFunction({ id: "etl::extract" }, async (data: any) => {
 
 iii.registerFunction({ id: "etl::transform" }, async (data: any) => {
   const logger = new Logger();
-  const transformed = data.extracted.map((row: any) => ({
-    ...row,
-    value: row.value * 2,
-  }));
+  const transformed = data.extracted.map((row: any) => ({ ...row, value: row.value * 2 }));
   await iii.trigger({
     function_id: "state::update",
     payload: {
@@ -129,6 +123,7 @@ iii.registerFunction({ id: "etl::transform" }, async (data: any) => {
 
 iii.registerFunction({ id: "etl::load" }, async (data: any) => {
   const logger = new Logger();
+  // ...write transformed rows...
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -137,7 +132,6 @@ iii.registerFunction({ id: "etl::load" }, async (data: any) => {
       value: {
         _key: data.runId,
         rows: data.transformed,
-        loadedAt: new Date().toISOString(),
       },
     },
   });
@@ -193,6 +187,7 @@ iii.registerFunction({ id: "etl::status" }, async (request: any) => {
 });
 
 iii.registerFunction({ id: "etl::start-scheduled" }, async () => {
+  // ...cron entrypoint...
   return iii.trigger({
     function_id: "etl::start",
     payload: {},

@@ -21,25 +21,25 @@ iii.registerFunction(
 );
 
 async function invokeWithRetry(payload: any) {
-  let lastError: unknown = null;
   const logger = new Logger();
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       return await iii.trigger({
         function_id: "billing::create-invoice",
         payload,
       });
     } catch (error) {
-      lastError = error;
-      if (attempt < 3) {
+      if (attempt < 2) {
         logger.warn("remote.create_invoice.retry", {
           attempt,
-          retriesLeft: 3 - attempt,
+          retriesLeft: 2 - attempt,
         });
+        continue;
       }
+      throw error;
     }
   }
-  throw lastError;
+  throw new Error("invoice request failed");
 }
 
 iii.registerFunction({ id: "remote::create-invoice" }, async (request: any) => {
@@ -48,6 +48,7 @@ iii.registerFunction({ id: "remote::create-invoice" }, async (request: any) => {
     customerId: request.body.customerId,
     amount: request.body.amount,
   });
+  // ...response mapping...
   logger.info("remote.create_invoice.completed", {
     invoiceId: invoice.id,
   });

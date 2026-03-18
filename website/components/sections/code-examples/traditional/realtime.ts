@@ -33,51 +33,26 @@ const redisPublisher = createClient({
 const redisSubscriber = redisPublisher.duplicate();
 const redisState = redisPublisher.duplicate();
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "realtime-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
-}
-
-async function roomPresence(roomId: string) {
-  return redisState.sCard(`presence:${roomId}`);
 }
 
 io.on("connection", (socket) => {
   socket.on("room.join", async ({ roomId, userId }) => {
     const span = tracer.startSpan("realtime.room_join");
     socket.join(roomId);
-    await redisState.sAdd(`presence:${roomId}`, userId);
-    const count = await roomPresence(roomId);
+    await redisState.sAdd(`presence:${roomId}`, userId); // ...presence store...
+    const count = await redisState.sCard(`presence:${roomId}`);
     io.to(roomId).emit("presence.updated", {
       roomId,
       count,
     });
-    await sendCentralLog("info", "realtime.room_join", {
+    await sendCentralLog("realtime.room_join", {
       roomId,
       userId,
       count,
@@ -92,13 +67,13 @@ app.post("/rooms/:roomId/score", async (req, res) => {
     roomId: req.params.roomId,
     playerId: req.body.playerId,
     score: req.body.score,
-    updatedAt: new Date().toISOString(),
   };
+  // ...validate update and apply rules...
   await redisPublisher.publish(
     `rooms:${req.params.roomId}:updates`,
     JSON.stringify(message),
   );
-  await sendCentralLog("info", "realtime.update_score", message);
+  await sendCentralLog("realtime.update_score", message);
   span.end();
   res.status(202).json({
     accepted: true,
@@ -113,7 +88,7 @@ async function bootRealtime() {
   await redisSubscriber.pSubscribe("rooms:*:updates", async (raw, channel) => {
     const roomId = channel.split(":")[1];
     io.to(roomId).emit("room.updated", JSON.parse(raw));
-    await sendCentralLog("info", "realtime.broadcast_update", {
+    await sendCentralLog("realtime.broadcast_update", {
       roomId,
     });
   });

@@ -21,15 +21,10 @@ iii.registerFunction({ id: "rooms::join-player" }, async (request: any) => {
         roomId,
         playerId,
         score: 0,
-        joinedAt: new Date().toISOString(),
       },
     },
   });
-  const players = await iii.trigger({
-    function_id: "state::list",
-    payload: { scope: "room-players" },
-  });
-  const count = players.filter((p: any) => p.roomId === roomId).length;
+  const count = 1; // ...compute from room roster...
   iii.trigger({
     function_id: "stream::send",
     payload: {
@@ -64,7 +59,6 @@ iii.registerFunction({ id: "rooms::set-score" }, async (request: any) => {
         roomId,
         playerId,
         score,
-        updatedAt: new Date().toISOString(),
       },
     },
   });
@@ -78,6 +72,7 @@ iii.registerFunction({ id: "rooms::set-score" }, async (request: any) => {
 
 iii.registerFunction({ id: "rooms::on-score-updated" }, async (event: any) => {
   const logger = new Logger();
+  // ...broadcast update...
   iii.trigger({
     function_id: "stream::send",
     payload: {
@@ -98,18 +93,12 @@ iii.registerFunction({ id: "rooms::on-score-updated" }, async (event: any) => {
 
 iii.registerFunction({ id: "rooms::state" }, async (request: any) => {
   const roomId = request.params.roomId;
-  const players = await iii.trigger({
-    function_id: "state::list",
-    payload: { scope: "room-players" },
-  });
-  const scores = await iii.trigger({
-    function_id: "state::list",
-    payload: { scope: "room-scores" },
-  });
+  const players = await iii.trigger({ function_id: "state::list", payload: { scope: "room-players" } });
+  const scores = await iii.trigger({ function_id: "state::list", payload: { scope: "room-scores" } });
   return {
     roomId,
     players: players.filter((p: any) => p.roomId === roomId).length,
-    scores: scores.filter((s: any) => s.roomId === roomId),
+    scores: scores.filter((s: any) => s.roomId === roomId), // ...project to client shape...
   };
 });
 

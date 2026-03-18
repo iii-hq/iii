@@ -53,7 +53,7 @@ iii.registerFunction({ id: "flags::evaluate" }, async (request: any) => {
       source: "override",
     };
   }
-  const value = false;
+  const value = false; // ...default targeting decision...
   logger.info("flags.evaluate.default", {
     flagKey,
     userId,
@@ -69,6 +69,7 @@ iii.registerFunction({ id: "flags::evaluate" }, async (request: any) => {
 
 iii.registerFunction({ id: "flags::on-updated" }, async (event: any) => {
   const logger = new Logger();
+  // ...fan out to subscribed clients...
   iii.trigger({
     function_id: "stream::send",
     payload: {

@@ -29,33 +29,12 @@ const app = express();
 app.use(express.json());
 const server = createServer(app);
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "multiplayer-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
@@ -68,28 +47,11 @@ class MatchRoom extends Room<{
       const span = tracer.startSpan("multiplayer.score_update");
       const roomId = this.roomId;
       const playerId = client.sessionId;
-      await redis.hSet(
-        `room:${roomId}:scores`,
-        playerId,
-        String(payload.score),
-      );
-      this.state.players[playerId] = {
-        score: payload.score,
-      };
-      this.broadcast("room.updated", {
-        roomId,
-        playerId,
-        score: payload.score,
-      });
-      await redis.publish(
-        "rooms.updated",
-        JSON.stringify({
-          roomId,
-          playerId,
-          score: payload.score,
-        }),
-      );
-      await sendCentralLog("info", "multiplayer.score_update", {
+      // ...authoritative scoring logic...
+      this.state.players[playerId] = { score: payload.score };
+      await redis.hSet(`room:${roomId}:scores`, playerId, String(payload.score));
+      await redis.publish("rooms.updated", JSON.stringify({ roomId, playerId, score: payload.score }));
+      await sendCentralLog("multiplayer.score_update", {
         roomId,
         playerId,
         score: payload.score,
@@ -99,32 +61,22 @@ class MatchRoom extends Room<{
   }
 
   async onJoin(client: Client) {
-    const span = tracer.startSpan("multiplayer.player_join");
-    this.state.players[client.sessionId] = {
-      score: 0,
-    };
+    this.state.players[client.sessionId] = { score: 0 };
     await redis.sAdd(`room:${this.roomId}:players`, client.sessionId);
     const playerCount = await redis.sCard(`room:${this.roomId}:players`);
-    this.broadcast("presence.updated", {
-      roomId: this.roomId,
-      count: playerCount,
-    });
-    await sendCentralLog("info", "multiplayer.player_join", {
+    this.broadcast("presence.updated", { roomId: this.roomId, count: playerCount });
+    await sendCentralLog("multiplayer.player_join", {
       roomId: this.roomId,
       playerId: client.sessionId,
       count: playerCount,
     });
-    span.end();
   }
 
   async onLeave(client: Client) {
     await redis.sRem(`room:${this.roomId}:players`, client.sessionId);
     const playerCount = await redis.sCard(`room:${this.roomId}:players`);
-    this.broadcast("presence.updated", {
-      roomId: this.roomId,
-      count: playerCount,
-    });
-    await sendCentralLog("info", "multiplayer.player_leave", {
+    this.broadcast("presence.updated", { roomId: this.roomId, count: playerCount });
+    await sendCentralLog("multiplayer.player_leave", {
       roomId: this.roomId,
       playerId: client.sessionId,
       count: playerCount,
@@ -141,12 +93,10 @@ app.post("/rooms/:roomId/score", async (req, res) => {
   const roomId = req.params.roomId;
   const playerId = String(req.body.playerId);
   const score = Number(req.body.score);
+  // ...HTTP fallback path...
   await redis.hSet(`room:${roomId}:scores`, playerId, String(score));
-  await redis.publish(
-    "rooms.updated",
-    JSON.stringify({ roomId, playerId, score }),
-  );
-  await sendCentralLog("info", "multiplayer.score_update", {
+  await redis.publish("rooms.updated", JSON.stringify({ roomId, playerId, score }));
+  await sendCentralLog("multiplayer.score_update", {
     roomId,
     playerId,
     score,
@@ -177,7 +127,7 @@ async function bootMultiplayer() {
     if (room) {
       room.broadcast("room.updated", evt);
     }
-    await sendCentralLog("info", "multiplayer.broadcast_update", evt);
+    await sendCentralLog("multiplayer.broadcast_update", evt);
   });
 }
 

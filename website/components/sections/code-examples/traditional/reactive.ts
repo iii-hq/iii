@@ -34,33 +34,12 @@ app.use(express.json());
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "reactive-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
@@ -75,7 +54,7 @@ app.post("/reactive/accounts/:accountId/status", async (req, res) => {
   await pg.query("notify account_changes, $1", [
     JSON.stringify({ accountId, status }),
   ]);
-  await sendCentralLog("info", "reactive.status_update", {
+  await sendCentralLog("reactive.status_update", {
     accountId,
     status,
   });
@@ -102,18 +81,15 @@ async function bootReactive() {
   await pg.query("listen account_changes");
   pg.on("notification", async (msg) => {
     if (msg.channel !== "account_changes" || !msg.payload) return;
+    // ...apply filtering/enrichment...
     await redisPub.publish("account_changes", msg.payload);
-    await sendCentralLog(
-      "info",
-      "reactive.pg_to_pubsub",
-      JSON.parse(msg.payload),
-    );
+    await sendCentralLog("reactive.pg_to_pubsub", JSON.parse(msg.payload));
   });
   await redisSub.subscribe("account_changes", async (raw) => {
     for (const socket of wss.clients) {
       socket.send(raw);
     }
-    await sendCentralLog("info", "reactive.pubsub_to_ws", JSON.parse(raw));
+    await sendCentralLog("reactive.pubsub_to_ws", JSON.parse(raw));
   });
 }
 

@@ -23,9 +23,7 @@ iii.registerFunction({ id: "agents::retrieve" }, async (data: any) => {
     function_id: "state::list",
     payload: { scope: "knowledge-base" },
   });
-  const selected = docs
-    .slice(0, 3)
-    .map((item: any) => item.content || item._key);
+  const selected = docs.slice(0, 3).map((item: any) => item.content || item._key);
   logger.info("agents.retrieve.completed", {
     sessionId: data.sessionId,
     count: selected.length,
@@ -35,9 +33,8 @@ iii.registerFunction({ id: "agents::retrieve" }, async (data: any) => {
 
 iii.registerFunction({ id: "agents::respond" }, async (data: any) => {
   const logger = new Logger();
-  const answer =
-    `I can help with "${data.input}". ${data.docs.join(" ")}`.trim();
-  for (const token of answer.split(" ")) {
+  const answer = `I can help with "${data.input}". ${data.docs.join(" ")}`.trim();
+  for (const token of answer.split(" ").slice(0, 3)) {
     iii.trigger({
       function_id: "stream::send",
       payload: {
@@ -50,6 +47,7 @@ iii.registerFunction({ id: "agents::respond" }, async (data: any) => {
       action: TriggerAction.Void(),
     });
   }
+  // ...model/tool call path...
   logger.info("agents.respond.completed", {
     sessionId: data.sessionId,
     outputLength: answer.length,
@@ -60,7 +58,6 @@ iii.registerFunction({ id: "agents::respond" }, async (data: any) => {
 iii.registerFunction({ id: "agents::persist" }, async (data: any) => {
   const logger = new Logger();
   const userKey = `${data.sessionId}:user:${Date.now()}`;
-  const assistantKey = `${data.sessionId}:assistant:${Date.now()}`;
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -74,19 +71,7 @@ iii.registerFunction({ id: "agents::persist" }, async (data: any) => {
       },
     },
   });
-  await iii.trigger({
-    function_id: "state::set",
-    payload: {
-      scope: "chat-memory",
-      key: assistantKey,
-      value: {
-        _key: assistantKey,
-        sessionId: data.sessionId,
-        role: "assistant",
-        content: data.answer,
-      },
-    },
-  });
+  // ...persist assistant output and metadata...
   logger.info("agents.persist.completed", {
     sessionId: data.sessionId,
   });
@@ -97,14 +82,6 @@ iii.registerFunction({ id: "agents::chat" }, async (request: any) => {
   const logger = new Logger();
   const sessionId = request.body.sessionId ?? `session-${Date.now()}`;
   const input = String(request.body.input ?? "");
-  const memory = await iii.trigger({
-    function_id: "state::list",
-    payload: { scope: "chat-memory" },
-  });
-  const prior = memory
-    .filter((m: any) => m.sessionId === sessionId)
-    .slice(-6)
-    .map((m: any) => m.content);
   const plan = await iii.trigger({
     function_id: "agents::plan",
     payload: { sessionId, input },
@@ -119,7 +96,7 @@ iii.registerFunction({ id: "agents::chat" }, async (request: any) => {
     function_id: "agents::respond",
     payload: {
       sessionId,
-      input: `${prior.join("\n")}\n${input}`.trim(),
+      input,
       docs: retrieval.docs,
     },
   });

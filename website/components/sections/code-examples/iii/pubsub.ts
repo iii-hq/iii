@@ -14,9 +14,8 @@ iii.registerFunction(
     const payload = {
       eventId: request.body.eventId ?? `evt-${Date.now()}`,
       orderId: request.body.orderId,
-      customerId: request.body.customerId,
-      total: request.body.total,
     };
+    // ...validate and enrich...
     iii.trigger({
       function_id: "publish",
       payload: {
@@ -38,19 +37,7 @@ iii.registerFunction(
 
 iii.registerFunction({ id: "orders::project-created" }, async (event: any) => {
   const logger = new Logger();
-  const seen = await iii.trigger({
-    function_id: "state::get",
-    payload: {
-      scope: "processed-events",
-      key: event.eventId,
-    },
-  });
-  if (seen) {
-    logger.warn("events.consume_order_created.duplicate", {
-      eventId: event.eventId,
-    });
-    return { duplicate: true };
-  }
+  // ...idempotency check...
   await iii.trigger({
     function_id: "state::set",
     payload: {
@@ -59,28 +46,14 @@ iii.registerFunction({ id: "orders::project-created" }, async (event: any) => {
       value: {
         _key: event.eventId,
         eventId: event.eventId,
-        appliedAt: new Date().toISOString(),
-      },
-    },
-  });
-  await iii.trigger({
-    function_id: "state::set",
-    payload: {
-      scope: "inventory-orders",
-      key: event.orderId,
-      value: {
-        _key: event.orderId,
-        orderId: event.orderId,
-        customerId: event.customerId,
-        total: event.total,
+        status: "applied",
       },
     },
   });
   logger.info("events.consume_order_created.applied", {
     eventId: event.eventId,
-    orderId: event.orderId,
   });
-  return { duplicate: false };
+  return { applied: true };
 });
 
 iii.registerFunction({ id: "orders::processed-snapshot" }, async () => {

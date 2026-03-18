@@ -28,33 +28,12 @@ const redis = createClient({
 });
 const subscriber = redis.duplicate();
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "feature-flags-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
@@ -68,7 +47,7 @@ app.post("/flags/:flagKey/overrides", async (req, res) => {
   };
   await redis.hSet("flags:overrides", flagKey, JSON.stringify(override));
   await redis.publish("flags.updated", JSON.stringify(override));
-  await sendCentralLog("info", "flags.override_set", override);
+  await sendCentralLog("flags.override_set", override);
   span.end();
   res.json(override);
 });
@@ -80,7 +59,7 @@ app.get("/flags/:flagKey/evaluate", async (req, res) => {
   const override = await redis.hGet("flags:overrides", flagKey);
   if (override) {
     const parsed = JSON.parse(override);
-    await sendCentralLog("info", "flags.evaluate.override", {
+    await sendCentralLog("flags.evaluate.override", {
       flagKey,
       userId,
       value: parsed.value,
@@ -94,8 +73,9 @@ app.get("/flags/:flagKey/evaluate", async (req, res) => {
     });
     return;
   }
+  // ...segment/user targeting...
   const value = await ldClient.variation(flagKey, { key: userId }, false);
-  await sendCentralLog("info", "flags.evaluate.launchdarkly", {
+  await sendCentralLog("flags.evaluate.launchdarkly", {
     flagKey,
     userId,
     value,
@@ -116,11 +96,9 @@ async function bootFlags() {
   await redis.connect();
   await subscriber.connect();
   await subscriber.subscribe("flags.updated", async (raw) => {
-    const evt = JSON.parse(raw) as {
-      flagKey: string;
-      value: boolean;
-    };
-    await sendCentralLog("info", "flags.update_propagated", evt);
+    const evt = JSON.parse(raw) as { flagKey: string; value: boolean };
+    // ...fan out config refresh...
+    await sendCentralLog("flags.update_propagated", evt);
   });
 }
 

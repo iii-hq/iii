@@ -30,41 +30,19 @@ const schedules: Record<
   }
 > = {};
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "cron-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
 async function runReportTask() {
   const span = tracer.startSpan("cron.reports_generate");
-  await sendCentralLog("info", "cron.reports_generate.run", {
-    task: "reports::generate",
-  });
+  // ...task body...
+  await sendCentralLog("cron.reports_generate.run", { task: "reports::generate" });
   span.end();
 }
 
@@ -79,14 +57,14 @@ schedules.reports = {
 app.post("/cron/reports/start", async (_req, res) => {
   schedules.reports.task.start();
   schedules.reports.enabled = true;
-  await sendCentralLog("info", "cron.reports.start", {});
+  await sendCentralLog("cron.reports.start", {});
   res.json({ task: "reports", enabled: true });
 });
 
 app.post("/cron/reports/stop", async (_req, res) => {
   schedules.reports.task.stop();
   schedules.reports.enabled = false;
-  await sendCentralLog("info", "cron.reports.stop", {});
+  await sendCentralLog("cron.reports.stop", {});
   res.json({ task: "reports", enabled: false });
 });
 
@@ -96,7 +74,7 @@ app.get("/cron/tasks", async (_req, res) => {
     expression: schedule.expression,
     enabled: schedule.enabled,
   }));
-  await sendCentralLog("info", "cron.tasks.list", {
+  await sendCentralLog("cron.tasks.list", {
     count: tasks.length,
   });
   res.json({ tasks });

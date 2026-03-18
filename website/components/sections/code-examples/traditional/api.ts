@@ -27,74 +27,37 @@ type Post = {
   body: string;
 };
 
-const posts: Post[] = [
-  {
-    title: "Hello API",
-    body: "HTTP and app logic are implemented in one service.",
-  },
-];
+const posts: Post[] = [];
 
 const createPost = z.object({
   title: z.string().min(1),
   body: z.string().min(1),
 });
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") {
-    logger.error(payload);
-    return;
-  }
-  if (level === "warn") {
-    logger.warn(payload);
-    return;
-  }
-  logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "blog-api-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
 app.get("/posts", async (_req, res) => {
   const span = tracer.startSpan("api.list_posts");
-  await sendCentralLog("info", "api.list_posts", {
-    count: posts.length,
-  });
+  await sendCentralLog("api.list_posts", { count: posts.length });
+  // ...fetch from storage...
   span.end();
   res.json({ posts });
 });
 
 app.post("/posts", async (req, res) => {
   const span = tracer.startSpan("api.create_post");
-  const data = createPost.parse(req.body);
-  const post: Post = {
-    title: data.title,
-    body: data.body,
-  };
+  const data = createPost.parse(req.body); // ...validation...
+  const post: Post = { title: data.title, body: data.body };
   posts.unshift(post);
-  await sendCentralLog("info", "api.create_post.created", {
-    title: post.title,
-  });
+  // ...persist and publish side effects...
+  await sendCentralLog("api.create_post.created", { title: post.title });
   span.end();
   res.status(201).json({ post });
 });

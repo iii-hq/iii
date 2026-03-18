@@ -45,7 +45,6 @@ iii.registerFunction({ id: 'orders::start' }, async (request: any) => {
       value: {
         _key: orderId,
         orderId,
-        total: request.body.total,
         status: 'queued',
         currentStep: 'created',
         updatedAt: new Date().toISOString(),
@@ -56,10 +55,9 @@ iii.registerFunction({ id: 'orders::start' }, async (request: any) => {
     function_id: 'orders::validate',
     payload: {
       orderId,
-      total: request.body.total,
     },
     action: TriggerAction.Enqueue({
-      queue: 'orders-validate',
+      queue: 'orders-workflow',
     }),
   });
   logger.info('workflow.start_order_fulfillment.queued', {
@@ -71,15 +69,13 @@ iii.registerFunction({ id: 'orders::start' }, async (request: any) => {
 iii.registerFunction({ id: 'orders::validate' }, async (data: any) => {
   const logger = new Logger();
   await track(data.orderId, 'validate', 'running');
+  // ...validation and enrichment...
   await track(data.orderId, 'validate', 'complete');
   await iii.trigger({
-    function_id: 'orders::charge',
-    payload: {
-      orderId: data.orderId,
-      total: data.total,
-    },
+    function_id: 'orders::ship',
+    payload: { orderId: data.orderId },
     action: TriggerAction.Enqueue({
-      queue: 'orders-payment',
+      queue: 'orders-workflow',
     }),
   });
   logger.info('workflow.step.validate', {
@@ -88,43 +84,10 @@ iii.registerFunction({ id: 'orders::validate' }, async (data: any) => {
   return { ok: true };
 });
 
-iii.registerFunction({ id: 'orders::charge' }, async (data: any) => {
-  const logger = new Logger();
-  await track(data.orderId, 'payment', 'running');
-  const transactionId = `txn-${Date.now()}`;
-  await iii.trigger({
-    function_id: 'state::update',
-    payload: {
-      scope: 'workflow-orders',
-      key: data.orderId,
-      ops: [
-        {
-          type: 'set',
-          path: 'transactionId',
-          value: transactionId,
-        },
-      ],
-    },
-  });
-  await track(data.orderId, 'payment', 'complete');
-  await iii.trigger({
-    function_id: 'orders::ship',
-    payload: { orderId: data.orderId },
-    action: TriggerAction.Enqueue({
-      queue: 'orders-ship',
-    }),
-  });
-  logger.info('workflow.step.payment', {
-    orderId: data.orderId,
-    transactionId,
-  });
-  return { transactionId };
-});
-
 iii.registerFunction({ id: 'orders::ship' }, async (data: any) => {
   const logger = new Logger();
   await track(data.orderId, 'ship', 'running');
-  const trackingNumber = `trk-${Date.now()}`;
+  const trackingNumber = `trk-${Date.now()}`; // ...call carrier...
   await iii.trigger({
     function_id: 'state::update',
     payload: {

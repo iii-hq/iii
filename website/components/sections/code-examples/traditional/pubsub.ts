@@ -24,47 +24,21 @@ app.use(express.json());
 let channel: Channel;
 const processed = new Set<string>();
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "events-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
 async function handleProjection(message: ConsumeMessage | null) {
   if (!message) return;
   const span = tracer.startSpan("events.consume_order_created");
-  const event = JSON.parse(message.content.toString()) as {
-    eventId: string;
-    orderId: string;
-    customerId: string;
-    total: number;
-  };
+  const event = JSON.parse(message.content.toString()) as { eventId: string };
   if (processed.has(event.eventId)) {
-    await sendCentralLog("warn", "events.consume_order_created.duplicate", {
+    await sendCentralLog("events.consume_order_created.duplicate", {
       eventId: event.eventId,
     });
     channel.ack(message);
@@ -72,9 +46,9 @@ async function handleProjection(message: ConsumeMessage | null) {
     return;
   }
   processed.add(event.eventId);
-  await sendCentralLog("info", "events.consume_order_created.applied", {
+  // ...apply projection...
+  await sendCentralLog("events.consume_order_created.applied", {
     eventId: event.eventId,
-    orderId: event.orderId,
   });
   channel.ack(message);
   span.end();
@@ -106,9 +80,8 @@ app.post("/events/order-created", async (req, res) => {
   const payload = {
     eventId: req.body.eventId ?? `evt-${Date.now()}`,
     orderId: req.body.orderId,
-    customerId: req.body.customerId,
-    total: req.body.total,
   };
+  // ...validate and enrich payload...
   channel.publish(
     "orders.events",
     "order.created",
@@ -117,7 +90,7 @@ app.post("/events/order-created", async (req, res) => {
       persistent: true,
     },
   );
-  await sendCentralLog("info", "events.publish_order_created.published", {
+  await sendCentralLog("events.publish_order_created.published", {
     eventId: payload.eventId,
     orderId: payload.orderId,
   });
@@ -129,7 +102,7 @@ app.post("/events/order-created", async (req, res) => {
 });
 
 app.get("/events/processed", async (_req, res) => {
-  await sendCentralLog("info", "events.processed.snapshot", {
+  await sendCentralLog("events.processed.snapshot", {
     count: processed.size,
   });
   res.json({ processedCount: processed.size });

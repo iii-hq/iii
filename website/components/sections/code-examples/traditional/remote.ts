@@ -22,33 +22,12 @@ const tracer = trace.getTracer("remote-traditional");
 const app = express();
 app.use(express.json());
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "remote-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
@@ -74,14 +53,15 @@ app.post("/remote/invoices", async (req, res) => {
     {
       retries: 2,
       onFailedAttempt: async (error) => {
-        await sendCentralLog("warn", "remote.create_invoice.retry", {
+        await sendCentralLog("remote.create_invoice.retry", {
           attempt: error.attemptNumber,
           retriesLeft: error.retriesLeft,
         });
       },
     },
   );
-  await sendCentralLog("info", "remote.create_invoice.completed", {
+  // ...map remote response shape...
+  await sendCentralLog("remote.create_invoice.completed", {
     invoiceId: invoice.id,
   });
   span.end();

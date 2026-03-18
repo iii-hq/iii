@@ -13,12 +13,7 @@ type Post = {
   body: string;
 };
 
-const posts: Post[] = [
-  {
-    title: "Hello API",
-    body: "HTTP trigger wiring stays separate from function logic.",
-  },
-];
+const posts: Post[] = [];
 
 const createPost = z.object({
   title: z.string().min(1),
@@ -27,9 +22,8 @@ const createPost = z.object({
 
 iii.registerFunction({ id: "blog::list-posts" }, async () => {
   const logger = new Logger();
-  logger.info("api.list_posts", {
-    count: posts.length,
-  });
+  // ...read model query...
+  logger.info("api.list_posts", { count: posts.length });
   return { posts };
 });
 
@@ -37,10 +31,9 @@ iii.registerFunction({ id: "blog::create-post" }, async (request: any) => {
   const logger = new Logger();
   const { title, body } = createPost.parse(request.body);
   const post = { title, body };
+  // ...domain rules and side effects...
   posts.unshift(post);
-  logger.info("api.create_post.created", {
-    title: post.title,
-  });
+  logger.info("api.create_post.created", { title: post.title });
   return { post };
 });
 

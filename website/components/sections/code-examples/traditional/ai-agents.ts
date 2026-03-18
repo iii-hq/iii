@@ -10,9 +10,7 @@ import { trace } from "@opentelemetry/api";
 type AgentState = {
   sessionId: string;
   input: string;
-  memory: string[];
   docs: string[];
-  needsDocs: boolean;
   answer: string;
 };
 
@@ -38,54 +36,13 @@ const openai = new OpenAI({
 const app = express();
 app.use(express.json());
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "ai-agents-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
-}
-
-async function planNode(state: AgentState): Promise<Partial<AgentState>> {
-  const needsDocs = /docs|policy|reference/i.test(state.input);
-  await sendCentralLog("info", "agents.plan.completed", {
-    sessionId: state.sessionId,
-    needsDocs,
-  });
-  return { needsDocs };
-}
-
-async function retrieveNode(state: AgentState): Promise<Partial<AgentState>> {
-  const stored = await redis.lRange("knowledge-base", 0, 2);
-  const docs =
-    stored.length > 0 ? stored : ["runbook", "api contract", "support policy"];
-  await sendCentralLog("info", "agents.retrieve.completed", {
-    sessionId: state.sessionId,
-    count: docs.length,
-  });
-  return { docs };
 }
 
 async function respondNode(state: AgentState): Promise<Partial<AgentState>> {
@@ -98,21 +55,14 @@ async function respondNode(state: AgentState): Promise<Partial<AgentState>> {
       },
       {
         role: "user",
-        content:
-          `${state.memory.join("\n")}\n${state.docs.join("\n")}\n${state.input}`.trim(),
+        content: `${state.docs.join("\n")}\n${state.input}`.trim(),
       },
     ],
-    stream: true,
+    stream: false,
   });
-  let answer = "";
-  for await (const chunk of completion) {
-    const token = chunk.choices[0]?.delta?.content ?? "";
-    if (token) {
-      answer += token;
-      await redis.publish(`agent-stream:${state.sessionId}`, token);
-    }
-  }
-  await sendCentralLog("info", "agents.respond.completed", {
+  const answer = completion.choices[0]?.message?.content ?? "";
+  // ...optional token streaming path...
+  await sendCentralLog("agents.respond.completed", {
     sessionId: state.sessionId,
     outputLength: answer.length,
   });
@@ -120,13 +70,8 @@ async function respondNode(state: AgentState): Promise<Partial<AgentState>> {
 }
 
 async function persistNode(state: AgentState): Promise<Partial<AgentState>> {
-  await redis.rPush(
-    `chat-memory:${state.sessionId}`,
-    state.input,
-    state.answer,
-  );
-  await redis.lTrim(`chat-memory:${state.sessionId}`, -12, -1);
-  await sendCentralLog("info", "agents.persist.completed", {
+  await redis.rPush(`chat-memory:${state.sessionId}`, state.input, state.answer);
+  await sendCentralLog("agents.persist.completed", {
     sessionId: state.sessionId,
   });
   return {};
@@ -135,15 +80,9 @@ async function persistNode(state: AgentState): Promise<Partial<AgentState>> {
 const graph = new StateGraph<AgentState>({
   channels: {} as any,
 })
-  .addNode("plan", planNode)
-  .addNode("retrieve", retrieveNode)
   .addNode("respond", respondNode)
   .addNode("persist", persistNode)
-  .addEdge("__start__", "plan")
-  .addConditionalEdges("plan", (state) =>
-    state.needsDocs ? "retrieve" : "respond",
-  )
-  .addEdge("retrieve", "respond")
+  .addEdge("__start__", "respond")
   .addEdge("respond", "persist")
   .addEdge("persist", "__end__")
   .compile();
@@ -151,16 +90,15 @@ const graph = new StateGraph<AgentState>({
 app.post("/agents/chat", async (req, res) => {
   const span = tracer.startSpan("agents.chat");
   const sessionId = req.body.sessionId ?? `session-${Date.now()}`;
-  const memory = await redis.lRange(`chat-memory:${sessionId}`, 0, -1);
+  const docs = await redis.lRange("knowledge-base", 0, 2);
+  // ...routing/planning tool calls...
   const result = await graph.invoke({
     sessionId,
     input: String(req.body.input ?? ""),
-    memory,
-    docs: [],
-    needsDocs: false,
+    docs,
     answer: "",
   });
-  await sendCentralLog("info", "agents.chat.completed", {
+  await sendCentralLog("agents.chat.completed", {
     sessionId,
   });
   span.end();

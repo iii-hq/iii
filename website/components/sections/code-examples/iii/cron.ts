@@ -21,9 +21,8 @@ iii.registerFunction({ id: "reports::generate" }, async () => {
     logger.info("cron.reports_generate.skipped", {});
     return { skipped: true };
   }
-  logger.info("cron.reports_generate.run", {
-    task: "reports::generate",
-  });
+  // ...scheduled job work...
+  logger.info("cron.reports_generate.run", { task: "reports::generate" });
   return { ran: true };
 });
 
@@ -77,6 +76,7 @@ iii.registerFunction({ id: "cron::tasks-list" }, async () => {
     enabled: true,
     expression: "0 0 3 * * * *",
   };
+  // ...merge static and dynamic schedules...
   logger.info("cron.tasks.list", { count: 1 });
   return {
     tasks: [

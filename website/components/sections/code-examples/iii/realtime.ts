@@ -20,17 +20,10 @@ iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
         _key: `${roomId}:${userId}`,
         roomId,
         userId,
-        joinedAt: new Date().toISOString(),
       },
     },
   });
-  const members = await iii.trigger({
-    function_id: "state::list",
-    payload: { scope: "room-presence" },
-  });
-  const count = members.filter(
-    (member: any) => member.roomId === roomId,
-  ).length;
+  const count = 1; // ...compute from shared state...
   iii.trigger({
     function_id: "stream::send",
     payload: {
@@ -57,7 +50,6 @@ iii.registerFunction({ id: "rooms::update-score" }, async (request: any) => {
     roomId,
     playerId: request.body.playerId,
     score: request.body.score,
-    updatedAt: new Date().toISOString(),
   };
   await iii.trigger({
     function_id: "state::set",
@@ -76,6 +68,7 @@ iii.registerFunction({ id: "rooms::update-score" }, async (request: any) => {
 
 iii.registerFunction({ id: "rooms::on-score-change" }, async (event: any) => {
   const logger = new Logger();
+  // ...fan out to subscribers...
   iii.trigger({
     function_id: "stream::send",
     payload: {

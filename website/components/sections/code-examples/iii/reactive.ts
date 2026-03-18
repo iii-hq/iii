@@ -20,7 +20,6 @@ iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
         _key: accountId,
         id: accountId,
         status,
-        updatedAt: new Date().toISOString(),
       },
     },
   });
@@ -52,6 +51,7 @@ iii.registerFunction({ id: "accounts::get" }, async (request: any) => {
 iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
   const logger = new Logger();
   const update = event.new_value;
+  // ...publish for async consumers...
   iii.trigger({
     function_id: "publish",
     payload: {

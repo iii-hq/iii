@@ -25,33 +25,12 @@ const redis = createClient({
 const app = express();
 app.use(express.json());
 
-function writeLog(
-  level: "info" | "warn" | "error",
-  payload: Record<string, unknown>,
-) {
-  if (level === "error") return logger.error(payload);
-  if (level === "warn") return logger.warn(payload);
-  return logger.info(payload);
-}
-
-async function sendCentralLog(
-  level: "info" | "warn" | "error",
-  event: string,
-  data: Record<string, unknown>,
-) {
-  writeLog(level, { event, ...data });
+async function sendCentralLog(event: string, data: Record<string, unknown>) {
+  logger.info({ event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      service: "etl-traditional",
-      level,
-      event,
-      data,
-      at: new Date().toISOString(),
-    }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ event, data }),
   });
 }
 
@@ -74,58 +53,28 @@ async function processMessage(raw: string) {
     payload: any;
   };
   if (msg.step === "extract") {
-    await setRunState(msg.runId, {
-      step: "extract",
-      status: "running",
-    });
-    const extracted = [
-      { id: "1", value: 10 },
-      { id: "2", value: 20 },
-    ];
-    await sendCentralLog("info", "etl.extract.completed", {
-      runId: msg.runId,
-      count: extracted.length,
-    });
-    await enqueueStep(msg.runId, "transform", {
-      extracted,
-    });
+    await setRunState(msg.runId, { step: "extract", status: "running" });
+    // ...fetch source records...
+    await enqueueStep(msg.runId, "transform", { rows: [{ id: "1", value: 10 }] });
+    await sendCentralLog("etl.extract.completed", { runId: msg.runId });
     return;
   }
   if (msg.step === "transform") {
-    await setRunState(msg.runId, {
-      step: "transform",
-      status: "running",
-    });
-    const transformed = msg.payload.extracted.map((row: any) => ({
-      ...row,
-      value: row.value * 2,
-    }));
-    await sendCentralLog("info", "etl.transform.completed", {
-      runId: msg.runId,
-      count: transformed.length,
-    });
-    await enqueueStep(msg.runId, "load", {
-      transformed,
-    });
+    await setRunState(msg.runId, { step: "transform", status: "running" });
+    // ...normalize/clean rows...
+    await enqueueStep(msg.runId, "load", { rows: msg.payload.rows });
+    await sendCentralLog("etl.transform.completed", { runId: msg.runId });
     return;
   }
-  await setRunState(msg.runId, {
-    step: "load",
-    status: "running",
-  });
-  await redis.set(
-    `etl:warehouse:${msg.runId}`,
-    JSON.stringify(msg.payload.transformed),
-  );
+  await setRunState(msg.runId, { step: "load", status: "running" });
+  // ...write to warehouse destination...
+  await redis.set(`etl:warehouse:${msg.runId}`, JSON.stringify(msg.payload.rows));
   await setRunState(msg.runId, {
     step: "load",
     status: "completed",
     completedAt: new Date().toISOString(),
   });
-  await sendCentralLog("info", "etl.load.completed", {
-    runId: msg.runId,
-    count: msg.payload.transformed.length,
-  });
+  await sendCentralLog("etl.load.completed", { runId: msg.runId });
 }
 
 async function workerLoop() {
@@ -147,9 +96,7 @@ app.post("/etl/run", async (_req, res) => {
     createdAt: new Date().toISOString(),
   });
   await enqueueStep(runId, "extract", {});
-  await sendCentralLog("info", "etl.start_run.queued", {
-    runId,
-  });
+  await sendCentralLog("etl.start_run.queued", { runId });
   span.end();
   res.status(202).json({ runId, status: "queued" });
 });
