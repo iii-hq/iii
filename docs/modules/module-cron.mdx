@@ -143,14 +143,7 @@ iii.register_trigger({'type': 'cron', 'function_id': 'jobs::cleanupOldData', 'co
 <Tab title="Rust">
 ```rust
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "jobs::cleanupOldData".into(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("jobs::cleanupOldData".into()),
     |event: Value| async move {
         println!("Running cleanup scheduled at: {}", event["scheduled_time"]);
         Ok(json!({}))

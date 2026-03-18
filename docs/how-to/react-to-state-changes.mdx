@@ -72,14 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker(&url, InitOptions::default());
 
     iii.register_function(
-        RegisterFunctionMessage {
-            id: "orders::on-status-change".into(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        RegisterFunctionMessage::with_id("orders::on-status-change".into()),
         |event| async move {
             let logger = Logger::new();
             logger.info("Order status changed", Some(json!({ "key": event["key"], "new_value": event["new_value"] })));

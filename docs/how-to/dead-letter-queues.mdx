@@ -65,14 +65,7 @@ let iii = register_worker(
 );
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "payments::charge".into(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("payments::charge".into()),
     HttpInvocationConfig {
         url: "https://api.payments.example.com/charge".to_string(),
         method: HttpMethod::Post,

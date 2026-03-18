@@ -346,7 +346,7 @@ iii.register_function({'id': 'onAuth'}, on_auth)
 </Tab>
 <Tab title="Rust">
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "onAuth".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |_input| async move {
+iii.register_function(RegisterFunctionMessage::with_id("onAuth".into()), |_input| async move {
     Ok(json!({ "context": { "name": "John Doe" } }))
 });
 ```
@@ -433,7 +433,7 @@ iii.register_trigger({'type': 'stream:join', 'function_id': 'onJoin', 'config': 
 </Tab>
 <Tab title="Rust">
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "onJoin".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+iii.register_function(RegisterFunctionMessage::with_id("onJoin".into()), |input| async move {
     println!("Joined stream: {:?}", input);
     Ok(json!({}))
 });
@@ -618,7 +618,7 @@ iii.register_function({'id': 'stream::auth'}, stream_auth)
 </Tab>
 <Tab title="Rust">
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "stream::auth".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+iii.register_function(RegisterFunctionMessage::with_id("stream::auth".into()), |input| async move {
     let headers = input.get("headers").and_then(|h| h.as_object());
     let token = headers
         .and_then(|h| h.get("authorization"))
@@ -668,7 +668,7 @@ iii.register_trigger({'type': 'stream:join', 'function_id': 'onJoin', 'config': 
 </Tab>
 <Tab title="Rust">
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "onJoin".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+iii.register_function(RegisterFunctionMessage::with_id("onJoin".into()), |input| async move {
     if let Some(user_id) = input.get("context").and_then(|c| c.get("userId")).and_then(|u| u.as_str()) {
         let stream = input["stream_name"].as_str().unwrap_or("");
         let group = input["group_id"].as_str().unwrap_or("");
@@ -726,7 +726,7 @@ iii.register_trigger({
 </Tab>
 <Tab title="Rust">
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "conditions::requireContext".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+iii.register_function(RegisterFunctionMessage::with_id("conditions::requireContext".into()), |input| async move {
     let has_user = input
         .get("context")
         .and_then(|c| c.get("userId"))
@@ -734,7 +734,7 @@ iii.register_function(RegisterFunctionMessage { id: "conditions::requireContext"
     Ok(json!(has_user))
 });
 
-iii.register_function(RegisterFunctionMessage { id: "onJoin".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+iii.register_function(RegisterFunctionMessage::with_id("onJoin".into()), |input| async move {
     let user_id = input.get("context").and_then(|c| c.get("userId")).and_then(|u| u.as_str()).unwrap_or("");
     let stream = input["stream_name"].as_str().unwrap_or("");
     println!("User joined: {} {}", user_id, stream);

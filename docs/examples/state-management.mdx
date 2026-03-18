@@ -103,7 +103,7 @@ use serde_json::json;
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 iii.register_function(
-    RegisterFunctionMessage { id: "users.update_status".into(), description: Some("Update user status in state".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    RegisterFunctionMessage::with_id("users.update_status".into()).with_description("Update user status in state".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;
@@ -212,7 +212,7 @@ iii.register_trigger({
 
 ```rust
 iii.register_function(
-    RegisterFunctionMessage { id: "users.get_status".into(), description: Some("Read user status from state".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    RegisterFunctionMessage::with_id("users.get_status".into()).with_description("Read user status from state".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;
@@ -322,7 +322,7 @@ iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "confi
 
 ```rust
 iii.register_function(
-    RegisterFunctionMessage { id: "cron.orders_audit".into(), description: Some("Checks for overdue orders".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    RegisterFunctionMessage::with_id("cron.orders_audit".into()).with_description("Checks for overdue orders".into()),
     |_input| async move {
         let logger = Logger::new();
 

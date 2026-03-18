@@ -284,6 +284,10 @@ impl RegisterFunctionMessage {
             invocation: None,
         }
     }
+    pub fn with_description(mut self, description: String) -> Self {
+        self.description = Some(description);
+        self
+    }
     pub fn to_message(&self) -> Message {
         Message::RegisterFunction {
             id: self.id.clone(),

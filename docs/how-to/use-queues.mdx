@@ -117,14 +117,7 @@ let iii = register_worker(
 
 let iii_clone = iii.clone();
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::create".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("orders::create".to_string()),
     move |input| {
         let iii = iii_clone.clone();
         async move {
@@ -207,14 +200,7 @@ let iii = register_worker(
 );
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::process-order".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("orders::process-order".to_string()),
     |order| async move {
         let logger = Logger::new();
         let order_id = order["id"].as_str().unwrap_or("");
@@ -265,14 +251,7 @@ use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
 use serde_json::json;
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::process-order".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("orders::process-order".to_string()),
     |order| async move {
         iii.trigger(TriggerRequest {
             function_id: "notifications::send".to_string(),

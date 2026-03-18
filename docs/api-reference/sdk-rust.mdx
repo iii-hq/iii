@@ -81,14 +81,7 @@ use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
 use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "greet".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("greet".to_string()),
     |input: Value| async move {
         Ok(json!({"message": format!("Hello, {}!", input["name"])}))
     },

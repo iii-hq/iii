@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
     let logger = Logger::new();
 
-    iii.register_function(RegisterFunctionMessage { id: "math.add".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+    iii.register_function(RegisterFunctionMessage::with_id("math.add".into()), |input| async move {
         let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(json!({ "sum": a + b }))
