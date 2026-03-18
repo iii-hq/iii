@@ -7,7 +7,7 @@ import { DependencyVisualization } from './DependencyVisualization';
 const designPatterns = [
   { id: 'api', label: 'API' },
   { id: 'events', label: 'Pub Sub' },
-  { id: 'realtime', label: 'Realtime' },
+  { id: 'realtime', label: 'Streaming' },
   { id: 'state', label: 'State' },
   { id: 'cron', label: 'Cron' },
   { id: 'workflow', label: 'Workflows' },
@@ -177,7 +177,6 @@ function CodeBlock({
         }`}
       >
         <Highlight
-          key={isDarkMode ? 'dark' : 'light'}
           theme={isDarkMode ? themes.nightOwl : themes.github}
           code={code.trim()}
           language={language as any}

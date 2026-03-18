@@ -11,14 +11,10 @@ iii.registerFunction(
   { id: 'orders::publish-created' },
   async (request: any) => {
     const logger = new Logger();
-    const payload = await iii.trigger({
-      function_id: 'orders-service::build-created-event',
-      payload: {
-        eventId: request.body.eventId ?? `evt-${Date.now()}`,
-        orderId: request.body.orderId,
-        accountId: request.body.accountId,
-      },
-    });
+    const payload = {
+      eventId: request.body.eventId ?? `evt-${Date.now()}`,
+      orderId: request.body.orderId,
+    };
     iii.trigger({
       function_id: 'publish',
       payload: {
@@ -38,48 +34,18 @@ iii.registerFunction(
   },
 );
 
-iii.registerFunction({ id: 'orders::project-created' }, async (event: any) => {
+iii.registerFunction({ id: 'orders::consume-created' }, async (event: any) => {
   const logger = new Logger();
-  const projection = await iii.trigger({
-    function_id: 'orders-service::apply-created',
-    payload: event,
-  });
-  await iii.trigger({
-    function_id: 'state::set',
-    payload: {
-      scope: 'processed-events',
-      key: event.eventId,
-      value: {
-        _key: event.eventId,
-        eventId: event.eventId,
-        status: projection.status ?? 'applied',
-        projection,
-      },
-    },
-  });
-  logger.info('events.consume_order_created.applied', {
+  logger.info('events.consume_order_created.ack', {
     eventId: event.eventId,
+    orderId: event.orderId,
   });
-  return { applied: true };
-});
-
-iii.registerFunction({ id: 'orders::processed-snapshot' }, async () => {
-  const items = await iii.trigger({
-    function_id: 'state::list',
-    payload: { scope: 'processed-events' },
-  });
-  const summary = await iii.trigger({
-    function_id: 'analytics-service::summarize-processed-events',
-    payload: {
-      processedCount: items.length,
-    },
-  });
-  return { processedCount: items.length, summary };
+  return { ack: true };
 });
 
 iii.registerTrigger({
   type: 'subscribe',
-  function_id: 'orders::project-created',
+  function_id: 'orders::consume-created',
   config: { topic: 'order.created' },
 });
 
@@ -89,14 +55,5 @@ iii.registerTrigger({
   config: {
     api_path: '/events/order-created',
     http_method: 'POST',
-  },
-});
-
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'orders::processed-snapshot',
-  config: {
-    api_path: '/events/processed',
-    http_method: 'GET',
   },
 });

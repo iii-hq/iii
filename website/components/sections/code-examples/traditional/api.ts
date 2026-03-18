@@ -46,17 +46,15 @@ async function sendCentralLog(event: string, data: Record<string, unknown>) {
 app.get("/posts", async (_req, res) => {
   const span = tracer.startSpan("api.list_posts");
   await sendCentralLog("api.list_posts", { count: posts.length });
-  // ...fetch from storage...
   span.end();
   res.json({ posts });
 });
 
 app.post("/posts", async (req, res) => {
   const span = tracer.startSpan("api.create_post");
-  const data = createPost.parse(req.body); // ...validation...
+  const data = createPost.parse(req.body);
   const post: Post = { title: data.title, body: data.body };
   posts.unshift(post);
-  // ...persist and publish side effects...
   await sendCentralLog("api.create_post.created", { title: post.title });
   span.end();
   res.status(201).json({ post });

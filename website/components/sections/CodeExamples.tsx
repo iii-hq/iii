@@ -50,10 +50,10 @@ export const codeExamples: Record<string, CodeExample> = {
 
   realtime: {
     description:
-      'Stream live updates from workers and state changes without a separate realtime integration layer.',
+      'Publish and consume durable stream events for live updates without wiring custom stream infrastructure.',
     traditional: {
-      title: 'Socket.io + Presence',
-      tools: ['Socket.io', 'Redis'],
+      title: 'Redis Streams + Socket.io',
+      tools: ['Redis', 'Socket.io'],
       language: 'typescript',
       code: traditional.realtime,
     },
@@ -148,8 +148,8 @@ export const codeExamples: Record<string, CodeExample> = {
     description:
       'Move data through scheduled or event-driven steps with shared progress and retryable handoffs.',
     traditional: {
-      title: 'Scheduler + Workers',
-      tools: ['node-cron', 'Redis'],
+      title: 'Queue + Workers',
+      tools: ['Redis'],
       language: 'typescript',
       code: traditional.etl,
     },

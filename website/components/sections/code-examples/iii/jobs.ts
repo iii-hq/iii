@@ -11,14 +11,12 @@ iii.registerFunction(
   { id: "video::enqueue-transcode" },
   async (request: any) => {
     const logger = new Logger();
-    const prepared = await iii.trigger({
-      function_id: "media-service::prepare-transcode",
-      payload: {
-        assetId: request.body.assetId,
-        profile: request.body.profile ?? "1080p",
-      },
-    });
-    const jobId = prepared.jobId ?? `job-${Date.now()}`;
+    const jobId = request.body.jobId ?? `job-${Date.now()}`;
+    const payload = {
+      jobId,
+      assetId: request.body.assetId,
+      profile: request.body.profile ?? "1080p",
+    };
     await iii.trigger({
       function_id: "state::set",
       payload: {
@@ -26,20 +24,14 @@ iii.registerFunction(
         key: jobId,
         value: {
           _key: jobId,
-          jobId,
-          assetId: prepared.assetId,
-          profile: prepared.profile,
+          ...payload,
           status: "queued",
         },
       },
     });
     iii.trigger({
       function_id: "video::transcode",
-      payload: {
-        jobId,
-        assetId: prepared.assetId,
-        profile: prepared.profile,
-      },
+      payload,
       action: TriggerAction.Enqueue({
         queue: "video-transcode",
       }),
@@ -89,14 +81,6 @@ iii.registerFunction({ id: "video::job-status" }, async (request: any) => {
       key: request.params.jobId,
     },
   });
-  if (!job) {
-    job = await iii.trigger({
-      function_id: "jobs-service::lookup",
-      payload: {
-        jobId: request.params.jobId,
-      },
-    });
-  }
   if (!job) {
     logger.warn("jobs.lookup.not_found", {
       jobId: request.params.jobId,

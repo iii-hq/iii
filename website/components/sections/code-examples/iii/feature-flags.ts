@@ -1,4 +1,4 @@
-import { registerWorker, Logger, TriggerAction } from "iii-sdk";
+import { registerWorker, Logger } from "iii-sdk";
 
 const iii = registerWorker(
   process.env.III_ENGINE_URL || "ws://localhost:49134",
@@ -57,39 +57,6 @@ iii.registerFunction({ id: "flags::evaluate" }, async (request: any) => {
     source: evaluation.source,
   });
   return evaluation;
-});
-
-iii.registerFunction({ id: "flags::on-updated" }, async (event: any) => {
-  const logger = new Logger();
-  iii.trigger({
-    function_id: "release-service::invalidate-flag-caches",
-    payload: {
-      flagKey: event.new_value?.flagKey,
-      value: event.new_value?.value,
-    },
-    action: TriggerAction.Enqueue({
-      queue: "release-cache",
-    }),
-  });
-  iii.trigger({
-    function_id: "stream::send",
-    payload: {
-      stream_name: "flags-updates",
-      group_id: "global",
-      id: `flag-${Date.now()}`,
-      event_type: "flag.updated",
-      data: event.new_value,
-    },
-    action: TriggerAction.Void(),
-  });
-  logger.info("flags.update_propagated", event.new_value);
-  return { ok: true };
-});
-
-iii.registerTrigger({
-  type: "state",
-  function_id: "flags::on-updated",
-  config: { scope: "flag-overrides" },
 });
 
 iii.registerTrigger({

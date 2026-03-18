@@ -1,5 +1,4 @@
 import express from "express";
-import cron from "node-cron";
 import { createClient } from "redis";
 import pino from "pino";
 import { NodeSDK } from "@opentelemetry/sdk-node";
@@ -54,20 +53,17 @@ async function processMessage(raw: string) {
   };
   if (msg.step === "extract") {
     await setRunState(msg.runId, { step: "extract", status: "running" });
-    // ...fetch source records...
     await enqueueStep(msg.runId, "transform", { rows: [{ id: "1", value: 10 }] });
     await sendCentralLog("etl.extract.completed", { runId: msg.runId });
     return;
   }
   if (msg.step === "transform") {
     await setRunState(msg.runId, { step: "transform", status: "running" });
-    // ...normalize/clean rows...
     await enqueueStep(msg.runId, "load", { rows: msg.payload.rows });
     await sendCentralLog("etl.transform.completed", { runId: msg.runId });
     return;
   }
   await setRunState(msg.runId, { step: "load", status: "running" });
-  // ...write to warehouse destination...
   await redis.set(`etl:warehouse:${msg.runId}`, JSON.stringify(msg.payload.rows));
   await setRunState(msg.runId, {
     step: "load",
@@ -99,19 +95,6 @@ app.post("/etl/run", async (_req, res) => {
   await sendCentralLog("etl.start_run.queued", { runId });
   span.end();
   res.status(202).json({ runId, status: "queued" });
-});
-
-app.get("/etl/:runId", async (req, res) => {
-  const snapshot = await redis.hGetAll(`etl:run:${req.params.runId}`);
-  if (Object.keys(snapshot).length === 0) {
-    res.status(404).json({ error: "Run not found" });
-    return;
-  }
-  res.json(snapshot);
-});
-
-cron.schedule("0 2 * * *", () => {
-  void enqueueStep(`run-${Date.now()}`, "extract", {});
 });
 
 async function bootEtl() {

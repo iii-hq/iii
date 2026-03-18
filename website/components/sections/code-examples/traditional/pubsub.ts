@@ -22,7 +22,6 @@ const app = express();
 app.use(express.json());
 
 let channel: Channel;
-const processed = new Set<string>();
 
 async function sendCentralLog(event: string, data: Record<string, unknown>) {
   logger.info({ event, ...data });
@@ -36,19 +35,13 @@ async function sendCentralLog(event: string, data: Record<string, unknown>) {
 async function handleProjection(message: ConsumeMessage | null) {
   if (!message) return;
   const span = tracer.startSpan("events.consume_order_created");
-  const event = JSON.parse(message.content.toString()) as { eventId: string };
-  if (processed.has(event.eventId)) {
-    await sendCentralLog("events.consume_order_created.duplicate", {
-      eventId: event.eventId,
-    });
-    channel.ack(message);
-    span.end();
-    return;
-  }
-  processed.add(event.eventId);
-  // ...apply projection...
+  const event = JSON.parse(message.content.toString()) as {
+    eventId: string;
+    orderId: string;
+  };
   await sendCentralLog("events.consume_order_created.applied", {
     eventId: event.eventId,
+    orderId: event.orderId,
   });
   channel.ack(message);
   span.end();
@@ -81,7 +74,6 @@ app.post("/events/order-created", async (req, res) => {
     eventId: req.body.eventId ?? `evt-${Date.now()}`,
     orderId: req.body.orderId,
   };
-  // ...validate and enrich payload...
   channel.publish(
     "orders.events",
     "order.created",
@@ -99,13 +91,6 @@ app.post("/events/order-created", async (req, res) => {
     accepted: true,
     eventId: payload.eventId,
   });
-});
-
-app.get("/events/processed", async (_req, res) => {
-  await sendCentralLog("events.processed.snapshot", {
-    count: processed.size,
-  });
-  res.json({ processedCount: processed.size });
 });
 
 void bootBroker();

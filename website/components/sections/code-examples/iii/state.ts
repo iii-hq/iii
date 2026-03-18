@@ -10,13 +10,10 @@ const iii = registerWorker(
 iii.registerFunction({ id: "carts::add-item" }, async (request: any) => {
   const logger = new Logger();
   const cartId = request.params.cartId;
-  const lineItem = await iii.trigger({
-    function_id: "catalog-service::validate-line-item",
-    payload: {
-      sku: request.body.sku,
-      qty: request.body.qty,
-    },
-  });
+  const lineItem = {
+    sku: String(request.body.sku),
+    qty: Number(request.body.qty),
+  };
   const cart = await iii.trigger({
     function_id: "cart-service::add-item",
     payload: {
@@ -35,18 +32,11 @@ iii.registerFunction({ id: "carts::add-item" }, async (request: any) => {
       },
     },
   });
-  const quote = await iii.trigger({
-    function_id: "pricing-service::quote-cart",
-    payload: {
-      cartId,
-      items: cart.items,
-    },
-  });
   logger.info("state.cart_add_item", {
     cartId,
     sku: lineItem.sku,
   });
-  return { cart, quote };
+  return { cart };
 });
 
 iii.registerFunction({ id: "carts::get" }, async (request: any) => {
@@ -65,16 +55,7 @@ iii.registerFunction({ id: "carts::get" }, async (request: any) => {
         cartId: request.params.cartId,
       },
     });
-    if (!cart) {
-      logger.warn("state.cart_get.not_found", {
-        cartId: request.params.cartId,
-      });
-      const error = new Error("Cart not found") as Error & {
-        status: number;
-      };
-      error.status = 404;
-      throw error;
-    }
+    if (!cart) return { cartId: request.params.cartId, items: [] };
     await iii.trigger({
       function_id: "state::set",
       payload: {
@@ -91,7 +72,7 @@ iii.registerFunction({ id: "carts::get" }, async (request: any) => {
     cartId: request.params.cartId,
     itemCount: cart.items?.length ?? 0,
   });
-  return cart;
+  return { cart };
 });
 
 iii.registerTrigger({

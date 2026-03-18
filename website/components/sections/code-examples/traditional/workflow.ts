@@ -45,7 +45,7 @@ async function setWorkflowState(orderId: string, step: string, status: string) {
 }
 
 const { runStep } = proxyActivities<{
-  runStep(orderId: string, step: string): Promise<void>;
+  runStep(orderId: string, step: "validate" | "ship"): Promise<void>;
 }>({
   startToCloseTimeout: "1 minute",
   retry: { maximumAttempts: 3 },
@@ -55,7 +55,6 @@ export async function orderFulfillmentWorkflow(input: {
   orderId: string;
 }) {
   await runStep(input.orderId, "validate");
-  await runStep(input.orderId, "payment");
   await runStep(input.orderId, "ship");
   return { orderId: input.orderId, status: "fulfilled" };
 }
@@ -70,9 +69,8 @@ async function bootTemporal() {
     taskQueue: "order-workflows",
     workflowsPath: require.resolve("./workflow-definitions"),
     activities: {
-      runStep: async (orderId: string, step: string) => {
+      runStep: async (orderId: string, step: "validate" | "ship") => {
         await setWorkflowState(orderId, step, "running");
-        // ...external calls, retries, compensation...
         await setWorkflowState(orderId, step, "complete");
         await sendCentralLog("workflow.step.completed", { orderId, step });
       },
@@ -84,7 +82,7 @@ async function bootTemporal() {
 app.post("/workflows/order", async (req, res) => {
   const span = tracer.startSpan("workflow.start_order_fulfillment");
   const orderId = req.body.orderId ?? `ord-${Date.now()}`;
-  await setWorkflowState(orderId, "created", "queued");
+  await setWorkflowState(orderId, "validate", "queued");
   const connection = await Connection.connect({
     address: process.env.TEMPORAL_ADDRESS || "localhost:7233",
   });
@@ -103,15 +101,6 @@ app.post("/workflows/order", async (req, res) => {
     orderId,
     workflowId: handle.workflowId,
   });
-});
-
-app.get("/workflows/order/:orderId", async (req, res) => {
-  const snapshot = await redis.hGetAll(`workflow:${req.params.orderId}`);
-  if (Object.keys(snapshot).length === 0) {
-    res.status(404).json({ error: "Workflow not found" });
-    return;
-  }
-  res.json({ orderId: req.params.orderId, ...snapshot });
 });
 
 void bootTemporal();

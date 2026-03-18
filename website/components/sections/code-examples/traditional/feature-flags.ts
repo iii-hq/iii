@@ -26,7 +26,6 @@ const ldClient = init(process.env.LD_SDK_KEY || "");
 const redis = createClient({
   url: process.env.REDIS_URL || "redis://localhost:6379",
 });
-const subscriber = redis.duplicate();
 
 async function sendCentralLog(event: string, data: Record<string, unknown>) {
   logger.info({ event, ...data });
@@ -46,7 +45,6 @@ app.post("/flags/:flagKey/overrides", async (req, res) => {
     updatedAt: new Date().toISOString(),
   };
   await redis.hSet("flags:overrides", flagKey, JSON.stringify(override));
-  await redis.publish("flags.updated", JSON.stringify(override));
   await sendCentralLog("flags.override_set", override);
   span.end();
   res.json(override);
@@ -73,7 +71,6 @@ app.get("/flags/:flagKey/evaluate", async (req, res) => {
     });
     return;
   }
-  // ...segment/user targeting...
   const value = await ldClient.variation(flagKey, { key: userId }, false);
   await sendCentralLog("flags.evaluate.launchdarkly", {
     flagKey,
@@ -94,12 +91,6 @@ async function bootFlags() {
     timeout: 5,
   });
   await redis.connect();
-  await subscriber.connect();
-  await subscriber.subscribe("flags.updated", async (raw) => {
-    const evt = JSON.parse(raw) as { flagKey: string; value: boolean };
-    // ...fan out config refresh...
-    await sendCentralLog("flags.update_propagated", evt);
-  });
 }
 
 void bootFlags();

@@ -293,6 +293,8 @@ interface HighlightedCodeBlockProps {
   isDarkMode: boolean;
   language?: string;
   animationPhase: AnimationPhase;
+  titleRowHeightPx?: number;
+  onTitleRowHeightChange?: (height: number) => void;
 }
 
 interface IIIHeaderGraphProps {
@@ -320,8 +322,35 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
   const lineClasses = isDarkMode ? 'bg-iii-light/45' : 'bg-iii-dark/35';
   const dotClasses = isDarkMode ? 'bg-iii-info' : 'bg-iii-accent-light';
   const nodes = dependencies.slice(0, 2);
+  const nodeSignature = nodes.join('|');
   const [orbs, setOrbs] = useState<HeaderOrbParticle[]>([]);
+  const [arePillsVisible, setArePillsVisible] = useState(false);
+  const [isOnlineFlashVisible, setIsOnlineFlashVisible] = useState(false);
   const orbIdRef = useRef(0);
+
+  useEffect(() => {
+    if (nodes.length === 0) {
+      setArePillsVisible(false);
+      setIsOnlineFlashVisible(false);
+      return;
+    }
+
+    setArePillsVisible(false);
+    setIsOnlineFlashVisible(false);
+
+    const riseTimer = setTimeout(() => {
+      setArePillsVisible(true);
+      setIsOnlineFlashVisible(true);
+    }, 24);
+    const flashTimer = setTimeout(() => {
+      setIsOnlineFlashVisible(false);
+    }, 760);
+
+    return () => {
+      clearTimeout(riseTimer);
+      clearTimeout(flashTimer);
+    };
+  }, [nodeSignature]);
 
   useEffect(() => {
     if (nodes.length === 0) {
@@ -372,7 +401,7 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
       }
       setOrbs([]);
     };
-  }, [nodes.length, dependencies.join('|')]);
+  }, [nodes.length, nodeSignature]);
 
   if (nodes.length === 0) {
     return null;
@@ -405,11 +434,31 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
         {nodes.map((node, index) => (
           <div
             key={`${node}-${index}`}
-            className={`px-2 sm:px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold text-center truncate ${boxClasses}`}
-            style={{ width: 'clamp(68px, 10vw, 132px)' }}
+            className={`px-2 sm:px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold overflow-hidden ${boxClasses} ${
+              isOnlineFlashVisible
+                ? isDarkMode
+                  ? 'border-iii-success/80 bg-iii-success/20'
+                  : 'border-iii-success/70 bg-iii-success/10'
+                : ''
+            }`}
+            style={{
+              maxWidth: 'clamp(104px, 18vw, 220px)',
+              transform: `${arePillsVisible ? 'translateY(0px)' : 'translateY(10px)'} ${isOnlineFlashVisible ? 'scale(1.02)' : 'scale(1)'}`,
+              opacity: arePillsVisible ? 1 : 0,
+              boxShadow: isOnlineFlashVisible
+                ? '0 0 0 1px rgba(34, 197, 94, 0.65), 0 0 14px rgba(34, 197, 94, 0.45)'
+                : undefined,
+              transition:
+                'transform 320ms ease-in, opacity 320ms ease-in, background-color 220ms ease-in, border-color 220ms ease-in, box-shadow 220ms ease-in',
+            }}
             title={node}
           >
-            {node}
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-semibold text-iii-success flex-shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
+              </span>
+              <span className="truncate">{node}</span>
+            </div>
           </div>
         ))}
       </div>
@@ -441,7 +490,6 @@ const lineContainsTool = (lineText: string, tools: string[]): boolean => {
   // Check for tool-specific keywords
   const toolKeywords = [
     'redis',
-    'bull',
     'queue',
     'kafka',
     'rabbit',
@@ -500,6 +548,14 @@ const extractWorkerServiceDependencies = (code: string): string[] => {
   return Array.from(dependencies);
 };
 
+const withIIIBaseDependency = (dependencies: string[]): string[] => {
+  const iiiModuleDependency = 'iii modules';
+  return [
+    iiiModuleDependency,
+    ...dependencies.filter((dependency) => dependency !== iiiModuleDependency),
+  ];
+};
+
 const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   code,
   title,
@@ -508,6 +564,8 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   isDarkMode,
   language = 'typescript',
   animationPhase,
+  titleRowHeightPx,
+  onTitleRowHeightChange,
 }) => {
   const isTraditional = variant === 'traditional';
   const isIII = variant === 'iii';
@@ -517,6 +575,7 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   const [revealedLine, setRevealedLine] = useState(0);
   const [scanComplete, setScanComplete] = useState(false);
   const totalLinesRef = useRef(0);
+  const titleRowRef = useRef<HTMLDivElement>(null);
 
   // Animation phases
   const isOutputting = ['outputting', 'legendVisible', 'spotlight'].includes(
@@ -695,15 +754,44 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
     ),
   );
   const baseDependencies = isIII
-    ? extractWorkerServiceDependencies(code)
+    ? withIIIBaseDependency(extractWorkerServiceDependencies(code))
     : inferredDependencies.length > 0
       ? inferredDependencies
       : tools
           .map((tool) => tool.replace(/\s*\+.*$/, '').trim())
           .filter(Boolean);
-  const dependencyCount =
-    animationPhase === 'highlighting' ? 0 : animationPhase === 'moving' ? 1 : 2;
+  const dependencyCount = [
+    'moving',
+    'linking',
+    'connected',
+    'outputting',
+    'legendVisible',
+    'spotlight',
+  ].includes(animationPhase)
+    ? 2
+    : 0;
   const headerDependencies = baseDependencies.slice(0, dependencyCount);
+
+  useEffect(() => {
+    if (!onTitleRowHeightChange || !titleRowRef.current) {
+      return;
+    }
+
+    const titleRowElement = titleRowRef.current;
+    const reportHeight = () => {
+      const height = Math.ceil(titleRowElement.getBoundingClientRect().height);
+      if (height > 0) {
+        onTitleRowHeightChange(height);
+      }
+    };
+
+    reportHeight();
+
+    const resizeObserver = new ResizeObserver(reportHeight);
+    resizeObserver.observe(titleRowElement);
+
+    return () => resizeObserver.disconnect();
+  }, [animationPhase, onTitleRowHeightChange]);
 
   // Border styling for iii code block - transforms to dashed accent when outputting
   const getBorderClasses = () => {
@@ -734,7 +822,13 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
             : 'border-iii-dark bg-iii-light/50'
         }`}
       >
-        <div className="flex items-center gap-2">
+        <div
+          ref={titleRowRef}
+          className="flex items-center gap-2"
+          style={
+            titleRowHeightPx ? { height: `${titleRowHeightPx}px` } : undefined
+          }
+        >
           <div className="flex items-center gap-2 min-w-0">
             <div
               className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
@@ -906,7 +1000,17 @@ export const DependencyVisualization: React.FC<
 }) => {
   const [animationPhase, setAnimationPhase] = useState<AnimationPhase>('idle');
   const [hasAnimatedOnScroll, setHasAnimatedOnScroll] = useState(false);
+  const [sharedTitleRowHeightPx, setSharedTitleRowHeightPx] = useState(30);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const handleTitleRowHeightChange = useCallback((height: number) => {
+    if (height <= 0) {
+      return;
+    }
+    setSharedTitleRowHeightPx((previousHeight) =>
+      previousHeight === height ? previousHeight : height,
+    );
+  }, []);
 
   const runAnimation = useCallback(() => {
     setAnimationPhase('idle');
@@ -991,6 +1095,7 @@ export const DependencyVisualization: React.FC<
             isDarkMode={isDarkMode}
             language={traditionalLanguage}
             animationPhase={animationPhase}
+            titleRowHeightPx={sharedTitleRowHeightPx}
           />
         </div>
 
@@ -1004,6 +1109,8 @@ export const DependencyVisualization: React.FC<
             isDarkMode={isDarkMode}
             language={iiiLanguage}
             animationPhase={animationPhase}
+            titleRowHeightPx={sharedTitleRowHeightPx}
+            onTitleRowHeightChange={handleTitleRowHeightChange}
           />
         </div>
       </div>

@@ -64,7 +64,7 @@ iii.registerFunction({ id: "orders::start" }, async (request: any) => {
         _key: orderId,
         orderId,
         status: "queued",
-        currentStep: "created",
+        currentStep: "validate",
         items: orderDraft.items,
         accountId: orderDraft.accountId,
         updatedAt: new Date().toISOString(),
@@ -121,16 +121,8 @@ iii.registerFunction({ id: "orders::validate" }, async (data: any) => {
     error.status = 422;
     throw error;
   }
-  const payment = await iii.trigger({
-    function_id: "billing-service::charge-order",
-    payload: {
-      orderId: data.orderId,
-      accountId: snapshot.accountId,
-      amount: validation.totalAmount,
-    },
-  });
   await trackStep(data.orderId, "validate", "complete", {
-    paymentId: payment.paymentId,
+    validatedAt: new Date().toISOString(),
   });
   await iii.trigger({
     function_id: "orders::ship",
@@ -141,7 +133,6 @@ iii.registerFunction({ id: "orders::validate" }, async (data: any) => {
   });
   logger.info("workflow.step.validate", {
     orderId: data.orderId,
-    paymentId: payment.paymentId,
   });
   return { ok: true };
 });
@@ -173,45 +164,11 @@ iii.registerFunction({ id: "orders::ship" }, async (data: any) => {
     },
   });
   await trackStep(data.orderId, "ship", "fulfilled");
-  iii.trigger({
-    function_id: "publish",
-    payload: {
-      topic: "order.fulfilled",
-      data: {
-        orderId: data.orderId,
-        trackingNumber: shipment.trackingNumber,
-      },
-    },
-    action: TriggerAction.Void(),
-  });
   logger.info("workflow.step.ship", {
     orderId: data.orderId,
     trackingNumber: shipment.trackingNumber,
   });
   return { trackingNumber: shipment.trackingNumber };
-});
-
-iii.registerFunction({ id: "orders::snapshot" }, async (request: any) => {
-  const logger = new Logger();
-  const snapshot = await iii.trigger({
-    function_id: "state::get",
-    payload: {
-      scope: "workflow-orders",
-      key: request.params.orderId,
-    },
-  });
-  if (!snapshot) {
-    const error = new Error('Workflow not found') as Error & {
-      status: number;
-    };
-    error.status = 404;
-    throw error;
-  }
-  logger.info('workflow.snapshot.loaded', {
-    orderId: request.params.orderId,
-    status: snapshot.status,
-  });
-  return snapshot;
 });
 
 iii.registerTrigger({
@@ -220,14 +177,5 @@ iii.registerTrigger({
   config: {
     api_path: "/workflows/order",
     http_method: "POST",
-  },
-});
-
-iii.registerTrigger({
-  type: "http",
-  function_id: "orders::snapshot",
-  config: {
-    api_path: "/workflows/order/:orderId",
-    http_method: "GET",
   },
 });

@@ -39,16 +39,6 @@ iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
   const logger = new Logger();
   const update = event.new_value;
   iii.trigger({
-    function_id: "crm-service::sync-account",
-    payload: {
-      accountId: update.id,
-      status: update.status,
-    },
-    action: TriggerAction.Enqueue({
-      queue: "crm-sync",
-    }),
-  });
-  iii.trigger({
     function_id: "publish",
     payload: {
       topic: "account_changes",
@@ -56,19 +46,8 @@ iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
     },
     action: TriggerAction.Void(),
   });
-  iii.trigger({
-    function_id: "stream::send",
-    payload: {
-      stream_name: "account-changes",
-      group_id: "global",
-      id: `acc-${Date.now()}`,
-      event_type: "account.updated",
-      data: update,
-    },
-    action: TriggerAction.Void(),
-  });
-  logger.info("reactive.pubsub_to_stream", {
-    accountId: update.id,
+  logger.info("reactive.state_to_pubsub", {
+    accountId: update.accountId ?? update.id,
     status: update.status,
   });
   return { propagated: true };

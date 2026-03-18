@@ -62,18 +62,6 @@ app.post("/reactive/accounts/:accountId/status", async (req, res) => {
   res.json({ accountId, status });
 });
 
-app.get("/reactive/accounts/:accountId", async (req, res) => {
-  const result = await pg.query(
-    "select id, status from accounts where id = $1",
-    [req.params.accountId],
-  );
-  if (result.rows.length === 0) {
-    res.status(404).json({ error: "Account not found" });
-    return;
-  }
-  res.json(result.rows[0]);
-});
-
 async function bootReactive() {
   await pg.connect();
   await redisPub.connect();
@@ -81,7 +69,6 @@ async function bootReactive() {
   await pg.query("listen account_changes");
   pg.on("notification", async (msg) => {
     if (msg.channel !== "account_changes" || !msg.payload) return;
-    // ...apply filtering/enrichment...
     await redisPub.publish("account_changes", msg.payload);
     await sendCentralLog("reactive.pg_to_pubsub", JSON.parse(msg.payload));
   });

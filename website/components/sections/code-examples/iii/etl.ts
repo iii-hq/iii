@@ -66,7 +66,6 @@ iii.registerFunction({ id: "etl::extract-step" }, async (data: any) => {
       ],
     },
   });
-  // ...pull source data...
   logger.info("etl.extract.completed", {
     runId: data.runId,
     count: extracted.length,
@@ -184,32 +183,6 @@ iii.registerFunction({ id: "etl::load-step" }, async (data: any) => {
   };
 });
 
-iii.registerFunction({ id: "etl::status" }, async (request: any) => {
-  const snapshot = await iii.trigger({
-    function_id: "state::get",
-    payload: {
-      scope: "etl-runs",
-      key: request.params.runId,
-    },
-  });
-  if (!snapshot) {
-    const error = new Error("Run not found") as Error & {
-      status: number;
-    };
-    error.status = 404;
-    throw error;
-  }
-  return snapshot;
-});
-
-iii.registerFunction({ id: "etl::start-scheduled" }, async () => {
-  // ...cron entrypoint...
-  return iii.trigger({
-    function_id: "etl::start",
-    payload: {},
-  });
-});
-
 iii.registerTrigger({
   type: "http",
   function_id: "etl::start",
@@ -217,19 +190,4 @@ iii.registerTrigger({
     api_path: "/etl/run",
     http_method: "POST",
   },
-});
-
-iii.registerTrigger({
-  type: "http",
-  function_id: "etl::status",
-  config: {
-    api_path: "/etl/:runId",
-    http_method: "GET",
-  },
-});
-
-iii.registerTrigger({
-  type: "cron",
-  function_id: "etl::start-scheduled",
-  config: { expression: "0 0 2 * * * *" },
 });

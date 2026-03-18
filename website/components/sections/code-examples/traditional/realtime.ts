@@ -31,7 +31,7 @@ const redisPublisher = createClient({
   url: process.env.REDIS_URL || "redis://localhost:6379",
 });
 const redisSubscriber = redisPublisher.duplicate();
-const redisState = redisPublisher.duplicate();
+const streamName = "room-score-stream";
 
 async function sendCentralLog(event: string, data: Record<string, unknown>) {
   logger.info({ event, ...data });
@@ -42,38 +42,21 @@ async function sendCentralLog(event: string, data: Record<string, unknown>) {
   });
 }
 
-io.on("connection", (socket) => {
-  socket.on("room.join", async ({ roomId, userId }) => {
-    const span = tracer.startSpan("realtime.room_join");
-    socket.join(roomId);
-    await redisState.sAdd(`presence:${roomId}`, userId); // ...presence store...
-    const count = await redisState.sCard(`presence:${roomId}`);
-    io.to(roomId).emit("presence.updated", {
-      roomId,
-      count,
-    });
-    await sendCentralLog("realtime.room_join", {
-      roomId,
-      userId,
-      count,
-    });
-    span.end();
-  });
-});
-
 app.post("/rooms/:roomId/score", async (req, res) => {
-  const span = tracer.startSpan("realtime.update_score");
-  const message = {
+  const span = tracer.startSpan("stream.publish_room_score");
+  const score = {
     roomId: req.params.roomId,
     playerId: req.body.playerId,
-    score: req.body.score,
+    score: Number(req.body.score),
+    at: new Date().toISOString(),
   };
-  // ...validate update and apply rules...
-  await redisPublisher.publish(
-    `rooms:${req.params.roomId}:updates`,
-    JSON.stringify(message),
-  );
-  await sendCentralLog("realtime.update_score", message);
+  await redisPublisher.xAdd(streamName, "*", {
+    roomId: score.roomId,
+    playerId: String(score.playerId),
+    score: String(score.score),
+    at: score.at,
+  });
+  await sendCentralLog("stream.publish_room_score", score);
   span.end();
   res.status(202).json({
     accepted: true,
@@ -84,14 +67,30 @@ app.post("/rooms/:roomId/score", async (req, res) => {
 async function bootRealtime() {
   await redisPublisher.connect();
   await redisSubscriber.connect();
-  await redisState.connect();
-  await redisSubscriber.pSubscribe("rooms:*:updates", async (raw, channel) => {
-    const roomId = channel.split(":")[1];
-    io.to(roomId).emit("room.updated", JSON.parse(raw));
-    await sendCentralLog("realtime.broadcast_update", {
-      roomId,
-    });
-  });
+  let lastId = "$";
+  while (true) {
+    const streams = await redisSubscriber.xRead(
+      [{ key: streamName, id: lastId }],
+      { BLOCK: 0, COUNT: 10 },
+    );
+    if (!streams) continue;
+    for (const stream of streams) {
+      for (const message of stream.messages) {
+        lastId = message.id;
+        const payload = {
+          roomId: String(message.message.roomId),
+          playerId: String(message.message.playerId),
+          score: Number(message.message.score),
+          at: String(message.message.at),
+        };
+        io.emit("room.stream.update", payload);
+        await sendCentralLog("stream.consume_room_score", {
+          eventId: message.id,
+          roomId: payload.roomId,
+        });
+      }
+    }
+  }
 }
 
 void bootRealtime();
