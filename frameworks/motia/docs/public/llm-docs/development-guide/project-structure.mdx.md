@@ -13,9 +13,9 @@ Here's what a typical Motia project looks like:
 
 <Folder name="my-motia-project" defaultOpen>
   <Folder name="src" defaultOpen>
-    <File name="01-api-gateway.step.ts" />
-    <File name="02-data-processor_step.py" />
-    <File name="03-send-notification.step.js" />
+    <File name="api-gateway.step.ts" />
+    <File name="data-processor_step.py" />
+    <File name="send-notification.step.js" />
     <File name="send-notification.tsx" />
   </Folder>
   <File name="package.json" />
@@ -29,10 +29,10 @@ Here's what a typical Motia project looks like:
 
 | File | Purpose | Type | Auto-Generated |
 |------|---------|------|----------------|
-| `01-api-gateway.step.ts` | TypeScript API endpoint | User Code | - |
-| `02-data-processor_step.py` | Python data processing | User Code | - |
-| `03-send-notification.step.js` | JavaScript automation | User Code | - |
-| `send-notification.tsx` | Optional [UI override component](/docs/development-guide/customizing-flows) | User Code | - |
+| `api-gateway.step.ts` | TypeScript API endpoint | User Code | - |
+| `data-processor_step.py` | Python data processing | User Code | - |
+| `send-notification.step.js` | JavaScript automation | User Code | - |
+| `send-notification.tsx` | Optional UI override component | User Code | - |
 | `package.json` | Node.js dependencies (if using JS/TS) | Config | - |
 | `requirements.txt` | Python dependencies (if using Python) | Config | - |
 | `tsconfig.json` | TypeScript config (if using TypeScript) | Config | - |
@@ -84,7 +84,7 @@ When you start the dev server, Motia will:
 Motia uses this specific pattern for automatic step discovery:
 
 ```
-[prefix-]descriptive-name.step.[extension]
+descriptive-name.step.[extension]
 ```
 
 <Callout type="warning">
@@ -103,7 +103,7 @@ The `.step.` part in the filename is **required** - this is how Motia identifies
 
 | Step Type | TypeScript | Python | JavaScript |
 |-----------|------------|---------|-----------|
-| **API Endpoint** | `01-auth-api.step.ts` | `01-auth-api_step.py` or `auth_api_step.py` | `01-auth-api.step.js` |
+| **API Endpoint** | `auth-api.step.ts` | `auth-api_step.py` or `auth_api_step.py` | `auth-api.step.js` |
 | **Queue Handler** | `process-order.step.ts` | `process-order_step.py` or `process_order_step.py` | `process-order.step.js` |
 | **Cron Job** | `daily-report.step.ts` | `daily-report_step.py` or `daily_report_step.py` | `daily-report.step.js` |
 | **Data Processing** | `transform-data.step.ts` | `ml-analysis_step.py` or `ml_analysis_step.py` | `data-cleanup.step.js` |
@@ -121,20 +121,20 @@ All examples below use `src/` as the root directory.
 Perfect for linear workflows where order matters:
 
 <Folder name="src" defaultOpen>
-  <File name="01-api-start.step.ts" />
-  <File name="02-validate-data_step.py" />
-  <File name="03-process-payment.step.js" />
-  <File name="04-send-confirmation.step.ts" />
-  <File name="05-cleanup_step.py" />
+  <File name="api-start.step.ts" />
+  <File name="validate-data_step.py" />
+  <File name="process-payment.step.js" />
+  <File name="send-confirmation.step.ts" />
+  <File name="cleanup_step.py" />
 </Folder>
 
 | Step | Language | Purpose |
 |------|----------|---------|
-| `01-api-start.step.ts` | TypeScript | API endpoint |
-| `02-validate-data_step.py` | Python | Data validation |
-| `03-process-payment.step.js` | JavaScript | Payment processing |
-| `04-send-confirmation.step.ts` | TypeScript | Email service |
-| `05-cleanup_step.py` | Python | Cleanup tasks |
+| `api-start.step.ts` | TypeScript | API endpoint |
+| `validate-data_step.py` | Python | Data validation |
+| `process-payment.step.js` | JavaScript | Payment processing |
+| `send-confirmation.step.ts` | TypeScript | Email service |
+| `cleanup_step.py` | Python | Cleanup tasks |
 
 </Tab>
 <Tab value="Feature-Based">
@@ -292,19 +292,19 @@ Let's see how Motia discovers different step types:
 ### Example 1: TypeScript API Step
 
 ```typescript title="src/user-api.step.ts"
-import { type Handlers, type StepConfig } from 'motia'
+import { type Handlers, type StepConfig, enqueue } from 'motia'
 
 export const config = {
   name: 'user-api',
   description: 'Fetch users and enqueue event',
   triggers: [
-    { type: 'api', path: '/users', method: 'GET' },
+    { type: 'http', path: '/users', method: 'GET' },
   ],
   enqueues: ['users.fetched'],
   flows: ['user-management'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (req, { enqueue }) => {
+export const handler: Handlers<typeof config> = async ({ request }) => {
   await enqueue({
     topic: 'users.fetched',
     data: { users: [] }
@@ -320,6 +320,8 @@ export const handler: Handlers<typeof config> = async (req, { enqueue }) => {
 ### Example 2: Python Queue Step
 
 ```python title="src/data-processor_step.py"
+from motia import enqueue
+
 config = {
     "name": "data-processor",
     "description": "Process incoming data with Python",
@@ -337,7 +339,7 @@ async def handler(input_data, ctx):
         "count": len(input_data.get("users", []))
     }
 
-    await ctx.enqueue({
+    await enqueue({
         "topic": "data.processed",
         "data": processed_data
     })
@@ -346,6 +348,8 @@ async def handler(input_data, ctx):
 ### Example 3: JavaScript Automation Step
 
 ```javascript title="src/send-notifications.step.js"
+import { enqueue, logger } from 'motia'
+
 export const config = {
   name: 'send-notifications',
   description: 'Send notifications via multiple channels',
@@ -356,7 +360,7 @@ export const config = {
   flows: ['user-management']
 }
 
-export const handler = async (input, { enqueue, logger }) => {
+export const handler = async (input) => {
   logger.info('Sending notifications', { data: input })
 
   const results = await Promise.all([
@@ -491,7 +495,7 @@ npm run dev
 # [CREATED] Step (Cron) src/petstore/state-audit-cron.step.ts created
 # [CREATED] Step (Queue) src/petstore/process-food-order.step.ts created
 # [CREATED] Step (Queue) src/petstore/notification.step.ts created
-# [CREATED] Step (API) src/petstore/api.step.ts created
+# [CREATED] Step (HTTP) src/petstore/api.step.ts created
 ```
 
 ## Next Steps

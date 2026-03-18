@@ -7,9 +7,6 @@ full: true
 When you're ready to deploy your Motia project to production, pick the path that fits your needs:
 
 <Cards>
-  <Card href="/docs/deployment-guide/motia-cloud/features" title="Deploy with Motia Cloud">
-    Zero-config deployment with built-in scaling, monitoring, and Redis.
-  </Card>
   <Card href="/docs/deployment-guide/self-hosted" title="Self-Hosted">
     Run Motia in Docker on your own infrastructure.
   </Card>

@@ -5,6 +5,7 @@
     "project-structure",
     "state-management",
     "streams",
+    "react-stream-client",
     "flows",
     "queue-config",
     "authentication",
@@ -13,6 +14,7 @@
     "environment-variables",
     "cli",
     "motia-config",
+    "motia-package-exports",
     "adapters",
     "plugins"
   ]

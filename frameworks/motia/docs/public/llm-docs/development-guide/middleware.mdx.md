@@ -1,11 +1,11 @@
 ---
 title: Middleware
-description: Run code before and after your API handlers
+description: Run code before and after your HTTP handlers
 ---
 
 ## What is Middleware?
 
-Middleware runs before your API handler. Use it for authentication, logging, error handling, or any logic that applies to multiple endpoints.
+Middleware runs before your HTTP handler. Use it for authentication, logging, error handling, or any logic that applies to multiple endpoints.
 
 ---
 
@@ -14,10 +14,10 @@ Middleware runs before your API handler. Use it for authentication, logging, err
 A middleware is a function that receives three arguments:
 
 ```typescript
-middleware(req, ctx, next)
+middleware({ request, response }, ctx, next)
 ```
 
-- **req** - The incoming request (same as handler)
+- **`{ request, response }`** - The `MotiaHttpArgs` object (same as handler)
 - **ctx** - The context object (same as handler)
 - **next()** - Call this to continue to the handler
 
@@ -32,8 +32,8 @@ If you don't call `next()`, the request stops. The handler never runs.
     ```typescript
     import { ApiMiddleware, type Handlers, type StepConfig } from 'motia'
 
-    const authMiddleware: ApiMiddleware = async (req, ctx, next) => {
-      if (!req.headers.authorization) {
+    const authMiddleware: ApiMiddleware = async ({ request }, ctx, next) => {
+      if (!request.headers.authorization) {
         return { status: 401, body: { error: 'Unauthorized' } }
       }
       return next()
@@ -43,21 +43,20 @@ If you don't call `next()`, the request stops. The handler never runs.
       name: 'ProtectedEndpoint',
       description: 'A protected API endpoint',
       triggers: [
-        { type: 'api', path: '/protected', method: 'GET' },
+        { type: 'http', path: '/protected', method: 'GET', middleware: [authMiddleware] },
       ],
       enqueues: [],
-      middleware: [authMiddleware],
     } as const satisfies StepConfig
 
-    export const handler: Handlers<typeof config> = async (req, ctx) => {
+    export const handler: Handlers<typeof config> = async ({ request }, ctx) => {
       return { status: 200, body: { message: 'Success' } }
     }
     ```
   </Tab>
   <Tab value="JavaScript">
     ```javascript
-    const authMiddleware = async (req, ctx, next) => {
-      if (!req.headers.authorization) {
+    const authMiddleware = async ({ request }, ctx, next) => {
+      if (!request.headers.authorization) {
         return { status: 401, body: { error: 'Unauthorized' } }
       }
       return next()
@@ -67,21 +66,23 @@ If you don't call `next()`, the request stops. The handler never runs.
       name: 'ProtectedEndpoint',
       description: 'A protected API endpoint',
       triggers: [
-        { type: 'api', path: '/protected', method: 'GET' },
+        { type: 'http', path: '/protected', method: 'GET', middleware: [authMiddleware] },
       ],
       enqueues: [],
-      middleware: [authMiddleware]
     }
 
-    export const handler = async (req, ctx) => {
+    export const handler = async ({ request }, ctx) => {
       return { status: 200, body: { message: 'Success' } }
     }
     ```
   </Tab>
   <Tab value="Python">
     ```python
-    async def auth_middleware(req, context, next_fn):
-        if not req.get("headers", {}).get("authorization"):
+    from typing import Any
+    from motia import ApiRequest, ApiResponse, FlowContext, http
+
+    async def auth_middleware(request, context, next_fn):
+        if not request.headers.get("authorization"):
             return {"status": 401, "body": {"error": "Unauthorized"}}
         return await next_fn()
 
@@ -89,14 +90,13 @@ If you don't call `next()`, the request stops. The handler never runs.
         "name": "ProtectedEndpoint",
         "description": "A protected API endpoint",
         "triggers": [
-            {"type": "api", "path": "/protected", "method": "GET"}
+            http("GET", "/protected", middleware=[auth_middleware]),
         ],
         "enqueues": [],
-        "middleware": [auth_middleware]
     }
 
-    async def handler(req, context):
-        return {"status": 200, "body": {"message": "Success"}}
+    async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+        return ApiResponse(status=200, body={"message": "Success"})
     ```
   </Tab>
 </Tabs>
@@ -112,14 +112,14 @@ export const config = {
   name: 'MyEndpoint',
   description: 'Endpoint with multiple middleware',
   triggers: [
-    { type: 'api', path: '/endpoint', method: 'POST' },
+    {
+      type: 'http',
+      path: '/endpoint',
+      method: 'POST',
+      middleware: [loggingMiddleware, authMiddleware, errorMiddleware],
+    },
   ],
   enqueues: [],
-  middleware: [
-    loggingMiddleware,
-    authMiddleware,
-    errorMiddleware
-  ]
 } as const satisfies StepConfig
 ```
 
@@ -132,7 +132,7 @@ Await `next()` to get the response, then modify it:
 <Tabs items={['TypeScript', 'JavaScript', 'Python']}>
   <Tab value="TypeScript">
     ```typescript
-    const addHeadersMiddleware = async (req, ctx, next) => {
+    const addHeadersMiddleware = async ({ request }, ctx, next) => {
       const response = await next()
 
       return {
@@ -147,7 +147,7 @@ Await `next()` to get the response, then modify it:
   </Tab>
   <Tab value="JavaScript">
     ```javascript
-    const addHeadersMiddleware = async (req, ctx, next) => {
+    const addHeadersMiddleware = async ({ request }, ctx, next) => {
       const response = await next()
 
       return {
@@ -162,13 +162,15 @@ Await `next()` to get the response, then modify it:
   </Tab>
   <Tab value="Python">
     ```python
-    async def add_headers_middleware(req, context, next_fn):
+    async def add_headers_middleware(request, context, next_fn):
         response = await next_fn()
+        if response is None:
+            return None
 
-        headers = response.get("headers", {})
+        headers = dict(response.headers) if response.headers else {}
         headers["X-Request-Id"] = context.trace_id
 
-        return {**response, "headers": headers}
+        return ApiResponse(status=response.status, body=response.body, headers=headers)
     ```
   </Tab>
 </Tabs>
@@ -196,8 +198,8 @@ Middleware can attach data to the `req` object, making it available to your hand
     Then attach the data in your middleware:
 
     ```typescript
-    const authMiddleware: ApiMiddleware = async (req, ctx, next) => {
-      req.user = { id: '123', role: 'admin' }
+    const authMiddleware: ApiMiddleware = async ({ request }, ctx, next) => {
+      request.user = { id: '123', role: 'admin' }
       return next()
     }
     ```
@@ -205,8 +207,8 @@ Middleware can attach data to the `req` object, making it available to your hand
     Now use it in your handler:
 
     ```typescript
-    export const handler: Handlers<typeof config> = async (req, ctx) => {
-      if (req.user?.role === 'admin') {
+    export const handler: Handlers<typeof config> = async ({ request }, ctx) => {
+      if (request.user?.role === 'admin') {
         return { status: 200, body: { message: 'Welcome Admin' } }
       }
       return { status: 403, body: { error: 'Forbidden' } }
@@ -214,11 +216,11 @@ Middleware can attach data to the `req` object, making it available to your hand
     ```
   </Tab>
   <Tab value="JavaScript">
-    Attach data to `req` in middleware:
+    Attach data to `request` in middleware:
 
     ```javascript
-    const authMiddleware = async (req, ctx, next) => {
-      req.user = { id: '123', role: 'admin' }
+    const authMiddleware = async ({ request }, ctx, next) => {
+      request.user = { id: '123', role: 'admin' }
       return next()
     }
     ```
@@ -226,23 +228,23 @@ Middleware can attach data to the `req` object, making it available to your hand
     Access it in your handler:
 
     ```javascript
-    export const handler = async (req, ctx) => {
-      const { user } = req
+    export const handler = async ({ request }, ctx) => {
+      const { user } = request
       return { status: 200, body: { user } }
     }
     ```
   </Tab>
   <Tab value="Python">
-    Add data to the `req` dictionary:
+    Store auth data on the context object:
 
     ```python
-    async def auth_middleware(req, context, next_fn):
-        req["user"] = {"id": "123", "role": "admin"}
+    async def auth_middleware(request, context, next_fn):
+        context.user = {"id": "123", "role": "admin"}
         return await next_fn()
 
-    async def handler(req, context):
-        user = req.get("user")
-        return {"status": 200, "body": {"user": user}}
+    async def handler(request, context):
+        user = getattr(context, "user", None)
+        return ApiResponse(status=200, body={"user": user})
     ```
   </Tab>
 </Tabs>
@@ -259,17 +261,18 @@ Catch errors from handlers:
   <Tab value="TypeScript">
     ```typescript
     import { ZodError } from 'zod'
+    import { logger } from 'motia'
 
-    const errorMiddleware = async (req, ctx, next) => {
+    const errorMiddleware = async ({ request }, _, next) => {
       try {
         return await next()
       } catch (error: any) {
         if (error instanceof ZodError) {
-          ctx.logger.error('Validation error', { errors: error.errors })
+          logger.error('Validation error', { errors: error.errors })
           return { status: 400, body: { error: 'Validation failed' } }
         }
 
-        ctx.logger.error('Unexpected error', { error: error.message })
+        logger.error('Unexpected error', { error: error.message })
         return { status: 500, body: { error: 'Internal server error' } }
       }
     }
@@ -278,17 +281,18 @@ Catch errors from handlers:
   <Tab value="JavaScript">
     ```javascript
     import { ZodError } from 'zod'
+    import { logger } from 'motia'
 
-    const errorMiddleware = async (req, ctx, next) => {
+    const errorMiddleware = async ({ request }, _, next) => {
       try {
         return await next()
       } catch (error) {
         if (error instanceof ZodError) {
-          ctx.logger.error('Validation error', { errors: error.errors })
+          logger.error('Validation error', { errors: error.errors })
           return { status: 400, body: { error: 'Validation failed' } }
         }
 
-        ctx.logger.error('Unexpected error', { error: error.message })
+        logger.error('Unexpected error', { error: error.message })
         return { status: 500, body: { error: 'Internal server error' } }
       }
     }
@@ -296,14 +300,17 @@ Catch errors from handlers:
   </Tab>
   <Tab value="Python">
     ```python
-    async def error_middleware(req, context, next_fn):
+    from pydantic import ValidationError
+    from motia import logger
+
+    async def error_middleware(request, _, next_fn):
         try:
             return await next_fn()
         except ValidationError as e:
-            context.logger.error("Validation error", {"errors": str(e)})
+            logger.error("Validation error", {"errors": str(e)})
             return {"status": 400, "body": {"error": "Validation failed"}}
         except Exception as e:
-            context.logger.error("Unexpected error", {"error": str(e)})
+            logger.error("Unexpected error", {"error": str(e)})
             return {"status": 500, "body": {"error": "Internal server error"}}
     ```
   </Tab>
@@ -316,11 +323,13 @@ Catch errors from handlers:
 Create middleware files in a shared location:
 
 ```typescript title="middlewares/core.middleware.ts"
-export const coreMiddleware = async (req, ctx, next) => {
+import { logger } from 'motia'
+
+export const coreMiddleware = async ({ request }, _, next) => {
   try {
     return await next()
   } catch (error) {
-    ctx.logger.error('Error', { error })
+    logger.error('Error', { error })
     return { status: 500, body: { error: 'Internal server error' } }
   }
 }
@@ -336,10 +345,9 @@ export const config = {
   name: 'GetUser',
   description: 'Get user by ID',
   triggers: [
-    { type: 'api', path: '/users/:id', method: 'GET' },
+    { type: 'http', path: '/users/:id', method: 'GET', middleware: [coreMiddleware] },
   ],
   enqueues: [],
-  middleware: [coreMiddleware],
 } as const satisfies StepConfig
 ```
 
@@ -352,7 +360,7 @@ export const config = {
     Learn more about Triggers
   </Card>
 
-  <Card href="/docs/development-guide/testing" title="Testing">
-    Learn more about testing your Motia Steps
+  <Card href="/docs/examples" title="Examples">
+    Explore real-world examples and patterns
   </Card>
 </Cards>

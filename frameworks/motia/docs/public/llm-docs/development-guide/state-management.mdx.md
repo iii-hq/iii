@@ -22,7 +22,7 @@ Think of it like folders and files:
 <Tab value='TypeScript'>
 
 ```typescript
-import { type Handlers, type StepConfig } from 'motia'
+import { type Handlers, type StepConfig, stateManager } from 'motia'
 
 export const config = {
   name: 'MyStep',
@@ -33,25 +33,25 @@ export const config = {
   flows: ['my-flow'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { state }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   // Store an item in a group (returns { new_value, old_value })
-  const result = await state.set('orders', 'order-123', {
+  const result = await stateManager.set('orders', 'order-123', {
     id: 'order-123',
     status: 'pending',
     total: 99.99
   })
 
   // Get a specific item
-  const order = await state.get('orders', 'order-123')
+  const order = await stateManager.get('orders', 'order-123')
 
   // Get all items in a group
-  const allOrders = await state.list('orders')
+  const allOrders = await stateManager.list('orders')
 
   // Delete a specific item
-  await state.delete('orders', 'order-123')
+  await stateManager.delete('orders', 'order-123')
 
   // Clear entire group
-  await state.clear('orders')
+  await stateManager.clear('orders')
 }
 ```
 
@@ -59,32 +59,34 @@ export const handler: Handlers<typeof config> = async (input, { state }) => {
 <Tab value='Python'>
 
 ```python
-async def handler(input, context):
+from motia import state_manager
+
+async def handler(input):
     # Store an item in a group (returns { new_value, old_value })
-    result = await context.state.set("orders", "order-123", {
+    result = await state_manager.set("orders", "order-123", {
         "id": "order-123",
         "status": "pending",
         "total": 99.99
     })
 
     # Get a specific item
-    order = await context.state.get("orders", "order-123")
+    order = await state_manager.get("orders", "order-123")
 
     # Get all items in a group
-    all_orders = await context.state.list("orders")
+    all_orders = await state_manager.list("orders")
 
     # Delete a specific item
-    await context.state.delete("orders", "order-123")
+    await state_manager.delete("orders", "order-123")
 
     # Clear entire group
-    await context.state.clear("orders")
+    await state_manager.clear("orders")
   ```
 
   </Tab>
 <Tab value='JavaScript'>
 
   ```javascript
-import { type Handlers, type StepConfig } from 'motia'
+import { stateManager } from 'motia'
 
 export const config = {
   name: 'MyStep',
@@ -95,25 +97,25 @@ export const config = {
   flows: ['my-flow'],
 }
 
-export const handler = async (input, { state }) => {
+export const handler = async (input) => {
   // Store an item in a group (returns { new_value, old_value })
-  const result = await state.set('orders', 'order-123', {
+  const result = await stateManager.set('orders', 'order-123', {
     id: 'order-123',
     status: 'pending',
     total: 99.99
   })
 
   // Get a specific item
-  const order = await state.get('orders', 'order-123')
+  const order = await stateManager.get('orders', 'order-123')
 
   // Get all items in a group
-  const allOrders = await state.list('orders')
+  const allOrders = await stateManager.list('orders')
 
   // Delete a specific item
-  await state.delete('orders', 'order-123')
+  await stateManager.delete('orders', 'order-123')
 
   // Clear entire group
-  await state.clear('orders')
+  await stateManager.clear('orders')
   }
   ```
 
@@ -126,49 +128,60 @@ export const handler = async (input, { state }) => {
 
 | Method | What it does |
 |--------|--------------|
-| `state.set(groupId, key, value)` | Store an item in a group. Returns `StreamSetResult` with `new_value` and `old_value` |
-| `state.get(groupId, key)` | Get a specific item (returns `null` if not found) |
-| `state.list(groupId)` | Get all items in a group as an array |
-| `state.delete(groupId, key)` | Remove a specific item |
-| `state.clear(groupId)` | Remove all items in a group |
-| `state.update(groupId, key, ops)` | Atomic update with `UpdateOp[]` |
+| `stateManager.set(groupId, key, value)` | Store an item in a group. Returns `StreamSetResult` with `new_value` and `old_value` |
+| `stateManager.get(groupId, key)` | Get a specific item (returns `null` if not found) |
+| `stateManager.list(groupId)` | Get all items in a group as an array |
+| `stateManager.delete(groupId, key)` | Remove a specific item |
+| `stateManager.clear(groupId)` | Remove all items in a group |
+| `stateManager.update(groupId, key, ops)` | Atomic update with `UpdateOp[]` |
 
 ---
 
 ## Atomic Updates
 
-Use `state.update()` for atomic operations on state items. This is useful when you need to increment counters, update specific fields, or perform multiple changes atomically.
+The `update()` method performs atomic operations on state data, eliminating race conditions from manual get-then-set patterns.
+
+<Callout type="info">
+  Use `update()` instead of getting a value, modifying it, and setting it back. Atomic updates prevent data loss when multiple Steps modify the same state concurrently.
+</Callout>
+
+### TypeScript/JavaScript
 
 ```typescript
-import { type Handlers, type StepConfig, type UpdateOp } from 'motia'
+import { stateManager } from 'motia'
 
-export const config = {
-  name: 'UpdateInventory',
-  description: 'Atomically update inventory',
-  triggers: [
-    { type: 'queue', topic: 'inventory.update' },
-  ],
-  flows: ['inventory'],
-} as const satisfies StepConfig
-
-export const handler: Handlers<typeof config> = async (input, { state }) => {
-  const ops: UpdateOp[] = [
-    { type: 'set', path: 'name', value: 'New Name' },
-    { type: 'increment', path: 'count', by: 1 },
-    { type: 'decrement', path: 'stock', by: 1 },
-  ]
-  const result = await state.update('inventory', 'item-123', ops)
-  // result has new_value and old_value
-}
+await stateManager.update('orders', orderId, [
+  { type: 'increment', path: 'completedSteps', by: 1 },
+  { type: 'set', path: 'status', value: 'shipped' },
+  { type: 'decrement', path: 'retries', by: 1 },
+])
 ```
 
-### Available Update Operations
+### Python
 
-| Operation | Description | Example |
-|-----------|-------------|---------|
-| `set` | Set a field to a value | `{ type: 'set', path: 'name', value: 'New Name' }` |
-| `increment` | Increment a numeric field | `{ type: 'increment', path: 'count', by: 1 }` |
-| `decrement` | Decrement a numeric field | `{ type: 'decrement', path: 'stock', by: 1 }` |
+```python
+from motia import state_manager
+
+await state_manager.update("orders", order_id, [
+    {"type": "increment", "path": "completedSteps", "by": 1},
+    {"type": "set", "path": "status", "value": "shipped"},
+    {"type": "decrement", "path": "retries", "by": 1},
+])
+```
+
+### UpdateOp Types
+
+| Type | Fields | Description |
+|---|---|---|
+| `set` | `path`, `value` | Set a field to a value (overwrite) |
+| `merge` | `path` (optional), `value` | Merge an object into the existing value |
+| `increment` | `path`, `by` | Increment a numeric field |
+| `decrement` | `path`, `by` | Decrement a numeric field |
+| `remove` | `path` | Remove a field entirely |
+
+`update()` returns `{ new_value, old_value }` just like `set()`.
+
+[Learn more about Atomic Updates](/docs/advanced-features/atomic-updates)
 
 ---
 
@@ -182,31 +195,31 @@ Let's build an order processing workflow that uses state across multiple Steps.
 <Tab value='TypeScript'>
 
 ```typescript
-import { type Handlers, type StepConfig } from 'motia'
+import { enqueue, type Handlers, logger, type StepConfig, stateManager } from 'motia'
 
 export const config = {
   name: 'CreateOrder',
   description: 'Receive and store a new order',
   triggers: [
-    { type: 'api', path: '/orders', method: 'POST' },
+    { type: 'http', path: '/orders', method: 'POST' },
   ],
   enqueues: ['order.created'],
   flows: ['order-processing'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (req, { state, enqueue, logger }) => {
+export const handler: Handlers<typeof config> = async ({ request }) => {
   const orderId = crypto.randomUUID()
 
   const order = {
     id: orderId,
-    items: req.body.items,
-    total: req.body.total,
+    items: request.body.items,
+    total: request.body.total,
     status: 'pending',
     createdAt: new Date().toISOString()
   }
 
   // Store in state
-  await state.set('orders', orderId, order)
+  await stateManager.set('orders', orderId, order)
 
   logger.info('Order created', { orderId })
 
@@ -226,49 +239,53 @@ export const handler: Handlers<typeof config> = async (req, { state, enqueue, lo
 ```python
 import uuid
 from datetime import datetime
+from typing import Any
+from motia import ApiRequest, ApiResponse, FlowContext, enqueue, logger, state_manager
 
-async def handler(req, context):
+async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
     order_id = str(uuid.uuid4())
 
     order = {
         "id": order_id,
-        "items": req.get("body", {}).get("items"),
-        "total": req.get("body", {}).get("total"),
+        "items": request.body.get("items"),
+        "total": request.body.get("total"),
         "status": "pending",
         "created_at": datetime.now().isoformat()
     }
 
     # Store in state
-    await context.state.set("orders", order_id, order)
+    await state_manager.set("orders", order_id, order)
 
-    context.logger.info("Order created", {"orderId": order_id})
+    logger.info("Order created", {"orderId": order_id})
 
     # Trigger processing
-    await context.enqueue({
+    await enqueue({
         "topic": "order.created",
         "data": {"orderId": order_id}
     })
 
-    return {"status": 201, "body": order}
+    return ApiResponse(status=201, body=order)
   ```
 
   </Tab>
 <Tab value='JavaScript'>
 
   ```javascript
-export const handler = async (req, { state, enqueue, logger }) => {
+import { enqueue, logger, stateManager } from 'motia'
+
+export const handler = async ({ request }) => {
   const orderId = crypto.randomUUID()
 
   const order = {
     id: orderId,
-    items: req.body.items,
-    total: req.body.total,
+    items: request.body.items,
+    total: request.body.total,
     status: 'pending',
     createdAt: new Date().toISOString()
   }
 
   // Store in state
-  await state.set('orders', orderId, order)
+  await stateManager.set('orders', orderId, order)
 
   logger.info('Order created', { orderId })
 
@@ -291,7 +308,7 @@ export const handler = async (req, { state, enqueue, logger }) => {
 <Tab value='TypeScript'>
 
   ```typescript
-import { type Handlers, type StepConfig } from 'motia'
+import { enqueue, type Handlers, logger, type StepConfig, stateManager } from 'motia'
 
 export const config = {
   name: 'ProcessPayment',
@@ -303,11 +320,11 @@ export const config = {
   flows: ['order-processing'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { state, enqueue, logger }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   const { orderId } = input
 
   // Get order from state
-  const order = await state.get('orders', orderId)
+  const order = await stateManager.get('orders', orderId)
 
   if (!order) {
     throw new Error(`Order ${orderId} not found`)
@@ -315,7 +332,7 @@ export const handler: Handlers<typeof config> = async (input, { state, enqueue, 
 
   // Update status
   order.status = 'paid'
-  await state.set('orders', orderId, order)
+  await stateManager.set('orders', orderId, order)
 
   logger.info('Payment processed', { orderId })
 
@@ -330,22 +347,24 @@ export const handler: Handlers<typeof config> = async (input, { state, enqueue, 
 <Tab value='Python'>
 
 ```python
-async def handler(input, context):
+from motia import enqueue, logger, state_manager
+
+async def handler(input):
     order_id = input.get("orderId")
 
     # Get order from state
-    order = await context.state.get("orders", order_id)
+    order = await state_manager.get("orders", order_id)
 
     if not order:
         raise Exception(f"Order {order_id} not found")
 
     # Update status
     order["status"] = "paid"
-    await context.state.set("orders", order_id, order)
+    await state_manager.set("orders", order_id, order)
 
-    context.logger.info("Payment processed", {"orderId": order_id})
+    logger.info("Payment processed", {"orderId": order_id})
 
-    await context.enqueue({
+    await enqueue({
         "topic": "payment.completed",
         "data": {"orderId": order_id}
     })
@@ -355,11 +374,13 @@ async def handler(input, context):
 <Tab value='JavaScript'>
 
 ```javascript
-export const handler = async (input, { state, enqueue, logger }) => {
+import { enqueue, logger, stateManager } from 'motia'
+
+export const handler = async (input) => {
   const { orderId } = input
 
   // Get order from state
-  const order = await state.get('orders', orderId)
+  const order = await stateManager.get('orders', orderId)
 
   if (!order) {
     throw new Error(`Order ${orderId} not found`)
@@ -367,7 +388,7 @@ export const handler = async (input, { state, enqueue, logger }) => {
 
   // Update status
   order.status = 'paid'
-  await state.set('orders', orderId, order)
+  await stateManager.set('orders', orderId, order)
 
   logger.info('Payment processed', { orderId })
 
@@ -387,7 +408,7 @@ export const handler = async (input, { state, enqueue, logger }) => {
 <Tab value='TypeScript'>
 
   ```typescript
-import { type Handlers, type StepConfig, cron } from 'motia'
+import { type Handlers, logger, type StepConfig, stateManager, cron } from 'motia'
 
 export const config = {
   name: 'DailyReport',
@@ -399,9 +420,9 @@ export const config = {
   flows: ['order-processing'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { state, logger }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   // Get all orders
-  const allOrders = await state.list<Order>('orders')
+  const allOrders = await stateManager.list<Order>('orders')
 
   const pending = allOrders.filter(o => o.status === 'pending')
   const paid = allOrders.filter(o => o.status === 'paid')
@@ -418,14 +439,16 @@ export const handler: Handlers<typeof config> = async (input, { state, logger })
 <Tab value='Python'>
 
 ```python
-async def handler(context):
+from motia import logger, state_manager
+
+async def handler():
     # Get all orders
-    all_orders = await context.state.list("orders")
+    all_orders = await state_manager.list("orders")
 
     pending = [o for o in all_orders if o.get("status") == "pending"]
     paid = [o for o in all_orders if o.get("status") == "paid"]
 
-    context.logger.info("Daily order report", {
+    logger.info("Daily order report", {
         "total": len(all_orders),
         "pending": len(pending),
         "paid": len(paid)
@@ -436,9 +459,11 @@ async def handler(context):
 <Tab value='JavaScript'>
 
   ```javascript
-export const handler = async (input, { state, logger }) => {
+import { logger, stateManager } from 'motia'
+
+export const handler = async (input) => {
   // Get all orders
-  const allOrders = await state.list('orders')
+  const allOrders = await stateManager.list('orders')
 
   const pending = allOrders.filter(o => o.status === 'pending')
   const paid = allOrders.filter(o => o.status === 'paid')
@@ -472,15 +497,45 @@ export const handler = async (input, { state, logger }) => {
 
 ---
 
+## Inspecting State in the iii Console
+
+The iii development console lets you browse, inspect, and manage state groups and individual entries in real-time:
+
+![State inspector in the iii Console](/console/states-detail.png)
+
+---
+
 ## Remember
 
 - Organize data using **groupId** (like `orders`, `users`, `cache`)
 - Each item needs a unique **key** within its groupId
-- Use `list(groupId)` to retrieve all items in a group
-- `state.set()` returns `{ new_value, old_value }` (StreamSetResult)
-- Use `state.update()` for atomic operations like increment/decrement
+- Use `stateManager.list(groupId)` to retrieve all items in a group
+- `stateManager.set()` returns `{ new_value, old_value }` (StreamSetResult)
+- Use `stateManager.update()` for atomic operations like increment/decrement
 - State works the same across TypeScript, Python, and JavaScript
 - Clean up state when you're done with it
 - Use databases for permanent data, state for temporary workflow data
 
 ---
+
+## State Triggers
+
+Steps can react to state changes automatically using state triggers. This enables powerful reactive patterns — for example, triggering a step when a parallel merge completes, without polling or manual coordination.
+
+```typescript
+export const config = {
+  name: 'OnTaskComplete',
+  triggers: [
+    {
+      type: 'state',
+      condition: (input) => {
+        if (!input.new_value) return false
+        return input.group_id === 'tasks' && input.new_value.completedSteps === input.new_value.totalSteps
+      },
+    },
+  ],
+  flows: ['task-flow'],
+} as const satisfies StepConfig
+```
+
+[Learn more about State Triggers](/docs/advanced-features/reactive-triggers)

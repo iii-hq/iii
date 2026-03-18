@@ -19,10 +19,10 @@ Your project now has AI development guides in `.cursor/rules/` that work with al
 ## What's Included
 
 Complete guides with **TypeScript, JavaScript, and Python** examples for:
-- API Steps, Event Steps, Cron Steps
+- Steps with HTTP, Queue, and Cron triggers
 - State Management, Middleware, Real-time Streaming
-- Virtual Steps, UI Steps
-- Architecture & Error Handling
+- Flow visualization and multi-trigger patterns
+- Architecture and Error Handling
 
 ## Supported AI Tools
 

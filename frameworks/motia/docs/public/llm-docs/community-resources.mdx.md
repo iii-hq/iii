@@ -7,7 +7,7 @@ description: Join the Motia community and get help with questions, examples, and
 
 Welcome to the Motia community! Whether you're just getting started or building production applications, our community is here to help you succeed with Motia.
 
-## 💬 Get Help & Support
+## Get Help & Support
 
 ### Discord Community
 **Best for: Real-time help, discussions, and community support**
@@ -43,7 +43,7 @@ Connect with the Motia team and fellow developers, ask questions, share ideas, a
 
 Found a bug or have a feature request? Open an issue on our GitHub repository with detailed information about your environment and steps to reproduce.
 
-## 🚀 Development & Contribution
+## Development & Contribution
 
 ### Main Repository
 **The heart of Motia development**
@@ -96,7 +96,7 @@ Explore complete implementations, step-by-step tutorials, and production-ready c
 
 Check out our public roadmap to see upcoming features, improvements, and community requests.
 
-## 📱 Stay Connected
+## Stay Connected
 
 ### Social Media
 Follow us for the latest news, updates, and community highlights:
@@ -150,31 +150,31 @@ Follow us for the latest news, updates, and community highlights:
 
 Watch video tutorials, live streams, and learn from the Motia team and community.
 
-## 🎯 Quick Links
+## Quick Links
 
 ### Documentation
-- **[Getting Started](/docs/getting-started)** - Learn the basics of Motia
-- **[API Endpoints Tutorial](/docs/getting-started/build-your-first-motia-app/api-endpoints)** - Hands-on REST API tutorial
+- **[Quick Start](/docs/getting-started/quick-start)** - Get up and running with Motia in minutes
+- **[Core Concepts](/docs/concepts/overview)** - Learn the basics of Motia
 - **[Examples](/docs/examples)** - Real-world use cases and implementations
-- **[API Reference](/docs/concepts/steps)** - Complete API documentation
+- **[API Reference](/docs/api-reference)** - Complete API documentation
 
 ### Community Guidelines
-- **[How to Contribute](/docs/contribution/how-to-contribute)** - Guidelines for contributing to Motia
+- **[How to Contribute](/docs/contribution)** - Guidelines for contributing to Motia
 - **Be respectful** - Treat everyone with kindness and respect
 - **Help others** - Share your knowledge and help fellow developers
 - **Stay on topic** - Keep discussions relevant to Motia and development
 
-## 💝 Ways to Support Motia
+## Ways to Support Motia
 
-- ⭐ **Star our repository** on GitHub
-- 🐦 **Share on social media** - Help spread the word about Motia
-- 📝 **Write about your experience** - Blog posts, tutorials, case studies
-- 🐛 **Report bugs** - Help us improve by reporting issues
-- 💡 **Suggest features** - Share your ideas for new features
-- 🤝 **Contribute code** - Submit pull requests and improvements
-- 📖 **Improve documentation** - Help make our docs better
+- **Star our repository** on GitHub
+- **Share on social media** - Help spread the word about Motia
+- **Write about your experience** - Blog posts, tutorials, case studies
+- **Report bugs** - Help us improve by reporting issues
+- **Suggest features** - Share your ideas for new features
+- **Contribute code** - Submit pull requests and improvements
+- **Improve documentation** - Help make our docs better
 
-## 🆘 Getting Help
+## Getting Help
 
 ### Before Asking for Help
 1. **Check the documentation** - Most questions are answered in our docs
@@ -193,6 +193,6 @@ Watch video tutorials, live streams, and learn from the Motia team and community
 
 ---
 
-**Welcome to the Motia community!** 🎉
+**Welcome to the Motia community!**
 
-We're excited to have you here and can't wait to see what amazing things you'll build with Motia. Whether you're just getting started or you're a seasoned developer, our community is here to support your journey.
+We're excited to have you here and can't wait to see what you'll build with Motia. Whether you're just getting started or you're a seasoned developer, our community is here to support your journey.

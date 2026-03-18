@@ -77,8 +77,8 @@ With the rise of AI, many backend tasks have become less deterministic and more 
 
 Motia provides fault tolerance out of the box, eliminating the need to manually spin up queue infrastructure.
 
-- Using Queue Steps, you get retry mechanisms out of the box
-- Configuration of queue infrastructure is abstracted away
+- Using queue triggers, you get retry mechanisms out of the box
+- Queue infrastructure configuration is handled by the iii engine through `config.yaml`
 
 ---
 

@@ -51,15 +51,40 @@ flyctl auth login
 
 <Steps>
 <Step>
-#### Generate Docker files
+#### Build your project and create Dockerfile
 
-From your Motia project root:
+Build your Motia project first:
 
 ```bash
-npx motia@latest docker setup
+motia build
 ```
 
-This creates `Dockerfile` and `.dockerignore`.
+Then create a `Dockerfile` in your project root:
+
+```dockerfile title="Dockerfile"
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+
+FROM oven/bun:1.1-slim
+
+WORKDIR /app
+
+COPY --from=builder /root/.local/bin/iii /usr/local/bin/iii
+
+COPY package.json .
+COPY dist/index-production.js dist/
+COPY dist/index-production.js.map dist/
+COPY config-production.yaml config.yaml
+
+EXPOSE 3111
+EXPOSE 3112
+
+CMD ["iii", "--config", "config.yaml"]
+```
 
 </Step>
 <Step>
@@ -73,7 +98,7 @@ primary_region = "sjc"
   dockerfile = "Dockerfile"
 
 [http_service]
-  internal_port = 3000
+  internal_port = 3111
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true
@@ -145,29 +170,21 @@ Your app is live at: `https://my-motia-app.fly.dev`
 
 ## Project Setup
 
-### Update Your Start Script
+### Configure the iii Engine
 
-Fly injects the port via environment variables. Update your `package.json`:
+The iii engine is the entrypoint for your Motia app in production. It reads `config.yaml` and manages all modules. Make sure your `config.yaml` binds to `0.0.0.0` -- Fly needs your app to listen on all interfaces.
 
-```json title="package.json"
-{
-  "scripts": {
-    "start": "motia start --port ${PORT:-3000} --host 0.0.0.0"
-  }
-}
-```
-
-The `--host 0.0.0.0` is important - Fly needs your app to listen on all interfaces.
+Use `${PORT:3111}` in your REST API module config so Fly can inject its port if needed.
 
 ### Configure Redis
 
 Create a production `config.yaml` with Redis adapters for all modules. Fly sets `REDIS_URL` when you run `flyctl redis create`:
 
-```yaml title="config.yaml"
+```yaml title="config-production.yaml"
 modules:
   - class: modules::stream::StreamModule
     config:
-      port: ${STREAMS_PORT:31112}
+      port: ${STREAM_PORT:3112}
       host: 0.0.0.0
       auth_function: motia.streams.authenticate
       adapter:
@@ -213,6 +230,11 @@ modules:
     config:
       adapter:
         class: modules::cron::KvCronAdapter
+
+  - class: modules::shell::ExecModule
+    config:
+      exec:
+        - bun run --enable-source-maps dist/index-production.js
 ```
 
 <Callout type="info">
@@ -265,10 +287,13 @@ flyctl apps destroy my-motia-app
 
 **Symptom:** Fly warns "app is not listening on the expected address"
 
-**Fix:** Make sure your start script includes `--host 0.0.0.0`:
+**Fix:** Make sure your `config.yaml` REST API module uses `host: 0.0.0.0` and the port matches `fly.toml`'s `internal_port`:
 
-```json
-"start": "motia start --port ${PORT:-3000} --host 0.0.0.0"
+```yaml
+  - class: modules::api::RestApiModule
+    config:
+      port: ${PORT:3111}
+      host: 0.0.0.0
 ```
 
 ### Redis Connection Refused

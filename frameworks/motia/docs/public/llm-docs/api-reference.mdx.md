@@ -7,6 +7,10 @@ Everything you need to know about Motia's APIs. This reference covers all the ty
 
 If you're new to Motia, start with the [Steps guide](/docs/concepts/steps) to understand the basics.
 
+<Callout type="info" title="Package exports">
+  For a concise list of npm entrypoints and exports, see [motia Package Exports](/docs/development-guide/motia-package-exports).
+</Callout>
+
 ## Step Configuration
 
 Every Step needs a config. The unified `StepConfig` type works for all step types -- the `triggers` array determines what activates the step.
@@ -28,7 +32,7 @@ type StepConfig = {
 
 **Required fields:**
 - `name` - Unique identifier for this Step
-- `triggers` - Array of triggers that activate this step (API, queue, cron, state, stream)
+- `triggers` - Array of triggers that activate this step (HTTP, queue, cron, state, stream)
 
 **Optional fields:**
 - `description` - Human-readable description
@@ -45,22 +49,22 @@ type StepConfig = {
 Triggers define how a step gets activated. A step can have multiple triggers.
 
 ```typescript
-type TriggerConfig = QueueTrigger | ApiTrigger | CronTrigger | StateTrigger | StreamTrigger
+type TriggerConfig = QueueTrigger | HttpTrigger | CronTrigger | StateTrigger | StreamTrigger
 ```
 
-#### ApiTrigger
+#### HttpTrigger
 
 Use this for HTTP endpoints.
 
 ```typescript
-type ApiTrigger = {
-  type: 'api'
+type HttpTrigger = {
+  type: 'http'
   path: string
-  method: ApiRouteMethod
+  method: HttpRouteMethod
   bodySchema?: StepSchemaInput
   responseSchema?: Record<number, StepSchemaInput>
   queryParams?: readonly QueryParam[]
-  middleware?: readonly ApiMiddleware[]
+  middleware?: readonly HttpMiddleware[]
   condition?: TriggerCondition
 }
 ```
@@ -125,9 +129,9 @@ type StreamTrigger = {
 Use these helpers for concise trigger definitions:
 
 ```typescript
-import { api, queue, cron, state, stream } from 'motia'
+import { http, queue, cron, state, stream } from 'motia'
 
-api(method: ApiRouteMethod, path: string, options?: ApiOptions, condition?: TriggerCondition): ApiTrigger
+http(method: HttpRouteMethod, path: string, options?: HttpOptions, condition?: TriggerCondition): HttpTrigger
 queue(topic: string, options?: { input?: StepSchemaInput; config?: Partial<QueueConfig> }, condition?: TriggerCondition): QueueTrigger
 cron(expression: string, condition?: TriggerCondition): CronTrigger
 state(condition?: TriggerCondition): StateTrigger
@@ -151,13 +155,13 @@ type EnqueueData<T> = { topic: string; data: T; messageGroupId?: string }
 <Tab value='TypeScript'>
 
 ```typescript
-import { StepConfig, Handlers, api, queue, cron } from 'motia'
+import { StepConfig, Handlers, http, queue, cron } from 'motia'
 
 export const config = {
   name: 'CreateUser',
   description: 'Creates a new user',
   triggers: [
-    api('POST', '/users', {
+    http('POST', '/users', {
       bodySchema: z.object({ name: z.string() }),
       responseSchema: {
         201: z.object({ id: z.string(), name: z.string() })
@@ -183,7 +187,7 @@ export const config = {
   description: 'Creates a new user',
   triggers: [
     {
-      type: 'api',
+      type: 'http',
       method: 'POST',
       path: '/users',
       bodySchema: z.object({ name: z.string() }),
@@ -217,7 +221,7 @@ config = {
     "description": "Creates a new user",
     "triggers": [
         {
-            "type": "api",
+            "type": "http",
             "method": "POST",
             "path": "/users",
             "bodySchema": {"type": "object", "properties": {"name": {"type": "string"}}},
@@ -403,13 +407,13 @@ A single step can respond to multiple trigger types:
 <Tab value='TypeScript'>
 
 ```typescript
-import { StepConfig, api, queue, cron } from 'motia'
+import { StepConfig, http, queue, cron } from 'motia'
 
 export const config = {
   name: 'UserSync',
   description: 'Syncs user data from multiple sources',
   triggers: [
-    api('POST', '/users/sync'),
+    http('POST', '/users/sync'),
     queue('user.updated'),
     cron('0 */6 * * *'),
   ],
@@ -428,7 +432,7 @@ export const config = {
   name: 'UserSync',
   description: 'Syncs user data from multiple sources',
   triggers: [
-    { type: 'api', method: 'POST', path: '/users/sync' },
+    { type: 'http', method: 'POST', path: '/users/sync' },
     { type: 'queue', topic: 'user.updated' },
     cron('0 */6 * * *'),
   ],
@@ -442,61 +446,6 @@ export const config = {
 
 ---
 
-### NoopConfig
-
-Use this for visual-only nodes in the iii development console (no code execution).
-
-<Tabs items={['TypeScript', 'JavaScript', 'Python']}>
-<Tab value='TypeScript'>
-
-```typescript
-import { StepConfig } from 'motia'
-
-export const config = {
-  name: 'ManualApproval',
-  description: 'Manager approval gate',
-  triggers: [],
-  virtualEnqueues: ['approved', 'rejected'],
-  virtualSubscribes: ['approval.requested'],
-  flows: ['approvals'],
-} as const satisfies StepConfig
-```
-
-</Tab>
-<Tab value='JavaScript'>
-
-```javascript
-export const config = {
-  name: 'ManualApproval',
-  description: 'Manager approval gate',
-  triggers: [],
-  virtualEnqueues: ['approved', 'rejected'],
-  virtualSubscribes: ['approval.requested'],
-  flows: ['approvals'],
-}
-```
-
-</Tab>
-<Tab value='Python'>
-
-```python
-config = {
-    "name": "ManualApproval",
-    "description": "Manager approval gate",
-    "triggers": [],
-    "virtualEnqueues": ["approved", "rejected"],
-    "virtualSubscribes": ["approval.requested"],
-    "flows": ["approvals"],
-}
-```
-
-</Tab>
-</Tabs>
-
-**No handler needed** - Noop Steps don't execute code. They exist for iii development console visualization only.
-
----
-
 ## Handlers
 
 Handlers are the functions that execute your business logic. Use the `Handlers` type with your config for full type safety.
@@ -506,15 +455,15 @@ Handlers are the functions that execute your business logic. Use the `Handlers` 
 ```typescript
 type Handlers<TConfig extends StepConfig> = (
   input: InferHandlerInput<TConfig>,
-  ctx: FlowContext<InferEnqueues<TConfig>, InferHandlerInput<TConfig>>,
-) => Promise<ApiResponse | void>
+  ctx: FlowContext<InferHandlerInput<TConfig>>,
+) => Promise<HttpResponse | void>
 ```
 
-The handler signature is unified -- the `input` type is inferred from the trigger that activated the step. Use `ctx.match()` or `ctx.is` to differentiate between trigger types in multi-trigger steps.
+The handler signature is unified -- the `input` type is inferred from the trigger that activated the step. Use `ctx.match()` or `ctx.is` to differentiate between trigger types in multi-trigger steps. Note that `enqueue`, `logger`, `stateManager`, and streams are now standalone imports from `motia` rather than context properties.
 
 ---
 
-### API Step Handler
+### HTTP Step Handler
 
 Receives a request, returns a response.
 
@@ -522,19 +471,19 @@ Receives a request, returns a response.
 <Tab value='TypeScript'>
 
 ```typescript
-import { StepConfig, Handlers, api } from 'motia'
+import { StepConfig, Handlers, http, enqueue } from 'motia'
 
 export const config = {
   name: 'CreateUser',
-  triggers: [api('POST', '/users')],
+  triggers: [http('POST', '/users')],
   enqueues: ['user.created'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (req, ctx) => {
-  const { name, email } = req.body
+export const handler: Handlers<typeof config> = async ({ request }, { traceId }) => {
+  const { name, email } = request.body
   const userId = crypto.randomUUID()
 
-  await ctx.enqueue({
+  await enqueue({
     topic: 'user.created',
     data: { userId, email }
   })
@@ -542,7 +491,7 @@ export const handler: Handlers<typeof config> = async (req, ctx) => {
   return {
     status: 201,
     body: { id: userId, name, email },
-    headers: { 'X-Request-ID': ctx.traceId }
+    headers: { 'X-Request-ID': traceId }
   }
 }
 ```
@@ -551,11 +500,13 @@ export const handler: Handlers<typeof config> = async (req, ctx) => {
 <Tab value='JavaScript'>
 
 ```javascript
-export const handler = async (req, ctx) => {
-  const { name, email } = req.body
+import { enqueue } from 'motia'
+
+export const handler = async ({ request }, { traceId }) => {
+  const { name, email } = request.body
   const userId = crypto.randomUUID()
 
-  await ctx.enqueue({
+  await enqueue({
     topic: 'user.created',
     data: { userId, email }
   })
@@ -563,7 +514,7 @@ export const handler = async (req, ctx) => {
   return {
     status: 201,
     body: { id: userId, name, email },
-    headers: { 'X-Request-ID': ctx.traceId }
+    headers: { 'X-Request-ID': traceId }
   }
 }
 ```
@@ -573,22 +524,24 @@ export const handler = async (req, ctx) => {
 
 ```python
 import uuid
+from typing import Any
+from motia import ApiRequest, ApiResponse, FlowContext, http, enqueue
 
-async def handler(req, context):
-    name = req.get("body", {}).get("name")
-    email = req.get("body", {}).get("email")
+async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+    name = request.body.get("name")
+    email = request.body.get("email")
     user_id = str(uuid.uuid4())
 
-    await context.enqueue({
+    await enqueue({
         "topic": "user.created",
         "data": {"user_id": user_id, "email": email}
     })
 
-    return {
-        "status": 201,
-        "body": {"id": user_id, "name": name, "email": email},
-        "headers": {"X-Request-ID": context.trace_id}
-    }
+    return ApiResponse(
+        status=201,
+        body={"id": user_id, "name": name, "email": email},
+        headers={"X-Request-ID": ctx.trace_id}
+    )
 ```
 
 </Tab>
@@ -604,7 +557,7 @@ Receives queue data, processes it. No return value.
 <Tab value='TypeScript'>
 
 ```typescript
-import { StepConfig, Handlers, queue } from 'motia'
+import { StepConfig, Handlers, queue, enqueue, logger, stateManager } from 'motia'
 
 export const config = {
   name: 'ProcessOrder',
@@ -616,15 +569,15 @@ export const handler: Handlers<typeof config> = async (input, ctx) => {
   const data = ctx.getData()
   const { orderId, amount } = data
 
-  ctx.logger.info('Processing order', { orderId, amount })
+  logger.info('Processing order', { orderId, amount })
 
-  await ctx.state.set('orders', orderId, {
+  await stateManager.set('orders', orderId, {
     id: orderId,
     amount,
     status: 'processed'
   })
 
-  await ctx.enqueue({
+  await enqueue({
     topic: 'order.processed',
     data: { orderId }
   })
@@ -635,19 +588,21 @@ export const handler: Handlers<typeof config> = async (input, ctx) => {
 <Tab value='JavaScript'>
 
 ```javascript
+import { enqueue, logger, stateManager } from 'motia'
+
 export const handler = async (input, ctx) => {
   const data = ctx.getData()
   const { orderId, amount } = data
 
-  ctx.logger.info('Processing order', { orderId, amount })
+  logger.info('Processing order', { orderId, amount })
 
-  await ctx.state.set('orders', orderId, {
+  await stateManager.set('orders', orderId, {
     id: orderId,
     amount,
     status: 'processed'
   })
 
-  await ctx.enqueue({
+  await enqueue({
     topic: 'order.processed',
     data: { orderId }
   })
@@ -658,19 +613,21 @@ export const handler = async (input, ctx) => {
 <Tab value='Python'>
 
 ```python
+from motia import enqueue, logger, state_manager
+
 async def handler(input_data, context):
     order_id = input_data.get("order_id")
     amount = input_data.get("amount")
 
-    context.logger.info("Processing order", {"order_id": order_id, "amount": amount})
+    logger.info("Processing order", {"order_id": order_id, "amount": amount})
 
-    await context.state.set("orders", order_id, {
+    await state_manager.set("orders", order_id, {
         "id": order_id,
         "amount": amount,
         "status": "processed"
     })
 
-    await context.enqueue({
+    await enqueue({
         "topic": "order.processed",
         "data": {"order_id": order_id}
     })
@@ -683,13 +640,13 @@ async def handler(input_data, context):
 
 ### Cron Step Handler
 
-Runs on a schedule. Only receives context.
+Runs on a schedule. Uses standalone imports for logging and state management.
 
 <Tabs items={['TypeScript', 'JavaScript', 'Python']}>
 <Tab value='TypeScript'>
 
 ```typescript
-import { StepConfig, Handlers, cron } from 'motia'
+import { StepConfig, Handlers, cron, logger, stateManager } from 'motia'
 
 export const config = {
   name: 'DailyCleanup',
@@ -697,15 +654,15 @@ export const config = {
   enqueues: [],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, ctx) => {
-  ctx.logger.info('Running daily cleanup')
+export const handler: Handlers<typeof config> = async (input) => {
+  logger.info('Running daily cleanup')
 
-  const oldOrders = await ctx.state.list('orders')
+  const oldOrders = await stateManager.list('orders')
   const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000)
 
   for (const order of oldOrders) {
     if (order.createdAt < cutoff) {
-      await ctx.state.delete('orders', order.id)
+      await stateManager.delete('orders', order.id)
     }
   }
 }
@@ -715,15 +672,17 @@ export const handler: Handlers<typeof config> = async (input, ctx) => {
 <Tab value='JavaScript'>
 
 ```javascript
-export const handler = async (input, ctx) => {
-  ctx.logger.info('Running daily cleanup')
+import { logger, stateManager } from 'motia'
 
-  const oldOrders = await ctx.state.list('orders')
+export const handler = async (input) => {
+  logger.info('Running daily cleanup')
+
+  const oldOrders = await stateManager.list('orders')
   const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000)
 
   for (const order of oldOrders) {
     if (order.createdAt < cutoff) {
-      await ctx.state.delete('orders', order.id)
+      await stateManager.delete('orders', order.id)
     }
   }
 }
@@ -734,16 +693,17 @@ export const handler = async (input, ctx) => {
 
 ```python
 from datetime import datetime, timedelta
+from motia import logger, state_manager
 
-async def handler(input_data, context):
-    context.logger.info("Running daily cleanup")
+async def handler(input_data):
+    logger.info("Running daily cleanup")
 
-    old_orders = await context.state.list("orders")
+    old_orders = await state_manager.list("orders")
     cutoff = (datetime.now() - timedelta(days=30)).timestamp()
 
     for order in old_orders:
         if order.get("created_at") < cutoff:
-            await context.state.delete("orders", order.get("id"))
+            await state_manager.delete("orders", order.get("id"))
 ```
 
 </Tab>
@@ -759,12 +719,12 @@ For steps with multiple triggers, use `ctx.match()` to handle each trigger type:
 <Tab value='TypeScript'>
 
 ```typescript
-import { StepConfig, Handlers, api, queue, cron } from 'motia'
+import { StepConfig, Handlers, http, queue, cron, stateManager } from 'motia'
 
 export const config = {
   name: 'UserSync',
   triggers: [
-    api('POST', '/users/sync'),
+    http('POST', '/users/sync'),
     queue('user.updated'),
     cron('0 */6 * * *'),
   ],
@@ -773,19 +733,19 @@ export const config = {
 
 export const handler: Handlers<typeof config> = async (input, ctx) => {
   return ctx.match({
-    api: async (request) => {
+    http: async ({ request }) => {
       const { userId } = request.body
-      await syncUser(userId, ctx)
+      await syncUser(userId)
       return { status: 200, body: { synced: true } }
     },
     queue: async (data) => {
       const payload = ctx.getData()
-      await syncUser(payload.userId, ctx)
+      await syncUser(payload.userId)
     },
     cron: async () => {
-      const allUsers = await ctx.state.list('users')
+      const allUsers = await stateManager.list('users')
       for (const user of allUsers) {
-        await syncUser(user.id, ctx)
+        await syncUser(user.id)
       }
     },
   })
@@ -796,21 +756,23 @@ export const handler: Handlers<typeof config> = async (input, ctx) => {
 <Tab value='JavaScript'>
 
 ```javascript
+import { stateManager } from 'motia'
+
 export const handler = async (input, ctx) => {
   return ctx.match({
-    api: async (request) => {
+    http: async ({ request }) => {
       const { userId } = request.body
-      await syncUser(userId, ctx)
+      await syncUser(userId)
       return { status: 200, body: { synced: true } }
     },
     queue: async (data) => {
       const payload = ctx.getData()
-      await syncUser(payload.userId, ctx)
+      await syncUser(payload.userId)
     },
     cron: async () => {
-      const allUsers = await ctx.state.list('users')
+      const allUsers = await stateManager.list('users')
       for (const user of allUsers) {
-        await syncUser(user.id, ctx)
+        await syncUser(user.id)
       }
     },
   })
@@ -823,7 +785,7 @@ export const handler = async (input, ctx) => {
 You can also use `ctx.is` for simpler checks:
 
 ```typescript
-if (ctx.is.api(input)) {
+if (ctx.is.http(input)) {
   return { status: 200, body: { ok: true } }
 }
 if (ctx.is.queue(input)) {
@@ -838,19 +800,15 @@ if (ctx.is.cron(input)) {
 
 ## Handler Context (FlowContext)
 
-Every handler gets a context object (`ctx` in TypeScript/JavaScript, `context` in Python) with these tools.
+Every handler receives an optional context object (`ctx` in TypeScript/JavaScript, `context` in Python). The `enqueue`, `logger`, `stateManager`, and streams are now standalone imports from `motia` rather than context properties.
 
 ```typescript
-interface FlowContext<TEnqueueData, TInput> {
-  enqueue: Enqueuer<TEnqueueData>
+interface FlowContext<TInput> {
   traceId: string
-  state: InternalStateManager
-  logger: Logger
-  streams: Streams
   trigger: TriggerInfo
   is: {
     queue: (input) => boolean
-    api: (input) => boolean
+    http: (input) => boolean
     cron: (input) => boolean
     state: (input) => boolean
     stream: (input) => boolean
@@ -862,18 +820,20 @@ interface FlowContext<TEnqueueData, TInput> {
 
 ### enqueue
 
-Trigger other Steps by publishing messages to topics.
+Trigger other Steps by publishing messages to topics. Import directly from `motia`:
 
 <Tabs items={['TypeScript', 'JavaScript', 'Python']}>
 <Tab value='TypeScript'>
 
 ```typescript
-await ctx.enqueue({
+import { enqueue } from 'motia'
+
+await enqueue({
   topic: 'order.created',
   data: { orderId: '123', total: 99.99 }
 })
 
-await ctx.enqueue({
+await enqueue({
   topic: 'order.processing',
   data: { orderId: '123', items: [...] },
   messageGroupId: 'user-456'
@@ -886,12 +846,14 @@ await ctx.enqueue({
 <Tab value='JavaScript'>
 
 ```javascript
-await ctx.enqueue({
+import { enqueue } from 'motia'
+
+await enqueue({
   topic: 'order.created',
   data: { orderId: '123', total: 99.99 }
 })
 
-await ctx.enqueue({
+await enqueue({
   topic: 'order.processing',
   data: { orderId: '123', items: [...] },
   messageGroupId: 'user-456'
@@ -904,12 +866,14 @@ await ctx.enqueue({
 <Tab value='Python'>
 
 ```python
-await context.enqueue({
+from motia import enqueue
+
+await enqueue({
     "topic": "order.created",
     "data": {"order_id": "123", "total": 99.99}
 })
 
-await context.enqueue({
+await enqueue({
     "topic": "order.processing",
     "data": {"order_id": "123", "items": [...]},
     "messageGroupId": "user-456"
@@ -927,12 +891,14 @@ The `data` must match the `input` schema of Steps subscribing to that topic.
 
 ### logger
 
-Structured logging with automatic trace ID correlation.
+Structured logging with automatic trace ID correlation. Import directly from `motia`:
 
 <Tabs items={['TypeScript', 'JavaScript', 'Python']}>
 <Tab value='TypeScript'>
 
 ```typescript
+import { logger } from 'motia'
+
 logger.info('User created', { userId: '123', email: 'user@example.com' })
 logger.warn('Rate limit approaching', { current: 95, limit: 100 })
 logger.error('Payment failed', { error: err.message, orderId: '456' })
@@ -943,6 +909,8 @@ logger.debug('Cache miss', { key: 'user:123' })
 <Tab value='JavaScript'>
 
 ```javascript
+import { logger } from 'motia'
+
 logger.info('User created', { userId: '123', email: 'user@example.com' })
 logger.warn('Rate limit approaching', { current: 95, limit: 100 })
 logger.error('Payment failed', { error: err.message, orderId: '456' })
@@ -953,10 +921,12 @@ logger.debug('Cache miss', { key: 'user:123' })
 <Tab value='Python'>
 
 ```python
-context.logger.info("User created", {"user_id": "123", "email": "user@example.com"})
-context.logger.warn("Rate limit approaching", {"current": 95, "limit": 100})
-context.logger.error("Payment failed", {"error": str(err), "order_id": "456"})
-context.logger.debug("Cache miss", {"key": "user:123"})
+from motia import logger
+
+logger.info("User created", {"user_id": "123", "email": "user@example.com"})
+logger.warn("Rate limit approaching", {"current": 95, "limit": 100})
+logger.error("Payment failed", {"error": str(err), "order_id": "456"})
+logger.debug("Cache miss", {"key": "user:123"})
 ```
 
 </Tab>
@@ -972,9 +942,13 @@ All logs are automatically tagged with:
 
 ---
 
-### state
+### stateManager
 
-Persistent key-value storage shared across Steps.
+Persistent key-value storage shared across Steps. Import directly from `motia`:
+
+```typescript
+import { stateManager } from 'motia'
+```
 
 ```typescript
 interface InternalStateManager {
@@ -990,68 +964,76 @@ type StreamSetResult<T> = { new_value: T; old_value: T | null }
 
 type UpdateOp =
   | { type: 'set', path: string, value: any }
+  | { type: 'merge', path?: string, value: any }
   | { type: 'increment', path: string, by: number }
   | { type: 'decrement', path: string, by: number }
+  | { type: 'remove', path: string }
 ```
 
 <Tabs items={['TypeScript', 'JavaScript', 'Python']}>
 <Tab value='TypeScript'>
 
 ```typescript
-await state.set('users', 'user-123', { name: 'Alice', email: 'alice@example.com' })
+import { stateManager } from 'motia'
 
-const user = await state.get<User>('users', 'user-123')
+await stateManager.set('users', 'user-123', { name: 'Alice', email: 'alice@example.com' })
 
-const allUsers = await state.list<User>('users')
+const user = await stateManager.get<User>('users', 'user-123')
 
-await state.update('users', 'user-123', [
+const allUsers = await stateManager.list<User>('users')
+
+await stateManager.update('users', 'user-123', [
   { type: 'set', path: 'name', value: 'Bob' },
   { type: 'increment', path: 'loginCount', by: 1 },
 ])
 
-await state.delete('users', 'user-123')
+await stateManager.delete('users', 'user-123')
 
-await state.clear('users')
+await stateManager.clear('users')
 ```
 
 </Tab>
 <Tab value='JavaScript'>
 
 ```javascript
-await state.set('users', 'user-123', { name: 'Alice', email: 'alice@example.com' })
+import { stateManager } from 'motia'
 
-const user = await state.get('users', 'user-123')
+await stateManager.set('users', 'user-123', { name: 'Alice', email: 'alice@example.com' })
 
-const allUsers = await state.list('users')
+const user = await stateManager.get('users', 'user-123')
 
-await state.update('users', 'user-123', [
+const allUsers = await stateManager.list('users')
+
+await stateManager.update('users', 'user-123', [
   { type: 'set', path: 'name', value: 'Bob' },
   { type: 'increment', path: 'loginCount', by: 1 },
 ])
 
-await state.delete('users', 'user-123')
+await stateManager.delete('users', 'user-123')
 
-await state.clear('users')
+await stateManager.clear('users')
 ```
 
 </Tab>
 <Tab value='Python'>
 
 ```python
-await context.state.set("users", "user-123", {"name": "Alice", "email": "alice@example.com"})
+from motia import state_manager
 
-user = await context.state.get("users", "user-123")
+await state_manager.set("users", "user-123", {"name": "Alice", "email": "alice@example.com"})
 
-all_users = await context.state.list("users")
+user = await state_manager.get("users", "user-123")
 
-await context.state.update("users", "user-123", [
+all_users = await state_manager.list("users")
+
+await state_manager.update("users", "user-123", [
     {"type": "set", "path": "name", "value": "Bob"},
     {"type": "increment", "path": "loginCount", "by": 1},
 ])
 
-await context.state.delete("users", "user-123")
+await state_manager.delete("users", "user-123")
 
-await context.state.clear("users")
+await state_manager.clear("users")
 ```
 
 </Tab>
@@ -1059,20 +1041,24 @@ await context.state.clear("users")
 
 **Methods:**
 
-- `get(groupId, key)` - Returns the value or `null`
-- `set(groupId, key, value)` - Stores the value and returns `{ new_value, old_value }`
-- `update(groupId, key, ops)` - Applies atomic update operations and returns `{ new_value, old_value }`
-- `delete(groupId, key)` - Removes and returns the value (or `null`)
-- `list(groupId)` - Returns array of all values in the group
-- `clear(groupId)` - Removes all items in the group
+- `stateManager.get(groupId, key)` - Returns the value or `null`
+- `stateManager.set(groupId, key, value)` - Stores the value and returns `{ new_value, old_value }`
+- `stateManager.update(groupId, key, ops)` - Applies atomic update operations and returns `{ new_value, old_value }`
+- `stateManager.delete(groupId, key)` - Removes and returns the value (or `null`)
+- `stateManager.list(groupId)` - Returns array of all values in the group
+- `stateManager.clear(groupId)` - Removes all items in the group
 
 [Learn more about State](/docs/development-guide/state-management)
 
 ---
 
-### streams
+### Streams
 
-Real-time data channels for pushing updates to connected clients.
+Real-time data channels for pushing updates to connected clients. Stream instances are imported directly from their `.stream.ts` files:
+
+```typescript
+import { chatMessagesStream } from './chat-messages.stream'
+```
 
 ```typescript
 interface MotiaStream<TData> {
@@ -1089,23 +1075,26 @@ interface MotiaStream<TData> {
 <Tab value='TypeScript'>
 
 ```typescript
-await streams.chatMessages.set('room-123', 'msg-456', {
+// Import the stream instance from its stream file
+import { chatMessagesStream } from './chat-messages.stream'
+
+await chatMessagesStream.set('room-123', 'msg-456', {
   text: 'Hello!',
   author: 'Alice',
   timestamp: new Date().toISOString()
 })
 
-const message = await streams.chatMessages.get('room-123', 'msg-456')
+const message = await chatMessagesStream.get('room-123', 'msg-456')
 
-const messages = await streams.chatMessages.getGroup('room-123')
+const messages = await chatMessagesStream.getGroup('room-123')
 
-await streams.chatMessages.delete('room-123', 'msg-456')
+await chatMessagesStream.delete('room-123', 'msg-456')
 
-await streams.chatMessages.update('room-123', 'msg-456', [
+await chatMessagesStream.update('room-123', 'msg-456', [
   { type: 'set', path: 'text', value: 'Updated message' },
 ])
 
-await streams.chatMessages.send(
+await chatMessagesStream.send(
   { groupId: 'room-123' },
   { type: 'user.typing', data: { userId: 'alice' } }
 )
@@ -1115,23 +1104,26 @@ await streams.chatMessages.send(
 <Tab value='JavaScript'>
 
 ```javascript
-await streams.chatMessages.set('room-123', 'msg-456', {
+// Import the stream instance from its stream file
+import { chatMessagesStream } from './chat-messages.stream'
+
+await chatMessagesStream.set('room-123', 'msg-456', {
   text: 'Hello!',
   author: 'Alice',
   timestamp: new Date().toISOString()
 })
 
-const message = await streams.chatMessages.get('room-123', 'msg-456')
+const message = await chatMessagesStream.get('room-123', 'msg-456')
 
-const messages = await streams.chatMessages.getGroup('room-123')
+const messages = await chatMessagesStream.getGroup('room-123')
 
-await streams.chatMessages.delete('room-123', 'msg-456')
+await chatMessagesStream.delete('room-123', 'msg-456')
 
-await streams.chatMessages.update('room-123', 'msg-456', [
+await chatMessagesStream.update('room-123', 'msg-456', [
   { type: 'set', path: 'text', value: 'Updated message' },
 ])
 
-await streams.chatMessages.send(
+await chatMessagesStream.send(
   { groupId: 'room-123' },
   { type: 'user.typing', data: { userId: 'alice' } }
 )
@@ -1141,23 +1133,26 @@ await streams.chatMessages.send(
 <Tab value='Python'>
 
 ```python
-await context.streams.chatMessages.set("room-123", "msg-456", {
+# Import the stream instance from its stream file
+from chat_messages_stream import chat_messages_stream
+
+await chat_messages_stream.set("room-123", "msg-456", {
     "text": "Hello!",
     "author": "Alice",
     "timestamp": datetime.now().isoformat()
 })
 
-message = await context.streams.chatMessages.get("room-123", "msg-456")
+message = await chat_messages_stream.get("room-123", "msg-456")
 
-messages = await context.streams.chatMessages.getGroup("room-123")
+messages = await chat_messages_stream.getGroup("room-123")
 
-await context.streams.chatMessages.delete("room-123", "msg-456")
+await chat_messages_stream.delete("room-123", "msg-456")
 
-await context.streams.chatMessages.update("room-123", "msg-456", [
+await chat_messages_stream.update("room-123", "msg-456", [
     {"type": "set", "path": "text", "value": "Updated message"},
 ])
 
-await context.streams.chatMessages.send(
+await chat_messages_stream.send(
     {"groupId": "room-123"},
     {"type": "user.typing", "data": {"user_id": "alice"}}
 )
@@ -1168,12 +1163,12 @@ await context.streams.chatMessages.send(
 
 **Methods:**
 
-- `set(groupId, id, data)` - Create or update an item (returns `{ new_value, old_value }`)
-- `get(groupId, id)` - Retrieve an item or `null`
-- `getGroup(groupId)` - Get all items in a group
-- `delete(groupId, id)` - Remove an item
-- `update(groupId, id, ops)` - Apply atomic update operations
-- `send(channel, event)` - Send an ephemeral event (e.g., typing indicators, reactions)
+- `stream.set(groupId, id, data)` - Create or update an item (returns `{ new_value, old_value }`)
+- `stream.get(groupId, id)` - Retrieve an item or `null`
+- `stream.getGroup(groupId)` - Get all items in a group
+- `stream.delete(groupId, id)` - Remove an item
+- `stream.update(groupId, id, ops)` - Apply atomic update operations
+- `stream.send(channel, event)` - Send an ephemeral event (e.g., typing indicators, reactions)
 
 [Learn more about Streams](/docs/development-guide/streams)
 
@@ -1187,7 +1182,9 @@ Unique ID for tracking requests across Steps.
 <Tab value='TypeScript'>
 
 ```typescript
-export const handler: Handlers<typeof config> = async (req, { traceId, logger }) => {
+import { logger } from 'motia'
+
+export const handler: Handlers<typeof config> = async ({ request }, { traceId }) => {
   logger.info('Processing request', { traceId })
   return { status: 200, body: { traceId } }
 }
@@ -1197,7 +1194,9 @@ export const handler: Handlers<typeof config> = async (req, { traceId, logger })
 <Tab value='JavaScript'>
 
 ```javascript
-export const handler = async (req, { traceId, logger }) => {
+import { logger } from 'motia'
+
+export const handler = async ({ request }, { traceId }) => {
   logger.info('Processing request', { traceId })
   return { status: 200, body: { traceId } }
 }
@@ -1207,9 +1206,12 @@ export const handler = async (req, { traceId, logger }) => {
 <Tab value='Python'>
 
 ```python
-async def handler(req, context):
-    context.logger.info("Processing request", {"trace_id": context.trace_id})
-    return {"status": 200, "body": {"trace_id": context.trace_id}}
+from typing import Any
+from motia import ApiRequest, ApiResponse, FlowContext, logger
+
+async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+    logger.info("Processing request", {"trace_id": ctx.trace_id})
+    return ApiResponse(status=200, body={"trace_id": ctx.trace_id})
 ```
 
 </Tab>
@@ -1225,7 +1227,7 @@ Information about what triggered the current handler execution.
 
 ```typescript
 interface TriggerInfo {
-  type: 'api' | 'queue' | 'cron' | 'state' | 'stream'
+  type: 'http' | 'queue' | 'cron' | 'state' | 'stream'
 }
 ```
 
@@ -1246,9 +1248,9 @@ const data = ctx.getData()
 Route execution based on trigger type. See [Multi-Trigger Handler with match()](#multi-trigger-handler-with-match) above.
 
 ```typescript
-type MatchHandlers<TInput, TEnqueueData, TResult> = {
+type MatchHandlers<TInput, TResult> = {
   queue?: (input) => Promise<void>
-  api?: (request) => Promise<TResult>
+  http?: (request) => Promise<TResult>
   cron?: () => Promise<void>
   state?: (input) => Promise<TResult>
   stream?: (input) => Promise<TResult>
@@ -1268,8 +1270,8 @@ Intercepts API requests before and after the handler.
 ```typescript
 import { ApiMiddleware } from 'motia'
 
-export const authMiddleware: ApiMiddleware = async (req, ctx, next) => {
-  const token = req.headers.authorization
+export const authMiddleware: ApiMiddleware = async ({ request }, ctx, next) => {
+  const token = request.headers.authorization
 
   if (!token) {
     return { status: 401, body: { error: 'Unauthorized' } }
@@ -1283,8 +1285,8 @@ export const authMiddleware: ApiMiddleware = async (req, ctx, next) => {
 <Tab value='JavaScript'>
 
 ```javascript
-const authMiddleware = async (req, ctx, next) => {
-  const token = req.headers.authorization
+const authMiddleware = async ({ request }, ctx, next) => {
+  const token = request.headers.authorization
 
   if (!token) {
     return { status: 401, body: { error: 'Unauthorized' } }
@@ -1298,8 +1300,8 @@ const authMiddleware = async (req, ctx, next) => {
 <Tab value='Python'>
 
 ```python
-async def auth_middleware(req, context, next_fn):
-    token = req.get("headers", {}).get("authorization")
+async def auth_middleware(request, context, next_fn):
+    token = request.headers.get("authorization")
 
     if not token:
         return {"status": 401, "body": {"error": "Unauthorized"}}
@@ -1311,7 +1313,7 @@ async def auth_middleware(req, context, next_fn):
 </Tabs>
 
 **Parameters:**
-- `req` - Request object
+- `{ request, response }` - The `MotiaHttpArgs` object containing request and response
 - `ctx` - Context object
 - `next` - Function to call the next middleware/handler
 
@@ -1321,16 +1323,31 @@ async def auth_middleware(req, context, next_fn):
 
 ---
 
-## Request Object (ApiRequest)
+## Handler Input
 
-API handlers receive a request object with these fields.
+TypeScript and JavaScript handlers receive `MotiaHttpArgs` (containing `request` and `response`).
+Python handlers use `ApiRequest` for standard responses and only use `MotiaHttpArgs` for streaming/SSE handlers.
 
 ```typescript
-interface ApiRequest<TBody = unknown> {
+interface MotiaHttpArgs<TBody = unknown> {
+  request: MotiaHttpRequest<TBody>
+  response: MotiaHttpResponse
+}
+
+interface MotiaHttpRequest<TBody = unknown> {
   pathParams: Record<string, string>
   queryParams: Record<string, string | string[]>
   body: TBody
   headers: Record<string, string | string[]>
+  method: string
+  requestBody: ChannelReader
+}
+
+type MotiaHttpResponse = {
+  status: (statusCode: number) => void
+  headers: (headers: Record<string, string>) => void
+  stream: NodeJS.WritableStream
+  close: () => void
 }
 ```
 
@@ -1338,12 +1355,12 @@ interface ApiRequest<TBody = unknown> {
 <Tab value='TypeScript'>
 
 ```typescript
-export const handler: Handlers<typeof config> = async (req, ctx) => {
-  const userId = req.pathParams.id
-  const page = req.queryParams.page
-  const limit = req.queryParams.limit
-  const { name, email } = req.body
-  const auth = req.headers.authorization
+export const handler: Handlers<typeof config> = async ({ request }, ctx) => {
+  const userId = request.pathParams.id
+  const page = request.queryParams.page
+  const limit = request.queryParams.limit
+  const { name, email } = request.body
+  const auth = request.headers.authorization
 
   return { status: 200, body: { userId, name } }
 }
@@ -1353,12 +1370,12 @@ export const handler: Handlers<typeof config> = async (req, ctx) => {
 <Tab value='JavaScript'>
 
 ```javascript
-export const handler = async (req, ctx) => {
-  const userId = req.pathParams.id
-  const page = req.queryParams.page
-  const limit = req.queryParams.limit
-  const { name, email } = req.body
-  const auth = req.headers.authorization
+export const handler = async ({ request }, ctx) => {
+  const userId = request.pathParams.id
+  const page = request.queryParams.page
+  const limit = request.queryParams.limit
+  const { name, email } = request.body
+  const auth = request.headers.authorization
 
   return { status: 200, body: { userId, name } }
 }
@@ -1368,35 +1385,45 @@ export const handler = async (req, ctx) => {
 <Tab value='Python'>
 
 ```python
-async def handler(req, context):
-    user_id = req.get("pathParams", {}).get("id")
-    page = req.get("queryParams", {}).get("page")
-    limit = req.get("queryParams", {}).get("limit")
-    body = req.get("body", {})
-    name = body.get("name")
-    email = body.get("email")
-    auth = req.get("headers", {}).get("authorization")
+from typing import Any
+from motia import ApiRequest, ApiResponse, FlowContext
 
-    return {"status": 200, "body": {"user_id": user_id, "name": name}}
+async def handler(request: ApiRequest[Any], ctx: FlowContext[Any]) -> ApiResponse[Any]:
+    user_id = request.path_params.get("id")
+    page = request.query_params.get("page")
+    limit = request.query_params.get("limit")
+    name = request.body.get("name")
+    email = request.body.get("email")
+    auth = request.headers.get("authorization")
+
+    return ApiResponse(status=200, body={"user_id": user_id, "name": name})
 ```
 
 </Tab>
 </Tabs>
 
-**Fields:**
-- `pathParams` - Object with path parameters (e.g., `:id` from `/users/:id`)
-- `queryParams` - Object with query string params (values can be string or array)
+**`request` fields:**
+- `pathParams` / `path_params` (Python) - Object with path parameters (e.g., `:id` from `/users/:id`)
+- `queryParams` / `query_params` (Python) - Object with query string params (values can be string or array)
 - `body` - Parsed request body (validated against `bodySchema` if defined)
 - `headers` - Object with request headers (values can be string or array)
+- `method` - HTTP method string
+- `requestBody` / `request_body` (Python) - Raw request body stream (for SSE / streaming)
+
+**`response` fields (for SSE / streaming):**
+- `status(code)` - Set HTTP status code
+- `headers(headers)` - Set response headers
+- `stream` / `writer.stream` (Python) - Writable stream for sending data
+- `close()` - Close the response stream
 
 ---
 
 ## Response Object (ApiResponse)
 
-API handlers must return an object with these fields.
+HTTP handlers must return an object with these fields.
 
 ```typescript
-type ApiResponse<TStatus extends number, TBody> = {
+type ApiResponse<TStatus extends number = number, TBody = any> = {
   status: TStatus
   headers?: Record<string, string>
   body: TBody
@@ -1435,14 +1462,16 @@ return {
 <Tab value='Python'>
 
 ```python
-return {
-    "status": 200,
-    "body": {"id": "123", "name": "Alice"},
-    "headers": {
+from motia import ApiResponse
+
+return ApiResponse(
+    status=200,
+    body={"id": "123", "name": "Alice"},
+    headers={
         "Cache-Control": "max-age=3600",
         "X-Custom-Header": "value"
     }
-}
+)
 ```
 
 </Tab>
@@ -1452,6 +1481,113 @@ return {
 - `status` - HTTP status code (200, 201, 400, 404, 500, etc.)
 - `body` - Response data (will be JSON-encoded automatically)
 - `headers` - Optional custom headers
+
+---
+
+## Server-Sent Events (SSE)
+
+HTTP handlers can stream responses using Server-Sent Events. Instead of returning a response object, use the `response` object from `MotiaHttpArgs` to set headers and write to the stream.
+
+<Tabs items={['TypeScript', 'Python']}>
+<Tab value='TypeScript'>
+
+```typescript title="src/sse-example.step.ts"
+import { type Handlers, http, type StepConfig, logger } from 'motia'
+
+export const config = {
+  name: 'SSE Example',
+  description: 'Streams data back to the client as SSE',
+  flows: ['sse-example'],
+  triggers: [http('POST', '/sse')],
+  enqueues: [],
+} as const satisfies StepConfig
+
+export const handler: Handlers<typeof config> = async ({ request, response }) => {
+  logger.info('SSE request received')
+
+  response.status(200)
+  response.headers({
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  })
+
+  const chunks: string[] = []
+  for await (const chunk of request.requestBody.stream) {
+    chunks.push(Buffer.from(chunk).toString('utf-8'))
+  }
+  const body = chunks.join('').trim()
+
+  const items = ['alpha', 'bravo', 'charlie']
+  for (const item of items) {
+    response.stream.write(`event: item\ndata: ${JSON.stringify({ item })}\n\n`)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+
+  response.stream.write(`event: done\ndata: ${JSON.stringify({ total: items.length })}\n\n`)
+  response.close()
+}
+```
+
+</Tab>
+<Tab value='Python'>
+
+```python title="src/sse_example_step.py"
+import asyncio
+import json
+from typing import Any
+
+from motia import MotiaHttpArgs, FlowContext, http, logger
+
+config = {
+    "name": "SSE Example",
+    "description": "Streams data back to the client as SSE",
+    "flows": ["sse-example"],
+    "triggers": [
+        http("POST", "/sse"),
+    ],
+    "enqueues": [],
+}
+
+async def handler(args: MotiaHttpArgs[Any], ctx: FlowContext[Any]) -> None:
+    request = args.request
+    response = args.response
+
+    logger.info("SSE request received")
+
+    await response.status(200)
+    await response.headers({
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+    })
+
+    raw_chunks: list[str] = []
+    async for chunk in request.request_body.stream:
+        if isinstance(chunk, bytes):
+            raw_chunks.append(chunk.decode("utf-8", errors="replace"))
+        else:
+            raw_chunks.append(str(chunk))
+    payload = "".join(raw_chunks).strip()
+
+    items = ["alpha", "bravo", "charlie"]
+    for item in items:
+        response.writer.stream.write(f"event: item\ndata: {json.dumps({'item': item})}\n\n".encode("utf-8"))
+        await asyncio.sleep(0.5)
+
+    response.writer.stream.write(f"event: done\ndata: {json.dumps({'total': len(items)})}\n\n".encode("utf-8"))
+    response.close()
+```
+
+</Tab>
+</Tabs>
+
+**Key differences from standard HTTP handlers:**
+- Destructure both `request` and `response` from the first argument
+- Use `response.status()` and `response.headers()` to set the status and headers
+- Write SSE-formatted data to `response.stream` (TS/JS) or `response.writer.stream` (Python)
+- Call `response.close()` when done streaming
+- Do **not** return a response object — the response is streamed directly
 
 ---
 
@@ -1532,7 +1668,7 @@ config = {
 </Tabs>
 
 **Fields:**
-- `name` - Unique stream name (used in `ctx.streams.<name>`)
+- `name` - Unique stream name (the stream instance is imported from the stream file)
 - `schema` - Zod schema (TS/JS) or JSON Schema (Python) for data validation
 - `baseConfig.storageType` - Always `'default'` (custom storage coming soon)
 - `onJoin` - Optional callback when a client subscribes
@@ -1646,8 +1782,8 @@ Files are copied into the deployment bundle and accessible at runtime.
     Real-time streaming guide
   </Card>
 
-  <Card href="/docs/development-guide/middleware" title="Middleware">
-    Request/response middleware patterns
+  <Card href="/docs/development-guide/authentication" title="Authentication">
+    Authentication patterns for HTTP and stream endpoints
   </Card>
 
   <Card href="/docs/examples" title="Examples">

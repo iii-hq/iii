@@ -51,18 +51,19 @@ DATABASE_URL=postgresql://user:password@localhost:5432/myapp
 ### TypeScript/JavaScript
 
 ```typescript title="my-step.step.ts"
-import { type Handlers, type StepConfig } from 'motia'
+import { type Handlers, type StepConfig, logger } from 'motia'
 
 export const config = {
   name: 'chat-with-ai',
   description: 'Chat endpoint using OpenAI',
   triggers: [
-    { type: 'api', path: '/chat', method: 'POST' },
+    { type: 'http', path: '/chat', method: 'POST' },
   ],
+  enqueues: [],
   flows: ['ai-chat'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (req, { logger }) => {
+export const handler: Handlers<typeof config> = async ({ request }) => {
   const apiKey = process.env.OPENAI_API_KEY
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL
 
@@ -80,6 +81,7 @@ export const handler: Handlers<typeof config> = async (req, { logger }) => {
 
 ```python title="my-step.step.py"
 import os
+from motia import logger
 
 config = {
     "name": "process-data",
@@ -90,14 +92,14 @@ config = {
     "flows": ["data-pipeline"]
 }
 
-async def handler(input_data, ctx):
+async def handler(input_data):
     api_key = os.environ.get('OPENAI_API_KEY')
     database_url = os.environ.get('DATABASE_URL')
 
     if not api_key:
         raise ValueError('Missing OPENAI_API_KEY')
 
-    ctx.logger.info('Processing with API key', {'has_key': bool(api_key)})
+    logger.info('Processing with API key', {'has_key': bool(api_key)})
 
     return {'status': 'processed'}
 ```

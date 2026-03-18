@@ -19,7 +19,7 @@ export const config = {
   name: 'CreateResource',
   description: 'Create a new resource',
   triggers: [
-    { type: 'api', path: '/resources', method: 'POST' },
+    { type: 'http', path: '/resources', method: 'POST' },
   ],
   enqueues: [],
   flows: ['resource-management'],
@@ -34,7 +34,7 @@ config = {
     "name": "CreateResource",
     "description": "Create a new resource",
     "triggers": [
-        {"type": "api", "path": "/resources", "method": "POST"}
+        {"type": "http", "path": "/resources", "method": "POST"}
     ],
     "enqueues": [],
     "flows": ["resource-management"]
@@ -49,7 +49,7 @@ export const config = {
   name: 'CreateResource',
   description: 'Create a new resource',
   triggers: [
-    { type: 'api', path: '/resources', method: 'POST' },
+    { type: 'http', path: '/resources', method: 'POST' },
   ],
   enqueues: [],
   flows: ['resource-management']
@@ -63,34 +63,32 @@ export const config = {
 
 ## Example
 
-Two Steps working together in one flow.
+Two Steps connected through a single flow definition.
 
-![API and Queue Steps connected in a flow](../img/flows-api-event.png)
-
-**API Step - Create resource:**
+**HTTP Step - Create resource:**
 
 <Tabs items={['TypeScript', 'Python', 'JavaScript']}>
 <Tab value='TypeScript'>
 
 ```typescript title="src/create-resource.step.ts"
-import { type Handlers, type StepConfig } from 'motia'
+import { type Handlers, type StepConfig, enqueue, logger } from 'motia'
 
 export const config = {
   name: 'CreateResource',
   description: 'Create a new resource and trigger email',
   triggers: [
-    { type: 'api', path: '/resources', method: 'POST' },
+    { type: 'http', path: '/resources', method: 'POST' },
   ],
   enqueues: ['send-email'],
   flows: ['resource-management'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (req, { enqueue, logger }) => {
-  logger.info('Creating resource', { title: req.body.title })
+export const handler: Handlers<typeof config> = async ({ request }) => {
+  logger.info('Creating resource', { title: request.body.title })
 
   await enqueue({
     topic: 'send-email',
-    data: { email: req.body.email }
+    data: { email: request.body.email }
   })
 
   return { status: 201, body: { id: '123' } }
@@ -101,47 +99,52 @@ export const handler: Handlers<typeof config> = async (req, { enqueue, logger })
 <Tab value='Python'>
 
 ```python title="src/create_resource_step.py"
+from typing import Any
+from motia import ApiRequest, ApiResponse, http, logger, enqueue
+
 config = {
     "name": "CreateResource",
     "description": "Create a new resource and trigger email",
     "triggers": [
-        {"type": "api", "path": "/resources", "method": "POST"}
+        http("POST", "/resources"),
     ],
     "enqueues": ["send-email"],
     "flows": ["resource-management"]
 }
 
-async def handler(req, ctx):
-    ctx.logger.info("Creating resource", {"title": req["body"]["title"]})
+async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
+    logger.info("Creating resource", {"title": request.body["title"]})
 
-    await ctx.enqueue({
+    await enqueue({
         "topic": "send-email",
-        "data": {"email": req["body"]["email"]}
+        "data": {"email": request.body["email"]}
     })
 
-    return {"status": 201, "body": {"id": "123"}}
+    return ApiResponse(status=201, body={"id": "123"})
 ```
 
 </Tab>
 <Tab value='JavaScript'>
 
 ```javascript title="src/create-resource.step.js"
+import { enqueue, logger } from 'motia'
+
 export const config = {
   name: 'CreateResource',
   description: 'Create a new resource and trigger email',
   triggers: [
-    { type: 'api', path: '/resources', method: 'POST' },
+    { type: 'http', path: '/resources', method: 'POST' },
   ],
   enqueues: ['send-email'],
   flows: ['resource-management']
 }
 
-export const handler = async (req, { enqueue, logger }) => {
-  logger.info('Creating resource', { title: req.body.title })
+export const handler = async ({ request }) => {
+  logger.info('Creating resource', { title: request.body.title })
 
   await enqueue({
     topic: 'send-email',
-    data: { email: req.body.email }
+    data: { email: request.body.email }
   })
 
   return { status: 201, body: { id: '123' } }
@@ -157,7 +160,7 @@ export const handler = async (req, { enqueue, logger }) => {
 <Tab value='TypeScript'>
 
 ```typescript title="src/send-email.step.ts"
-import { type Handlers, type StepConfig } from 'motia'
+import { type Handlers, type StepConfig, logger } from 'motia'
 
 export const config = {
   name: 'SendEmail',
@@ -169,7 +172,7 @@ export const config = {
   flows: ['resource-management'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   logger.info('Sending email', { email: input.email })
 }
 ```
@@ -178,6 +181,8 @@ export const handler: Handlers<typeof config> = async (input, { logger }) => {
 <Tab value='Python'>
 
 ```python title="src/send_email_step.py"
+from motia import logger
+
 config = {
     "name": "SendEmail",
     "description": "Send an email notification",
@@ -188,14 +193,16 @@ config = {
     "flows": ["resource-management"]
 }
 
-async def handler(input, ctx):
-    ctx.logger.info("Sending email", {"email": input["email"]})
+async def handler(input):
+    logger.info("Sending email", {"email": input["email"]})
 ```
 
 </Tab>
 <Tab value='JavaScript'>
 
 ```javascript title="src/send-email.step.js"
+import { logger } from 'motia'
+
 export const config = {
   name: 'SendEmail',
   description: 'Send an email notification',
@@ -206,7 +213,7 @@ export const config = {
   flows: ['resource-management']
 }
 
-export const handler = async (input, { logger }) => {
+export const handler = async (input) => {
   logger.info('Sending email', { email: input.email })
 }
 ```
@@ -288,7 +295,7 @@ export const config = {
   name: 'HealthCheck',
   description: 'Health check endpoint',
   triggers: [
-    { type: 'api', path: '/health', method: 'GET' },
+    { type: 'http', path: '/health', method: 'GET' },
   ],
   enqueues: [],
 } as const satisfies StepConfig
@@ -302,7 +309,7 @@ config = {
     "name": "HealthCheck",
     "description": "Health check endpoint",
     "triggers": [
-        {"type": "api", "path": "/health", "method": "GET"}
+        {"type": "http", "path": "/health", "method": "GET"}
     ],
     "enqueues": []
 }
@@ -316,7 +323,7 @@ export const config = {
   name: 'HealthCheck',
   description: 'Health check endpoint',
   triggers: [
-    { type: 'api', path: '/health', method: 'GET' },
+    { type: 'http', path: '/health', method: 'GET' },
   ],
   enqueues: [],
 }
@@ -331,7 +338,7 @@ export const config = {
 
 The iii development console has a dropdown to filter by flow. Select a flow to see only the Steps that belong to it.
 
-![Flow dropdown in iii development console](../img/drop-down-flow.png)
+![Flow view in the iii Console](/console/flow-view.png)
 
 ### Virtual Connections
 
@@ -347,7 +354,7 @@ export const config = {
   name: 'CreateResource',
   description: 'Create a resource requiring approval',
   triggers: [
-    { type: 'api', path: '/resources', method: 'POST' },
+    { type: 'http', path: '/resources', method: 'POST' },
   ],
   enqueues: [],
   virtualEnqueues: ['approval.required'],
@@ -363,7 +370,7 @@ config = {
     "name": "CreateResource",
     "description": "Create a resource requiring approval",
     "triggers": [
-        {"type": "api", "path": "/resources", "method": "POST"}
+        {"type": "http", "path": "/resources", "method": "POST"}
     ],
     "enqueues": [],
     "virtualEnqueues": ["approval.required"],
@@ -379,7 +386,7 @@ export const config = {
   name: 'CreateResource',
   description: 'Create a resource requiring approval',
   triggers: [
-    { type: 'api', path: '/resources', method: 'POST' },
+    { type: 'http', path: '/resources', method: 'POST' },
   ],
   enqueues: [],
   virtualEnqueues: ['approval.required'],
@@ -391,8 +398,6 @@ export const config = {
 </Tabs>
 
 Virtual connections show as gray/dashed lines in the iii development console. Real connections (from `enqueues` and queue triggers) show as dark solid lines.
-
-![Virtual connections with labels in iii development console](../img/virtual-emit-subscribe.png)
 
 ### Labels
 
@@ -408,7 +413,7 @@ export const config = {
   name: 'SendEmail',
   description: 'Send email notifications',
   triggers: [
-    { type: 'api', path: '/send', method: 'POST' },
+    { type: 'http', path: '/send', method: 'POST' },
   ],
   enqueues: [],
   virtualEnqueues: [
@@ -427,7 +432,7 @@ config = {
     "name": "SendEmail",
     "description": "Send email notifications",
     "triggers": [
-        {"type": "api", "path": "/send", "method": "POST"}
+        {"type": "http", "path": "/send", "method": "POST"}
     ],
     "enqueues": [],
     "virtualEnqueues": [
@@ -446,7 +451,7 @@ export const config = {
   name: 'SendEmail',
   description: 'Send email notifications',
   triggers: [
-    { type: 'api', path: '/send', method: 'POST' },
+    { type: 'http', path: '/send', method: 'POST' },
   ],
   enqueues: [],
   virtualEnqueues: [
@@ -508,6 +513,6 @@ export const config = {
 </Tab>
 </Tabs>
 
-[Learn about customizing how flows look](/docs/development-guide/customizing-flows)
+[Learn more about Steps and Triggers](/docs/concepts/steps)
 
 ---

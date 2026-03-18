@@ -19,7 +19,7 @@ Motia gives you everything you need to answer these questions.
 
 ## Logging
 
-Every Step has a `logger` in the context. Use it to see what's happening.
+Every Step can use the `logger` imported from Motia. Use it to see what's happening.
 
 ### Log Levels
 
@@ -37,7 +37,9 @@ Every Step has a `logger` in the context. Use it to see what's happening.
 <Tabs items={['TypeScript', 'Python', 'JavaScript']}>
   <Tab value='TypeScript'>
     ```typescript
-    export const handler: Handlers<typeof config> = async (input, { logger }) => {
+    import { logger } from 'motia'
+
+    export const handler: Handlers<typeof config> = async (input) => {
       logger.info('Processing order')
 
       logger.info('Order created', {
@@ -67,10 +69,12 @@ Every Step has a `logger` in the context. Use it to see what's happening.
   </Tab>
   <Tab value='Python'>
     ```python
-    async def handler(input, context):
-        context.logger.info('Processing order')
+    from motia import logger
 
-        context.logger.info('Order created', {
+    async def handler(input):
+        logger.info('Processing order')
+
+        logger.info('Order created', {
             'order_id': input.get("id"),
             'total': input.get("total")
         })
@@ -78,23 +82,25 @@ Every Step has a `logger` in the context. Use it to see what's happening.
         try:
             await charge_card(input.get("payment_method"))
         except Exception as error:
-            context.logger.error('Payment failed', {
+            logger.error('Payment failed', {
                 'error': str(error),
                 'order_id': input.get("id")
             })
 
         if input.get("total", 0) > 1000:
-            context.logger.warn('Large order', {
+            logger.warn('Large order', {
                 'total': input.get("total"),
                 'threshold': 1000
             })
 
-        context.logger.debug('Raw input', {'input': input})
+        logger.debug('Raw input', {'input': input})
     ```
   </Tab>
   <Tab value='JavaScript'>
     ```javascript
-    export const handler = async (input, { logger }) => {
+    import { logger } from 'motia'
+
+    export const handler = async (input) => {
       logger.info('Processing order')
 
       logger.info('Order created', {
@@ -156,6 +162,8 @@ Open the [iii development console](https://iii.dev/docs) and click on your flow.
 - The trace ID (to follow a request through the entire flow)
 - Full context data
 
+![Real-time logs in the iii Console](/console/logs-detail.png)
+
 ---
 
 ## Tracing
@@ -163,7 +171,9 @@ Open the [iii development console](https://iii.dev/docs) and click on your flow.
 Every request gets a unique `traceId`. This lets you follow a single request through your entire flow.
 
 ```typescript
-export const handler: Handlers<typeof config> = async (req, { logger, traceId, enqueue }) => {
+import { logger, enqueue } from 'motia'
+
+export const handler: Handlers<typeof config> = async ({ request }, { traceId }) => {
   logger.info('Order started', { traceId })
 
   await enqueue({
@@ -179,6 +189,8 @@ export const handler: Handlers<typeof config> = async (req, { logger, traceId, e
 - Click any log entry
 - See all logs with the same `traceId`
 - Follow the request from start to finish
+
+![Traces waterfall view in the iii Console](/console/traces-detail.png)
 
 ---
 
@@ -219,7 +231,9 @@ Why? Objects are searchable, filterable, and easier to parse.
 ### Track Performance
 
 ```typescript
-export const handler: Handlers<typeof config> = async (input, { logger }) => {
+import { logger } from 'motia'
+
+export const handler: Handlers<typeof config> = async (input) => {
   const start = performance.now()
 
   await processOrder(input)
@@ -255,11 +269,13 @@ try {
 **Steps to debug:**
 
 1. **Check terminal logs** - See which Steps ran
-2. **Open the iii development console** at [http://localhost:3000](http://localhost:3000)
+2. **Open the iii development console** at [http://localhost:3113](http://localhost:3113)
 3. **Click your flow** - See the visual diagram
 4. **Expand logs panel** - See all logs in chronological order
 5. **Click a log** - Filter by that `traceId` to follow the request
 6. **Check each Step** - See where it failed
+
+![Traces waterfall in the iii Console](/console/traces-waterfall.png)
 
 ### Common Issues
 

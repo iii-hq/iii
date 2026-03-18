@@ -164,8 +164,10 @@ When enqueuing to FIFO queues, pass a `messageGroupId`:
 <Tab value='TypeScript'>
 
 ```typescript
-export const handler: Handlers<typeof config> = async (req, { enqueue }) => {
-  const { orderId, customerId } = req.body
+import { enqueue } from 'motia'
+
+export const handler: Handlers<typeof config> = async ({ request }) => {
+  const { orderId, customerId } = request.body
 
   await enqueue({
     topic: 'order.created',
@@ -179,23 +181,30 @@ export const handler: Handlers<typeof config> = async (req, { enqueue }) => {
 <Tab value='Python'>
 
 ```python
-async def handler(req, ctx):
-    order_id = req.body["orderId"]
-    customer_id = req.body["customerId"]
+from typing import Any
+from motia import ApiRequest, ApiResponse, enqueue
 
-    await ctx.enqueue({
+async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
+    order_id = request.body["orderId"]
+    customer_id = request.body["customerId"]
+
+    await enqueue({
         "topic": "order.created",
         "data": {"orderId": order_id, "customerId": customer_id},
         "messageGroupId": customer_id
     })
+
+    return ApiResponse(status=202, body={"status": "queued"})
 ```
 
 </Tab>
 <Tab value='JavaScript'>
 
 ```javascript
-export const handler = async (req, { enqueue }) => {
-  const { orderId, customerId } = req.body
+import { enqueue } from 'motia'
+
+export const handler = async ({ request }) => {
+  const { orderId, customerId } = request.body
 
   await enqueue({
     topic: 'order.created',

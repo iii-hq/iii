@@ -3,9 +3,9 @@ title: Overview
 description: Build production-grade backends with a single primitive - APIs, background jobs, workflows, and AI agents unified
 ---
 
-<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
+{/* <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/2-motia-overview-core-concepts.mp4" type="video/mp4" />
-</video>
+</video> */}
 
 **Build production-grade backends with a single primitive.**
 
@@ -15,7 +15,16 @@ Want an API? That's a Step.
 Need a background job? That's a Step.
 Scheduled task? Also a Step.
 
-Write each Step in whatever language makes sense - TypeScript, Python, or JavaScript. They all run together, share the same state, and talk through queued messages.
+Write each Step in whatever language makes sense — TypeScript, Python, or JavaScript. Each language runtime runs independently, managed by the iii engine, and they all share the same state and communicate through queued messages.
+
+## Naming Clarification: Motia vs iii
+
+| Name | Role |
+|---|---|
+| **Motia** | The framework/SDK you import in application code (`import { step, enqueue, stateManager } from 'motia'`) |
+| **iii** | The runtime engine that runs infrastructure modules (queue, state, stream, cron, API, observability) |
+
+In short: **you write Motia code, and iii runs it**.
 
 ## How It Works
 
@@ -28,19 +37,19 @@ Every Step is just a file with two parts:
 <Tab value='TypeScript'>
 
 ```typescript title="src/my-step.step.ts"
-import { type Handlers, type StepConfig } from 'motia'
+import { type Handlers, type StepConfig, enqueue, logger } from 'motia'
 
 export const config = {
   name: 'MyStep',
   description: 'Handles incoming requests',
   triggers: [
-    { type: 'api', path: '/endpoint', method: 'POST' },
+    { type: 'http', path: '/endpoint', method: 'POST' },
   ],
   enqueues: ['task.done'],
   flows: ['my-flow'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (req, { enqueue, logger }) => {
+export const handler: Handlers<typeof config> = async ({ request }) => {
   logger.info('Processing request')
 
   await enqueue({
@@ -56,42 +65,47 @@ export const handler: Handlers<typeof config> = async (req, { enqueue, logger })
 <Tab value='Python'>
 
 ```python title="src/my_step.py"
+from typing import Any
+from motia import ApiRequest, ApiResponse, http, logger, enqueue
+
 config = {
     "name": "MyStep",
     "description": "Handles incoming requests",
     "triggers": [
-        {"type": "api", "path": "/endpoint", "method": "POST"}
+        http("POST", "/endpoint"),
     ],
     "enqueues": ["task.done"],
     "flows": ["my-flow"]
 }
 
-async def handler(req, context):
-    context.logger.info("Processing request")
+async def handler(request: ApiRequest[Any]) -> ApiResponse[Any]:
+    logger.info("Processing request")
 
-    await context.enqueue({
+    await enqueue({
         "topic": "task.done",
         "data": {"result": "success"}
     })
 
-    return {"status": 200, "body": {"success": True}}
+    return ApiResponse(status=200, body={"success": True})
 ```
 
 </Tab>
 <Tab value='JavaScript'>
 
 ```javascript title="src/my-step.step.js"
+import { enqueue, logger } from 'motia'
+
 export const config = {
   name: 'MyStep',
   description: 'Handles incoming requests',
   triggers: [
-    { type: 'api', path: '/endpoint', method: 'POST' },
+    { type: 'http', path: '/endpoint', method: 'POST' },
   ],
   enqueues: ['task.done'],
   flows: ['my-flow'],
 }
 
-export const handler = async (req, { enqueue, logger }) => {
+export const handler = async ({ request }) => {
   logger.info('Processing request')
 
   await enqueue({
@@ -164,7 +178,7 @@ Motia automatically discovers Steps - no manual registration required.
       <File name="notifications.stream.ts" />
     </Folder>
   </Folder>
-  <File name="config.yml" />
+  <File name="config.yaml" />
   <File name=".env" />
   <File name="package.json" />
   <File name="requirements.txt" />
@@ -195,18 +209,12 @@ Motia scans the `src/` directory and automatically registers files that:
 
 ## Multi-Language Support
 
-Every Step can be in a different language. They all run in the same process and share everything.
+Every Step can be in a different language. Each language runtime runs as an independent process managed by the iii engine — Python developers do not need Node.js, and vice versa. All runtimes share the same state and communicate through the same queue infrastructure.
 
 **Currently Supported:**
 - **TypeScript** `.step.ts`
-- **Python** `_step.py` (install with `pip install motia-python`)
+- **Python** `_step.py` (standalone `motia` Python package — no Node.js required)
 - **JavaScript** `.step.js`
-
-**Coming Soon:**
-- Ruby `.step.rb`
-- C# `.step.cs`
-- Go `.step.go`
-- And many more...
 
 **Example project:**
 
@@ -251,21 +259,31 @@ Clients receive updates instantly.
 
 [Learn about Streams](/docs/development-guide/streams)
 
-### Adapters
-Pluggable infrastructure components that enable horizontal scaling and custom implementations. Swap default file-based storage with Redis, RabbitMQ, or your own implementations without changing your code.
+### Infrastructure via config.yaml
+All infrastructure — queues, state storage, streams, cron scheduling, and observability — is configured through `config.yaml` modules managed by the iii engine. Swap default file-based storage with Redis or RabbitMQ without changing your application code.
 
-[Learn about Adapters](/docs/development-guide/adapters)
+[Learn about the iii Engine](/docs/concepts/iii-engine)
 
 ### Context Object
-Every handler gets a context object with everything you need:
+Every handler gets a context object with:
 
 | Property | What It Does |
 |----------|--------------|
-| `logger` | Structured logging |
-| `enqueue` | Trigger other Steps |
-| `state` | Persistent storage |
-| `streams` | Real-time updates |
 | `traceId` | Request tracing |
+| `trigger` | Trigger metadata |
+| `is` | Type guards for trigger types |
+| `getData()` | Get typed trigger data |
+| `match()` | Pattern matching on trigger |
+
+---
+
+## Motia + iii
+
+Motia is the application framework — you write Steps in TypeScript, Python, or JavaScript. The **iii engine** is the runtime that powers everything underneath: it manages queues, state storage, stream servers, cron scheduling, HTTP routing, and observability.
+
+You configure iii through a `config.yaml` file that declares which modules to load and how to configure their adapters (file-based for development, Redis/RabbitMQ for production). The iii engine then manages the lifecycle of your Motia SDK processes via the `ExecModule`.
+
+[Learn more about the iii Engine](/docs/concepts/iii-engine)
 
 ---
 
@@ -278,7 +296,11 @@ Visual interface for building and debugging flows:
 - Inspect state as it changes
 - View stream updates in real-time
 
-[Learn about the iii development console](https://iii.dev/docs)
+![iii Console Dashboard](/console/dashboard.png)
+
+![Flow diagram in iii Console](/console/flow-view.png)
+
+[Learn about the iii development console](/docs/development-guide/observability)
 
 ---
 
@@ -287,6 +309,10 @@ Visual interface for building and debugging flows:
 <Cards>
   <Card href="/docs/concepts/steps" title="Steps">
     Deep dive into Steps - the only primitive you need
+  </Card>
+
+  <Card href="/docs/concepts/iii-engine" title="The iii Engine">
+    Understand how iii manages infrastructure through config.yaml
   </Card>
 
   <Card href="/docs/getting-started/quick-start" title="Quick Start">

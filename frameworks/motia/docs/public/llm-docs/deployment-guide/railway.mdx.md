@@ -120,29 +120,44 @@ This assigns a public URL to your app. You're live!
 
 ## Project Setup
 
-### Docker Files
+### Build Your Project
 
-If you haven't already, generate the Docker files:
+Before creating the Docker image, build your Motia project:
 
 ```bash
-npx motia@latest docker setup
+motia build
 ```
 
-This creates `Dockerfile` and `.dockerignore` in your project.
+This creates optimized production files in `dist/`.
 
-### Update Your Start Script
+### Dockerfile
 
-Railway injects the port via the `PORT` environment variable. Update your `package.json`:
+Create a `Dockerfile` in your project root. This uses the iii engine as the entrypoint:
 
-```json title="package.json"
-{
-  "scripts": {
-    "start": "motia start --port ${PORT:-3000} --host 0.0.0.0"
-  }
-}
+```dockerfile title="Dockerfile"
+FROM debian:bookworm-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+
+FROM oven/bun:1.1-slim
+
+WORKDIR /app
+
+COPY --from=builder /root/.local/bin/iii /usr/local/bin/iii
+
+COPY package.json .
+COPY dist/index-production.js dist/
+COPY dist/index-production.js.map dist/
+COPY config-production.yaml config.yaml
+
+EXPOSE 3111
+EXPOSE 3112
+
+CMD ["iii", "--config", "config.yaml"]
 ```
-
-This ensures Motia listens on the port Railway expects.
 
 ### Railway Configuration
 
@@ -157,7 +172,6 @@ Create a `railway.json` in your project root:
   },
   "deploy": {
     "numReplicas": 1,
-    "startCommand": "npm run start",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
@@ -165,7 +179,7 @@ Create a `railway.json` in your project root:
 ```
 
 <Callout type="info">
-**Healthchecks:** Railway's default healthcheck expects a `200` response on `/`. This is Motia's default behavior as well. Check the configuration if Railway's healthcheck fails.
+**Healthchecks:** Railway's default healthcheck expects a `200` response on `/`. The iii engine serves this by default. Check the configuration if Railway's healthcheck fails.
 </Callout>
 
 ---
@@ -174,11 +188,11 @@ Create a `railway.json` in your project root:
 
 Create a production `config.yaml` with Redis adapters for all modules. Railway auto-injects `REDIS_URL` when you link the Redis service to your app:
 
-```yaml title="config.yaml"
+```yaml title="config-production.yaml"
 modules:
   - class: modules::stream::StreamModule
     config:
-      port: ${STREAMS_PORT:31112}
+      port: ${STREAM_PORT:3112}
       host: 0.0.0.0
       auth_function: motia.streams.authenticate
       adapter:
@@ -224,6 +238,11 @@ modules:
     config:
       adapter:
         class: modules::cron::KvCronAdapter
+
+  - class: modules::shell::ExecModule
+    config:
+      exec:
+        - bun run --enable-source-maps dist/index-production.js
 ```
 
 <Callout type="info">
@@ -337,10 +356,13 @@ railway logs --tail
 
 **Cause:** Usually means the app isn't listening on the right port.
 
-**Fix:** Make sure your start script uses `${PORT:-3000}`:
+**Fix:** Make sure your `config.yaml` uses `${PORT:3111}` for the REST API module port so Railway can inject its port:
 
-```json
-"start": "motia start --port ${PORT:-3000} --host 0.0.0.0"
+```yaml
+  - class: modules::api::RestApiModule
+    config:
+      port: ${PORT:3111}
+      host: 0.0.0.0
 ```
 
 ### Redis Connection Errors

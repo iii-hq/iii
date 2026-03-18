@@ -1,132 +1,184 @@
 ---
 title: Command Line Interface (CLI)
-description: Learn how to use the Motia CLI for project creation and deployment
+description: Learn how to use the Motia CLI and the iii engine CLI to build, develop, and run your application
 ---
 
-# Command Line Interface (CLI)
+Motia projects use the **motia-cli** for scaffolding new projects, the **Motia npm package** for building Node.js projects, and the **iii CLI** for running the engine that powers everything.
 
-The Motia CLI handles project scaffolding and deployment. It is installed with the `motia` package.
+---
+
+## Motia CLI (motia-cli)
+
+The motia-cli scaffolds new Motia projects with support for Node.js, Python, or mixed language templates. Python developers don't need npm; Node.js developers don't need Python.
+
+### Install motia-cli
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MotiaDev/motia-cli/main/install.sh | sh
+```
+
+Or via Homebrew:
+
+```bash
+brew tap MotiaDev/tap
+brew install motia-cli
+```
+
+### `motia-cli create [name]`
+
+Scaffold a new Motia project with sensible defaults including `iii-config.yaml`, example Steps, and the appropriate dependency files for your chosen language.
+
+```bash
+motia-cli create my-project
+```
+
+Interactive prompts will ask for:
+
+- **Project folder name** — or pass it as an argument
+- **Language** — Node.js (TypeScript), Python, or Mixed (both)
+- **iii installation** — confirms you have the iii engine installed
+
+The CLI downloads templates from the [motia-iii-example](https://github.com/MotiaDev/motia-iii-example) repository and installs dependencies automatically (`npm install` for Node.js, `uv sync` for Python).
+
+---
+
+## iii CLI
+
+The iii engine is the runtime that manages all infrastructure modules (queues, state, streams, cron, HTTP) and your Motia application process.
+
+### Install iii
+
+```bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+```
+
+### `iii`
+
+Start the iii engine. By default it looks for `config.yaml` in the current directory.
+
+```bash
+iii
+```
+
+### `iii -c <config-file>`
+
+Start the engine with a specific configuration file.
+
+```bash
+iii -c config.yaml
+iii -c config-production.yaml
+```
+
+### `iii -v`
+
+Print the iii engine version.
+
+```bash
+iii -v
+```
 
 <Callout type="info">
-During development, `npm run dev` starts the [iii](https://iii.dev) runtime which orchestrates building and running your Motia application. The commands below are either run directly by you or internally by iii's Shell Exec module.
+During development, your `package.json` should have `"dev": "iii"` so that `npm run dev` starts the engine, which reads `config.yaml` and boots all configured modules including your Motia application via the ExecModule.
 </Callout>
-
-## Project Creation
-
-### `npx motia@latest create`
-
-Scaffold a new Motia project.
-
-```bash
-npx motia@latest create [project-name] [options]
-```
-
-**Arguments:**
-
-- `[project-name]` (optional): The name for your project folder. Use `.` or `./` for the current directory.
-
-**Options:**
-
-- `--template <template-name>` (optional): Template to use. If not provided, you'll be prompted interactively.
-
-**Available Templates:**
-
-| Template | Description | Use Case |
-|----------|-------------|----------|
-| `motia-tutorial-typescript` | Tutorial (TypeScript only) | Interactive tutorial project in TypeScript |
-| `motia-tutorial-python` | Tutorial (Python only) | Interactive tutorial project in Python |
-| `starter-multilang` | Starter (All languages; TS/JS + Python) | Polyglot project with TypeScript API, Python event processing, and JavaScript logging |
-| `starter-typescript` | Starter (TypeScript only) | Minimal TypeScript project with basic examples |
-| `starter-javascript` | Starter (JavaScript only) | Minimal JavaScript project with basic examples |
-| `starter-python` | Starter (Python only) | Minimal Python project with basic examples |
-
-**Examples:**
-
-```bash
-npx motia@latest create my-app --template starter-typescript
-npx motia@latest create my-tutorial --template motia-tutorial-python
-npx motia@latest create
-```
 
 ---
 
-## Build
+## iii Console
+
+The iii console provides a visual interface for building and debugging flows. Install and run it separately:
+
+```bash
+curl -fsSL https://install.iii.dev/console/main/install.sh | sh
+iii-console --enable-flow
+```
+
+Then open [http://localhost:3113/](http://localhost:3113/) to see flow diagrams, real-time logs, state inspection, and stream monitoring.
+
+![iii Console Dashboard](/console/dashboard.png)
+
+---
+
+## Motia Node.js Tools (npx motia)
+
+For Node.js and mixed projects, the `motia` npm package provides build and development tools. Install it as a project dependency when you scaffold with motia-cli.
 
 ### `motia build`
 
-Build your project, compiling all Steps and generating deployment artifacts.
+Build your project, generating an optimized production bundle in `dist/`.
 
 ```bash
 npx motia build
 ```
 
-<Callout type="info">
-During development, iii's Shell Exec module runs this automatically when your Step files change. You typically only run this manually for deployment.
-</Callout>
+This produces:
+- `dist/index-production.js`
+- `dist/index-production.js.map`
 
----
+Your `config.yaml` should reference the production bundle in the ExecModule (place this under the top-level `modules:` list):
 
-## Deployment
+```yaml title="config.yaml (production ExecModule)"
+modules:
+  # ... other modules (StreamModule, StateModule, etc.) ...
 
-### `motia cloud deploy`
-
-Deploy to Motia Cloud.
-
-```bash
-npx motia cloud deploy --api-key <api-key> --version-name <version> [options]
+  - class: modules::shell::ExecModule
+    config:
+      exec:
+        - bun run --enable-source-maps dist/index-production.js
 ```
 
-**Options:**
+### `motia dev`
 
-- `-k, --api-key <key>` (required): Your API key for authentication
-- `-v, --version-name <version>` (required): The version to deploy
-- `-n, --project-name <name>`: Project name (used when creating a new project)
-- `-s, --environment-id <id>`: Environment ID (can also be set via `MOTIA_ENVIRONMENT_ID` env var)
-- `--environment-name <name>`: Environment name (used when creating a new environment)
-- `-d, --version-description <description>`: The description of the version
-- `-e, --env-file <path>`: Path to environment file
-
-### Docker
-
-Tools for containerizing your Motia project.
+Start the Motia SDK in development mode. This is typically run automatically by the iii engine's ExecModule, not manually.
 
 ```bash
-npx motia docker setup       # Generate Dockerfile and .dockerignore
-npx motia docker build        # Build Docker image
-npx motia docker run          # Build and run in a container
+npx motia dev
 ```
 
----
+Your `config.yaml` ExecModule for development (place this under the top-level `modules:` list). The `watch` array defines file patterns that trigger a rebuild, and the `exec` commands run sequentially — `npx motia dev` compiles the Steps, then `node dist/index-dev.js` starts the built output:
 
-## Utility Commands
+```yaml title="config.yaml (development ExecModule)"
+modules:
+  # ... other modules (StreamModule, StateModule, etc.) ...
 
-### `motia generate step`
-
-Create a new Step with interactive prompts.
-
-```bash
-npx motia generate step [--dir <path>]
+  - class: modules::shell::ExecModule
+    config:
+      watch:
+        - steps/**/*.ts
+      exec:
+        - npx motia dev
+        - node dist/index-dev.js
 ```
 
-### `motia enqueue`
+### `motia rules pull`
 
-Manually enqueue a message for testing.
-
-```bash
-npx motia enqueue --topic user.created --message '{"userId":"123"}'
-```
-
-### `motia state list`
-
-List current file state.
+Update AI development guides (Cursor rules, AGENTS.md) to the latest version.
 
 ```bash
-npx motia state list
+npx motia rules pull
+npx motia rules pull --force  # Overwrite existing
 ```
 
 ---
 
-## Next Steps
+## Typical Development Workflow
 
-- Explore the [Core Concepts](/docs/concepts) to learn more about Steps, Flows, and Topics.
-- Check out the [Examples](/docs/examples) for common patterns and use cases.
+```bash
+motia-cli create my-project   # Scaffold a new project (choose Node.js, Python, or Mixed)
+cd my-project
+iii -c iii-config.yaml        # Starts the iii engine and your Motia Steps
+```
+
+The `iii` engine reads `iii-config.yaml`, starts all modules, and uses the ExecModule to build and run your Motia Steps automatically. File changes trigger hot-reload.
+
+---
+
+## What's Next?
+
+<Cards>
+  <Card href="/docs/concepts/overview" title="Core Concepts">
+    Learn about Steps, triggers, and the event-driven architecture
+  </Card>
+  <Card href="/docs/examples" title="Examples">
+    Explore real-world patterns and use cases
+  </Card>
+</Cards>
