@@ -1,8 +1,11 @@
 import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
-const iii = registerWorker(process.env.III_ENGINE_URL || "ws://localhost:49134", {
-  workerName: "multiplayer-iii",
-});
+const iii = registerWorker(
+  process.env.III_ENGINE_URL || "ws://localhost:49134",
+  {
+    workerName: "multiplayer-iii",
+  },
+);
 
 iii.registerFunction({ id: "rooms::join-player" }, async (request: any) => {
   const logger = new Logger();
@@ -13,7 +16,13 @@ iii.registerFunction({ id: "rooms::join-player" }, async (request: any) => {
     payload: {
       scope: "room-players",
       key: `${roomId}:${playerId}`,
-      value: { _key: `${roomId}:${playerId}`, roomId, playerId, score: 0, joinedAt: new Date().toISOString() },
+      value: {
+        _key: `${roomId}:${playerId}`,
+        roomId,
+        playerId,
+        score: 0,
+        joinedAt: new Date().toISOString(),
+      },
     },
   });
   const players = await iii.trigger({
@@ -32,7 +41,11 @@ iii.registerFunction({ id: "rooms::join-player" }, async (request: any) => {
     },
     action: TriggerAction.Void(),
   });
-  logger.info("multiplayer.player_join", { roomId, playerId, count });
+  logger.info("multiplayer.player_join", {
+    roomId,
+    playerId,
+    count,
+  });
   return { roomId, playerId, count };
 });
 
@@ -46,10 +59,20 @@ iii.registerFunction({ id: "rooms::set-score" }, async (request: any) => {
     payload: {
       scope: "room-scores",
       key: `${roomId}:${playerId}`,
-      value: { _key: `${roomId}:${playerId}`, roomId, playerId, score, updatedAt: new Date().toISOString() },
+      value: {
+        _key: `${roomId}:${playerId}`,
+        roomId,
+        playerId,
+        score,
+        updatedAt: new Date().toISOString(),
+      },
     },
   });
-  logger.info("multiplayer.score_update", { roomId, playerId, score });
+  logger.info("multiplayer.score_update", {
+    roomId,
+    playerId,
+    score,
+  });
   return { accepted: true, roomId };
 });
 
@@ -99,17 +122,26 @@ iii.registerTrigger({
 iii.registerTrigger({
   type: "http",
   function_id: "rooms::join-player",
-  config: { api_path: "/rooms/join", http_method: "POST" },
+  config: {
+    api_path: "/rooms/join",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "rooms::set-score",
-  config: { api_path: "/rooms/:roomId/score", http_method: "POST" },
+  config: {
+    api_path: "/rooms/:roomId/score",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "rooms::state",
-  config: { api_path: "/rooms/:roomId/state", http_method: "GET" },
+  config: {
+    api_path: "/rooms/:roomId/state",
+    http_method: "GET",
+  },
 });

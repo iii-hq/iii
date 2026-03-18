@@ -1,21 +1,29 @@
 import { registerWorker, Logger } from "iii-sdk";
 
-const iii = registerWorker(process.env.III_ENGINE_URL || "ws://localhost:49134", {
-  workerName: "cron-iii",
-});
+const iii = registerWorker(
+  process.env.III_ENGINE_URL || "ws://localhost:49134",
+  {
+    workerName: "cron-iii",
+  },
+);
 
 iii.registerFunction({ id: "reports::generate" }, async () => {
   const logger = new Logger();
   const settings = await iii.trigger({
     function_id: "state::get",
-    payload: { scope: "cron-settings", key: "reports" },
+    payload: {
+      scope: "cron-settings",
+      key: "reports",
+    },
   });
   const enabled = settings?.enabled ?? true;
   if (!enabled) {
     logger.info("cron.reports_generate.skipped", {});
     return { skipped: true };
   }
-  logger.info("cron.reports_generate.run", { task: "reports::generate" });
+  logger.info("cron.reports_generate.run", {
+    task: "reports::generate",
+  });
   return { ran: true };
 });
 
@@ -26,7 +34,11 @@ iii.registerFunction({ id: "cron::reports-start" }, async () => {
     payload: {
       scope: "cron-settings",
       key: "reports",
-      value: { _key: "reports", enabled: true, expression: "0 0 3 * * * *" },
+      value: {
+        _key: "reports",
+        enabled: true,
+        expression: "0 0 3 * * * *",
+      },
     },
   });
   logger.info("cron.reports.start", {});
@@ -40,7 +52,11 @@ iii.registerFunction({ id: "cron::reports-stop" }, async () => {
     payload: {
       scope: "cron-settings",
       key: "reports",
-      value: { _key: "reports", enabled: false, expression: "0 0 3 * * * *" },
+      value: {
+        _key: "reports",
+        enabled: false,
+        expression: "0 0 3 * * * *",
+      },
     },
   });
   logger.info("cron.reports.stop", {});
@@ -51,11 +67,26 @@ iii.registerFunction({ id: "cron::tasks-list" }, async () => {
   const logger = new Logger();
   const settings = await iii.trigger({
     function_id: "state::get",
-    payload: { scope: "cron-settings", key: "reports" },
+    payload: {
+      scope: "cron-settings",
+      key: "reports",
+    },
   });
-  const task = settings ?? { _key: "reports", enabled: true, expression: "0 0 3 * * * *" };
+  const task = settings ?? {
+    _key: "reports",
+    enabled: true,
+    expression: "0 0 3 * * * *",
+  };
   logger.info("cron.tasks.list", { count: 1 });
-  return { tasks: [{ id: "reports", expression: task.expression, enabled: task.enabled }] };
+  return {
+    tasks: [
+      {
+        id: "reports",
+        expression: task.expression,
+        enabled: task.enabled,
+      },
+    ],
+  };
 });
 
 iii.registerTrigger({
@@ -67,17 +98,26 @@ iii.registerTrigger({
 iii.registerTrigger({
   type: "http",
   function_id: "cron::reports-start",
-  config: { api_path: "/cron/reports/start", http_method: "POST" },
+  config: {
+    api_path: "/cron/reports/start",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "cron::reports-stop",
-  config: { api_path: "/cron/reports/stop", http_method: "POST" },
+  config: {
+    api_path: "/cron/reports/stop",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "cron::tasks-list",
-  config: { api_path: "/cron/tasks", http_method: "GET" },
+  config: {
+    api_path: "/cron/tasks",
+    http_method: "GET",
+  },
 });

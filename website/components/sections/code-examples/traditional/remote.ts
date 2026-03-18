@@ -14,22 +14,34 @@ const telemetry = new NodeSDK({
 });
 void telemetry.start();
 
-const logger = pino({ name: "remote-traditional", level: process.env.LOG_LEVEL ?? "info" });
+const logger = pino({
+  name: "remote-traditional",
+  level: process.env.LOG_LEVEL ?? "info",
+});
 const tracer = trace.getTracer("remote-traditional");
 const app = express();
 app.use(express.json());
 
-function writeLog(level: "info" | "warn" | "error", payload: Record<string, unknown>) {
+function writeLog(
+  level: "info" | "warn" | "error",
+  payload: Record<string, unknown>,
+) {
   if (level === "error") return logger.error(payload);
   if (level === "warn") return logger.warn(payload);
   return logger.info(payload);
 }
 
-async function sendCentralLog(level: "info" | "warn" | "error", event: string, data: Record<string, unknown>) {
+async function sendCentralLog(
+  level: "info" | "warn" | "error",
+  event: string,
+  data: Record<string, unknown>,
+) {
   writeLog(level, { event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
       service: "remote-traditional",
       level,
@@ -52,7 +64,9 @@ app.post("/remote/invoices", async (req, res) => {
         },
         {
           timeout: 5000,
-          headers: { authorization: `Bearer ${process.env.BILLING_API_TOKEN}` },
+          headers: {
+            authorization: `Bearer ${process.env.BILLING_API_TOKEN}`,
+          },
         },
       );
       return response.data;
@@ -67,7 +81,9 @@ app.post("/remote/invoices", async (req, res) => {
       },
     },
   );
-  await sendCentralLog("info", "remote.create_invoice.completed", { invoiceId: invoice.id });
+  await sendCentralLog("info", "remote.create_invoice.completed", {
+    invoiceId: invoice.id,
+  });
   span.end();
   res.json(invoice);
 });

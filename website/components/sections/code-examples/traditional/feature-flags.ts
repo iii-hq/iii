@@ -14,26 +14,40 @@ const telemetry = new NodeSDK({
 });
 void telemetry.start();
 
-const logger = pino({ name: "feature-flags-traditional", level: process.env.LOG_LEVEL ?? "info" });
+const logger = pino({
+  name: "feature-flags-traditional",
+  level: process.env.LOG_LEVEL ?? "info",
+});
 const tracer = trace.getTracer("feature-flags-traditional");
 const app = express();
 app.use(express.json());
 
 const ldClient = init(process.env.LD_SDK_KEY || "");
-const redis = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+const redis = createClient({
+  url: process.env.REDIS_URL || "redis://localhost:6379",
+});
 const subscriber = redis.duplicate();
 
-function writeLog(level: "info" | "warn" | "error", payload: Record<string, unknown>) {
+function writeLog(
+  level: "info" | "warn" | "error",
+  payload: Record<string, unknown>,
+) {
   if (level === "error") return logger.error(payload);
   if (level === "warn") return logger.warn(payload);
   return logger.info(payload);
 }
 
-async function sendCentralLog(level: "info" | "warn" | "error", event: string, data: Record<string, unknown>) {
+async function sendCentralLog(
+  level: "info" | "warn" | "error",
+  event: string,
+  data: Record<string, unknown>,
+) {
   writeLog(level, { event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
       service: "feature-flags-traditional",
       level,
@@ -66,23 +80,46 @@ app.get("/flags/:flagKey/evaluate", async (req, res) => {
   const override = await redis.hGet("flags:overrides", flagKey);
   if (override) {
     const parsed = JSON.parse(override);
-    await sendCentralLog("info", "flags.evaluate.override", { flagKey, userId, value: parsed.value });
+    await sendCentralLog("info", "flags.evaluate.override", {
+      flagKey,
+      userId,
+      value: parsed.value,
+    });
     span.end();
-    res.json({ flagKey, userId, value: parsed.value, source: "override" });
+    res.json({
+      flagKey,
+      userId,
+      value: parsed.value,
+      source: "override",
+    });
     return;
   }
   const value = await ldClient.variation(flagKey, { key: userId }, false);
-  await sendCentralLog("info", "flags.evaluate.launchdarkly", { flagKey, userId, value });
+  await sendCentralLog("info", "flags.evaluate.launchdarkly", {
+    flagKey,
+    userId,
+    value,
+  });
   span.end();
-  res.json({ flagKey, userId, value, source: "launchdarkly" });
+  res.json({
+    flagKey,
+    userId,
+    value,
+    source: "launchdarkly",
+  });
 });
 
 async function bootFlags() {
-  await ldClient.waitForInitialization({ timeout: 5 });
+  await ldClient.waitForInitialization({
+    timeout: 5,
+  });
   await redis.connect();
   await subscriber.connect();
   await subscriber.subscribe("flags.updated", async (raw) => {
-    const evt = JSON.parse(raw) as { flagKey: string; value: boolean };
+    const evt = JSON.parse(raw) as {
+      flagKey: string;
+      value: boolean;
+    };
     await sendCentralLog("info", "flags.update_propagated", evt);
   });
 }

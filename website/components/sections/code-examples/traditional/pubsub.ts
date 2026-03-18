@@ -13,7 +13,10 @@ const telemetry = new NodeSDK({
 });
 void telemetry.start();
 
-const logger = pino({ name: "events-traditional", level: process.env.LOG_LEVEL ?? "info" });
+const logger = pino({
+  name: "events-traditional",
+  level: process.env.LOG_LEVEL ?? "info",
+});
 const tracer = trace.getTracer("events-traditional");
 const app = express();
 app.use(express.json());
@@ -21,17 +24,26 @@ app.use(express.json());
 let channel: Channel;
 const processed = new Set<string>();
 
-function writeLog(level: "info" | "warn" | "error", payload: Record<string, unknown>) {
+function writeLog(
+  level: "info" | "warn" | "error",
+  payload: Record<string, unknown>,
+) {
   if (level === "error") return logger.error(payload);
   if (level === "warn") return logger.warn(payload);
   return logger.info(payload);
 }
 
-async function sendCentralLog(level: "info" | "warn" | "error", event: string, data: Record<string, unknown>) {
+async function sendCentralLog(
+  level: "info" | "warn" | "error",
+  event: string,
+  data: Record<string, unknown>,
+) {
   writeLog(level, { event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
       service: "events-traditional",
       level,
@@ -52,7 +64,9 @@ async function handleProjection(message: ConsumeMessage | null) {
     total: number;
   };
   if (processed.has(event.eventId)) {
-    await sendCentralLog("warn", "events.consume_order_created.duplicate", { eventId: event.eventId });
+    await sendCentralLog("warn", "events.consume_order_created.duplicate", {
+      eventId: event.eventId,
+    });
     channel.ack(message);
     span.end();
     return;
@@ -67,12 +81,24 @@ async function handleProjection(message: ConsumeMessage | null) {
 }
 
 async function bootBroker() {
-  const connection: Connection = await amqp.connect(process.env.AMQP_URL || "amqp://localhost");
+  const connection: Connection = await amqp.connect(
+    process.env.AMQP_URL || "amqp://localhost",
+  );
   channel = await connection.createChannel();
-  await channel.assertExchange("orders.events", "topic", { durable: true });
-  await channel.assertQueue("inventory.projection", { durable: true });
-  await channel.bindQueue("inventory.projection", "orders.events", "order.created");
-  await channel.consume("inventory.projection", handleProjection, { noAck: false });
+  await channel.assertExchange("orders.events", "topic", {
+    durable: true,
+  });
+  await channel.assertQueue("inventory.projection", {
+    durable: true,
+  });
+  await channel.bindQueue(
+    "inventory.projection",
+    "orders.events",
+    "order.created",
+  );
+  await channel.consume("inventory.projection", handleProjection, {
+    noAck: false,
+  });
 }
 
 app.post("/events/order-created", async (req, res) => {
@@ -83,19 +109,29 @@ app.post("/events/order-created", async (req, res) => {
     customerId: req.body.customerId,
     total: req.body.total,
   };
-  channel.publish("orders.events", "order.created", Buffer.from(JSON.stringify(payload)), {
-    persistent: true,
-  });
+  channel.publish(
+    "orders.events",
+    "order.created",
+    Buffer.from(JSON.stringify(payload)),
+    {
+      persistent: true,
+    },
+  );
   await sendCentralLog("info", "events.publish_order_created.published", {
     eventId: payload.eventId,
     orderId: payload.orderId,
   });
   span.end();
-  res.status(202).json({ accepted: true, eventId: payload.eventId });
+  res.status(202).json({
+    accepted: true,
+    eventId: payload.eventId,
+  });
 });
 
 app.get("/events/processed", async (_req, res) => {
-  await sendCentralLog("info", "events.processed.snapshot", { count: processed.size });
+  await sendCentralLog("info", "events.processed.snapshot", {
+    count: processed.size,
+  });
   res.json({ processedCount: processed.size });
 });
 

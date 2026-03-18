@@ -1,37 +1,54 @@
 import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
-const iii = registerWorker(process.env.III_ENGINE_URL || "ws://localhost:49134", {
-  workerName: "events-iii",
-});
+const iii = registerWorker(
+  process.env.III_ENGINE_URL || "ws://localhost:49134",
+  {
+    workerName: "events-iii",
+  },
+);
 
-iii.registerFunction({ id: "orders::publish-created" }, async (request: any) => {
-  const logger = new Logger();
-  const payload = {
-    eventId: request.body.eventId ?? `evt-${Date.now()}`,
-    orderId: request.body.orderId,
-    customerId: request.body.customerId,
-    total: request.body.total,
-  };
-  iii.trigger({
-    function_id: "publish",
-    payload: { topic: "order.created", data: payload },
-    action: TriggerAction.Void(),
-  });
-  logger.info("events.publish_order_created.published", {
-    eventId: payload.eventId,
-    orderId: payload.orderId,
-  });
-  return { accepted: true, eventId: payload.eventId };
-});
+iii.registerFunction(
+  { id: "orders::publish-created" },
+  async (request: any) => {
+    const logger = new Logger();
+    const payload = {
+      eventId: request.body.eventId ?? `evt-${Date.now()}`,
+      orderId: request.body.orderId,
+      customerId: request.body.customerId,
+      total: request.body.total,
+    };
+    iii.trigger({
+      function_id: "publish",
+      payload: {
+        topic: "order.created",
+        data: payload,
+      },
+      action: TriggerAction.Void(),
+    });
+    logger.info("events.publish_order_created.published", {
+      eventId: payload.eventId,
+      orderId: payload.orderId,
+    });
+    return {
+      accepted: true,
+      eventId: payload.eventId,
+    };
+  },
+);
 
 iii.registerFunction({ id: "orders::project-created" }, async (event: any) => {
   const logger = new Logger();
   const seen = await iii.trigger({
     function_id: "state::get",
-    payload: { scope: "processed-events", key: event.eventId },
+    payload: {
+      scope: "processed-events",
+      key: event.eventId,
+    },
   });
   if (seen) {
-    logger.warn("events.consume_order_created.duplicate", { eventId: event.eventId });
+    logger.warn("events.consume_order_created.duplicate", {
+      eventId: event.eventId,
+    });
     return { duplicate: true };
   }
   await iii.trigger({
@@ -39,7 +56,11 @@ iii.registerFunction({ id: "orders::project-created" }, async (event: any) => {
     payload: {
       scope: "processed-events",
       key: event.eventId,
-      value: { _key: event.eventId, eventId: event.eventId, appliedAt: new Date().toISOString() },
+      value: {
+        _key: event.eventId,
+        eventId: event.eventId,
+        appliedAt: new Date().toISOString(),
+      },
     },
   });
   await iii.trigger({
@@ -47,10 +68,18 @@ iii.registerFunction({ id: "orders::project-created" }, async (event: any) => {
     payload: {
       scope: "inventory-orders",
       key: event.orderId,
-      value: { _key: event.orderId, orderId: event.orderId, customerId: event.customerId, total: event.total },
+      value: {
+        _key: event.orderId,
+        orderId: event.orderId,
+        customerId: event.customerId,
+        total: event.total,
+      },
     },
   });
-  logger.info("events.consume_order_created.applied", { eventId: event.eventId, orderId: event.orderId });
+  logger.info("events.consume_order_created.applied", {
+    eventId: event.eventId,
+    orderId: event.orderId,
+  });
   return { duplicate: false };
 });
 
@@ -71,11 +100,17 @@ iii.registerTrigger({
 iii.registerTrigger({
   type: "http",
   function_id: "orders::publish-created",
-  config: { api_path: "/events/order-created", http_method: "POST" },
+  config: {
+    api_path: "/events/order-created",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "orders::processed-snapshot",
-  config: { api_path: "/events/processed", http_method: "GET" },
+  config: {
+    api_path: "/events/processed",
+    http_method: "GET",
+  },
 });

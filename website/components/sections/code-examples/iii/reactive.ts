@@ -1,8 +1,11 @@
 import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
-const iii = registerWorker(process.env.III_ENGINE_URL || "ws://localhost:49134", {
-  workerName: "reactive-iii",
-});
+const iii = registerWorker(
+  process.env.III_ENGINE_URL || "ws://localhost:49134",
+  {
+    workerName: "reactive-iii",
+  },
+);
 
 iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
   const logger = new Logger();
@@ -13,20 +16,33 @@ iii.registerFunction({ id: "accounts::set-status" }, async (request: any) => {
     payload: {
       scope: "accounts",
       key: accountId,
-      value: { _key: accountId, id: accountId, status, updatedAt: new Date().toISOString() },
+      value: {
+        _key: accountId,
+        id: accountId,
+        status,
+        updatedAt: new Date().toISOString(),
+      },
     },
   });
-  logger.info("reactive.status_update", { accountId, status });
+  logger.info("reactive.status_update", {
+    accountId,
+    status,
+  });
   return { accountId, status };
 });
 
 iii.registerFunction({ id: "accounts::get" }, async (request: any) => {
   const account = await iii.trigger({
     function_id: "state::get",
-    payload: { scope: "accounts", key: request.params.accountId },
+    payload: {
+      scope: "accounts",
+      key: request.params.accountId,
+    },
   });
   if (!account) {
-    const error = new Error("Account not found") as Error & { status: number };
+    const error = new Error("Account not found") as Error & {
+      status: number;
+    };
     error.status = 404;
     throw error;
   }
@@ -38,7 +54,10 @@ iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
   const update = event.new_value;
   iii.trigger({
     function_id: "publish",
-    payload: { topic: "account_changes", data: update },
+    payload: {
+      topic: "account_changes",
+      data: update,
+    },
     action: TriggerAction.Void(),
   });
   iii.trigger({
@@ -52,7 +71,10 @@ iii.registerFunction({ id: "accounts::on-change" }, async (event: any) => {
     },
     action: TriggerAction.Void(),
   });
-  logger.info("reactive.pubsub_to_stream", { accountId: update.id, status: update.status });
+  logger.info("reactive.pubsub_to_stream", {
+    accountId: update.id,
+    status: update.status,
+  });
   return { propagated: true };
 });
 
@@ -65,11 +87,17 @@ iii.registerTrigger({
 iii.registerTrigger({
   type: "http",
   function_id: "accounts::set-status",
-  config: { api_path: "/reactive/accounts/:accountId/status", http_method: "POST" },
+  config: {
+    api_path: "/reactive/accounts/:accountId/status",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "accounts::get",
-  config: { api_path: "/reactive/accounts/:accountId", http_method: "GET" },
+  config: {
+    api_path: "/reactive/accounts/:accountId",
+    http_method: "GET",
+  },
 });

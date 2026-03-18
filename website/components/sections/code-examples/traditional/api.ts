@@ -39,7 +39,10 @@ const createPost = z.object({
   body: z.string().min(1),
 });
 
-function writeLog(level: "info" | "warn" | "error", payload: Record<string, unknown>) {
+function writeLog(
+  level: "info" | "warn" | "error",
+  payload: Record<string, unknown>,
+) {
   if (level === "error") {
     logger.error(payload);
     return;
@@ -51,11 +54,17 @@ function writeLog(level: "info" | "warn" | "error", payload: Record<string, unkn
   logger.info(payload);
 }
 
-async function sendCentralLog(level: "info" | "warn" | "error", event: string, data: Record<string, unknown>) {
+async function sendCentralLog(
+  level: "info" | "warn" | "error",
+  event: string,
+  data: Record<string, unknown>,
+) {
   writeLog(level, { event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
       service: "blog-api-traditional",
       level,
@@ -68,7 +77,9 @@ async function sendCentralLog(level: "info" | "warn" | "error", event: string, d
 
 app.get("/posts", async (_req, res) => {
   const span = tracer.startSpan("api.list_posts");
-  await sendCentralLog("info", "api.list_posts", { count: posts.length });
+  await sendCentralLog("info", "api.list_posts", {
+    count: posts.length,
+  });
   span.end();
   res.json({ posts });
 });
@@ -76,9 +87,14 @@ app.get("/posts", async (_req, res) => {
 app.post("/posts", async (req, res) => {
   const span = tracer.startSpan("api.create_post");
   const data = createPost.parse(req.body);
-  const post: Post = { title: data.title, body: data.body };
+  const post: Post = {
+    title: data.title,
+    body: data.body,
+  };
   posts.unshift(post);
-  await sendCentralLog("info", "api.create_post.created", { title: post.title });
+  await sendCentralLog("info", "api.create_post.created", {
+    title: post.title,
+  });
   span.end();
   res.status(201).json({ post });
 });

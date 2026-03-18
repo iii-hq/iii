@@ -15,28 +15,44 @@ const telemetry = new NodeSDK({
 });
 void telemetry.start();
 
-const logger = pino({ name: "realtime-traditional", level: process.env.LOG_LEVEL ?? "info" });
+const logger = pino({
+  name: "realtime-traditional",
+  level: process.env.LOG_LEVEL ?? "info",
+});
 const tracer = trace.getTracer("realtime-traditional");
 
 const app = express();
 app.use(express.json());
 const server = createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-const redisPublisher = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
+const io = new Server(server, {
+  cors: { origin: "*" },
+});
+const redisPublisher = createClient({
+  url: process.env.REDIS_URL || "redis://localhost:6379",
+});
 const redisSubscriber = redisPublisher.duplicate();
 const redisState = redisPublisher.duplicate();
 
-function writeLog(level: "info" | "warn" | "error", payload: Record<string, unknown>) {
+function writeLog(
+  level: "info" | "warn" | "error",
+  payload: Record<string, unknown>,
+) {
   if (level === "error") return logger.error(payload);
   if (level === "warn") return logger.warn(payload);
   return logger.info(payload);
 }
 
-async function sendCentralLog(level: "info" | "warn" | "error", event: string, data: Record<string, unknown>) {
+async function sendCentralLog(
+  level: "info" | "warn" | "error",
+  event: string,
+  data: Record<string, unknown>,
+) {
   writeLog(level, { event, ...data });
   await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+    },
     body: JSON.stringify({
       service: "realtime-traditional",
       level,
@@ -57,8 +73,15 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     await redisState.sAdd(`presence:${roomId}`, userId);
     const count = await roomPresence(roomId);
-    io.to(roomId).emit("presence.updated", { roomId, count });
-    await sendCentralLog("info", "realtime.room_join", { roomId, userId, count });
+    io.to(roomId).emit("presence.updated", {
+      roomId,
+      count,
+    });
+    await sendCentralLog("info", "realtime.room_join", {
+      roomId,
+      userId,
+      count,
+    });
     span.end();
   });
 });
@@ -71,10 +94,16 @@ app.post("/rooms/:roomId/score", async (req, res) => {
     score: req.body.score,
     updatedAt: new Date().toISOString(),
   };
-  await redisPublisher.publish(`rooms:${req.params.roomId}:updates`, JSON.stringify(message));
+  await redisPublisher.publish(
+    `rooms:${req.params.roomId}:updates`,
+    JSON.stringify(message),
+  );
   await sendCentralLog("info", "realtime.update_score", message);
   span.end();
-  res.status(202).json({ accepted: true, roomId: req.params.roomId });
+  res.status(202).json({
+    accepted: true,
+    roomId: req.params.roomId,
+  });
 });
 
 async function bootRealtime() {
@@ -84,7 +113,9 @@ async function bootRealtime() {
   await redisSubscriber.pSubscribe("rooms:*:updates", async (raw, channel) => {
     const roomId = channel.split(":")[1];
     io.to(roomId).emit("room.updated", JSON.parse(raw));
-    await sendCentralLog("info", "realtime.broadcast_update", { roomId });
+    await sendCentralLog("info", "realtime.broadcast_update", {
+      roomId,
+    });
   });
 }
 

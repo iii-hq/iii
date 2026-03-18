@@ -1,8 +1,11 @@
 import { registerWorker, Logger, TriggerAction } from "iii-sdk";
 
-const iii = registerWorker(process.env.III_ENGINE_URL || "ws://localhost:49134", {
-  workerName: "realtime-iii",
-});
+const iii = registerWorker(
+  process.env.III_ENGINE_URL || "ws://localhost:49134",
+  {
+    workerName: "realtime-iii",
+  },
+);
 
 iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
   const logger = new Logger();
@@ -13,14 +16,21 @@ iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
     payload: {
       scope: "room-presence",
       key: `${roomId}:${userId}`,
-      value: { _key: `${roomId}:${userId}`, roomId, userId, joinedAt: new Date().toISOString() },
+      value: {
+        _key: `${roomId}:${userId}`,
+        roomId,
+        userId,
+        joinedAt: new Date().toISOString(),
+      },
     },
   });
   const members = await iii.trigger({
     function_id: "state::list",
     payload: { scope: "room-presence" },
   });
-  const count = members.filter((member: any) => member.roomId === roomId).length;
+  const count = members.filter(
+    (member: any) => member.roomId === roomId,
+  ).length;
   iii.trigger({
     function_id: "stream::send",
     payload: {
@@ -32,7 +42,11 @@ iii.registerFunction({ id: "rooms::join" }, async (request: any) => {
     },
     action: TriggerAction.Void(),
   });
-  logger.info("realtime.room_join", { roomId, userId, count });
+  logger.info("realtime.room_join", {
+    roomId,
+    userId,
+    count,
+  });
   return { roomId, count };
 });
 
@@ -50,7 +64,10 @@ iii.registerFunction({ id: "rooms::update-score" }, async (request: any) => {
     payload: {
       scope: "room-state",
       key: `${roomId}:${update.playerId}`,
-      value: { _key: `${roomId}:${update.playerId}`, ...update },
+      value: {
+        _key: `${roomId}:${update.playerId}`,
+        ...update,
+      },
     },
   });
   logger.info("realtime.update_score", update);
@@ -70,7 +87,9 @@ iii.registerFunction({ id: "rooms::on-score-change" }, async (event: any) => {
     },
     action: TriggerAction.Void(),
   });
-  logger.info("realtime.broadcast_update", { roomId: event.new_value.roomId });
+  logger.info("realtime.broadcast_update", {
+    roomId: event.new_value.roomId,
+  });
   return { delivered: true };
 });
 
@@ -83,11 +102,17 @@ iii.registerTrigger({
 iii.registerTrigger({
   type: "http",
   function_id: "rooms::join",
-  config: { api_path: "/rooms/join", http_method: "POST" },
+  config: {
+    api_path: "/rooms/join",
+    http_method: "POST",
+  },
 });
 
 iii.registerTrigger({
   type: "http",
   function_id: "rooms::update-score",
-  config: { api_path: "/rooms/:roomId/score", http_method: "POST" },
+  config: {
+    api_path: "/rooms/:roomId/score",
+    http_method: "POST",
+  },
 });
