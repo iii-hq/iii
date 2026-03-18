@@ -285,384 +285,6 @@ const businessLogicKeywords = [
   "flow.",
 ];
 
-interface DependencyBoxProps {
-  name: string;
-  index: number;
-  animationPhase: AnimationPhase;
-  isDarkMode: boolean;
-  totalTools: number;
-}
-
-const DependencyBox: React.FC<DependencyBoxProps> = ({
-  name,
-  index,
-  animationPhase,
-  isDarkMode,
-  totalTools,
-}) => {
-  // During idle/highlighting: boxes are invisible, positioned far left (in the code)
-  // During moving: boxes animate from left into the center hub
-  // During linking: lines extend, boxes start transitioning color
-  // During connected/outputting+: boxes are accent colored and fully connected
-
-  const laterPhases = ["outputting", "legendVisible", "spotlight"];
-
-  const isVisible =
-    animationPhase === "moving" ||
-    animationPhase === "linking" ||
-    animationPhase === "connected" ||
-    laterPhases.includes(animationPhase);
-  const isMoving = animationPhase === "moving";
-  const isLinkedOrConnected =
-    animationPhase === "linking" ||
-    animationPhase === "connected" ||
-    laterPhases.includes(animationPhase);
-
-  // Stagger vertical positions to simulate coming from different lines
-  const verticalOffset = index * 8; // Slight vertical stagger
-
-  // Color transitions: alert (moving) -> accent (linking/connected)
-  const getColorClasses = () => {
-    if (isLinkedOrConnected) {
-      return isDarkMode
-        ? "bg-iii-dark border-iii-accent text-iii-accent"
-        : "bg-white border-iii-accent-light text-iii-accent-light";
-    }
-    return isDarkMode
-      ? "bg-iii-dark border-iii-alert/50 text-iii-alert"
-      : "bg-white border-red-300 text-red-600";
-  };
-
-  return (
-    <div
-      className={`
-        px-3 py-2 rounded-lg border text-xs font-medium whitespace-nowrap
-        transition-all ease-out
-        ${isVisible ? "duration-1000" : "duration-0"}
-        ${
-          isVisible
-            ? "opacity-100 translate-x-0"
-            : "opacity-0 -translate-x-[200px]"
-        }
-        ${isMoving ? "scale-95" : "scale-100"}
-        ${getColorClasses()}
-      `}
-      style={{
-        transitionDelay: isVisible ? `${index * 100}ms` : "0ms",
-        // Add slight vertical offset during animation to show they came from different places
-        transform: isVisible
-          ? `translateX(0) translateY(0)`
-          : `translateX(-200px) translateY(${
-              verticalOffset - totalTools * 4
-            }px)`,
-      }}
-    >
-      {name}
-    </div>
-  );
-};
-
-interface IIIEngineHubProps {
-  tools: string[];
-  animationPhase: AnimationPhase;
-  isDarkMode: boolean;
-}
-
-// Animated connection line with flowing energy effect
-const ConnectionLine: React.FC<{
-  isVisible: boolean;
-  isActive: boolean;
-  height: string;
-  delay: number;
-  index: number;
-  isDarkMode: boolean;
-}> = ({ isVisible, isActive, height, delay, index, isDarkMode }) => {
-  // Use CSS variables for colors
-  const accentVar = isDarkMode
-    ? "var(--color-info)"
-    : "var(--color-accent-light)";
-
-  return (
-    <div
-      className={`
-        relative transition-all duration-700 ease-out
-        ${isVisible ? `${height} opacity-100` : "h-0 opacity-0"}
-      `}
-      style={{
-        transitionDelay: `${delay}ms`,
-        width: "2px",
-      }}
-    >
-      {/* Base line */}
-      <div
-        className={`absolute inset-0 rounded-full ${
-          isDarkMode ? "bg-iii-info/30" : "bg-iii-accent-light/30"
-        }`}
-      />
-
-      {/* Animated flowing gradient */}
-      {isActive && (
-        <>
-          <div
-            className="absolute inset-0 rounded-full overflow-hidden opacity-60"
-            style={{
-              background: `linear-gradient(180deg, 
-                transparent 0%, 
-                ${accentVar} 30%, 
-                ${accentVar} 70%, 
-                transparent 100%
-              )`,
-              backgroundSize: "100% 300%",
-              animation: `flowDown 2.5s ease-in-out infinite`,
-              animationDelay: `${index * 200}ms`,
-            }}
-          />
-          {/* Glowing orb that travels */}
-          <div
-            className={`absolute left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full opacity-60 ${
-              isDarkMode ? "bg-iii-info" : "bg-iii-accent-light"
-            }`}
-            style={{
-              animation: `orbTravel 3s ease-in-out infinite`,
-              animationDelay: `${index * 300}ms`,
-            }}
-          />
-        </>
-      )}
-    </div>
-  );
-};
-
-// Horizontal bidirectional connection line to the code output with creative endpoint
-const OutputConnectionLine: React.FC<{
-  isVisible: boolean;
-  isDarkMode: boolean;
-}> = ({ isVisible, isDarkMode }) => {
-  // Use CSS variables for colors
-  const accentVar = isDarkMode
-    ? "var(--color-accent)"
-    : "var(--color-accent-light)";
-
-  return (
-    <div className="absolute right-0 top-1/2 -translate-y-1/2 translate-x-full flex items-center">
-      {/* Solid accent line */}
-      <div
-        className={`
-          h-0.5 transition-all duration-1000 ease-out overflow-visible relative
-          ${isVisible ? "w-[60px] opacity-100" : "w-0 opacity-0"}
-          ${isDarkMode ? "bg-iii-accent" : "bg-iii-accent-light"}
-        `}
-      >
-        {/* Orb traveling right (engine -> code) */}
-        {isVisible && (
-          <div
-            className={`absolute top-1/2 -translate-y-1/2 h-2 w-2 rounded-full ${
-              isDarkMode ? "bg-iii-info" : "bg-iii-accent-light"
-            }`}
-            style={{
-              animation: "orbTravelRight 2s ease-in-out infinite",
-            }}
-          />
-        )}
-        {/* Orb traveling left (code -> engine) */}
-        {isVisible && (
-          <div
-            className={`absolute top-1/2 -translate-y-1/2 h-2 w-2 rounded-full ${
-              isDarkMode ? "bg-iii-accent" : "bg-iii-accent-light"
-            }`}
-            style={{
-              animation: "orbTravelLeft 2s ease-in-out infinite",
-              animationDelay: "1s",
-            }}
-          />
-        )}
-      </div>
-
-      {/* Connection port/socket that overlaps with the code border */}
-      <div
-        className={`
-          relative transition-all duration-700
-          ${isVisible ? "opacity-100 scale-100" : "opacity-0 scale-0"}
-        `}
-        style={{ transitionDelay: isVisible ? "600ms" : "0ms" }}
-      >
-        {/* Inner glowing core (stronger and more visible) */}
-        <div
-          className={`absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-5 ${
-            isDarkMode ? "bg-iii-accent" : "bg-iii-accent-light"
-          }`}
-        />
-      </div>
-    </div>
-  );
-};
-
-const IIIEngineHub: React.FC<IIIEngineHubProps> = ({
-  tools,
-  animationPhase,
-  isDarkMode,
-}) => {
-  const laterPhases = ["outputting", "legendVisible", "spotlight"];
-
-  const showDependencies =
-    animationPhase === "moving" ||
-    animationPhase === "linking" ||
-    animationPhase === "connected" ||
-    laterPhases.includes(animationPhase);
-  const isLinking =
-    animationPhase === "linking" ||
-    animationPhase === "connected" ||
-    laterPhases.includes(animationPhase);
-  const isConnected =
-    animationPhase === "connected" || laterPhases.includes(animationPhase);
-  const isOutputting = laterPhases.includes(animationPhase);
-
-  // Split tools into top and bottom halves
-  const midpoint = Math.ceil(tools.length / 2);
-  const topTools = tools.slice(0, midpoint);
-  const bottomTools = tools.slice(midpoint);
-
-  return (
-    <div className="flex flex-col items-center justify-center h-full py-4 min-h-[400px] overflow-visible">
-      {/* Top dependencies with connection lines */}
-      <div className="flex flex-col items-center gap-0 overflow-visible">
-        {topTools.map((tool, i) => (
-          <div key={tool} className="flex flex-col items-center">
-            <DependencyBox
-              name={tool}
-              index={i}
-              animationPhase={animationPhase}
-              isDarkMode={isDarkMode}
-              totalTools={tools.length}
-            />
-            {/* Connection line from this dependency */}
-            <ConnectionLine
-              isVisible={isLinking}
-              isActive={isConnected}
-              height="h-6"
-              delay={i * 120}
-              index={i}
-              isDarkMode={isDarkMode}
-            />
-          </div>
-        ))}
-      </div>
-
-      {/* Converging lines to engine - top */}
-      <ConnectionLine
-        isVisible={isLinking}
-        isActive={isConnected}
-        height="h-4"
-        delay={topTools.length * 120 + 100}
-        index={topTools.length}
-        isDarkMode={isDarkMode}
-      />
-
-      {/* iii Engine Core */}
-      <div
-        className={`
-        relative px-6 py-4 rounded-lg border-2 transition-all duration-500 my-1
-        ${
-          isConnected
-            ? isDarkMode
-              ? "border-iii-accent bg-iii-accent/10 shadow-lg shadow-iii-accent/20"
-              : "border-iii-accent-light bg-iii-accent-light/10 shadow-lg shadow-iii-accent-light/20"
-            : isDarkMode
-              ? "border-iii-light/30 bg-iii-dark/50"
-              : "border-iii-dark/30 bg-white/50"
-        }
-      `}
-      >
-        {/* Pulse effect when connected */}
-        {isConnected && (
-          <div
-            className={`absolute inset-0 rounded-lg opacity-90 transition-none ${
-              isDarkMode ? "bg-iii-accent" : "bg-iii-accent-light"
-            }`}
-            style={{
-              animation: "ping-once 2s cubic-bezier(0, 0, 0.2, 1)",
-              animationFillMode: "forwards",
-            }}
-          />
-        )}
-        {/* Ping once animation */}
-        <style>{`
-          @keyframes ping-once {
-            0% {
-              transform: scale(1);
-              opacity: 0.5;
-            }
-            75% {
-              transform: scale(1.25);
-              opacity: 0.05;
-            }
-            100% {
-              transform: scale(1.5);
-              opacity: 0;
-            }
-          }
-        `}</style>
-        <div
-          className={`
-          text-2xl font-black tracking-tight text-center relative z-10
-          ${isDarkMode ? "text-iii-accent" : "text-iii-accent-light"}
-        `}
-        >
-          iii
-        </div>
-        <div
-          className={`
-          text-[10px] font-mono text-center relative z-10
-          ${isDarkMode ? "text-iii-light/70" : "text-iii-medium"}
-        `}
-        >
-          engine
-        </div>
-
-        {/* Horizontal output connection to iii code */}
-        <OutputConnectionLine
-          isVisible={isOutputting}
-          isDarkMode={isDarkMode}
-        />
-      </div>
-
-      {/* Converging lines from engine - bottom */}
-      <ConnectionLine
-        isVisible={isLinking}
-        isActive={isConnected}
-        height="h-4"
-        delay={topTools.length * 120 + 200}
-        index={topTools.length + 1}
-        isDarkMode={isDarkMode}
-      />
-
-      {/* Bottom dependencies with connection lines */}
-      <div className="flex flex-col items-center gap-0 overflow-visible">
-        {bottomTools.map((tool, i) => (
-          <div key={tool} className="flex flex-col items-center">
-            {/* Connection line to this dependency */}
-            <ConnectionLine
-              isVisible={isLinking}
-              isActive={isConnected}
-              height="h-6"
-              delay={(i + midpoint) * 120}
-              index={i + midpoint + 2}
-              isDarkMode={isDarkMode}
-            />
-            <DependencyBox
-              name={tool}
-              index={i + midpoint}
-              animationPhase={animationPhase}
-              isDarkMode={isDarkMode}
-              totalTools={tools.length}
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
 interface HighlightedCodeBlockProps {
   code: string;
   title: string;
@@ -672,6 +294,43 @@ interface HighlightedCodeBlockProps {
   language?: string;
   animationPhase: AnimationPhase;
 }
+
+interface IIIHeaderGraphProps {
+  isDarkMode: boolean;
+  dependencies: string[];
+}
+
+const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
+  isDarkMode,
+  dependencies,
+}) => {
+  const boxClasses = isDarkMode
+    ? "border-iii-light/60 bg-iii-dark text-iii-light"
+    : "border-iii-dark/40 bg-white text-iii-black";
+  const lineClasses = isDarkMode ? "bg-iii-light/60" : "bg-iii-dark/40";
+  const nodes = dependencies.slice(0, 2);
+
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex items-center flex-shrink-0">
+      {nodes.map((node, index) => (
+        <React.Fragment key={`${node}-${index}`}>
+          <div
+            className={`min-w-[84px] px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold text-center ${boxClasses}`}
+          >
+            {node}
+          </div>
+          {index < nodes.length - 1 && (
+            <div className={`h-px w-5 sm:w-6 ${lineClasses}`} />
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
 
 // Helper to check if a line contains any tool-related import or setup
 const lineContainsTool = (lineText: string, tools: string[]): boolean => {
@@ -895,6 +554,45 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
     (animationPhase === "highlighting" || animationPhase === "moving");
   const shouldShowExtracted = isTraditional && animationPhase === "moving";
 
+  const inferredDependencies = Array.from(
+    new Set(
+      tools
+        .filter((tool) => {
+          const tokens = tool
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(
+              (token) => token.length >= 3 && token !== "sdk" && token !== "js",
+            );
+          if (tokens.length === 0) {
+            return false;
+          }
+          return lines.some((line, index) => {
+            if (!architectureLines.has(index + 1)) {
+              return false;
+            }
+            const lowerLine = line.toLowerCase();
+            return tokens.some((token) => lowerLine.includes(token));
+          });
+        })
+        .map((tool) => tool.replace(/\s*\+.*$/, "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const baseDependencies =
+    inferredDependencies.length > 0
+      ? inferredDependencies
+      : tools
+          .map((tool) => tool.replace(/\s*\+.*$/, "").trim())
+          .filter(Boolean);
+  const dependencyCount =
+    animationPhase === "highlighting"
+      ? 0
+      : animationPhase === "moving"
+        ? 1
+        : 2;
+  const headerDependencies = baseDependencies.slice(0, dependencyCount);
+
   // Border styling for iii code block - transforms to dashed accent when outputting
   const getBorderClasses = () => {
     if (isIII && isOutputting) {
@@ -904,7 +602,6 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
     }
     return isDarkMode ? "border-iii-light" : "border-iii-dark";
   };
-
   return (
     <div
       className={`rounded-lg overflow-hidden border-2 h-full flex flex-col transition-all duration-700 ${getBorderClasses()} ${
@@ -925,8 +622,8 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
             : "border-iii-dark bg-iii-light/50"
         }`}
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <div
               className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                 isTraditional
@@ -937,13 +634,33 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
               }`}
             />
             <span
-              className={`text-xs sm:text-sm font-medium transition-colors duration-300 ${
+              className={`text-xs sm:text-sm font-medium transition-colors duration-300 truncate ${
                 isDarkMode ? "text-iii-light" : "text-iii-black"
               }`}
             >
               {title}
             </span>
           </div>
+          {isIII && headerDependencies.length > 0 && (
+            <div
+              className={`relative h-px flex-1 min-w-6 ${
+                isDarkMode ? "bg-iii-light/35" : "bg-iii-dark/30"
+              }`}
+            >
+              <div
+                className={`absolute top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full ${
+                  isDarkMode ? "bg-iii-info" : "bg-iii-accent-light"
+                }`}
+                style={{ animation: "orbTravelRight 1.8s ease-in-out infinite" }}
+              />
+            </div>
+          )}
+          {isIII && (
+            <IIIHeaderGraph
+              isDarkMode={isDarkMode}
+              dependencies={headerDependencies}
+            />
+          )}
         </div>
       </div>
 
@@ -972,7 +689,6 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
           )}
 
         <Highlight
-          key={isDarkMode ? "dark" : "light"}
           theme={isDarkMode ? themes.nightOwl : themes.github}
           code={code.trim()}
           language={language as any}
@@ -1100,10 +816,10 @@ export const DependencyVisualization: React.FC<
     // Phase 1: Highlight dependency code in traditional block
     const timer1 = setTimeout(() => setAnimationPhase("highlighting"), 300);
 
-    // Phase 2: Move dependencies to center hub
+    // Phase 2: Transition dependency emphasis
     const timer2 = setTimeout(() => setAnimationPhase("moving"), 1500);
 
-    // Phase 3: Lines extend from engine to dependencies
+    // Phase 3: Activate linked visualization state
     const timer3 = setTimeout(() => setAnimationPhase("linking"), 3200);
 
     // Phase 4: Show fully connected state (color change completes)
@@ -1165,8 +881,8 @@ export const DependencyVisualization: React.FC<
 
   return (
     <div ref={containerRef} className="space-y-4">
-      {/* Three column layout: Traditional | Engine Hub | iii */}
-      <div className="hidden lg:grid grid-cols-[1fr_160px_1fr] gap-4 xl:gap-6 overflow-visible">
+      {/* Desktop layout: Traditional | iii */}
+      <div className="hidden lg:grid grid-cols-2 gap-4 xl:gap-6 overflow-visible">
         {/* Traditional Code - Left */}
         <div className="min-w-0">
           <HighlightedCodeBlock
@@ -1180,20 +896,12 @@ export const DependencyVisualization: React.FC<
           />
         </div>
 
-        {/* iii Engine Hub - Center (narrow) */}
-        <div className="flex-shrink-0 overflow-visible">
-          <IIIEngineHub
-            tools={traditionalTools}
-            animationPhase={animationPhase}
-            isDarkMode={isDarkMode}
-          />
-        </div>
-
         {/* iii Code - Right */}
         <div className="min-w-0">
           <HighlightedCodeBlock
             code={iiiCode}
             title={iiiTitle}
+            tools={traditionalTools}
             variant="iii"
             isDarkMode={isDarkMode}
             language={iiiLanguage}
@@ -1216,6 +924,7 @@ export const DependencyVisualization: React.FC<
         <HighlightedCodeBlock
           code={iiiCode}
           title={iiiTitle}
+          tools={traditionalTools}
           variant="iii"
           isDarkMode={isDarkMode}
           language={iiiLanguage}
@@ -1226,7 +935,7 @@ export const DependencyVisualization: React.FC<
       {/* Legend - aligned below respective code blocks */}
       <div
         className={`
-          hidden lg:grid grid-cols-[1fr_160px_1fr] gap-4 xl:gap-6
+          hidden lg:grid grid-cols-2 gap-4 xl:gap-6
           transition-all duration-1000 ease-out overflow-hidden
           ${isLegendVisible ? "max-h-32 opacity-100" : "max-h-0 opacity-0"}
         `}
@@ -1268,9 +977,6 @@ export const DependencyVisualization: React.FC<
             </div>
           </div>
         </div>
-
-        {/* Empty center column (below engine hub) */}
-        <div />
 
         {/* Business Logic legend - below iii code (right) */}
         <div className="flex justify-center">
