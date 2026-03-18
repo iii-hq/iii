@@ -231,12 +231,14 @@ All three Steps work together. TypeScript API enqueues a message, Python process
 ## Core Concepts
 
 ### State Management
-Persistent key-value storage that works across all Steps and languages. `state.set` returns `{ new_value, old_value }`.
+Persistent key-value storage that works across all Steps and languages. `stateManager.set` returns `{ new_value, old_value }`.
 
 ```typescript
-const result = await state.set('users', 'user-123', { name: 'John' })
+import { stateManager } from 'motia'
+
+const result = await stateManager.set('users', 'user-123', { name: 'John' })
 // result = { new_value: { name: 'John' }, old_value: null }
-const user = await state.get('users', 'user-123')
+const user = await stateManager.get('users', 'user-123')
 ```
 
 [Learn about State](/docs/development-guide/state-management)

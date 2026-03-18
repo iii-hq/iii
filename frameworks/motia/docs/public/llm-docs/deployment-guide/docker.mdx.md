@@ -161,7 +161,7 @@ docker compose up --build
 
 ## Python Steps
 
-Make sure you have the pyproject.toml at your project and the steps folder
+Make sure your project includes `pyproject.toml` and a `steps/` folder
 
 ```toml title="pyproject"
 [build-system]
@@ -204,10 +204,10 @@ WORKDIR /app
 COPY --from=iii-builder /root/.local/bin/iii /usr/local/bin/iii
 
 COPY pyproject.toml ./
+COPY steps ./steps
+
 RUN pip install --no-cache-dir uv && \
     uv pip install --system .
-
-COPY steps ./steps
 COPY config.yaml ./config.yaml
 
 ENV III_URL=ws://127.0.0.1:49134

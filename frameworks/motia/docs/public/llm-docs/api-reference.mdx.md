@@ -1144,7 +1144,7 @@ await chat_messages_stream.set("room-123", "msg-456", {
 
 message = await chat_messages_stream.get("room-123", "msg-456")
 
-messages = await chat_messages_stream.getGroup("room-123")
+messages = await chat_messages_stream.get_group("room-123")
 
 await chat_messages_stream.delete("room-123", "msg-456")
 

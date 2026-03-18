@@ -255,7 +255,7 @@ Triggers can include a `condition` function that determines whether the Step sho
 Filter queue messages based on their content:
 
 ```typescript
-import type { Handlers, StepConfig } from 'motia'
+import { enqueue, logger, type Handlers, type StepConfig } from 'motia'
 import { z } from 'zod'
 
 const orderSchema = z.object({
@@ -281,9 +281,9 @@ export const config = {
   flows: ['orders'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, ctx) => {
-  ctx.logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
-  await ctx.enqueue({ topic: 'order.premium-processed', data: input })
+export const handler: Handlers<typeof config> = async (input) => {
+  logger.info('Processing high-value order', { orderId: input.orderId, amount: input.amount })
+  await enqueue({ topic: 'order.premium-processed', data: input })
 }
 ```
 
@@ -2179,7 +2179,7 @@ await chat_messages_stream.set("room-123", "msg-456", {
 
 message = await chat_messages_stream.get("room-123", "msg-456")
 
-messages = await chat_messages_stream.getGroup("room-123")
+messages = await chat_messages_stream.get_group("room-123")
 
 await chat_messages_stream.delete("room-123", "msg-456")
 
@@ -3551,12 +3551,14 @@ All three Steps work together. TypeScript API enqueues a message, Python process
 ## Core Concepts
 
 ### State Management
-Persistent key-value storage that works across all Steps and languages. `state.set` returns `{ new_value, old_value }`.
+Persistent key-value storage that works across all Steps and languages. `stateManager.set` returns `{ new_value, old_value }`.
 
 ```typescript
-const result = await state.set('users', 'user-123', { name: 'John' })
+import { stateManager } from 'motia'
+
+const result = await stateManager.set('users', 'user-123', { name: 'John' })
 // result = { new_value: { name: 'John' }, old_value: null }
-const user = await state.get('users', 'user-123')
+const user = await stateManager.get('users', 'user-123')
 ```
 
 [Learn about State](/docs/development-guide/state-management)
@@ -3641,11 +3643,9 @@ title: Steps
 description: One primitive to build any backend. Simple, composable, and multi-language.
 ---
 
-```html
 <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/3-motia-steps.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/3-motia-steps.mp4" type="video/mp4" />
 </video>
-```
 
 ## One Primitive for Any Backend
 
@@ -4318,10 +4318,10 @@ const prefs = await stateManager.get('settings', 'preferences')
 <Tab value='Python'>
 
 ```python
-from motia import stateManager
+from motia import state_manager
 
-result = await stateManager.set("settings", "preferences", {"theme": "dark"})
-prefs = await stateManager.get("settings", "preferences")
+result = await state_manager.set("settings", "preferences", {"theme": "dark"})
+prefs = await state_manager.get("settings", "preferences")
 ```
 
 </Tab>
@@ -4782,7 +4782,7 @@ docker compose up --build
 
 ## Python Steps
 
-Make sure you have the pyproject.toml at your project and the steps folder
+Make sure your project includes `pyproject.toml` and a `steps/` folder
 
 ```toml title="pyproject"
 [build-system]
@@ -4825,10 +4825,10 @@ WORKDIR /app
 COPY --from=iii-builder /root/.local/bin/iii /usr/local/bin/iii
 
 COPY pyproject.toml ./
+COPY steps ./steps
+
 RUN pip install --no-cache-dir uv && \
     uv pip install --system .
-
-COPY steps ./steps
 COPY config.yaml ./config.yaml
 
 ENV III_URL=ws://127.0.0.1:49134
@@ -5819,7 +5819,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     rm -rf /var/lib/apt/lists/*
 
 # Install iii
-RUN curl -fSL https://install.iii.dev/iii/main/install.sh | sh
+RUN curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 
 FROM oven/bun:1.1-slim
 
@@ -7582,6 +7582,8 @@ These are exported from the root package:
 
 ### Initialization and internals
 
+> **Internal use only.** These exports are implementation details of the iii engine integration and may change without notice. Do not rely on them in application code.
+
 - `initIII`, `getInstance`
 - `setupStepEndpoint`
 - `generateStepId`
@@ -7597,7 +7599,13 @@ These are exported from the root package:
 
 ## `motia/build` exports
 
-The package defines a `motia/build` subpath export intended for build workflows and tooling integration.
+The package defines a `motia/build` subpath export intended for build workflows and tooling integration. Common use:
+
+```typescript
+import { buildConfig } from 'motia/build'
+```
+
+This entrypoint is primarily consumed by CLI tooling (`motia build`) and bundler integrations. See the [CLI reference](/docs/development-guide/cli) for usage in project build scripts.
 
 ## Important note about React stream hooks
 
@@ -8278,7 +8286,7 @@ export const handler: Handlers<typeof config> = async ({ request }) => {
 ### Example 2: Python Queue Step
 
 ```python title="src/data-processor_step.py"
-from datetime import datetime
+from datetime import datetime, timezone
 from motia import enqueue
 
 config = {
@@ -8294,7 +8302,7 @@ config = {
 async def handler(input_data):
     processed_data = {
         "original": input_data,
-        "processed_at": datetime.utcnow().isoformat(),
+        "processed_at": datetime.now(timezone.utc).isoformat(),
         "count": len(input_data.get("users", []))
     }
 
@@ -10130,6 +10138,8 @@ import { type Handlers, logger, type StepConfig } from 'motia'
 import { todoStream } from './todo.stream'
 
 export const handler: Handlers<typeof config> = async ({ request }) => {
+  // todoId and newTodo come from request.body in practice
+  const { todoId, ...newTodo } = request.body
   const todo = await todoStream.get('inbox', todoId)
   await todoStream.set('inbox', todoId, newTodo)
   await todoStream.delete('inbox', todoId)

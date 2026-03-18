@@ -3,11 +3,9 @@ title: Steps
 description: One primitive to build any backend. Simple, composable, and multi-language.
 ---
 
-```html
 <video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/3-motia-steps.gif">
   <source src="https://assets.motia.dev/videos/mp4/site/v1/3-motia-steps.mp4" type="video/mp4" />
 </video>
-```
 
 ## One Primitive for Any Backend
 
@@ -680,10 +678,10 @@ const prefs = await stateManager.get('settings', 'preferences')
 <Tab value='Python'>
 
 ```python
-from motia import stateManager
+from motia import state_manager
 
-result = await stateManager.set("settings", "preferences", {"theme": "dark"})
-prefs = await stateManager.get("settings", "preferences")
+result = await state_manager.set("settings", "preferences", {"theme": "dark"})
+prefs = await state_manager.get("settings", "preferences")
 ```
 
 </Tab>

@@ -41,6 +41,8 @@ These are exported from the root package:
 
 ### Initialization and internals
 
+> **Internal use only.** These exports are implementation details of the iii engine integration and may change without notice. Do not rely on them in application code.
+
 - `initIII`, `getInstance`
 - `setupStepEndpoint`
 - `generateStepId`
@@ -56,7 +58,13 @@ These are exported from the root package:
 
 ## `motia/build` exports
 
-The package defines a `motia/build` subpath export intended for build workflows and tooling integration.
+The package defines a `motia/build` subpath export intended for build workflows and tooling integration. Common use:
+
+```typescript
+import { buildConfig } from 'motia/build'
+```
+
+This entrypoint is primarily consumed by CLI tooling (`motia build`) and bundler integrations. See the [CLI reference](/docs/development-guide/cli) for usage in project build scripts.
 
 ## Important note about React stream hooks
 

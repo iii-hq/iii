@@ -186,6 +186,8 @@ import { type Handlers, logger, type StepConfig } from 'motia'
 import { todoStream } from './todo.stream'
 
 export const handler: Handlers<typeof config> = async ({ request }) => {
+  // todoId and newTodo come from request.body in practice
+  const { todoId, ...newTodo } = request.body
   const todo = await todoStream.get('inbox', todoId)
   await todoStream.set('inbox', todoId, newTodo)
   await todoStream.delete('inbox', todoId)

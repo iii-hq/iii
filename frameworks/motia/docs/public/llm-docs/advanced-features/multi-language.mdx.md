@@ -137,7 +137,7 @@ The mixed template structure:
 | `nodejs/src/` | HTTP API endpoints (`create-ticket`, `list-tickets`) |
 | `python/steps/` | Queue and cron triggers (`triage`, `notify`, `sla-monitor`, `escalate`) |
 
-The `config.yaml` uses two ExecModules — one for each runtime:
+The `iii-config.yaml` uses two ExecModules — one for each runtime:
 
 ```yaml
 modules:
