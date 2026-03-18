@@ -24,14 +24,7 @@ async fn register_healthcheck_function_and_trigger() {
     let iii = common::shared_iii();
 
     let fn_ref = iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.healthcheck.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        RegisterFunctionMessage::with_id("test.healthcheck.rs".to_string()),
         |_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
