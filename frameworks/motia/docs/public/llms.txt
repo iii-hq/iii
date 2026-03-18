@@ -505,7 +505,7 @@ The mixed template structure:
 | `nodejs/src/` | HTTP API endpoints (`create-ticket`, `list-tickets`) |
 | `python/steps/` | Queue and cron triggers (`triage`, `notify`, `sla-monitor`, `escalate`) |
 
-The `config.yaml` uses two ExecModules — one for each runtime:
+The `iii-config.yaml` uses two ExecModules — one for each runtime:
 
 ```yaml
 modules:
@@ -3322,12 +3322,6 @@ This starts all configured modules and the Motia SDK process. iii handles hot-re
 title: Overview
 description: Build production-grade backends with a single primitive - APIs, background jobs, workflows, and AI agents unified
 ---
-
-<!--
-<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
-  <source src="https://assets.motia.dev/videos/mp4/site/v1/2-motia-overview-core-concepts.mp4" type="video/mp4" />
-</video>
--->
 
 **Build production-grade backends with a single primitive.**
 
@@ -11858,11 +11852,11 @@ Select your preferred language when prompted:
 <Step>
 ### 4. Start the Project
 
-The `config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
+The `iii-config.yaml` in the project tells the iii engine how to run Motia — starting iii starts everything.
 
 ```bash
 cd my-project
-iii
+iii -c iii-config.yaml
 ```
 
 </Step>

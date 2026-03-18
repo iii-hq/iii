@@ -3,12 +3,6 @@ title: Overview
 description: Build production-grade backends with a single primitive - APIs, background jobs, workflows, and AI agents unified
 ---
 
-<!--
-<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/2-motia-overview-core-concepts.gif">
-  <source src="https://assets.motia.dev/videos/mp4/site/v1/2-motia-overview-core-concepts.mp4" type="video/mp4" />
-</video>
--->
-
 **Build production-grade backends with a single primitive.**
 
 Motia is a unified backend framework that combines APIs, background jobs, durable workflows, AI agents, streaming, and observability around one core primitive: **the Step**.
