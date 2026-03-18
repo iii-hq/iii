@@ -78,7 +78,7 @@ fn set_ini_key(section: &str, key: &str, value: &str) {
     }
 }
 
-const COMPILE_TIME_API_KEY: Option<&str> = option_env!("III_CLI_AMPLITUDE_API_KEY");
+const API_KEY: &str = "e8fb1f8d290a72dbb2d9b264926be4bf";
 
 #[derive(Serialize)]
 struct AmplitudeEvent {
@@ -207,28 +207,13 @@ fn is_telemetry_disabled() -> bool {
     false
 }
 
-fn resolve_api_key() -> Option<String> {
-    if let Ok(key) = std::env::var("III_TELEMETRY_API_KEY") {
-        if !key.is_empty() {
-            return Some(key);
-        }
-    }
-    COMPILE_TIME_API_KEY
-        .filter(|k| !k.is_empty())
-        .map(|k| k.to_string())
-}
-
-fn build_event(
-    event_type: &str,
-    properties: serde_json::Value,
-) -> Option<(String, AmplitudeEvent)> {
+fn build_event(event_type: &str, properties: serde_json::Value) -> Option<AmplitudeEvent> {
     if is_telemetry_disabled() {
         return None;
     }
-    let api_key = resolve_api_key()?;
 
     let telemetry_id = get_or_create_telemetry_id();
-    let event = AmplitudeEvent {
+    Some(AmplitudeEvent {
         device_id: telemetry_id.clone(),
         // user_id: currently telemetry_id, will become iii cloud user ID when accounts ship
         user_id: Some(telemetry_id),
@@ -241,14 +226,13 @@ fn build_event(
         time: chrono::Utc::now().timestamp_millis(),
         insert_id: uuid::Uuid::new_v4().to_string(),
         ip: Some("$remote".to_string()),
-    };
-    Some((api_key, event))
+    })
 }
 
-fn send_fire_and_forget(api_key: String, event: AmplitudeEvent) {
+fn send_fire_and_forget(event: AmplitudeEvent) {
     tokio::spawn(async move {
         let payload = AmplitudePayload {
-            api_key: &api_key,
+            api_key: API_KEY,
             events: vec![event],
         };
         let client = reqwest::Client::builder()
@@ -262,7 +246,7 @@ fn send_fire_and_forget(api_key: String, event: AmplitudeEvent) {
 }
 
 pub fn send_cli_update_started(target_binary: &str, from_version: &str) {
-    if let Some((key, event)) = build_event(
+    if let Some(event) = build_event(
         "cli_update_started",
         serde_json::json!({
             "target_binary": target_binary,
@@ -270,12 +254,12 @@ pub fn send_cli_update_started(target_binary: &str, from_version: &str) {
             "install_method": detect_install_method(),
         }),
     ) {
-        send_fire_and_forget(key, event);
+        send_fire_and_forget(event);
     }
 }
 
 pub fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_version: &str) {
-    if let Some((key, event)) = build_event(
+    if let Some(event) = build_event(
         "cli_update_succeeded",
         serde_json::json!({
             "target_binary": target_binary,
@@ -284,12 +268,12 @@ pub fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_ver
             "install_method": detect_install_method(),
         }),
     ) {
-        send_fire_and_forget(key, event);
+        send_fire_and_forget(event);
     }
 }
 
 pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &str) {
-    if let Some((key, event)) = build_event(
+    if let Some(event) = build_event(
         "cli_update_failed",
         serde_json::json!({
             "target_binary": target_binary,
@@ -298,7 +282,7 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
             "install_method": detect_install_method(),
         }),
     ) {
-        send_fire_and_forget(key, event);
+        send_fire_and_forget(event);
     }
 }
 
@@ -386,27 +370,14 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_build_event_returns_none_without_api_key() {
+    fn test_build_event_returns_some_when_enabled() {
         clear_opt_out_vars();
-        unsafe { env::remove_var("III_TELEMETRY_API_KEY") };
-        if COMPILE_TIME_API_KEY.is_none() || COMPILE_TIME_API_KEY == Some("") {
-            let result = build_event("cli_update_started", serde_json::json!({}));
-            assert!(result.is_none());
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_build_event_returns_some_with_runtime_api_key() {
-        clear_opt_out_vars();
-        unsafe { env::set_var("III_TELEMETRY_API_KEY", "test-key-123") };
         let result = build_event(
             "cli_update_started",
             serde_json::json!({"target_binary": "iii"}),
         );
         assert!(result.is_some());
-        let (key, event) = result.unwrap();
-        assert_eq!(key, "test-key-123");
+        let event = result.unwrap();
         assert_eq!(event.event_type, "cli_update_started");
         assert_eq!(event.platform, "iii-cli");
         assert_eq!(event.app_version, env!("CARGO_PKG_VERSION"));
@@ -417,21 +388,15 @@ mod tests {
         assert!(user_props.get("cli_version").is_some());
         assert!(user_props.get("environment.os").is_some());
         assert!(user_props.get("install_method").is_some());
-        unsafe { env::remove_var("III_TELEMETRY_API_KEY") };
     }
 
     #[test]
     #[serial]
     fn test_build_event_insert_ids_are_unique() {
         clear_opt_out_vars();
-        unsafe { env::set_var("III_TELEMETRY_API_KEY", "test-key") };
-        let r1 = build_event("evt", serde_json::json!({}));
-        let r2 = build_event("evt", serde_json::json!({}));
-        assert!(r1.is_some() && r2.is_some());
-        let (_, e1) = r1.unwrap();
-        let (_, e2) = r2.unwrap();
+        let e1 = build_event("evt", serde_json::json!({})).unwrap();
+        let e2 = build_event("evt", serde_json::json!({})).unwrap();
         assert_ne!(e1.insert_id, e2.insert_id);
-        unsafe { env::remove_var("III_TELEMETRY_API_KEY") };
     }
 
     #[test]

@@ -25,12 +25,12 @@ use self::amplitude::{AmplitudeClient, AmplitudeEvent};
 use self::collector::collector;
 use self::environment::EnvironmentInfo;
 
+const API_KEY: &str = "e8fb1f8d290a72dbb2d9b264926be4bf";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelemetryConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    #[serde(default)]
-    pub api_key: String,
     #[serde(default)]
     pub sdk_api_key: Option<String>,
     #[serde(default = "default_heartbeat_interval")]
@@ -49,7 +49,6 @@ impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            api_key: String::new(),
             sdk_api_key: None,
             heartbeat_interval_secs: 6 * 60 * 60,
         }
@@ -188,7 +187,6 @@ enum DisableReason {
     CiDetected,
     DevOptOut,
     Config,
-    NoApiKey,
 }
 
 fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
@@ -208,10 +206,6 @@ fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
 
     if environment::is_dev_optout() {
         return Some(DisableReason::DevOptOut);
-    }
-
-    if config.api_key.is_empty() {
-        return Some(DisableReason::NoApiKey);
     }
 
     None
@@ -481,9 +475,6 @@ impl Module for TelemetryModule {
                 DisableReason::DevOptOut => {
                     tracing::info!("Anonymous telemetry disabled (dev opt-out).");
                 }
-                DisableReason::NoApiKey => {
-                    tracing::info!("Anonymous telemetry disabled (no API key configured).");
-                }
             }
             return Ok(Box::new(DisabledTelemetryModule));
         }
@@ -493,7 +484,7 @@ impl Module for TelemetryModule {
 
         tracing::info!("Anonymous telemetry enabled. Set III_TELEMETRY_ENABLED=false to disable.");
 
-        let client = Arc::new(AmplitudeClient::new(telemetry_config.api_key.clone()));
+        let client = Arc::new(AmplitudeClient::new(API_KEY.to_string()));
 
         let sdk_client = telemetry_config
             .sdk_api_key
@@ -861,7 +852,6 @@ mod tests {
             engine,
             config: TelemetryConfig {
                 enabled: true,
-                api_key: "test-key".to_string(),
                 sdk_api_key: sdk_client.then(|| "sdk-test-key".to_string()),
                 heartbeat_interval_secs,
             },
@@ -893,7 +883,6 @@ mod tests {
     fn test_telemetry_config_default() {
         let config = TelemetryConfig::default();
         assert!(config.enabled);
-        assert!(config.api_key.is_empty());
         assert!(config.sdk_api_key.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
     }
@@ -903,7 +892,6 @@ mod tests {
         let json = serde_json::json!({});
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(config.enabled);
-        assert!(config.api_key.is_empty());
         assert!(config.sdk_api_key.is_none());
         assert_eq!(config.heartbeat_interval_secs, 6 * 60 * 60);
     }
@@ -912,13 +900,11 @@ mod tests {
     fn test_telemetry_config_deserialize_overrides() {
         let json = serde_json::json!({
             "enabled": false,
-            "api_key": "my-key",
             "sdk_api_key": "sdk-key",
             "heartbeat_interval_secs": 3600
         });
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(!config.enabled);
-        assert_eq!(config.api_key, "my-key");
         assert_eq!(config.sdk_api_key, Some("sdk-key".to_string()));
         assert_eq!(config.heartbeat_interval_secs, 3600);
     }
@@ -931,7 +917,6 @@ mod tests {
 
         let cloned = config.clone();
         assert_eq!(cloned.enabled, config.enabled);
-        assert_eq!(cloned.api_key, config.api_key);
     }
 
     // =========================================================================
@@ -1035,7 +1020,6 @@ mod tests {
 
         let config = TelemetryConfig {
             enabled: false,
-            api_key: "key".to_string(),
             ..TelemetryConfig::default()
         };
         let reason = check_disabled(&config);
@@ -1052,10 +1036,7 @@ mod tests {
             env::remove_var("III_TELEMETRY_DEV");
         }
 
-        let config = TelemetryConfig {
-            api_key: "key".to_string(),
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let reason = check_disabled(&config);
         assert!(reason.is_some());
         assert!(matches!(reason.unwrap(), DisableReason::UserOptOut));
@@ -1074,10 +1055,7 @@ mod tests {
             env::remove_var("III_TELEMETRY_DEV");
         }
 
-        let config = TelemetryConfig {
-            api_key: "key".to_string(),
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let reason = check_disabled(&config);
         assert!(reason.is_some());
         assert!(matches!(reason.unwrap(), DisableReason::UserOptOut));
@@ -1096,10 +1074,7 @@ mod tests {
             env::remove_var("III_TELEMETRY_DEV");
         }
 
-        let config = TelemetryConfig {
-            api_key: "key".to_string(),
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let reason = check_disabled(&config);
         if let Some(r) = &reason {
             assert!(!matches!(r, DisableReason::UserOptOut));
@@ -1122,10 +1097,7 @@ mod tests {
             env::set_var("CI", "true");
         }
 
-        let config = TelemetryConfig {
-            api_key: "key".to_string(),
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let reason = check_disabled(&config);
         assert!(reason.is_some());
         assert!(matches!(reason.unwrap(), DisableReason::CiDetected));
@@ -1144,10 +1116,7 @@ mod tests {
             env::set_var("III_TELEMETRY_DEV", "true");
         }
 
-        let config = TelemetryConfig {
-            api_key: "key".to_string(),
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let reason = check_disabled(&config);
         assert!(reason.is_some());
         assert!(matches!(reason.unwrap(), DisableReason::DevOptOut));
@@ -1159,21 +1128,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_check_disabled_returns_no_api_key_when_empty() {
-        clear_ci_env_vars();
-        unsafe {
-            env::remove_var("III_TELEMETRY_ENABLED");
-            env::remove_var("III_TELEMETRY_DEV");
-        }
-
-        let config = TelemetryConfig::default();
-        let reason = check_disabled(&config);
-        assert!(reason.is_some());
-        assert!(matches!(reason.unwrap(), DisableReason::NoApiKey));
-    }
-
-    #[test]
-    #[serial]
     fn test_check_disabled_returns_none_when_all_enabled() {
         clear_ci_env_vars();
         unsafe {
@@ -1181,10 +1135,7 @@ mod tests {
             env::remove_var("III_TELEMETRY_DEV");
         }
 
-        let config = TelemetryConfig {
-            api_key: "test-key".to_string(),
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let reason = check_disabled(&config);
         assert!(
             reason.is_none(),
@@ -1203,7 +1154,6 @@ mod tests {
 
         let config = TelemetryConfig {
             enabled: false,
-            api_key: "key".to_string(),
             ..TelemetryConfig::default()
         };
         let reason = check_disabled(&config);
@@ -1884,7 +1834,7 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_telemetry_module_create_disabled_when_no_api_key() {
+    async fn test_telemetry_module_create_enabled_by_default() {
         clear_ci_env_vars();
         unsafe {
             env::remove_var("III_TELEMETRY_ENABLED");
@@ -1893,21 +1843,6 @@ mod tests {
 
         let engine = make_test_engine();
         let module = TelemetryModule::create(engine, None).await.unwrap();
-        assert_eq!(module.name(), "Telemetry");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_telemetry_module_create_enabled_with_api_key() {
-        clear_ci_env_vars();
-        unsafe {
-            env::remove_var("III_TELEMETRY_ENABLED");
-            env::remove_var("III_TELEMETRY_DEV");
-        }
-
-        let engine = make_test_engine();
-        let config = serde_json::json!({ "api_key": "test-key-123" });
-        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
@@ -1922,7 +1857,6 @@ mod tests {
 
         let engine = make_test_engine();
         let config = serde_json::json!({
-            "api_key": "primary-key",
             "sdk_api_key": "sdk-key-456",
         });
         let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
@@ -1940,7 +1874,6 @@ mod tests {
 
         let engine = make_test_engine();
         let config = serde_json::json!({
-            "api_key": "primary-key",
             "sdk_api_key": "",
         });
         let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
@@ -1958,7 +1891,6 @@ mod tests {
         });
         let config: TelemetryConfig = serde_json::from_value(json).unwrap();
         assert!(config.enabled);
-        assert!(config.api_key.is_empty());
         assert!(config.sdk_api_key.is_none());
         assert_eq!(config.heartbeat_interval_secs, 120);
     }
@@ -1999,7 +1931,6 @@ mod tests {
         let _user = DisableReason::UserOptOut;
         let _ci = DisableReason::CiDetected;
         let _dev = DisableReason::DevOptOut;
-        let _no_key = DisableReason::NoApiKey;
     }
 
     // =========================================================================
@@ -2037,8 +1968,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let config = serde_json::json!({ "api_key": "key" });
-        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        let module = TelemetryModule::create(engine, None).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
@@ -2052,8 +1982,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let config = serde_json::json!({ "api_key": "test-key" });
-        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        let module = TelemetryModule::create(engine, None).await.unwrap();
         assert!(module.initialize().await.is_ok());
     }
 

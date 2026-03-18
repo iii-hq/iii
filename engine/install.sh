@@ -6,7 +6,7 @@ BIN_NAME="${BIN_NAME:-iii}"
 CLI_INSTALL_URL="${CLI_INSTALL_URL:-https://install.iii.dev/iii-cli/main/install.sh}"
 
 AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
-AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-}"
+AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-e8fb1f8d290a72dbb2d9b264926be4bf}"
 
 err() {
   echo "error: $*" >&2
@@ -182,7 +182,7 @@ iii_send_event() {
   _ts=$(date +%s 2>/dev/null || echo "0")
   _ts_ms=$(( _ts * 1000 ))
 
-  _payload="{\"api_key\":\"${AMPLITUDE_API_KEY}\",\"events\":[{\"device_id\":\"${_telemetry_id}\",\"user_id\":\"${_telemetry_id}\",\"event_type\":\"${_event_type}\",\"event_properties\":{${_event_props}},\"platform\":\"install-script\",\"os_name\":\"${_os}\",\"app_version\":\"${install_id}\",\"time\":${_ts_ms},\"insert_id\":\"$(iii_gen_uuid)\",\"ip\":\"\$remote\"}]}"
+  _payload="{\"api_key\":\"${AMPLITUDE_API_KEY}\",\"events\":[{\"device_id\":\"${_telemetry_id}\",\"user_id\":\"${_telemetry_id}\",\"event_type\":\"${_event_type}\",\"event_properties\":{${_event_props}},\"platform\":\"install-script\",\"os_name\":\"${_os}\",\"app_version\":\"script\",\"time\":${_ts_ms},\"insert_id\":\"$(iii_gen_uuid)\",\"ip\":\"\$remote\"}]}"
 
   curl -s -o /dev/null -X POST "$AMPLITUDE_ENDPOINT" \
     -H "Content-Type: application/json" \
