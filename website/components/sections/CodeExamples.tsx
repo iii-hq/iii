@@ -32,22 +32,6 @@ export const codeExamples: Record<string, CodeExample> = {
     },
   },
 
-  jobs: {
-    description:
-      'Run queued or fire-and-forget work with the same function model used for request handlers.',
-    traditional: {
-      title: 'BullMQ + Redis',
-      tools: ['BullMQ', 'Redis'],
-      language: 'typescript',
-      code: traditional.jobs,
-    },
-    iii: {
-      title: 'iii Engine',
-      language: 'typescript',
-      code: iii.jobs,
-    },
-  },
-
   events: {
     description:
       'Publish and subscribe to events with first-class triggers instead of wiring brokers into app code.',
@@ -55,12 +39,12 @@ export const codeExamples: Record<string, CodeExample> = {
       title: 'Broker + Publisher + Consumer',
       tools: ['RabbitMQ', 'amqplib'],
       language: 'typescript',
-      code: traditional.events,
+      code: traditional.pubsub,
     },
     iii: {
       title: 'iii Engine',
       language: 'typescript',
-      code: iii.events,
+      code: iii.pubsub,
     },
   },
 

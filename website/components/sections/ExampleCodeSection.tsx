@@ -1,28 +1,23 @@
-import React, { useState } from "react";
-import { Highlight, themes } from "prism-react-renderer";
-import { Zap } from "lucide-react";
-import { codeExamples } from "./CodeExamples";
-import { DependencyVisualization } from "./DependencyVisualization";
+import React, { useState } from 'react';
+import { Highlight, themes } from 'prism-react-renderer';
+import { Zap } from 'lucide-react';
+import { codeExamples } from './CodeExamples';
+import { DependencyVisualization } from './DependencyVisualization';
 
-// Categories showing what iii Engine replaces and enables
-const replaceCategories = [
-  { id: "api", label: "API" },
-  { id: "jobs", label: "Background Jobs" },
-  { id: "events", label: "Queues" },
-  { id: "realtime", label: "Realtime" },
-  { id: "state", label: "State" },
-  { id: "cron", label: "Cron" },
-  { id: "logging", label: "Observability" },
-  { id: "workflow", label: "Workflows" },
-];
-
-const enableCategories = [
-  { id: "ai-agents", label: "AI Agents" },
-  { id: "feature-flags", label: "Feature Flags" },
-  { id: "multiplayer", label: "Multiplayer" },
-  { id: "etl", label: "ETL" },
-  { id: "reactive", label: "Reactive State" },
-  { id: "remote", label: "Remote Invoke" },
+const designPatterns = [
+  { id: 'api', label: 'API' },
+  { id: 'events', label: 'Pub Sub' },
+  { id: 'realtime', label: 'Realtime' },
+  { id: 'state', label: 'State' },
+  { id: 'cron', label: 'Cron' },
+  { id: 'logging', label: 'Observability' },
+  { id: 'workflow', label: 'Workflows' },
+  { id: 'ai-agents', label: 'AI Agents' },
+  { id: 'feature-flags', label: 'Feature Flags' },
+  { id: 'multiplayer', label: 'Multiplayer' },
+  { id: 'etl', label: 'ETL' },
+  { id: 'reactive', label: 'Reactive State' },
+  { id: 'remote', label: 'Remote Invoke' },
 ];
 
 interface ToolBadgeProps {
@@ -35,8 +30,8 @@ const ToolBadge: React.FC<ToolBadgeProps> = ({ tool, isDarkMode }) => {
     <span
       className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] sm:text-xs font-medium transition-colors ${
         isDarkMode
-          ? "bg-iii-alert/20 text-iii-alert border border-iii-alert/30"
-          : "bg-iii-alert/10 text-iii-alert border border-iii-alert/20"
+          ? 'bg-iii-alert/20 text-iii-alert border border-iii-alert/30'
+          : 'bg-iii-alert/10 text-iii-alert border border-iii-alert/20'
       }`}
     >
       {tool}
@@ -46,7 +41,7 @@ const ToolBadge: React.FC<ToolBadgeProps> = ({ tool, isDarkMode }) => {
 
 // Helper function to count actual lines of code (excluding comments, empty lines)
 function countLinesOfCode(code: string, language: string): number {
-  const lines = code.split("\n");
+  const lines = code.split('\n');
   let count = 0;
   let inBlockComment = false;
 
@@ -57,7 +52,7 @@ function countLinesOfCode(code: string, language: string): number {
     if (!trimmed) continue;
 
     // Handle block comments
-    if (language === "python") {
+    if (language === 'python') {
       // Python uses ''' or """ for block comments/docstrings
       if (trimmed.startsWith('"""') || trimmed.startsWith("'''")) {
         if (trimmed.endsWith('"""') || trimmed.endsWith("'''")) {
@@ -69,15 +64,15 @@ function countLinesOfCode(code: string, language: string): number {
       }
     } else {
       // JS/TS block comments
-      if (trimmed.startsWith("/*")) {
+      if (trimmed.startsWith('/*')) {
         inBlockComment = true;
-        if (trimmed.endsWith("*/")) {
+        if (trimmed.endsWith('*/')) {
           inBlockComment = false;
         }
         continue;
       }
       if (inBlockComment) {
-        if (trimmed.endsWith("*/")) {
+        if (trimmed.endsWith('*/')) {
           inBlockComment = false;
         }
         continue;
@@ -87,10 +82,10 @@ function countLinesOfCode(code: string, language: string): number {
     if (inBlockComment) continue;
 
     // Skip single-line comments
-    if (language === "python") {
-      if (trimmed.startsWith("#")) continue;
+    if (language === 'python') {
+      if (trimmed.startsWith('#')) continue;
     } else {
-      if (trimmed.startsWith("//")) continue;
+      if (trimmed.startsWith('//')) continue;
     }
 
     // Skip lines that are only braces/brackets
@@ -108,32 +103,32 @@ function CodeBlock({
   tools,
   variant,
   isDarkMode,
-  language = "typescript",
+  language = 'typescript',
 }: {
   code: string;
   title: string;
   tools?: string[];
-  variant: "traditional" | "iii";
+  variant: 'traditional' | 'iii';
   isDarkMode: boolean;
   language?: string;
 }) {
-  const isTraditional = variant === "traditional";
+  const isTraditional = variant === 'traditional';
   const lineCount = countLinesOfCode(code, language);
 
   return (
     <div
       className={`rounded-lg overflow-hidden border h-full flex flex-col transition-colors duration-300 ${
         isDarkMode
-          ? "border-iii-light bg-iii-black"
-          : "border-iii-dark bg-white"
+          ? 'border-iii-light bg-iii-black'
+          : 'border-iii-dark bg-white'
       }`}
     >
       {/* Header */}
       <div
         className={`flex flex-col gap-2 px-3 sm:px-4 py-2 sm:py-3 border-b transition-colors duration-300 flex-shrink-0 ${
           isDarkMode
-            ? "border-iii-light bg-iii-dark/50"
-            : "border-iii-dark bg-iii-light/50"
+            ? 'border-iii-light bg-iii-dark/50'
+            : 'border-iii-dark bg-iii-light/50'
         }`}
       >
         <div className="flex items-center justify-between">
@@ -141,15 +136,15 @@ function CodeBlock({
             <div
               className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                 isTraditional
-                  ? "bg-iii-alert"
+                  ? 'bg-iii-alert'
                   : isDarkMode
-                    ? "bg-iii-accent"
-                    : "bg-iii-accent-light"
+                    ? 'bg-iii-accent'
+                    : 'bg-iii-accent-light'
               }`}
             />
             <span
               className={`text-xs sm:text-sm font-medium transition-colors duration-300 ${
-                isDarkMode ? "text-iii-light" : "text-iii-black"
+                isDarkMode ? 'text-iii-light' : 'text-iii-black'
               }`}
             >
               {title}
@@ -159,11 +154,11 @@ function CodeBlock({
             className={`text-[10px] sm:text-xs px-2 py-0.5 rounded font-medium transition-colors ${
               isTraditional
                 ? isDarkMode
-                  ? "bg-iii-alert/20 text-iii-alert"
-                  : "bg-iii-alert/10 text-iii-alert"
+                  ? 'bg-iii-alert/20 text-iii-alert'
+                  : 'bg-iii-alert/10 text-iii-alert'
                 : isDarkMode
-                  ? "bg-iii-accent/20 text-iii-accent"
-                  : "bg-iii-accent-light/20 text-iii-accent-light"
+                  ? 'bg-iii-accent/20 text-iii-accent'
+                  : 'bg-iii-accent-light/20 text-iii-accent-light'
             }`}
           >
             {lineCount} lines
@@ -181,11 +176,11 @@ function CodeBlock({
       {/* Code */}
       <div
         className={`p-2 sm:p-3 md:p-4 overflow-auto flex-1 max-h-[400px] sm:max-h-[500px] ${
-          isDarkMode ? "scrollbar-brand-dark" : "scrollbar-brand-light"
+          isDarkMode ? 'scrollbar-brand-dark' : 'scrollbar-brand-light'
         }`}
       >
         <Highlight
-          key={isDarkMode ? "dark" : "light"}
+          key={isDarkMode ? 'dark' : 'light'}
           theme={isDarkMode ? themes.nightOwl : themes.github}
           code={code.trim()}
           language={language as any}
@@ -200,7 +195,7 @@ function CodeBlock({
                 >
                   <span
                     className={`inline-block w-6 sm:w-8 text-right mr-2 sm:mr-3 select-none ${
-                      isDarkMode ? "text-iii-light/30" : "text-iii-medium/40"
+                      isDarkMode ? 'text-iii-light/30' : 'text-iii-medium/40'
                     }`}
                   >
                     {i + 1}
@@ -242,15 +237,15 @@ function SavingsIndicator({
 
   // Different colors for each state
   const codeComparisonColor = isSame
-    ? "text-iii-info"
+    ? 'text-iii-info'
     : isLess
-      ? "text-iii-success"
-      : "text-iii-warn";
+      ? 'text-iii-success'
+      : 'text-iii-warn';
 
   return (
     <div
       className={`flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-6 py-3 sm:py-4 px-4 rounded-lg transition-colors ${
-        isDarkMode ? "bg-iii-dark/30" : "bg-iii-light"
+        isDarkMode ? 'bg-iii-dark/30' : 'bg-iii-light'
       }`}
     >
       <div className="flex items-center gap-2">
@@ -302,7 +297,7 @@ function SavingsIndicator({
         )}
         <span
           className={`text-xs sm:text-sm ${
-            isDarkMode ? "text-[#C0C0C0]" : "text-iii-black"
+            isDarkMode ? 'text-[#C0C0C0]' : 'text-iii-black'
           }`}
         >
           {isSame ? (
@@ -313,21 +308,21 @@ function SavingsIndicator({
             <>
               <span className={`font-bold ${codeComparisonColor}`}>
                 {percentage}%
-              </span>{" "}
-              {isLess ? "less" : "more"} code
+              </span>{' '}
+              {isLess ? 'less' : 'more'} code
             </>
           )}
         </span>
       </div>
       <div
         className={`hidden sm:block w-px h-4 ${
-          isDarkMode ? "bg-[#3A3A3A]" : "bg-iii-medium/30"
+          isDarkMode ? 'bg-[#3A3A3A]' : 'bg-iii-medium/30'
         }`}
       />
       <div className="flex items-center gap-2">
         <svg
           className={`w-4 h-4 sm:w-5 sm:h-5 ${
-            isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+            isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
           }`}
           fill="none"
           viewBox="0 0 24 24"
@@ -342,28 +337,28 @@ function SavingsIndicator({
         </svg>
         <span
           className={`text-xs sm:text-sm ${
-            isDarkMode ? "text-[#C0C0C0]" : "text-iii-black"
+            isDarkMode ? 'text-[#C0C0C0]' : 'text-iii-black'
           }`}
         >
           <span
             className={`font-bold ${
-              isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+              isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
             }`}
           >
             {toolsCount}+
-          </span>{" "}
+          </span>{' '}
           tools replaced
         </span>
       </div>
       <div
         className={`hidden sm:block w-px h-4 ${
-          isDarkMode ? "bg-[#3A3A3A]" : "bg-iii-medium/30"
+          isDarkMode ? 'bg-[#3A3A3A]' : 'bg-iii-medium/30'
         }`}
       />
       <div className="flex items-center gap-2">
         <svg
           className={`w-4 h-4 sm:w-5 sm:h-5 ${
-            isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+            isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
           }`}
           fill="none"
           viewBox="0 0 24 24"
@@ -378,16 +373,16 @@ function SavingsIndicator({
         </svg>
         <span
           className={`text-xs sm:text-sm ${
-            isDarkMode ? "text-[#C0C0C0]" : "text-iii-black"
+            isDarkMode ? 'text-[#C0C0C0]' : 'text-iii-black'
           }`}
         >
           <span
             className={`font-bold ${
-              isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+              isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
             }`}
           >
             Any
-          </span>{" "}
+          </span>{' '}
           language
         </span>
       </div>
@@ -402,14 +397,14 @@ interface ExampleCodeSectionProps {
 export function ExampleCodeSection({
   isDarkMode = true,
 }: ExampleCodeSectionProps) {
-  const [activeCategory, setActiveCategory] = useState("api");
+  const [activeCategory, setActiveCategory] = useState('api');
 
   const currentExample = codeExamples[activeCategory];
 
   return (
     <section
       className={`relative overflow-hidden font-mono transition-colors duration-300 ${
-        isDarkMode ? "text-iii-light" : "text-iii-black"
+        isDarkMode ? 'text-iii-light' : 'text-iii-black'
       }`}
     >
       <div className="relative z-10">
@@ -417,41 +412,41 @@ export function ExampleCodeSection({
         <div className="text-center mb-8 md:mb-12 space-y-3 md:space-y-4">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-iii-accent/30 bg-iii-accent/5 mb-4">
             <Zap
-              className={`w-4 h-4 ${isDarkMode ? "text-iii-accent" : "text-iii-accent-light"}`}
+              className={`w-4 h-4 ${isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'}`}
             />
             <span
-              className={`text-xs font-mono tracking-wider uppercase ${isDarkMode ? "text-iii-accent" : "text-iii-accent-light"}`}
+              className={`text-xs font-mono tracking-wider uppercase ${isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'}`}
             >
               Side-by-Side Comparisons
             </span>
           </div>
-          <h2 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl xl:text-5xl font-bold tracking-tighter px-2">
-            <p>Services, frameworks, integrations,</p>
-            <p>all become design patterns.</p>
+          <h2 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-bold tracking-tighter px-2">
+            <p>With iii services, frameworks, and integrations</p>
+            <p>are transformed into design patterns</p>
           </h2>
           <p
             className={`text-xs sm:text-sm md:text-base lg:text-lg max-w-3xl mx-auto px-2 ${
-              isDarkMode ? "text-iii-light/70" : "text-iii-medium"
+              isDarkMode ? 'text-iii-light/70' : 'text-iii-medium'
             }`}
           >
-            Stop assembling, start building.
+            So you can focus on the code and not the infra
           </p>
         </div>
 
         {/* Category Pills */}
         <div className="mb-4 md:mb-6 flex flex-wrap gap-1.5 sm:gap-2 justify-center px-2">
-          {[...replaceCategories, ...enableCategories].map((category) => (
+          {designPatterns.map((category) => (
             <button
               key={category.id}
               onClick={() => setActiveCategory(category.id)}
               className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm transition-all whitespace-nowrap font-medium ${
                 activeCategory === category.id
                   ? isDarkMode
-                    ? "bg-iii-accent text-iii-black border border-iii-accent"
-                    : "bg-iii-accent-light text-iii-light border border-iii-accent-light"
+                    ? 'bg-iii-accent text-iii-black border border-iii-accent'
+                    : 'bg-iii-accent-light text-iii-light border border-iii-accent-light'
                   : isDarkMode
-                    ? "text-iii-light/50 hover:text-iii-light hover:bg-iii-dark/50 border border-iii-light/30"
-                    : "text-iii-medium/60 hover:text-iii-black hover:bg-iii-medium/10 border border-iii-dark/30"
+                    ? 'text-iii-light/50 hover:text-iii-light hover:bg-iii-dark/50 border border-iii-light/30'
+                    : 'text-iii-medium/60 hover:text-iii-black hover:bg-iii-medium/10 border border-iii-dark/30'
               }`}
             >
               {category.label}
@@ -464,7 +459,7 @@ export function ExampleCodeSection({
           <div className="mb-6 md:mb-8 max-w-2xl mx-auto flex items-center justify-center px-2 min-h-[40px] md:min-h-[48px]">
             <p
               className={`text-center text-[11px] sm:text-xs md:text-sm leading-5 sm:leading-6 ${
-                isDarkMode ? "text-iii-light/50" : "text-iii-medium/70"
+                isDarkMode ? 'text-iii-light/50' : 'text-iii-medium/70'
               }`}
             >
               {currentExample.description}
