@@ -10,7 +10,6 @@ const designPatterns = [
   { id: 'realtime', label: 'Realtime' },
   { id: 'state', label: 'State' },
   { id: 'cron', label: 'Cron' },
-  { id: 'logging', label: 'Observability' },
   { id: 'workflow', label: 'Workflows' },
   { id: 'ai-agents', label: 'AI Agents' },
   { id: 'feature-flags', label: 'Feature Flags' },

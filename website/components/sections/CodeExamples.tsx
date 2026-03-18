@@ -96,22 +96,6 @@ export const codeExamples: Record<string, CodeExample> = {
     },
   },
 
-  logging: {
-    description:
-      'Keep logs and execution context tied to the same function and worker lifecycle.',
-    traditional: {
-      title: 'Logger + Tracing',
-      tools: ['Pino', 'OpenTelemetry'],
-      language: 'typescript',
-      code: traditional.logging,
-    },
-    iii: {
-      title: 'iii Engine',
-      language: 'typescript',
-      code: iii.logging,
-    },
-  },
-
   workflow: {
     description:
       'Compose durable multi-step workflows from functions, queues, and state when work spans retries or handoffs.',

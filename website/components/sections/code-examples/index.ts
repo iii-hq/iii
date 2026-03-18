@@ -3,7 +3,6 @@ import traditionalPubsub from "./traditional/pubsub.ts?raw";
 import traditionalRealtime from "./traditional/realtime.ts?raw";
 import traditionalState from "./traditional/state.ts?raw";
 import traditionalCron from "./traditional/cron.ts?raw";
-import traditionalLogging from "./traditional/logging.ts?raw";
 import traditionalWorkflow from "./traditional/workflow.ts?raw";
 import traditionalAiAgents from "./traditional/ai-agents.ts?raw";
 import traditionalFeatureFlags from "./traditional/feature-flags.ts?raw";
@@ -17,7 +16,6 @@ import iiiPubsub from "./iii/pubsub.ts?raw";
 import iiiRealtime from "./iii/realtime.ts?raw";
 import iiiState from "./iii/state.ts?raw";
 import iiiCron from "./iii/cron.ts?raw";
-import iiiLogging from "./iii/logging.ts?raw";
 import iiiWorkflow from "./iii/workflow.ts?raw";
 import iiiAiAgents from "./iii/ai-agents.ts?raw";
 import iiiFeatureFlags from "./iii/feature-flags.ts?raw";
@@ -32,7 +30,6 @@ export const traditional = {
   realtime: traditionalRealtime,
   state: traditionalState,
   cron: traditionalCron,
-  logging: traditionalLogging,
   workflow: traditionalWorkflow,
   "ai-agents": traditionalAiAgents,
   "feature-flags": traditionalFeatureFlags,
@@ -48,7 +45,6 @@ export const iii = {
   realtime: iiiRealtime,
   state: iiiState,
   cron: iiiCron,
-  logging: iiiLogging,
   workflow: iiiWorkflow,
   "ai-agents": iiiAiAgents,
   "feature-flags": iiiFeatureFlags,
