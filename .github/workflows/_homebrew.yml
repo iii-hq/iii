@@ -1,50 +1,6 @@
 name: Homebrew Publish
 
 on:
-  workflow_dispatch:
-    inputs:
-      bin_name:
-        description: 'Binary name (e.g., iii, iii-console)'
-        required: true
-        type: string
-      formula_class:
-        description: 'Ruby class name for the formula (e.g., Iii, IiiConsole)'
-        required: true
-        type: string
-      formula_path:
-        description: 'Path inside homebrew-tap repo (e.g., Formula/iii.rb)'
-        required: true
-        type: string
-      description:
-        description: 'Formula description'
-        required: true
-        type: string
-      homepage:
-        description: 'Homepage URL for the formula'
-        required: true
-        type: string
-      release_repo:
-        description: 'GitHub repo hosting the release assets (e.g., iii-hq/iii)'
-        required: true
-        type: string
-      release_tag:
-        description: 'GitHub release tag for downloading assets (e.g., iii/v1.0.0)'
-        required: true
-        type: string
-      version:
-        description: 'Version number without v prefix (e.g., 1.0.0)'
-        required: true
-        type: string
-      include_linux:
-        description: 'Whether to include Linux targets in the formula'
-        required: false
-        type: boolean
-        default: false
-      dry_run:
-        description: 'Run in dry-run mode (skip actual publish)'
-        required: false
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       bin_name:

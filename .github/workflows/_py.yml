@@ -1,17 +1,6 @@
 name: PyPI Publish
 
 on:
-  workflow_dispatch:
-    inputs:
-      package_path:
-        description: 'Package directory (e.g., sdk/packages/python/iii)'
-        required: true
-        type: string
-      dry_run:
-        description: 'Build and validate without publishing'
-        required: false
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       package_path:
@@ -68,33 +57,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: astral-sh/setup-uv@v5
+      - name: Install build tools
+        run: pip install build twine
 
       - name: Build package
         working-directory: ${{ inputs.package_path }}
-        run: uv build
+        run: python -m build
 
       - name: Validate package
         if: inputs.dry_run == true
-        working-directory: ${{ inputs.package_path }}
-        run: uvx twine check dist/*
-
-      - name: Check if version already published
-        id: check_pypi
-        if: inputs.dry_run != true
-        working-directory: ${{ inputs.package_path }}
-        run: |
-          PKG_NAME=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-          PKG_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if pip index versions "$PKG_NAME" 2>/dev/null | grep -q "$PKG_VERSION"; then
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${PKG_NAME}==${PKG_VERSION} already published — skipping"
-          else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: twine check ${{ inputs.package_path }}/dist/*
 
       - name: Publish to PyPI
-        if: inputs.dry_run != true && steps.check_pypi.outputs.already_published != 'true'
+        if: inputs.dry_run != true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: ${{ inputs.package_path }}/dist/

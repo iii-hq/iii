@@ -1,17 +1,6 @@
 name: Rust Cargo Publish
 
 on:
-  workflow_dispatch:
-    inputs:
-      package_path:
-        description: 'Path to the crate directory (e.g., sdk/packages/rust/iii)'
-        required: true
-        type: string
-      dry_run:
-        description: 'Build and validate without publishing'
-        required: false
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       package_path:
@@ -68,21 +57,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check if version already published
-        id: check_crate
-        working-directory: ${{ inputs.package_path }}
-        run: |
-          CRATE_NAME=$(grep '^name = ' Cargo.toml | head -n1 | cut -d'"' -f2)
-          CRATE_VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d'"' -f2)
-          if cargo search "$CRATE_NAME" --limit 1 2>/dev/null | grep -q "\"${CRATE_VERSION}\""; then
-            echo "already_published=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${CRATE_NAME}@${CRATE_VERSION} already published — skipping"
-          else
-            echo "already_published=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Publish to crates.io
-        if: steps.check_crate.outputs.already_published != 'true'
         working-directory: ${{ inputs.package_path }}
         run: cargo publish ${{ inputs.dry_run == true && '--dry-run' || '' }}
         env:

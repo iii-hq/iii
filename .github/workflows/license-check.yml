@@ -3,18 +3,8 @@ name: License Header Check
 on:
   push:
     branches: [main]
-    paths:
-      - 'engine/**/*.rs'
-      - 'engine/licenserc.toml'
-      - 'engine/header.txt'
-      - '.github/workflows/license-check.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'engine/**/*.rs'
-      - 'engine/licenserc.toml'
-      - 'engine/header.txt'
-      - '.github/workflows/license-check.yml'
 
 jobs:
   check-license-headers:
