@@ -226,7 +226,7 @@ Trigger the producer function and check the logs for both the enqueue confirmati
 ```typescript
 const result = await iii.trigger({
   function_id: 'orders::create',
-  payload: { items: ['item-1', 'item-2'], total: 99.99 },
+  payload: { transaction_id: 1, items: ['item-1', 'item-2'], total: 99.99 },
 })
 console.log('Enqueue result:', result)
 ```
@@ -235,7 +235,7 @@ console.log('Enqueue result:', result)
 ```python
 result = iii.trigger({
     "function_id": "orders::create",
-    "payload": {"items": ["item-1", "item-2"], "total": 99.99},
+    "payload": {"transaction_id": 1, "items": ["item-1", "item-2"], "total": 99.99},
 })
 print("Enqueue result:", result)
 ```
@@ -245,7 +245,7 @@ print("Enqueue result:", result)
 let result = iii
     .trigger(TriggerRequest {
         function_id: "orders::create".into(),
-        payload: json!({ "items": ["item-1", "item-2"], "total": 99.99 }),
+        payload: json!({ "transaction_id": 1, "items": ["item-1", "item-2"], "total": 99.99 }),
         action: None,
         timeout_ms: None,
     })
@@ -263,160 +263,6 @@ You should see two log entries:
 ```
 
 The first comes from the producer (step 2), the second from the consumer (step 3). If the consumer log doesn't appear, check that the queue name in `trigger()` matches a key in `queue_configs` and that the target function is registered and connected.
-
-## Migrating from the old topic-based API
-
-<Info title="Topic-based queues">
-  The topic-based API (`triggerVoid('enqueue', { topic, data })` and `registerTrigger({ type: 'queue', ... })`) remains valid. Named Queues + Trigger Actions offer config-driven retries, concurrency, and FIFO ordering.
-</Info>
-
-### Enqueue: before and after
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript title="Before (deprecated)"
-// Old: enqueue via triggerVoid with topic
-iii.triggerVoid('enqueue', {
-  topic: 'order.created',
-  data: order,
-})
-
-// Old: register a queue trigger to consume
-iii.registerTrigger({
-  type: 'queue',
-  function_id: 'orders::process-payment',
-  config: { topic: 'order.created' },
-})
-```
-
-```typescript title="After (Named Queues)"
-// New: enqueue directly to the target function via a named queue
-await iii.trigger({
-  function_id: 'orders::process-payment',
-  payload: order,
-  action: TriggerAction.Enqueue({ queue: 'payment' }),
-})
-
-// No trigger registration needed — the function receives data normally
-```
-</Tab>
-<Tab title="Python">
-```python title="Before (deprecated)"
-# Old: enqueue via trigger with topic
-iii.trigger({
-    "function_id": "enqueue",
-    "payload": {"topic": "order.created", "data": order},
-})
-
-# Old: register a queue trigger to consume
-iii.register_trigger({
-    "type": "queue",
-    "function_id": "orders::process-payment",
-    "config": {"topic": "order.created"},
-})
-```
-
-```python title="After (Named Queues)"
-# New: enqueue directly to the target function via a named queue
-iii.trigger({
-    "function_id": "orders::process-payment",
-    "payload": order,
-    "action": TriggerAction.Enqueue(queue="payment"),
-})
-
-# No trigger registration needed
-```
-</Tab>
-<Tab title="Rust">
-```rust title="Before (deprecated)"
-use iii_sdk::{TriggerAction, TriggerRequest};
-use serde_json::json;
-
-// Old: enqueue via trigger with topic
-iii.trigger(TriggerRequest {
-    function_id: "enqueue".to_string(),
-    payload: json!({"topic": "order.created", "data": order}),
-    action: Some(TriggerAction::Void),
-    timeout_ms: None,
-}).await?;
-
-// Old: register a queue trigger to consume
-iii.register_trigger("queue", "orders::process-payment", json!({
-    "topic": "order.created",
-}))?;
-```
-
-```rust title="After (Named Queues)"
-use iii_sdk::{TriggerAction, TriggerRequest};
-
-iii.trigger(TriggerRequest {
-    function_id: "orders::process-payment".to_string(),
-    payload: order,
-    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
-    timeout_ms: None,
-})
-.await?;
-```
-</Tab>
-</Tabs>
-
-### triggerVoid: before and after
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript title="Before (deprecated)"
-iii.triggerVoid('send-notification', data)
-```
-
-```typescript title="After"
-await iii.trigger({
-  function_id: 'send-notification',
-  payload: data,
-  action: TriggerAction.Void(),
-})
-```
-</Tab>
-<Tab title="Python">
-```python title="Before (deprecated)"
-iii.trigger({
-    "function_id": "send-notification",
-    "payload": data,
-})
-```
-
-```python title="After"
-iii.trigger({
-    "function_id": "send-notification",
-    "payload": data,
-    "action": TriggerAction.Void(),
-})
-```
-</Tab>
-<Tab title="Rust">
-```rust title="Before (deprecated)"
-use iii_sdk::{TriggerAction, TriggerRequest};
-
-iii.trigger(TriggerRequest {
-    function_id: "send-notification".to_string(),
-    payload: data,
-    action: Some(TriggerAction::Void),
-    timeout_ms: None,
-}).await?;
-```
-
-```rust title="After"
-use iii_sdk::{TriggerAction, TriggerRequest};
-
-iii.trigger(TriggerRequest {
-    function_id: "send-notification".to_string(),
-    payload: data,
-    action: Some(TriggerAction::Void),
-    timeout_ms: None,
-})
-.await?;
-```
-</Tab>
-</Tabs>
 
 ## Result
 
