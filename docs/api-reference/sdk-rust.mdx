@@ -152,32 +152,18 @@ fn greet(input: Input) -> Result<String, String> {
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 // Using iii_fn wrapper (auto-fills request_format/response_format)
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "greet".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+iii.register_function((
+    RegisterFunctionMessage::with_id("greet".to_string()),
     iii_fn(greet),
-);
+));
 
-// Using raw closure (original API, still supported)
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "echo".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+// Using raw closure (still supported via tuple)
+iii.register_function((
+    RegisterFunctionMessage::with_id("echo".to_string()),
     |input: Value| async move {
         Ok(json!({"echo": input}))
     },
-);
+));
 ```
 
 ### register_service

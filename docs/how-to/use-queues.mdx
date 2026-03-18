@@ -525,12 +525,8 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::create".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
+iii.register_function((
+    RegisterFunctionMessage::with_id("orders::create".to_string()),
     move |req: Value| {
         let iii = iii_clone.clone();
         async move {
@@ -580,6 +576,140 @@ This example uses all three [trigger actions](./trigger-actions): **Enqueue** fo
 A marketing system sends thousands of emails. The SMTP provider has a rate limit. A standard queue with low concurrency prevents overloading the provider while retrying transient SMTP failures.
 
 **Queue configuration:**
+||||||| parent of 2e8fd855 (chore: update docs)
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="process-order.ts"
+import { registerWorker, Logger } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+iii.registerFunction({ id: 'orders::process-order' }, async (order) => {
+  const logger = new Logger()
+  logger.info('Processing payment', { orderId: order.id })
+  // ...payment logic...
+  return { processed: true }
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="process_order.py"
+import os
+
+from iii import Logger, register_worker
+
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+def process_order(order):
+    logger = Logger()
+    logger.info("Processing payment", {"orderId": order["id"]})
+    # ...payment logic...
+    return {"processed": True}
+
+
+iii.register_function({"id": "orders::process-order"}, process_order)
+```
+</Tab>
+<Tab title="Rust">
+```rust title="process_order.rs"
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage};
+use serde_json::json;
+
+let iii = register_worker(
+    &std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()),
+    InitOptions::default(),
+);
+
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "orders::process-order".to_string(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    },
+    |order| async move {
+        let logger = Logger::new();
+        let order_id = order["id"].as_str().unwrap_or("");
+        logger.info("Processing payment", Some(json!({ "orderId": order_id })));
+        // ...payment logic...
+        Ok(json!({ "processed": true }))
+    },
+);
+```
+</Tab>
+</Tabs>
+
+A worker can also enqueue further work, creating processing pipelines:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+iii.registerFunction({ id: 'orders::process-order' }, async (order) => {
+  // ...charge the customer...
+
+  await iii.trigger({
+    function_id: 'notifications::send',
+    payload: { orderId: order.id, type: 'payment-confirmed' },
+    action: TriggerAction.Enqueue({ queue: 'default' }),
+  })
+
+  return { processed: true }
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+def process_order(order):
+    # ...charge the customer...
+
+    iii.trigger({
+        "function_id": "notifications::send",
+        "payload": {"orderId": order["id"], "type": "payment-confirmed"},
+        "action": TriggerAction.Enqueue(queue="default"),
+    })
+
+    return {"processed": True}
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
+use serde_json::json;
+
+iii.register_function(
+    RegisterFunctionMessage {
+        id: "orders::process-order".to_string(),
+        description: None,
+        request_format: None,
+        response_format: None,
+        metadata: None,
+        invocation: None,
+    },
+    |order| async move {
+        iii.trigger(TriggerRequest {
+            function_id: "notifications::send".to_string(),
+            payload: json!({
+                "orderId": order["id"],
+                "type": "payment-confirmed",
+            }),
+            action: Some(TriggerAction::Enqueue { queue: "default".to_string() }),
+            timeout_ms: None,
+        })
+        .await?;
+
+        Ok(json!({ "processed": true }))
+    },
+);
+```
+</Tab>
+</Tabs>
+
+### 4. Use FIFO queues for ordered processing
+
+When order matters (e.g. payment transactions for the same account), use a FIFO queue. Set `type: fifo` and specify `message_group_field` — the field in your job data whose value determines the ordering group. Jobs with the same group value are processed strictly in order. The field named by `message_group_field` must be present **and non-null** in every job payload — the engine rejects enqueue requests where the field is missing or null.
 
 ```yaml title="iii-config.yaml (excerpt)"
 queue_configs:

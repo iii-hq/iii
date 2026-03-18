@@ -70,7 +70,7 @@ use serde_json::json;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function(RegisterFunctionMessage { id: "greet".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
+    iii.register_function(RegisterFunctionMessage::with_id("greet".into()), |input| async move {
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
         Ok(json!({ "message": format!("Hello, {name}!") }))
     });

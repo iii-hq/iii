@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let iii_clone = iii.clone();
   iii.register_function(
-    RegisterFunctionMessage { id: "math::add".into(), description: Some("Add two numbers and store result".into()), request_format: None, response_format: None, metadata: None, invocation: None },
+    RegisterFunctionMessage::with_id("math::add".into()).with_description("Add two numbers and store result".into()),
     move |input| {
       let iii = iii_clone.clone();
       async move {
@@ -172,11 +172,7 @@ let mut headers = HashMap::new();
 headers.insert("X-Service".to_string(), "iii-worker".to_string());
 
 iii.register_function(
-  RegisterFunctionMessage {
-    id: "notifications::send".into(),
-    description: Some("POST notification to Service Provider webhook".into()),
-    request_format: None, response_format: None, metadata: None, invocation: None,
-  },
+  RegisterFunctionMessage::with_id("notifications::send".into()).with_description("POST notification to Service Provider webhook".into()),
   HttpInvocationConfig {
     url: "https://hooks.provider.example.com/notify".to_string(),
     method: HttpMethod::Post,
@@ -253,7 +249,7 @@ iii.register_function({"id": "math::calculate"}, calculate)
 ```rust title="trigger.rs"
 let iii_clone = iii.clone();
 iii.register_function(
-  RegisterFunctionMessage { id: "math::calculate".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+  RegisterFunctionMessage::with_id("math::calculate".into()),
   move |input| {
     let iii = iii_clone.clone();
     async move {
@@ -297,7 +293,7 @@ use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
 
 let iii_clone = iii.clone();
 iii.register_function(
-  RegisterFunctionMessage { id: "math::calculate-async".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+  RegisterFunctionMessage::with_id("math::calculate-async".into()),
   move |input| {
     let iii = iii_clone.clone();
     async move {
@@ -361,7 +357,7 @@ use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
 
 let iii_clone = iii.clone();
 iii.register_function(
-  RegisterFunctionMessage { id: "orders::create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+  RegisterFunctionMessage::with_id("orders::create".into()),
   move |input| {
     let iii = iii_clone.clone();
     async move {
@@ -442,7 +438,7 @@ iii.register_trigger({
 <Tab title="Rust">
 ```rust title="http_trigger.rs"
 iii.register_function(
-  RegisterFunctionMessage { id: "math::multiply".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+  RegisterFunctionMessage::with_id("math::multiply".into()),
   |req| async move {
     let logger = Logger::new();
     let a = req["body"]["a"].as_i64().unwrap_or(0);
@@ -515,7 +511,7 @@ iii.register_trigger({
 ```rust title="cron_trigger.rs"
 let iii_clone = iii.clone();
 iii.register_function(
-  RegisterFunctionMessage { id: "math::aggregation".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+  RegisterFunctionMessage::with_id("math::aggregation".into()),
   move |_| {
     let iii = iii_clone.clone();
     async move {
@@ -595,7 +591,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let iii = register_worker(&url, InitOptions::default());
 
   iii.register_function(
-    RegisterFunctionMessage { id: "orders::webhook".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+    RegisterFunctionMessage::with_id("orders::webhook".into()),
     HttpInvocationConfig {
       url: std::env::var("WEBHOOK_URL").expect("WEBHOOK_URL required"),
       method: HttpMethod::Post,
@@ -673,7 +669,7 @@ iii.register_function({"id": "math::double"}, double)
 ```rust title="cross_language.rs"
 let iii_clone = iii.clone();
 iii.register_function(
-  RegisterFunctionMessage { id: "math::double".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+  RegisterFunctionMessage::with_id("math::double".into()),
   move |input| {
     let iii = iii_clone.clone();
     async move {
@@ -736,7 +732,7 @@ trigger.unregister()
 <Tab title="Rust">
 ```rust title="unregister.rs"
 let fn_ref = iii.register_function(
-    RegisterFunctionMessage { id: "orders::create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+    RegisterFunctionMessage::with_id("orders::create".into()),
     |input| async move {
         let item = input["body"]["item"].as_str().unwrap_or("");
         Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
