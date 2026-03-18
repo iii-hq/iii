@@ -30,6 +30,7 @@
             "pages": [
               "how-to/use-functions-and-triggers",
               "how-to/use-queues",
+              "how-to/use-fifo-queues",
               "how-to/dead-letter-queues",
               "how-to/expose-http-endpoint",
               "how-to/manage-state",

@@ -1,0 +1,154 @@
+---
+title: 'Use FIFO Queues'
+description: 'How to process jobs in strict order using FIFO queues and message groups.'
+---
+
+## Goal
+
+Process jobs in strict order within a group — for example, ensuring all transactions for the same account are handled sequentially — using a FIFO named queue.
+
+## Steps
+
+### 1. Configure a FIFO queue
+
+Set `type: fifo` and specify `message_group_field` — the JSON field in job payloads whose value determines the ordering group. Jobs sharing the same group value are processed strictly in order.
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        payment:
+          max_retries: 10
+          concurrency: 2
+          type: fifo
+          message_group_field: transaction_id
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
+```
+
+The field named by `message_group_field` **must be present and non-null** in every job payload. The engine rejects enqueue requests where the field is missing or null.
+
+### 2. Enqueue with the group field
+
+Include the field specified by `message_group_field` in your payload. Jobs with the same value are delivered in order.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import { TriggerAction } from 'iii-sdk'
+
+await iii.trigger({
+  function_id: 'payments::process',
+  payload: { transaction_id: 'txn-abc-123', amount: 49.99, currency: 'USD' },
+  action: TriggerAction.Enqueue({ queue: 'payment' }),
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import TriggerAction
+
+iii.trigger({
+    "function_id": "payments::process",
+    "payload": {
+        "transaction_id": "txn-abc-123",
+        "amount": 49.99,
+        "currency": "USD",
+    },
+    "action": TriggerAction.Enqueue(queue="payment"),
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{TriggerAction, TriggerRequest};
+use serde_json::json;
+
+iii.trigger(TriggerRequest {
+    function_id: "payments::process".to_string(),
+    payload: json!({
+        "transaction_id": "txn-abc-123",
+        "amount": 49.99,
+        "currency": "USD",
+    }),
+    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
+    timeout_ms: None,
+})
+.await?;
+```
+</Tab>
+</Tabs>
+
+### 3. Write the target function
+
+The target function is a regular function — FIFO ordering is transparent to the consumer.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="process-payment.ts"
+import { registerWorker, Logger } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+iii.registerFunction({ id: 'payments::process' }, async (payment) => {
+  const logger = new Logger()
+  logger.info('Processing payment', { txn: payment.transaction_id })
+  // ...payment logic...
+  return { processed: true }
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="process_payment.py"
+import os
+
+from iii import Logger, register_worker
+
+iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+def process_payment(payment):
+    logger = Logger()
+    logger.info("Processing payment", {"txn": payment["transaction_id"]})
+    # ...payment logic...
+    return {"processed": True}
+
+
+iii.register_function({"id": "payments::process"}, process_payment)
+```
+</Tab>
+<Tab title="Rust">
+```rust title="process_payment.rs"
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage};
+use serde_json::json;
+
+let iii = register_worker(
+    &std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()),
+    InitOptions::default(),
+);
+
+iii.register_function(
+    RegisterFunctionMessage { id: "payments::process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
+    |payment| async move {
+        let logger = Logger::new();
+        let txn = payment["transaction_id"].as_str().unwrap_or("");
+        logger.info("Processing payment", Some(json!({ "txn": txn })));
+        // ...payment logic...
+        Ok(json!({ "processed": true }))
+    },
+);
+```
+</Tab>
+</Tabs>
+
+## Result
+
+Jobs with the same `transaction_id` are processed in strict FIFO order. Jobs with different group values run concurrently up to the queue's `concurrency` limit. Failed jobs retry with backoff; after `max_retries` they move to the dead-letter queue.
+
+<Info title="See also">
+  For standard (non-ordered) queues, see [Use Queues](./use-queues). For DLQ handling, see [Manage Failed Triggers](./dead-letter-queues).
+</Info>

@@ -1,11 +1,11 @@
 ---
 title: 'Use Queues'
-description: 'How to enqueue work and process it asynchronously with retries, concurrency control, and ordering guarantees using Named Queues and Trigger Actions.'
+description: 'How to enqueue work and process it asynchronously with retries and concurrency control.'
 ---
 
 ## Goal
 
-Offload work to a named queue so it can be processed asynchronously by any function — with built-in retries, concurrency control, and optional FIFO ordering. The new Named Queues API lets you define queues in config and enqueue work via `trigger()` with an action parameter, so target functions receive data normally with no handler changes.
+Offload work to a named queue so it is processed asynchronously by any function — with built-in retries and concurrency control.
 
 ## Steps
 
@@ -49,7 +49,7 @@ The `default` queue is used when no queue name is specified. You can add as many
 
 ### 2. Enqueue work via trigger action
 
-From any function, enqueue a job by calling `trigger()` with the `Enqueue` action and the target queue name. The enqueue operation is asynchronous — the caller does not wait for the job to be processed — but the SDK does await an acknowledgement from the engine confirming the job was accepted. The returned result contains `{ messageReceiptId: string }` on success, or an `enqueue_error` if the queue was not found or FIFO validation failed.
+From any function, enqueue a job by calling `trigger()` with the `Enqueue` action and the target queue name.
 
 <Tabs>
 <Tab title="Node / TypeScript">
@@ -117,14 +117,7 @@ let iii = register_worker(
 
 let iii_clone = iii.clone();
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::create".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage { id: "orders::create".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
     move |input| {
         let iii = iii_clone.clone();
         async move {
@@ -156,6 +149,10 @@ iii.register_function(
 <Info title="No handler changes needed">
   The target function (`orders::process-order`) receives the enqueued data as its normal input argument.
   You do not need to register a queue trigger or unwrap a special envelope — the queue is transparent to the consumer.
+</Info>
+
+<Info title="Acknowledgement semantics">
+  The enqueue call is asynchronous — the caller does not wait for the job to be processed — but the SDK awaits an acknowledgement confirming the job was accepted. The result contains `{ messageReceiptId: string }` on success, or an `enqueue_error` if the queue was not found or validation failed.
 </Info>
 
 ### 3. Write the target function
@@ -207,14 +204,7 @@ let iii = register_worker(
 );
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::process-order".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage { id: "orders::process-order".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None },
     |order| async move {
         let logger = Logger::new();
         let order_id = order["id"].as_str().unwrap_or("");
@@ -227,191 +217,18 @@ iii.register_function(
 </Tab>
 </Tabs>
 
-A worker can also enqueue further work, creating processing pipelines:
+### 4. Verify the queue is working
+
+Trigger the producer function and check the logs for both the enqueue confirmation and the consumer processing:
 
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({ id: 'orders::process-order' }, async (order) => {
-  // ...charge the customer...
-
-  await iii.trigger({
-    function_id: 'notifications::send',
-    payload: { orderId: order.id, type: 'payment-confirmed' },
-    action: TriggerAction.Enqueue({ queue: 'default' }),
-  })
-
-  return { processed: true }
-})
-```
-</Tab>
-<Tab title="Python">
-```python
-def process_order(order):
-    # ...charge the customer...
-
-    iii.trigger({
-        "function_id": "notifications::send",
-        "payload": {"orderId": order["id"], "type": "payment-confirmed"},
-        "action": TriggerAction.Enqueue(queue="default"),
-    })
-
-    return {"processed": True}
-```
-</Tab>
-<Tab title="Rust">
-```rust
-use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
-use serde_json::json;
-
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::process-order".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
-    |order| async move {
-        iii.trigger(TriggerRequest {
-            function_id: "notifications::send".to_string(),
-            payload: json!({
-                "orderId": order["id"],
-                "type": "payment-confirmed",
-            }),
-            action: Some(TriggerAction::Enqueue { queue: "default".to_string() }),
-            timeout_ms: None,
-        })
-        .await?;
-
-        Ok(json!({ "processed": true }))
-    },
-);
-```
-</Tab>
-</Tabs>
-
-### 4. Use FIFO queues for ordered processing
-
-When order matters (e.g. payment transactions for the same account), use a FIFO queue. Set `type: fifo` and specify `message_group_field` — the field in your job data whose value determines the ordering group. Jobs with the same group value are processed strictly in order. The field named by `message_group_field` must be present **and non-null** in every job payload — the engine rejects enqueue requests where the field is missing or null.
-
-```yaml title="iii-config.yaml (excerpt)"
-queue_configs:
-  payment:
-    max_retries: 10
-    concurrency: 2
-    type: fifo
-    message_group_field: transaction_id  # job payloads must include a non-null transaction_id
-```
-
-The job data **must** contain the field specified by `message_group_field`:
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript
-// The 'transaction_id' field in the data is used for FIFO ordering
-await iii.trigger({
-  function_id: 'payments::process',
-  payload: { transaction_id: 'txn-abc-123', amount: 49.99, currency: 'USD' },
-  action: TriggerAction.Enqueue({ queue: 'payment' }),
-})
-```
-</Tab>
-<Tab title="Python">
-```python
-# The 'transaction_id' field in the data is used for FIFO ordering
-iii.trigger({
-    "function_id": "payments::process",
-    "payload": {
-        "transaction_id": "txn-abc-123",
-        "amount": 49.99,
-        "currency": "USD",
-    },
-    "action": TriggerAction.Enqueue(queue="payment"),
-})
-```
-</Tab>
-<Tab title="Rust">
-```rust
-use iii_sdk::{TriggerAction, TriggerRequest};
-use serde_json::json;
-
-iii.trigger(TriggerRequest {
-    function_id: "payments::process".to_string(),
-    payload: json!({
-        "transaction_id": "txn-abc-123",
-        "amount": 49.99,
-        "currency": "USD",
-    }),
-    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
-    timeout_ms: None,
-})
-.await?;
-```
-</Tab>
-</Tabs>
-
-### 5. Use Void for fire-and-forget calls
-
-When you want to trigger a function without waiting for a response and without going through a queue, use the `Void` action. This replaces the old `triggerVoid` method.
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript
-import { TriggerAction } from 'iii-sdk'
-
-// Fire-and-forget — no queue, no response
-await iii.trigger({
-  function_id: 'notifications::send-email',
-  payload: { to: 'user@example.com', subject: 'Hello' },
-  action: TriggerAction.Void(),
-})
-```
-</Tab>
-<Tab title="Python">
-```python
-from iii import TriggerAction
-
-# Fire-and-forget — no queue, no response
-iii.trigger({
-    "function_id": "notifications::send-email",
-    "payload": {"to": "user@example.com", "subject": "Hello"},
-    "action": TriggerAction.Void(),
-})
-```
-</Tab>
-<Tab title="Rust">
-```rust
-use iii_sdk::{TriggerAction, TriggerRequest};
-use serde_json::json;
-
-iii.trigger(TriggerRequest {
-    function_id: "notifications::send-email".to_string(),
-    payload: json!({
-        "to": "user@example.com",
-        "subject": "Hello",
-    }),
-    action: Some(TriggerAction::Void),
-    timeout_ms: None,
-})
-.await?;
-```
-</Tab>
-</Tabs>
-
-### 6. Trigger the workflow
-
-With the queue config and functions in place, kick off the workflow by calling the function that creates work:
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript
-const { orderId } = await iii.trigger({
+const result = await iii.trigger({
   function_id: 'orders::create',
   payload: { items: ['item-1', 'item-2'], total: 99.99 },
 })
-logger.info('Order created', { orderId })
+console.log('Enqueue result:', result)
 ```
 </Tab>
 <Tab title="Python">
@@ -420,139 +237,32 @@ result = iii.trigger({
     "function_id": "orders::create",
     "payload": {"items": ["item-1", "item-2"], "total": 99.99},
 })
-print("Order created", result["orderId"])
+print("Enqueue result:", result)
 ```
 </Tab>
 <Tab title="Rust">
 ```rust
-use iii_sdk::TriggerRequest;
-use serde_json::json;
-
 let result = iii
     .trigger(TriggerRequest {
-        function_id: "orders::create".to_string(),
-        payload: json!({
-            "items": ["item-1", "item-2"],
-            "total": 99.99,
-        }),
+        function_id: "orders::create".into(),
+        payload: json!({ "items": ["item-1", "item-2"], "total": 99.99 }),
         action: None,
         timeout_ms: None,
     })
     .await?;
-println!("Order created: {}", result["orderId"]);
+println!("Enqueue result: {result}");
 ```
 </Tab>
 </Tabs>
 
-## API Reference
+You should see two log entries:
 
-### Trigger actions
-
-| Action | Behavior | SDK Usage |
-|--------|----------|-----------|
-| _(none)_ | Direct call — waits for response | `trigger({ function_id: 'fn', payload: data })` |
-| `Enqueue` | Async via named queue — returns `{ messageReceiptId: string }` or `enqueue_error` | `trigger({ function_id: 'fn', payload: data, action: TriggerAction.Enqueue({ queue: 'name' }) })` |
-| `Void` | Fire-and-forget, no queue | `trigger({ function_id: 'fn', payload: data, action: TriggerAction.Void() })` |
-
-### SDK quick reference
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript
-import { registerWorker, TriggerAction } from 'iii-sdk'
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
-
-// Direct call (request/response)
-const result = await iii.trigger({
-  function_id: 'get-order',
-  payload: { id: '123' },
-})
-
-// Enqueue to named queue (async, returns acknowledgement)
-await iii.trigger({
-  function_id: 'process-order',
-  payload: orderData,
-  action: TriggerAction.Enqueue({ queue: 'payment' }),
-})
-
-// Void (fire-and-forget, no queue)
-await iii.trigger({
-  function_id: 'send-notification',
-  payload: data,
-  action: TriggerAction.Void(),
-})
 ```
-</Tab>
-<Tab title="Python">
-```python
-import os
-
-from iii import TriggerAction, register_worker
-
-iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
-
-# Direct call (request/response)
-result = iii.trigger({
-    "function_id": "get-order",
-    "payload": {"id": "123"},
-})
-
-# Enqueue to named queue (async, returns acknowledgement)
-iii.trigger({
-    "function_id": "process-order",
-    "payload": order_data,
-    "action": TriggerAction.Enqueue(queue="payment"),
-})
-
-# Void (fire-and-forget, no queue)
-iii.trigger({
-    "function_id": "send-notification",
-    "payload": data,
-    "action": TriggerAction.Void(),
-})
+[INFO] Order enqueued    { "orderId": "..." }
+[INFO] Processing payment { "orderId": "..." }
 ```
-</Tab>
-<Tab title="Rust">
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerAction, TriggerRequest};
-use serde_json::json;
 
-let iii = register_worker(
-    &std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()),
-    InitOptions::default(),
-);
-
-// Direct call (request/response)
-let result = iii
-    .trigger(TriggerRequest {
-        function_id: "get-order".to_string(),
-        payload: json!({ "id": "123" }),
-        action: None,
-        timeout_ms: None,
-    })
-    .await?;
-
-// Enqueue to named queue (async, returns acknowledgement)
-iii.trigger(TriggerRequest {
-    function_id: "process-order".to_string(),
-    payload: order_data,
-    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
-    timeout_ms: None,
-})
-.await?;
-
-// Void (fire-and-forget, no queue)
-iii.trigger(TriggerRequest {
-    function_id: "send-notification".to_string(),
-    payload: data,
-    action: Some(TriggerAction::Void),
-    timeout_ms: None,
-})
-.await?;
-```
-</Tab>
-</Tabs>
+The first comes from the producer (step 2), the second from the consumer (step 3). If the consumer log doesn't appear, check that the queue name in `trigger()` matches a key in `queue_configs` and that the target function is registered and connected.
 
 ## Migrating from the old topic-based API
 

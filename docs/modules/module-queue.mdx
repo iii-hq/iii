@@ -46,6 +46,14 @@ The producer targets the function and queue explicitly. Queue configuration is c
 
 Both modes are valid. Named queues offer config-driven retries, concurrency, and FIFO. See [Queue System](../architecture/queue-system) for design rationale.
 
+## Trigger Actions
+
+| Action | Behavior | SDK Usage |
+|--------|----------|-----------|
+| _(none)_ | Direct call — waits for response | `trigger({ function_id: 'fn', payload: data })` |
+| `Enqueue` | Async via named queue — returns `{ messageReceiptId }` | `trigger({ ..., action: TriggerAction.Enqueue({ queue: 'name' }) })` |
+| `Void` | Fire-and-forget, no queue | `trigger({ ..., action: TriggerAction.Void() })` |
+
 ## Sample Configuration
 
 ```yaml
