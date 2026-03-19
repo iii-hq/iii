@@ -60,17 +60,18 @@ NC='\033[0m'
 # --- Helper functions ---------------------------------------------------------
 
 err() {
+  local stage="$1"; shift
   printf "${RED}error:${NC} %s\n" "$*" >&2
   if [[ -n "${install_event_prefix:-}" && -n "${install_id:-}" && -n "${telemetry_id:-}" ]]; then
     local err_msg
     err_msg=$(echo "$*" | tr '"' "'")
     if [[ "$install_event_prefix" == "upgrade" ]]; then
       iii_send_event "upgrade_failed" \
-        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\",\"error_message\":\"${err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${stage}\",\"error_message\":\"${err_msg}\"" \
         "$telemetry_id"
     else
       iii_send_event "install_failed" \
-        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\",\"error_message\":\"${err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${stage}\",\"error_message\":\"${err_msg}\"" \
         "$telemetry_id"
     fi
     wait
@@ -228,7 +229,7 @@ iii_get_or_create_telemetry_id() {
 
   mkdir -p "${HOME}/.iii"
   local new_id
-  new_id=$(iii_gen_uuid)
+  new_id="auto-$(iii_gen_uuid)"
   iii_set_toml_key "identity" "id" "$new_id"
   echo "$new_id"
 }
@@ -363,14 +364,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     -v|--version)
       if [[ -z "${2:-}" ]]; then
-        err "--version requires an argument"
+        err "args" "--version requires an argument"
       fi
       requested_version="$2"
       shift 2
       ;;
     -b|--binary)
       if [[ -z "${2:-}" ]]; then
-        err "--binary requires an argument"
+        err "args" "--binary requires an argument"
       fi
       binary_path="$2"
       shift 2
@@ -400,7 +401,7 @@ if [[ -n "$requested_version" ]]; then
   local_ver="${requested_version#iii/}"
   local_ver="${local_ver#v}"
   if [[ ! "$local_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-    err "invalid version format: $requested_version (expected: X.Y.Z or X.Y.Z-pre)"
+    err "args" "invalid version format: $requested_version (expected: X.Y.Z or X.Y.Z-pre)"
   fi
   unset local_ver
 fi
@@ -408,7 +409,7 @@ fi
 # --- Dependency checks --------------------------------------------------------
 
 if ! command -v curl >/dev/null 2>&1; then
-  err "curl is required but not found"
+  err "dependency" "curl is required but not found"
 fi
 
 # --- Version check ------------------------------------------------------------
@@ -580,7 +581,7 @@ if [[ -z "$binary_path" ]]; then
         os="unknown-linux-gnu"
         ;;
       *)
-        err "unsupported OS: $uname_s"
+        err "platform" "unsupported OS: $uname_s"
         ;;
     esac
 
@@ -593,7 +594,7 @@ if [[ -z "$binary_path" ]]; then
         arch="aarch64"
         ;;
       *)
-        err "unsupported architecture: $uname_m"
+        err "platform" "unsupported architecture: $uname_m"
         ;;
     esac
 
@@ -635,23 +636,23 @@ if [[ -z "$binary_path" ]]; then
     printf "${MUTED}Installing ${NC}%s ${MUTED}version: ${NC}%s\n" "$BIN_NAME" "$requested_version"
     _tag="v${_bare}"
     api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
-    json=$(github_api "$api_url") || err "release tag not found: $requested_version (tried tag: $_tag)"
+    json=$(github_api "$api_url") || err "download" "release tag not found: $requested_version (tried tag: $_tag)"
   else
     printf "${MUTED}Installing ${NC}%s ${MUTED}latest version${NC}\n" "$BIN_NAME"
     api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
-    json_list=$(github_api "$api_url") || err "failed to fetch releases from $REPO"
+    json_list=$(github_api "$api_url") || err "download" "failed to fetch releases from $REPO"
     if command -v jq >/dev/null 2>&1; then
       json=$(printf '%s' "$json_list" \
         | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("v"))))')
-      [[ "$json" == "null" || -z "$json" ]] && err "no stable iii release found"
+      [[ "$json" == "null" || -z "$json" ]] && err "download" "no stable iii release found"
     else
       _tag=$(printf '%s' "$json_list" \
         | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"' \
         | head -n 1 \
         | sed -E 's/.*"(v[^"]+)".*/\1/')
-      [[ -z "$_tag" ]] && err "could not determine latest release"
+      [[ -z "$_tag" ]] && err "download" "could not determine latest release"
       api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
-      json=$(github_api "$api_url") || err "failed to fetch release $_tag"
+      json=$(github_api "$api_url") || err "download" "failed to fetch release $_tag"
     fi
   fi
 
@@ -668,7 +669,7 @@ if [[ -z "$binary_path" ]]; then
   specific_version="${specific_version#v}"
 
   if [[ -z "$specific_version" ]]; then
-    err "could not determine version from release response"
+    err "download" "could not determine version from release response"
   fi
 
   if [[ -z "$requested_version" ]]; then
@@ -752,7 +753,7 @@ download_and_install() {
     fi
     if [[ -n "$actual_hash" ]]; then
       if [[ "$actual_hash" != "$expected_hash" ]]; then
-        err "checksum verification failed (expected: $expected_hash, got: $actual_hash)"
+        err "checksum" "checksum verification failed (expected: $expected_hash, got: $actual_hash)"
       fi
       print_message muted "Checksum verified"
     else
@@ -766,17 +767,17 @@ download_and_install() {
   case "$asset_name" in
     *.tar.gz|*.tgz)
       if ! command -v tar >/dev/null 2>&1; then
-        err "tar is required to extract $asset_name"
+        err "extract" "tar is required to extract $asset_name"
       fi
       # Check for path traversal entries before extracting
       if tar -tzf "$tmpdir/$asset_name" | grep -qE '(^|/)\.\.(/|$)'; then
-        err "archive contains path traversal entries"
+        err "extract" "archive contains path traversal entries"
       fi
       tar --no-same-owner -xzf "$tmpdir/$asset_name" -C "$tmpdir"
       ;;
     *.zip)
       if ! command -v unzip >/dev/null 2>&1; then
-        err "unzip is required to extract $asset_name"
+        err "extract" "unzip is required to extract $asset_name"
       fi
       unzip -q "$tmpdir/$asset_name" -d "$tmpdir"
       ;;
@@ -795,12 +796,12 @@ download_and_install() {
   fi
 
   if [[ -z "${bin_file:-}" || ! -f "$bin_file" ]]; then
-    err "binary '$BIN_NAME' not found in downloaded asset"
+    err "binary_lookup" "binary '$BIN_NAME' not found in downloaded asset"
   fi
 
   # Reject symlinks to prevent symlink attacks
   if [[ -L "$bin_file" ]]; then
-    err "binary is a symlink, refusing to install"
+    err "binary_lookup" "binary is a symlink, refusing to install"
   fi
 
   # Install the binary
@@ -818,7 +819,7 @@ download_and_install() {
 
 install_from_binary() {
   if [[ ! -f "$binary_path" ]]; then
-    err "binary not found at: $binary_path"
+    err "install" "binary not found at: $binary_path"
   fi
 
   mkdir -p "$INSTALL_DIR"
@@ -1006,5 +1007,5 @@ if [[ -x "$INSTALL_DIR/$BIN_NAME" ]]; then
   printf "\n"
   printf "\n"
 else
-  err "installation failed: binary not executable at $INSTALL_DIR/$BIN_NAME"
+  err "install" "installation failed: binary not executable at $INSTALL_DIR/$BIN_NAME"
 fi

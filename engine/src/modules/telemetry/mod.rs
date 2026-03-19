@@ -155,7 +155,7 @@ fn get_or_create_install_id() -> String {
                 }
             }
 
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = format!("auto-{}", uuid::Uuid::new_v4());
             environment::set_config_key("identity", "id", &id);
             id
         })
@@ -557,6 +557,7 @@ impl Module for TelemetryModule {
                     "sdk_languages": wd.sdk_languages,
                     "worker_count_total": wd.worker_count_total,
                     "worker_count_motia": wd.worker_count_motia,
+                    "worker_count_by_language": wd.worker_count_by_language,
                     "workers": wd.workers,
                 }),
                 wd.sdk_telemetry.as_ref(),
@@ -671,18 +672,15 @@ impl Module for TelemetryModule {
                         let project = resolve_project_context(wd.sdk_telemetry.as_ref());
 
                         let properties = serde_json::json!({
-                            "delta_invocations_total": delta_invocations_total,
-                            "delta_invocations_success": delta_invocations_success,
-                            "delta_invocations_error": delta_invocations_error,
-                            "delta_api_requests": delta_api_requests,
-                            "delta_queue_emits": delta_queue_emits,
-                            "delta_queue_consumes": delta_queue_consumes,
-                            "delta_pubsub_publishes": delta_pubsub_publishes,
-                            "delta_pubsub_subscribes": delta_pubsub_subscribes,
-                            "delta_cron_executions": delta_cron_executions,
-                            "invocations_total": invocations_total,
-                            "invocations_success": invocations_success,
-                            "invocations_error": invocations_error,
+                            "invocations_total": delta_invocations_total,
+                            "invocations_success": delta_invocations_success,
+                            "invocations_error": delta_invocations_error,
+                            "api_requests": delta_api_requests,
+                            "queue_emits": delta_queue_emits,
+                            "queue_consumes": delta_queue_consumes,
+                            "pubsub_publishes": delta_pubsub_publishes,
+                            "pubsub_subscribes": delta_pubsub_subscribes,
+                            "cron_executions": delta_cron_executions,
                             "function_count": ft.function_count,
                             "trigger_count": ft.trigger_count,
                             "functions": ft.functions,

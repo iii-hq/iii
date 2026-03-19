@@ -9,16 +9,17 @@ AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
 AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-e8fb1f8d290a72dbb2d9b264926be4bf}"
 
 err() {
+  _stage="$1"; shift
   echo "error: $*" >&2
   if [ -n "${install_event_prefix:-}" ] && [ -n "${install_id:-}" ] && [ -n "${telemetry_id:-}" ]; then
     _err_msg=$(echo "$*" | tr '"' "'")
     if [ "$install_event_prefix" = "upgrade" ]; then
       iii_send_event "upgrade_failed" \
-        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_err_msg}\",\"error_message\":\"${_err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"" \
         "$telemetry_id" "$install_id"
     else
       iii_send_event "install_failed" \
-        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_err_msg}\",\"error_message\":\"${_err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"" \
         "$telemetry_id" "$install_id"
     fi
     wait
@@ -158,7 +159,7 @@ iii_get_or_create_telemetry_id() {
   fi
 
   mkdir -p "${HOME}/.iii"
-  _new_id=$(iii_gen_uuid)
+  _new_id="auto-$(iii_gen_uuid)"
   iii_set_toml_key "identity" "id" "$_new_id"
   echo "$_new_id"
 }
@@ -261,14 +262,14 @@ while [ $# -gt 0 ]; do
       ;;
     --cli-version)
       if [ $# -lt 2 ]; then
-        err "--cli-version requires a value"
+        err "args" "--cli-version requires a value"
       fi
       cli_version="$2"
       shift 2
       ;;
     --cli-dir)
       if [ $# -lt 2 ]; then
-        err "--cli-dir requires a value"
+        err "args" "--cli-dir requires a value"
       fi
       cli_dir="$2"
       shift 2
@@ -296,7 +297,7 @@ USAGE
       exit 0
       ;;
     -*)
-      err "unknown option: $1 (use --help for usage)"
+      err "args" "unknown option: $1 (use --help for usage)"
       ;;
     *)
       if [ -z "$engine_version" ]; then
@@ -310,7 +311,7 @@ done
 VERSION="$engine_version"
 
 if ! command -v curl >/dev/null 2>&1; then
-  err "curl is required"
+  err "dependency" "curl is required"
 fi
 
 install_id=$(iii_gen_uuid)
@@ -333,7 +334,7 @@ else
       arch="armv7"
       ;;
     *)
-      err "unsupported architecture: $uname_m"
+      err "platform" "unsupported architecture: $uname_m"
       ;;
   esac
 
@@ -367,7 +368,7 @@ else
       esac
       ;;
     *)
-      err "unsupported OS: $uname_s"
+      err "platform" "unsupported OS: $uname_s"
       ;;
   esac
 
@@ -388,7 +389,7 @@ if [ -n "$VERSION" ]; then
   _ver="${_ver#v}"
   _tag="${TAG_PREFIX}${_ver}"
   api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
-  json=$(github_api "$api_url") || err "release tag not found: $VERSION (tried tag: ${_tag})"
+  json=$(github_api "$api_url") || err "download" "release tag not found: $VERSION (tried tag: ${_tag})"
 else
   echo "installing latest version"
   api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
@@ -397,7 +398,7 @@ else
     json=$(printf '%s' "$json_list" \
       | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("v"))))')
     if [ "$json" = "null" ] || [ -z "$json" ]; then
-      err "no stable iii release found"
+      err "download" "no stable iii release found"
     fi
   else
     _tag=$(printf '%s' "$json_list" \
@@ -405,7 +406,7 @@ else
       | head -n 1 \
       | sed -E 's/.*"(v[^"]+)".*/\1/')
     if [ -z "$_tag" ]; then
-      err "could not determine latest release"
+      err "download" "could not determine latest release"
     fi
     api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
     json=$(github_api "$api_url")
@@ -431,7 +432,7 @@ if [ -z "$asset_url" ]; then
   printf '%s' "$json" \
     | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
     | sed -E 's/.*"([^"]+)".*/\1/' >&2
-  err "no release asset found for target: $target"
+  err "download" "no release asset found for target: $target"
 fi
 
 asset_name=$(basename "$asset_url")
@@ -475,7 +476,7 @@ case "$asset_name" in
     ;;
   *.zip)
     if ! command -v unzip >/dev/null 2>&1; then
-      err "unzip is required to extract $asset_name"
+      err "extract" "unzip is required to extract $asset_name"
     fi
     unzip -q "$tmpdir/$asset_name" -d "$tmpdir"
     ;;
@@ -490,7 +491,7 @@ else
 fi
 
 if [ -z "${bin_file:-}" ] || [ ! -f "$bin_file" ]; then
-  err "binary not found in downloaded asset"
+  err "binary_lookup" "binary not found in downloaded asset"
 fi
 
 installed_version=""

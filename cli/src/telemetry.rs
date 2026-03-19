@@ -147,7 +147,7 @@ fn get_or_create_telemetry_id() -> String {
         }
     }
 
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = format!("auto-{}", uuid::Uuid::new_v4());
     set_toml_key("identity", "id", &id);
     id
 }
