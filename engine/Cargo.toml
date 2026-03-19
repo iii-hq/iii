@@ -139,6 +139,7 @@ ring = "0.17.14"
 glob = "0.3.3"
 base64 = "0.22.1"
 subtle = "2.6"
+toml = "1.0.7"
 
 [dev-dependencies]
 mockall = "0.13"

@@ -8,76 +8,54 @@ use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
-// ~/.iii/telemetry.ini helpers
-// ---------------------------------------------------------------------------
+type TomlSections = BTreeMap<String, BTreeMap<String, String>>;
 
-pub fn telemetry_ini_path() -> std::path::PathBuf {
+fn iii_dir() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".iii")
-        .join("telemetry.ini")
 }
 
-fn parse_ini(content: &str) -> BTreeMap<String, BTreeMap<String, String>> {
-    let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    let mut current = String::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            current = line[1..line.len() - 1].to_string();
-        } else if let Some((key, val)) = line.split_once('=') {
-            let key = key.trim().to_string();
-            let val = val.trim().to_string();
-            if !key.is_empty() && !current.is_empty() {
-                sections.entry(current.clone()).or_default().insert(key, val);
-            }
-        }
-    }
-    sections
+pub fn telemetry_config_path() -> std::path::PathBuf {
+    iii_dir().join("telemetry.toml")
 }
 
-fn serialize_ini(sections: &BTreeMap<String, BTreeMap<String, String>>) -> String {
-    let mut out = String::new();
-    for (section, keys) in sections {
-        out.push_str(&format!("[{}]\n", section));
-        for (k, v) in keys {
-            out.push_str(&format!("{} = {}\n", k, v));
-        }
-        out.push('\n');
-    }
-    out
-}
-
-pub fn read_ini_key(section: &str, key: &str) -> Option<String> {
-    let contents = std::fs::read_to_string(telemetry_ini_path()).ok()?;
-    parse_ini(&contents)
-        .remove(section)?
-        .remove(key)
-        .filter(|v| !v.is_empty())
-}
-
-pub fn set_ini_key(section: &str, key: &str, value: &str) {
-    let path = telemetry_ini_path();
-    let contents = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut sections = parse_ini(&contents);
-    sections
-        .entry(section.to_string())
-        .or_default()
-        .insert(key.to_string(), value.to_string());
-    let serialized = serialize_ini(&sections);
+fn write_atomic(path: &std::path::Path, content: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, &serialized).is_ok() {
+    if std::fs::write(&tmp, content).is_ok() {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
             std::fs::set_permissions(&tmp, perms).ok();
         }
-        std::fs::rename(&tmp, &path).ok();
+        std::fs::rename(&tmp, path).ok();
+    }
+}
+
+pub fn read_config_key(section: &str, key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(telemetry_config_path()).ok()?;
+    let sections: TomlSections = toml::from_str(&contents).ok()?;
+    sections
+        .get(section)?
+        .get(key)
+        .filter(|v| !v.is_empty())
+        .cloned()
+}
+
+pub fn set_config_key(section: &str, key: &str, value: &str) {
+    let path = telemetry_config_path();
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut sections: TomlSections = toml::from_str(&contents).unwrap_or_default();
+    sections
+        .entry(section.to_string())
+        .or_default()
+        .insert(key.to_string(), value.to_string());
+    if let Ok(serialized) = toml::to_string(&sections) {
+        write_atomic(&path, &serialized);
     }
 }
 
@@ -206,7 +184,7 @@ pub fn is_dev_optout() -> bool {
         return true;
     }
 
-    if read_ini_key("preferences", "dev_optout").as_deref() == Some("true") {
+    if read_config_key("preferences", "dev_optout").as_deref() == Some("true") {
         return true;
     }
 
@@ -275,95 +253,84 @@ mod tests {
     use std::env;
 
     // =========================================================================
-    // telemetry.ini helpers
+    // telemetry.toml helpers
     // =========================================================================
 
     #[test]
-    fn test_parse_ini_empty() {
-        let sections = parse_ini("");
-        assert!(sections.is_empty());
+    fn test_toml_roundtrip() {
+        let mut sections: TomlSections = BTreeMap::new();
+        sections
+            .entry("identity".to_string())
+            .or_default()
+            .insert("id".to_string(), "abc-123".to_string());
+        sections
+            .entry("state".to_string())
+            .or_default()
+            .insert("first_run_sent".to_string(), "true".to_string());
+
+        let serialized = toml::to_string(&sections).unwrap();
+        let parsed: TomlSections = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed["identity"]["id"], "abc-123");
+        assert_eq!(parsed["state"]["first_run_sent"], "true");
     }
 
     #[test]
-    fn test_parse_ini_single_section() {
-        let content = "[identity]\nid = abc-123\n";
-        let sections = parse_ini(content);
-        assert_eq!(sections["identity"]["id"], "abc-123");
-    }
-
-    #[test]
-    fn test_parse_ini_multiple_sections() {
-        let content = "[identity]\nid = abc\n\n[state]\nfirst_run_sent = true\n";
-        let sections = parse_ini(content);
-        assert_eq!(sections["identity"]["id"], "abc");
-        assert_eq!(sections["state"]["first_run_sent"], "true");
-    }
-
-    #[test]
-    fn test_serialize_ini_roundtrip() {
-        let content = "[identity]\nid = abc-123\n\n[state]\nfirst_run_sent = true\n\n";
-        let sections = parse_ini(content);
-        let serialized = serialize_ini(&sections);
-        let sections2 = parse_ini(&serialized);
-        assert_eq!(sections2["identity"]["id"], "abc-123");
-        assert_eq!(sections2["state"]["first_run_sent"], "true");
-    }
-
-    #[test]
-    fn test_set_and_read_ini_key_new_file() {
+    fn test_set_and_read_config_key_new_file() {
         let dir = tempfile::tempdir().unwrap();
-        let ini_path = dir.path().join(".iii").join("telemetry.ini");
+        let toml_path = dir.path().join(".iii").join("telemetry.toml");
 
-        let key = read_key_from(&ini_path, "identity", "id");
+        let key = read_key_from(&toml_path, "identity", "id");
         assert!(key.is_none());
 
-        write_key_to(&ini_path, "identity", "id", "test-uuid");
-        let key = read_key_from(&ini_path, "identity", "id");
+        write_key_to(&toml_path, "identity", "id", "test-uuid");
+        let key = read_key_from(&toml_path, "identity", "id");
         assert_eq!(key.as_deref(), Some("test-uuid"));
     }
 
     #[test]
-    fn test_set_ini_key_preserves_other_sections() {
+    fn test_set_config_key_preserves_other_sections() {
         let dir = tempfile::tempdir().unwrap();
-        let ini_path = dir.path().join(".iii").join("telemetry.ini");
+        let toml_path = dir.path().join(".iii").join("telemetry.toml");
 
-        write_key_to(&ini_path, "identity", "id", "my-id");
-        write_key_to(&ini_path, "state", "first_run_sent", "true");
+        write_key_to(&toml_path, "identity", "id", "my-id");
+        write_key_to(&toml_path, "state", "first_run_sent", "true");
 
-        let id = read_key_from(&ini_path, "identity", "id");
-        let state = read_key_from(&ini_path, "state", "first_run_sent");
+        let id = read_key_from(&toml_path, "identity", "id");
+        let state = read_key_from(&toml_path, "state", "first_run_sent");
         assert_eq!(id.as_deref(), Some("my-id"));
         assert_eq!(state.as_deref(), Some("true"));
     }
 
     #[test]
-    fn test_set_ini_key_updates_existing_key() {
+    fn test_set_config_key_updates_existing_key() {
         let dir = tempfile::tempdir().unwrap();
-        let ini_path = dir.path().join(".iii").join("telemetry.ini");
+        let toml_path = dir.path().join(".iii").join("telemetry.toml");
 
-        write_key_to(&ini_path, "identity", "id", "old-id");
-        write_key_to(&ini_path, "identity", "id", "new-id");
+        write_key_to(&toml_path, "identity", "id", "old-id");
+        write_key_to(&toml_path, "identity", "id", "new-id");
 
-        let id = read_key_from(&ini_path, "identity", "id");
+        let id = read_key_from(&toml_path, "identity", "id");
         assert_eq!(id.as_deref(), Some("new-id"));
     }
 
     fn read_key_from(path: &std::path::Path, section: &str, key: &str) -> Option<String> {
         let contents = std::fs::read_to_string(path).ok()?;
-        parse_ini(&contents)
-            .remove(section)?
-            .remove(key)
+        let sections: TomlSections = toml::from_str(&contents).ok()?;
+        sections
+            .get(section)?
+            .get(key)
             .filter(|v| !v.is_empty())
+            .cloned()
     }
 
     fn write_key_to(path: &std::path::Path, section: &str, key: &str, value: &str) {
         let contents = std::fs::read_to_string(path).unwrap_or_default();
-        let mut sections = parse_ini(&contents);
+        let mut sections: TomlSections = toml::from_str(&contents).unwrap_or_default();
         sections
             .entry(section.to_string())
             .or_default()
             .insert(key.to_string(), value.to_string());
-        let serialized = serialize_ini(&sections);
+        let serialized = toml::to_string(&sections).unwrap();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }

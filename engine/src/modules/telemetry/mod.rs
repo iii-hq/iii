@@ -135,7 +135,7 @@ fn get_or_create_install_id() -> String {
     static INSTALL_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     INSTALL_ID
         .get_or_init(|| {
-            if let Some(id) = environment::read_ini_key("identity", "id") {
+            if let Some(id) = environment::read_config_key("identity", "id") {
                 return id;
             }
 
@@ -150,20 +150,20 @@ fn get_or_create_install_id() -> String {
             if let Ok(id) = std::fs::read_to_string(&legacy_path) {
                 let id = id.trim().to_string();
                 if !id.is_empty() {
-                    environment::set_ini_key("identity", "id", &id);
+                    environment::set_config_key("identity", "id", &id);
                     return id;
                 }
             }
 
             let id = uuid::Uuid::new_v4().to_string();
-            environment::set_ini_key("identity", "id", &id);
+            environment::set_config_key("identity", "id", &id);
             id
         })
         .clone()
 }
 
 fn check_and_mark_first_run() -> bool {
-    if environment::read_ini_key("state", "first_run_sent").as_deref() == Some("true") {
+    if environment::read_config_key("state", "first_run_sent").as_deref() == Some("true") {
         return false;
     }
 
@@ -173,12 +173,12 @@ fn check_and_mark_first_run() -> bool {
         .join("state.ini");
     if let Ok(contents) = std::fs::read_to_string(&legacy_path) {
         if contents.contains("first_run_sent=true") {
-            environment::set_ini_key("state", "first_run_sent", "true");
+            environment::set_config_key("state", "first_run_sent", "true");
             return false;
         }
     }
 
-    environment::set_ini_key("state", "first_run_sent", "true");
+    environment::set_config_key("state", "first_run_sent", "true");
     true
 }
 
@@ -248,7 +248,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
 struct WorkerData {
     worker_count_total: usize,
     worker_count_motia: usize,
-    workers: Vec<serde_json::Value>,
+    workers: Vec<String>,
     sdk_languages: Vec<String>,
     client_type: String,
     sdk_telemetry: Option<WorkerTelemetryMeta>,
@@ -259,28 +259,22 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     let mut best_telemetry: Option<(uuid::Uuid, WorkerTelemetryMeta)> = None;
     let mut worker_count_total = 0usize;
     let mut worker_count_motia = 0usize;
-    let mut workers: Vec<serde_json::Value> = Vec::new();
+    let mut workers: Vec<String> = Vec::new();
 
     for entry in engine.worker_registry.workers.iter() {
         let worker = entry.value();
-        worker_count_total += 1;
 
-        let runtime = worker
-            .runtime
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
+        let Some(runtime) = worker.runtime.clone() else {
+            continue;
+        };
+
+        worker_count_total += 1;
         *runtime_counts.entry(runtime.clone()).or_insert(0) += 1;
 
         let framework = worker
             .telemetry
             .as_ref()
             .and_then(|t| t.framework.clone())
-            .unwrap_or_default();
-
-        let language = worker
-            .telemetry
-            .as_ref()
-            .and_then(|t| t.language.clone())
             .unwrap_or_default();
 
         if framework.to_lowercase().contains("motia")
@@ -290,11 +284,11 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
             worker_count_motia += 1;
         }
 
-        workers.push(serde_json::json!({
-            "runtime": runtime,
-            "language": language,
-            "framework": framework,
-        }));
+        if framework.is_empty() {
+            workers.push(runtime);
+        } else {
+            workers.push(format!("{}:{}", runtime, framework));
+        }
 
         if let Some(telemetry) = worker.telemetry.as_ref()
             && (telemetry.language.is_some()
@@ -320,6 +314,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
         .map(|r| match r.as_str() {
             "node" => "iii-js".to_string(),
             "python" => "iii-py".to_string(),
+            "rust" => "iii-rust".to_string(),
             other => other.to_string(),
         })
         .collect();
@@ -589,10 +584,47 @@ impl Module for TelemetryModule {
             loop {
                 tokio::select! {
                     result = shutdown_rx.changed() => {
-                        if result.is_err() {
-                            break;
-                        }
-                        if *shutdown_rx.borrow() {
+                        if result.is_err() || *shutdown_rx.borrow() {
+                            use std::sync::atomic::Ordering;
+
+                            let uptime_secs = start_time.elapsed().as_secs();
+                            let invocations_total = acc.invocations_total.load(Ordering::Relaxed);
+                            let invocations_success = acc.invocations_success.load(Ordering::Relaxed);
+                            let invocations_error = acc.invocations_error.load(Ordering::Relaxed);
+
+                            let wd = collect_worker_data(&engine);
+                            let ft = collect_functions_and_triggers(&engine);
+                            let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+
+                            let event = ctx.build_event(
+                                "engine_stopped",
+                                serde_json::json!({
+                                    "project_id": project.project_id,
+                                    "project_name": project.project_name,
+                                    "version": env!("CARGO_PKG_VERSION"),
+                                    "uptime_secs": uptime_secs,
+                                    "invocations_total": invocations_total,
+                                    "invocations_success": invocations_success,
+                                    "invocations_error": invocations_error,
+                                    "function_count": ft.function_count,
+                                    "trigger_count": ft.trigger_count,
+                                    "functions": ft.functions,
+                                    "trigger_types": ft.trigger_types,
+                                    "client_type": wd.client_type,
+                                    "sdk_languages": wd.sdk_languages,
+                                    "worker_count_total": wd.worker_count_total,
+                                    "worker_count_motia": wd.worker_count_motia,
+                                    "workers": wd.workers,
+                                }),
+                                wd.sdk_telemetry.as_ref(),
+                            );
+
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                client.send_event(event),
+                            )
+                            .await;
+
                             break;
                         }
                     }
@@ -637,15 +669,18 @@ impl Module for TelemetryModule {
                         let project = resolve_project_context(wd.sdk_telemetry.as_ref());
 
                         let properties = serde_json::json!({
-                            "invocations_total": delta_invocations_total,
-                            "invocations_success": delta_invocations_success,
-                            "invocations_error": delta_invocations_error,
-                            "api_requests": delta_api_requests,
-                            "queue_emits": delta_queue_emits,
-                            "queue_consumes": delta_queue_consumes,
-                            "pubsub_publishes": delta_pubsub_publishes,
-                            "pubsub_subscribes": delta_pubsub_subscribes,
-                            "cron_executions": delta_cron_executions,
+                            "delta_invocations_total": delta_invocations_total,
+                            "delta_invocations_success": delta_invocations_success,
+                            "delta_invocations_error": delta_invocations_error,
+                            "delta_api_requests": delta_api_requests,
+                            "delta_queue_emits": delta_queue_emits,
+                            "delta_queue_consumes": delta_queue_consumes,
+                            "delta_pubsub_publishes": delta_pubsub_publishes,
+                            "delta_pubsub_subscribes": delta_pubsub_subscribes,
+                            "delta_cron_executions": delta_cron_executions,
+                            "invocations_total": invocations_total,
+                            "invocations_success": invocations_success,
+                            "invocations_error": invocations_error,
                             "function_count": ft.function_count,
                             "trigger_count": ft.trigger_count,
                             "functions": ft.functions,
@@ -678,36 +713,6 @@ impl Module for TelemetryModule {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        let uptime_secs = self.start_time.elapsed().as_secs();
-        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
-        use std::sync::atomic::Ordering;
-        let invocations_total = acc.invocations_total.load(Ordering::Relaxed);
-        let invocations_success = acc.invocations_success.load(Ordering::Relaxed);
-        let invocations_error = acc.invocations_error.load(Ordering::Relaxed);
-
-        let wd = collect_worker_data(&self.engine);
-        let project = resolve_project_context(wd.sdk_telemetry.as_ref());
-
-        let event = self.ctx.build_event(
-            "engine_stopped",
-            serde_json::json!({
-                "project_id": project.project_id,
-                "project_name": project.project_name,
-                "version": env!("CARGO_PKG_VERSION"),
-                "uptime_secs": uptime_secs,
-                "invocations_total": invocations_total,
-                "invocations_success": invocations_success,
-                "invocations_error": invocations_error,
-            }),
-            wd.sdk_telemetry.as_ref(),
-        );
-
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.active_client().send_event(event),
-        )
-        .await;
-
         Ok(())
     }
 }
@@ -1630,7 +1635,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_worker_data_unknown_runtime_defaults() {
+    fn test_collect_worker_data_skips_unregistered_workers() {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -1641,8 +1646,9 @@ mod tests {
         engine.worker_registry.workers.insert(wid, worker);
 
         let wd = collect_worker_data(&engine);
-        assert_eq!(wd.worker_count_total, 1);
-        assert!(wd.sdk_languages.contains(&"unknown".to_string()));
+        assert_eq!(wd.worker_count_total, 0);
+        assert!(wd.sdk_languages.is_empty());
+        assert!(wd.workers.is_empty());
     }
 
     #[test]
