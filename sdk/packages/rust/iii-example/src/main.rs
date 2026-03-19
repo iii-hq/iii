@@ -7,35 +7,33 @@ use iii_sdk::{
 use serde_json::json;
 
 #[derive(serde::Deserialize)]
-struct EchoOptions {
+struct EchoInput {
+    message: String,
+    repeat: i32,
     uppercase: bool,
     prefix: String,
 }
 
-fn echo_message(
-    message: String,
-    repeat: i32,
-    options: EchoOptions,
-) -> Result<serde_json::Value, String> {
-    let mut result = message.repeat(repeat as usize);
-    if options.uppercase {
+fn echo_message(input: EchoInput) -> Result<serde_json::Value, String> {
+    let mut result = input.message.repeat(input.repeat as usize);
+    if input.uppercase {
         result = result.to_uppercase();
     }
-    Ok(json!({ "echo": format!("{}{}", options.prefix, result) }))
+    Ok(json!({ "echo": format!("{}{}", input.prefix, result) }))
 }
 
 #[derive(serde::Deserialize)]
-struct DelayEchoOptions {
+struct DelayEchoInput {
+    message: String,
+    delay_ms: u64,
     suffix: String,
 }
 
-async fn delay_echo(
-    message: String,
-    delay_ms: u64,
-    options: DelayEchoOptions,
-) -> Result<serde_json::Value, String> {
-    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-    Ok(json!({ "echo": format!("{}{}", message, options.suffix), "delayed_ms": delay_ms }))
+async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, String> {
+    tokio::time::sleep(Duration::from_millis(input.delay_ms)).await;
+    Ok(
+        json!({ "echo": format!("{}{}", input.message, input.suffix), "delayed_ms": input.delay_ms }),
+    )
 }
 
 mod http_example;
@@ -96,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = iii
         .trigger(TriggerRequest {
             function_id: "example.echo".to_string(),
-            payload: json!(["hello", 2, {"uppercase": false, "prefix": "> "}]),
+            payload: json!({"message": "hello", "repeat": 2, "uppercase": false, "prefix": "> "}),
             action: None,
             timeout_ms: None,
         })
