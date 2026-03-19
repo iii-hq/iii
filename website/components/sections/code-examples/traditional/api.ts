@@ -45,9 +45,13 @@ async function sendCentralLog(event: string, data: Record<string, unknown>) {
 
 app.get("/posts", async (_req, res) => {
   const span = tracer.startSpan("api.list_posts");
-  await sendCentralLog("api.list_posts", { count: posts.length });
-  span.end();
-  res.json({ posts });
+  try {
+    await sendCentralLog("api.list_posts", { count: posts.length });
+    return res.json({ posts });
+  } finally {
+    span.end();
+  }
+});
 });
 
 app.post("/posts", async (req, res) => {
