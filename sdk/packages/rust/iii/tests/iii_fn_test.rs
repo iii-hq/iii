@@ -1,4 +1,6 @@
-use iii_sdk::{IIIError, iii_async_fn, iii_fn, IntoFunctionHandler, RegisterFunctionMessage, Value};
+use iii_sdk::{
+    IIIError, IntoFunctionHandler, RegisterFunctionMessage, Value, iii_async_fn, iii_fn,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -118,7 +120,10 @@ async fn test_sync_1arg_deser_missing_field() {
     assert!(result.is_err());
     match result.unwrap_err() {
         IIIError::Handler(msg) => {
-            assert!(msg.contains("name"), "error should mention missing field 'name', got: {msg}")
+            assert!(
+                msg.contains("name"),
+                "error should mention missing field 'name', got: {msg}"
+            )
         }
         other => panic!("expected IIIError::Handler, got: {other:?}"),
     }

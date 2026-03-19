@@ -242,8 +242,8 @@ fn format_type_name<T: ?Sized>() -> &'static str {
     let name = short_type_name::<T>();
     match name {
         "String" | "str" => "string",
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
-        | "u128" | "usize" | "f32" | "f64" => "number",
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" | "f32" | "f64" => "number",
         "bool" => "boolean",
         "Value" => "object",
         _ => "object",
@@ -267,8 +267,12 @@ fn make_response_format<R: ?Sized>() -> Option<Value> {
 #[doc(hidden)]
 pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
     fn into_handler(self) -> RemoteFunctionHandler;
-    fn request_format() -> Option<Value> { None }
-    fn response_format() -> Option<Value> { None }
+    fn request_format() -> Option<Value> {
+        None
+    }
+    fn response_format() -> Option<Value> {
+        None
+    }
 }
 
 // 0-arg sync — input is ignored
@@ -432,8 +436,12 @@ pub struct IIIAsyncFn<F = ()> {
 #[doc(hidden)]
 pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
     fn into_handler(self) -> RemoteFunctionHandler;
-    fn request_format() -> Option<Value> { None }
-    fn response_format() -> Option<Value> { None }
+    fn request_format() -> Option<Value> {
+        None
+    }
+    fn response_format() -> Option<Value> {
+        None
+    }
 }
 
 // 0-arg async — input is ignored
@@ -451,8 +459,7 @@ where
                 fut.await
                     .map_err(|e| IIIError::Handler(e.to_string()))
                     .and_then(|val| {
-                        serde_json::to_value(&val)
-                            .map_err(|e| IIIError::Handler(e.to_string()))
+                        serde_json::to_value(&val).map_err(|e| IIIError::Handler(e.to_string()))
                     })
             })
         })
@@ -474,9 +481,9 @@ where
 {
     fn into_handler(self) -> RemoteFunctionHandler {
         Arc::new(
-            move |input: Value|
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>>
-            {
+            move |input: Value| -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Value, IIIError>> + Send>,
+            > {
                 match serde_json::from_value::<T>(input) {
                     Ok(arg) => {
                         let fut = (self)(arg);

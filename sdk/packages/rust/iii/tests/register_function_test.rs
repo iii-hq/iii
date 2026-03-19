@@ -1,4 +1,6 @@
-use iii_sdk::{RegisterFunction, iii_async_fn, iii_fn, IntoFunctionHandler, RegisterFunctionMessage};
+use iii_sdk::{
+    IntoFunctionHandler, RegisterFunction, RegisterFunctionMessage, iii_async_fn, iii_fn,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -9,10 +11,8 @@ fn add(a: i32, b: i32) -> Result<i32, String> {
 #[tokio::test]
 async fn test_register_function_builder_sync() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
-    let func_ref = iii.register(
-        RegisterFunction::new("test.add", add)
-            .description("Add two numbers")
-    );
+    let func_ref =
+        iii.register(RegisterFunction::new("test.add", add).description("Add two numbers"));
     assert_eq!(func_ref.id, "test.add");
 }
 
@@ -144,7 +144,7 @@ async fn test_builder_description() {
     let _ref = iii.register(
         RegisterFunction::new("test.greet", greet)
             .description("Greet by name")
-            .metadata(json!({"version": 1}))
+            .metadata(json!({"version": 1})),
     );
 }
 
@@ -187,8 +187,7 @@ async fn test_iii_fn_does_not_overwrite_existing_format() {
 async fn test_register_async() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
     let _ref = iii.register(
-        RegisterFunction::new_async("test.async_greet", async_greet)
-            .description("Async greet")
+        RegisterFunction::new_async("test.async_greet", async_greet).description("Async greet"),
     );
 }
 

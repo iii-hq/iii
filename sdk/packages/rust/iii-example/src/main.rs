@@ -12,7 +12,11 @@ struct EchoOptions {
     prefix: String,
 }
 
-fn echo_message(message: String, repeat: i32, options: EchoOptions) -> Result<serde_json::Value, String> {
+fn echo_message(
+    message: String,
+    repeat: i32,
+    options: EchoOptions,
+) -> Result<serde_json::Value, String> {
     let mut result = message.repeat(repeat as usize);
     if options.uppercase {
         result = result.to_uppercase();
@@ -25,7 +29,11 @@ struct DelayEchoOptions {
     suffix: String,
 }
 
-async fn delay_echo(message: String, delay_ms: u64, options: DelayEchoOptions) -> Result<serde_json::Value, String> {
+async fn delay_echo(
+    message: String,
+    delay_ms: u64,
+    options: DelayEchoOptions,
+) -> Result<serde_json::Value, String> {
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     Ok(json!({ "echo": format!("{}{}", message, options.suffix), "delayed_ms": delay_ms }))
 }
