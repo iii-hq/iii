@@ -9,6 +9,7 @@ target/
 .env.test.local
 .env.production.local
 .vscode/
+.claude/
 
 .coverage
 coverage/

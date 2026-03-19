@@ -218,13 +218,13 @@ const App: React.FC = () => {
         </div>
 
         {/* Section 4: Triggers as Universal Adapters - Code Examples */}
-        <div
+        {/* <div
           className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
           data-machine-section="examples"
           data-machine-exclude="true"
         >
           <ExampleCodeSection isDarkMode={isDarkMode} />
-        </div>
+        </div> */}
 
         {/* Section 5: Observability - Trace-level visibility with OpenTelemetry */}
         <div
@@ -235,12 +235,12 @@ const App: React.FC = () => {
         </div>
 
         {/* Section 6: Agent-Ready - AI agents as first-class citizens */}
-        <div
+        {/* <div
           className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
           data-machine-section="agent-ready"
         >
           <AgentReadySection isDarkMode={isDarkMode} />
-        </div>
+        </div> */}
 
         {/* Section 7: Footer + CTA - FAQ, Discord, Links */}
         <div
