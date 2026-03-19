@@ -24,6 +24,10 @@ Each DLQ entry contains:
 
 Jobs in the DLQ are not retried automatically. They sit there until you inspect them, fix the root cause, and explicitly redrive them back to the main queue.
 
+<Info title="Queue architecture">
+  DLQs are one of three lifecycle stages every named queue uses internally. For the full design rationale — including why retry and DLQ each need separate exchanges and queues — see [Queue Architecture](/architecture/queues).
+</Info>
+
 ## How Jobs Reach the DLQ
 
 ```mermaid
@@ -181,72 +185,77 @@ sequenceDiagram
     F-->>Q: Success
 ```
 
+### Using the CLI
+
+The [`iii trigger`](/how-to/trigger-functions-from-cli) command invokes the builtin `iii::queue::redrive` function, which moves all messages from a queue's DLQ back to the main queue. Each message gets its attempt counter reset to zero, giving it a fresh set of retries.
+
+```bash
+iii trigger \
+  --function-id='iii::queue::redrive' \
+  --payload='{"queue": "payment"}'
+```
+
+The command connects to a running engine over WebSocket, sends the invocation, and prints the result:
+
+```json
+{
+  "queue": "payment",
+  "redriven": 12
+}
+```
+
+By default, `iii trigger` connects to `localhost:49134`. Use `--address` and `--port` to target a different engine instance:
+
+```bash
+iii trigger \
+  --function-id='iii::queue::redrive' \
+  --payload='{"queue": "payment"}' \
+  --address='localhost' \
+  --port=49134
+```
+
+### Using the SDK
+
+Because `iii::queue::redrive` is a registered function, you can also invoke it programmatically from any SDK:
+
 <Tabs>
-<Tab title="RabbitMQ Management UI">
-  The Management UI supports moving messages between queues.
+<Tab title="Node / TypeScript">
+```typescript
+const result = await iii.trigger({
+  function_id: 'iii::queue::redrive',
+  payload: { queue: 'payment' },
+})
 
-  <Steps>
-    <Step title="Navigate to the DLQ queue">
-      Open the **Queues and Streams** tab and click on the DLQ queue (e.g. `iii.__fn_queue::payment::dlq.queue`).
-    </Step>
-    <Step title="Move messages">
-      Expand the **Move messages** section. Set the **Destination queue** to the main queue:
-
-      ```
-      iii.__fn_queue::payment.queue
-      ```
-
-      Click **Move messages**. RabbitMQ moves all messages from the DLQ back to the main queue using the Shovel plugin.
-
-      <Info title="Shovel plugin required">
-        The "Move messages" feature requires the `rabbitmq_shovel` plugin. Enable it with `rabbitmq-plugins enable rabbitmq_shovel rabbitmq_shovel_management`.
-      </Info>
-    </Step>
-    <Step title="Verify">
-      Check the DLQ queue — it should now be empty. The main queue message count should have increased by the number of redriven messages.
-    </Step>
-  </Steps>
+console.log(result) // { queue: "payment", redriven: 12 }
+```
 </Tab>
-<Tab title="rabbitmqadmin CLI">
-  You can redrive messages by consuming from the DLQ and republishing to the main exchange.
+<Tab title="Python">
+```python
+result = iii.trigger({
+    "function_id": "iii::queue::redrive",
+    "payload": {"queue": "payment"},
+})
 
-  **Redrive all messages from a DLQ:**
-
-  ```bash
-  # Consume one message from the DLQ and republish it to the main exchange.
-  # Repeat until the DLQ is empty.
-  while true; do
-    msg=$(rabbitmqadmin get queue="iii.__fn_queue::payment::dlq.queue" count=1 ackmode=ack_requeue_false --format=raw_json)
-
-    # Exit when the DLQ is empty
-    if [ "$msg" = "[]" ]; then
-      echo "DLQ is empty — redrive complete."
-      break
-    fi
-
-    payload=$(echo "$msg" | jq -r '.[0].payload')
-
-    rabbitmqadmin publish \
-      exchange="iii.__fn_queue::payment" \
-      routing_key="payment" \
-      payload="$payload"
-
-    echo "Redrove 1 message"
-  done
-  ```
-
-  Replace `payment` with your queue name in both the DLQ queue name and the target exchange/routing key.
-
-  <Warning title="Redrive only after fixing the root cause">
-    Redriving messages without fixing the underlying issue sends them through the same retry cycle, and they will end up in the DLQ again.
-  </Warning>
+print(result)  # {"queue": "payment", "redriven": 12}
+```
 </Tab>
-<Tab title="Builtin adapter">
-  The builtin adapter has an internal redrive mechanism that pops all messages from the DLQ, resets their attempt counters, and pushes them back to the main queue.
+<Tab title="Rust">
+```rust
+let result = iii.trigger(TriggerRequest {
+    function_id: "iii::queue::redrive".into(),
+    payload: json!({ "queue": "payment" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
 
-  This capability is not currently exposed via CLI or REST API. For workflows that require DLQ redrive, use the [RabbitMQ adapter](/modules/module-queue#modulesqueuerabbitmqadapter) in production.
+println!("{}", result); // {"queue": "payment", "redriven": 12}
+```
 </Tab>
 </Tabs>
+
+<Info title="Architecture deep dive">
+  For the full design rationale behind the three-stage queue topology (main, retry, DLQ) and how redrive fits into it, see [Queue Architecture](/architecture/queues#redriving-dlq-messages).
+</Info>
 
 ## Best Practices
 

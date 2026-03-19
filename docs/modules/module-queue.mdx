@@ -182,6 +182,10 @@ For each named queue defined in `queue_configs`, iii creates the following Rabbi
 | DLQ exchange | `iii.__fn_queue::<name>::dlq` | `iii.__fn_queue::payment::dlq` |
 | DLQ queue | `iii.__fn_queue::<name>::dlq.queue` | `iii.__fn_queue::payment::dlq.queue` |
 
+<Info title="Why so many resources?">
+  Each named queue creates six RabbitMQ objects to support delayed retry and dead-lettering. For the design rationale, see [Queue Architecture](/architecture/queues).
+</Info>
+
 ## Adapter Comparison
 
 | | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
@@ -196,6 +200,50 @@ For each named queue defined in `queue_configs`, iii creates the following Rabbi
 
 <Info title="Choosing an adapter">
   For practical guidance on which adapter to use in different deployment scenarios, see [Use Queues — Choosing an Adapter](../how-to/use-queues#choosing-an-adapter).
+</Info>
+
+## Builtin Functions
+
+The queue module registers the following functions automatically when it initializes. These are callable via `trigger()` from any SDK or via the `iii trigger` CLI command.
+
+### enqueue
+
+Publishes a message to a topic-based queue.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `topic` | `string` | The topic to publish to (required, non-empty) |
+| `data` | `any` | The payload to deliver to subscribers |
+
+Returns `null` on success.
+
+### iii::queue::redrive
+
+Moves all messages from a named queue's dead-letter queue back to the main queue. Each message gets its attempt counter reset to zero.
+
+**Input:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `queue` | `string` | The named queue whose DLQ should be redriven (required, non-empty) |
+
+**Output:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `queue` | `string` | The queue name that was redriven |
+| `redriven` | `number` | The number of messages moved back to the main queue |
+
+**CLI example:**
+
+```bash
+iii trigger \
+  --function-id='iii::queue::redrive' \
+  --payload='{"queue": "payment"}'
+```
+
+<Info title="DLQ operations">
+  For a complete guide on inspecting DLQ messages before redriving, see [Manage Failed Triggers](../how-to/dead-letter-queues).
 </Info>
 
 ## Queue Flow
