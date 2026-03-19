@@ -32,18 +32,8 @@ iii trigger \
 ## Steps
 
 <Steps>
-  <Step title="Start the engine">
-    The engine must be running before you can trigger functions on it. Start it in a separate terminal:
-
-    ```bash
-    iii --config iii-config.yaml
-    ```
-
-    Or with built-in defaults:
-
-    ```bash
-    iii --use-default-config
-    ```
+  <Step title="Ensure the engine is running">
+    The `iii trigger` command connects to a running engine instance. If you don't have one running yet, follow the [Quickstart](/quickstart) to get started.
   </Step>
   <Step title="Identify the function ID">
     Every function registered with the engine has a unique ID. Builtin functions use the `iii::` prefix. User-defined functions use the ID you specified during registration.
