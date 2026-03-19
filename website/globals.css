@@ -350,6 +350,91 @@ body.light-mode {
   }
 }
 
+@keyframes dependencyElectricUndulate {
+  0% {
+    opacity: 0.62;
+    transform: translateY(0) scaleX(0.985);
+  }
+  22% {
+    opacity: 0.96;
+    transform: translateY(-6.4px) scaleX(1.02);
+  }
+  49% {
+    opacity: 0.66;
+    transform: translateY(5.4px) scaleX(0.986);
+  }
+  74% {
+    opacity: 0.98;
+    transform: translateY(-4.2px) scaleX(1.015);
+  }
+  100% {
+    opacity: 0.6;
+    transform: translateY(0) scaleX(0.986);
+  }
+}
+
+@keyframes dependencyElectricOpacitySweep {
+  0% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.2;
+  }
+}
+
+@keyframes dependencyElectricChargeTravel {
+  0% {
+    stroke-dashoffset: 152;
+  }
+  100% {
+    stroke-dashoffset: -152;
+  }
+}
+
+@keyframes dependencyElectricFlow {
+  0% {
+    opacity: 0;
+    transform: translate(-150%, -50%);
+  }
+  30% {
+    opacity: 1;
+  }
+  58% {
+    opacity: 0.88;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(140%, -50%);
+  }
+}
+
+@keyframes dependencyElectricResistance {
+  0% {
+    filter: brightness(1);
+  }
+  12% {
+    filter: brightness(0.82);
+  }
+  24% {
+    filter: brightness(1.12);
+  }
+  39% {
+    filter: brightness(0.78);
+  }
+  57% {
+    filter: brightness(1.16);
+  }
+  76% {
+    filter: brightness(0.85);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+
 /* Socket/port pulsing animation */
 @keyframes socketPulse {
   0%,
