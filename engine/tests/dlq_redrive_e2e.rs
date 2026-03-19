@@ -91,7 +91,10 @@ async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
 }
 
 /// Invoke the `iii::queue::redrive` function through the engine's function registry.
-async fn invoke_redrive(engine: &Engine, queue_name: &str) -> FunctionResult<Option<Value>, ErrorBody> {
+async fn invoke_redrive(
+    engine: &Engine,
+    queue_name: &str,
+) -> FunctionResult<Option<Value>, ErrorBody> {
     let function = engine
         .functions
         .get("iii::queue::redrive")
@@ -201,12 +204,9 @@ async fn e2e_dlq_redrive_full_lifecycle() {
     // Register a failing function so it exhausts retries
     register_failing_function(&engine, "e2e::order_processor", fail_count.clone());
 
-    let module = QueueCoreModule::create(
-        engine.clone(),
-        Some(queue_config_with_fast_retries()),
-    )
-    .await
-    .expect("create should succeed");
+    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+        .await
+        .expect("create should succeed");
 
     // Register iii::queue::redrive and other built-in functions
     module.register_functions(engine.clone());
@@ -217,7 +217,11 @@ async fn e2e_dlq_redrive_full_lifecycle() {
         .expect("initialize should succeed");
 
     // Verify DLQ starts empty
-    assert_eq!(dlq_count(&engine, "orders").await, 0, "DLQ should start empty");
+    assert_eq!(
+        dlq_count(&engine, "orders").await,
+        0,
+        "DLQ should start empty"
+    );
 
     // Enqueue a message that will fail
     enqueue(
@@ -243,7 +247,10 @@ async fn e2e_dlq_redrive_full_lifecycle() {
     );
 
     let in_dlq = dlq_count(&engine, "orders").await;
-    assert_eq!(in_dlq, 1, "Message should be in DLQ after retry exhaustion, got {in_dlq}");
+    assert_eq!(
+        in_dlq, 1,
+        "Message should be in DLQ after retry exhaustion, got {in_dlq}"
+    );
 
     // Phase 2: swap handler for one that succeeds, then redrive
     register_counting_function(&engine, "e2e::order_processor", success_count.clone());
@@ -286,15 +293,15 @@ async fn e2e_redrive_multiple_dlq_messages() {
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::batch_handler", fail_count.clone());
 
-    let module = QueueCoreModule::create(
-        engine.clone(),
-        Some(queue_config_with_fast_retries()),
-    )
-    .await
-    .expect("create should succeed");
+    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+        .await
+        .expect("create should succeed");
 
     module.register_functions(engine.clone());
-    module.initialize().await.expect("initialize should succeed");
+    module
+        .initialize()
+        .await
+        .expect("initialize should succeed");
 
     // Enqueue 3 messages that will all fail
     for i in 0..3 {
@@ -312,10 +319,7 @@ async fn e2e_redrive_multiple_dlq_messages() {
     tokio::time::sleep(Duration::from_millis(4000)).await;
 
     let in_dlq = dlq_count(&engine, "orders").await;
-    assert_eq!(
-        in_dlq, 3,
-        "All 3 messages should be in DLQ, got {in_dlq}"
-    );
+    assert_eq!(in_dlq, 3, "All 3 messages should be in DLQ, got {in_dlq}");
 
     // Replace with a succeeding handler
     let success_count = Arc::new(AtomicU64::new(0));
@@ -376,7 +380,11 @@ async fn e2e_redrive_empty_queue_name_returns_error() {
     let result = invoke_redrive(&engine, "").await;
     match result {
         FunctionResult::Failure(e) => {
-            assert_eq!(e.code, "queue_not_set", "Expected queue_not_set, got: {}", e.code);
+            assert_eq!(
+                e.code, "queue_not_set",
+                "Expected queue_not_set, got: {}",
+                e.code
+            );
             assert_eq!(e.message, "Queue name is required");
         }
         FunctionResult::Success(_) => panic!("Expected failure for empty queue name"),
@@ -409,15 +417,15 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         5,
     );
 
-    let module = QueueCoreModule::create(
-        engine.clone(),
-        Some(queue_config_with_fast_retries()),
-    )
-    .await
-    .expect("create should succeed");
+    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+        .await
+        .expect("create should succeed");
 
     module.register_functions(engine.clone());
-    module.initialize().await.expect("initialize should succeed");
+    module
+        .initialize()
+        .await
+        .expect("initialize should succeed");
 
     enqueue(
         &engine,
@@ -471,26 +479,21 @@ async fn e2e_redrive_result_contains_metadata() {
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::meta_handler", fail_count.clone());
 
-    let module = QueueCoreModule::create(
-        engine.clone(),
-        Some(queue_config_with_fast_retries()),
-    )
-    .await
-    .expect("create should succeed");
+    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_with_fast_retries()))
+        .await
+        .expect("create should succeed");
 
     module.register_functions(engine.clone());
-    module.initialize().await.expect("initialize should succeed");
+    module
+        .initialize()
+        .await
+        .expect("initialize should succeed");
 
     // Send 2 messages that will fail
     for i in 0..2 {
-        enqueue(
-            &engine,
-            "orders",
-            "e2e::meta_handler",
-            json!({ "item": i }),
-        )
-        .await
-        .expect("enqueue should succeed");
+        enqueue(&engine, "orders", "e2e::meta_handler", json!({ "item": i }))
+            .await
+            .expect("enqueue should succeed");
     }
 
     tokio::time::sleep(Duration::from_millis(3000)).await;
@@ -533,10 +536,7 @@ fn cli_trigger_subcommand_parses_correctly() {
         .output()
         .expect("failed to execute");
 
-    assert!(
-        output.status.success(),
-        "trigger --help should succeed"
-    );
+    assert!(output.status.success(), "trigger --help should succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -573,9 +573,12 @@ fn cli_trigger_invalid_json_payload_fails() {
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
         .args([
             "trigger",
-            "--function-id", "test::fn",
-            "--payload", "not-valid-json",
-            "--port", "19876",
+            "--function-id",
+            "test::fn",
+            "--payload",
+            "not-valid-json",
+            "--port",
+            "19876",
         ])
         .output()
         .expect("failed to execute");
@@ -600,9 +603,12 @@ fn cli_trigger_connection_refused_fails_gracefully() {
     let output = Command::new(env!("CARGO_BIN_EXE_iii"))
         .args([
             "trigger",
-            "--function-id", "iii::queue::redrive",
-            "--payload", r#"{"queue":"orders"}"#,
-            "--port", "19877",
+            "--function-id",
+            "iii::queue::redrive",
+            "--payload",
+            r#"{"queue":"orders"}"#,
+            "--port",
+            "19877",
         ])
         .output()
         .expect("failed to execute");

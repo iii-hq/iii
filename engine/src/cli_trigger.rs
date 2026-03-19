@@ -26,10 +26,7 @@ pub struct TriggerArgs {
     pub port: u16,
 }
 
-pub fn build_invoke_message(
-    function_id: &str,
-    data: serde_json::Value,
-) -> serde_json::Value {
+pub fn build_invoke_message(function_id: &str, data: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "type": "invokefunction",
         "invocation_id": null,
@@ -62,8 +59,7 @@ pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
     while let Some(msg) = socket.next().await {
         let msg = msg.map_err(|e| anyhow::anyhow!("WebSocket error: {}", e))?;
         if let WsMessage::Text(text) = msg {
-            let parsed: serde_json::Value =
-                serde_json::from_str(&text).unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
             if parsed.get("type").and_then(|t| t.as_str()) == Some("workerregistered") {
                 break;
             }
@@ -80,8 +76,7 @@ pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
     while let Some(msg) = socket.next().await {
         let msg = msg.map_err(|e| anyhow::anyhow!("WebSocket error: {}", e))?;
         if let WsMessage::Text(text) = msg {
-            let parsed: serde_json::Value =
-                serde_json::from_str(&text).unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
             if parsed.get("type").and_then(|t| t.as_str()) == Some("invocationresult") {
                 if let Some(error) = parsed.get("error").filter(|e| !e.is_null()) {
                     eprintln!("Error: {}", serde_json::to_string_pretty(error)?);

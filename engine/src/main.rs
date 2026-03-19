@@ -102,10 +102,14 @@ mod tests {
         let cli = Cli::try_parse_from([
             "iii",
             "trigger",
-            "--function-id", "iii::queue::redrive",
-            "--payload", r#"{"queue":"payment"}"#,
-            "--address", "10.0.0.1",
-            "--port", "9999",
+            "--function-id",
+            "iii::queue::redrive",
+            "--payload",
+            r#"{"queue":"payment"}"#,
+            "--address",
+            "10.0.0.1",
+            "--port",
+            "9999",
         ])
         .expect("should parse valid trigger args");
 
@@ -125,8 +129,10 @@ mod tests {
         let cli = Cli::try_parse_from([
             "iii",
             "trigger",
-            "--function-id", "test::fn",
-            "--payload", "{}",
+            "--function-id",
+            "test::fn",
+            "--payload",
+            "{}",
         ])
         .expect("should parse with defaults");
 
@@ -141,35 +147,25 @@ mod tests {
 
     #[test]
     fn trigger_requires_function_id() {
-        let result = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "--payload", "{}",
-        ]);
+        let result = Cli::try_parse_from(["iii", "trigger", "--payload", "{}"]);
         assert!(result.is_err(), "should fail without --function-id");
     }
 
     #[test]
     fn trigger_requires_payload() {
-        let result = Cli::try_parse_from([
-            "iii",
-            "trigger",
-            "--function-id", "test::fn",
-        ]);
+        let result = Cli::try_parse_from(["iii", "trigger", "--function-id", "test::fn"]);
         assert!(result.is_err(), "should fail without --payload");
     }
 
     #[test]
     fn no_subcommand_falls_through_to_serve() {
-        let cli = Cli::try_parse_from(["iii"])
-            .expect("should parse with no subcommand");
+        let cli = Cli::try_parse_from(["iii"]).expect("should parse with no subcommand");
         assert!(cli.command.is_none());
     }
 
     #[test]
     fn version_flag_works_globally() {
-        let cli = Cli::try_parse_from(["iii", "--version"])
-            .expect("should parse --version");
+        let cli = Cli::try_parse_from(["iii", "--version"]).expect("should parse --version");
         assert!(cli.version);
     }
 }

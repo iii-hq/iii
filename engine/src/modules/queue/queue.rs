@@ -154,7 +154,10 @@ impl QueueCoreModule {
         FunctionResult::Success(None)
     }
 
-    #[function(id = "iii::queue::redrive", description = "Redrive all DLQ messages back to the main queue")]
+    #[function(
+        id = "iii::queue::redrive",
+        description = "Redrive all DLQ messages back to the main queue"
+    )]
     pub async fn redrive(&self, input: RedriveInput) -> FunctionResult<RedriveResult, ErrorBody> {
         if input.queue.is_empty() {
             return FunctionResult::Failure(ErrorBody {
