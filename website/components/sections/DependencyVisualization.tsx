@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback, useId } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
+import { AnimatedConnector } from './AnimatedConnector';
 
 type AnimationPhase =
   | 'idle'
@@ -302,57 +303,38 @@ interface IIIHeaderGraphProps {
   dependencies: string[];
 }
 
-const ELECTRIC_CONNECTOR_VIEWBOX_HEIGHT = 40;
-const ELECTRIC_CONNECTOR_MIDLINE_Y = ELECTRIC_CONNECTOR_VIEWBOX_HEIGHT / 2;
-
-const buildElectricWavePath = (
-  baseY: number,
-  amplitude: number,
-  phaseOffset: number
-): string => {
-  const segments = 8;
-  let path = `M 0 ${baseY.toFixed(2)}`;
-
-  for (let segmentIndex = 0; segmentIndex < segments; segmentIndex++) {
-    const startX = (segmentIndex / segments) * 100;
-    const endX = ((segmentIndex + 1) / segments) * 100;
-    const controlOneX = startX + (endX - startX) / 3;
-    const controlTwoX = startX + ((endX - startX) * 2) / 3;
-    const controlOneY =
-      baseY + Math.sin((segmentIndex + phaseOffset) * 1.35) * amplitude;
-    const controlTwoY =
-      baseY - Math.sin((segmentIndex + phaseOffset + 0.55) * 1.35) * amplitude;
-
-    path += ` C ${controlOneX.toFixed(2)} ${controlOneY.toFixed(2)} ${controlTwoX.toFixed(2)} ${controlTwoY.toFixed(2)} ${endX.toFixed(2)} ${baseY.toFixed(2)}`;
-  }
-
-  return path;
-};
-
 const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
   isDarkMode,
   dependencies,
 }) => {
   const boxClasses = isDarkMode
-    ? 'border-iii-light/60 bg-iii-dark text-iii-light'
-    : 'border-iii-dark/40 bg-white text-iii-black';
-  const electricColorStrong = isDarkMode
-    ? 'rgba(74, 222, 128, 1)'
-    : 'rgba(34, 197, 94, 0.95)';
-  const electricColorMedium = isDarkMode
-    ? 'rgba(74, 222, 128, 0.68)'
-    : 'rgba(34, 197, 94, 0.62)';
-  const electricColorSoft = isDarkMode
-    ? 'rgba(74, 222, 128, 0.24)'
-    : 'rgba(34, 197, 94, 0.2)';
-  const electricLineShadow = isDarkMode
-    ? 'rgba(74, 222, 128, 0.92)'
-    : 'rgba(34, 197, 94, 0.78)';
+    ? 'bg-[#0a0a0a] text-iii-light'
+    : 'bg-white text-iii-black';
+  const accentBorderColor = isDarkMode ? '#f3f724' : '#2f7fff';
   const nodes = dependencies.slice(0, 2);
   const nodeSignature = nodes.join('|');
-  const electricGraphId = useId();
+  const graphRef = useRef<HTMLDivElement>(null);
+  const rightMostPillRef = useRef<HTMLDivElement>(null);
+  const [connectorLength, setConnectorLength] = useState(0);
   const [arePillsVisible, setArePillsVisible] = useState(false);
   const [isOnlineFlashVisible, setIsOnlineFlashVisible] = useState(false);
+
+  const updateConnectorLength = useCallback(() => {
+    if (!graphRef.current || !rightMostPillRef.current) {
+      return;
+    }
+
+    const graphRect = graphRef.current.getBoundingClientRect();
+    const rightMostPillRect = rightMostPillRef.current.getBoundingClientRect();
+    const nextLength = Math.max(
+      0,
+      Math.round(rightMostPillRect.left - graphRect.left),
+    );
+
+    setConnectorLength((previousLength) =>
+      previousLength === nextLength ? previousLength : nextLength,
+    );
+  }, []);
 
   useEffect(() => {
     if (nodes.length === 0) {
@@ -378,142 +360,82 @@ const IIIHeaderGraph: React.FC<IIIHeaderGraphProps> = ({
     };
   }, [nodeSignature]);
 
+  useEffect(() => {
+    updateConnectorLength();
+  }, [nodeSignature, updateConnectorLength]);
+
+  useEffect(() => {
+    if (!graphRef.current || !rightMostPillRef.current) {
+      return;
+    }
+
+    const resizeObserver = new ResizeObserver(updateConnectorLength);
+    resizeObserver.observe(graphRef.current);
+    resizeObserver.observe(rightMostPillRef.current);
+    window.addEventListener('resize', updateConnectorLength);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateConnectorLength);
+    };
+  }, [updateConnectorLength, nodeSignature]);
+
   if (nodes.length === 0) {
     return null;
   }
 
   return (
-    <div className="relative flex items-center gap-2 min-w-0 flex-1">
+    <div ref={graphRef} className="relative flex items-center gap-2 min-w-0 flex-1">
+      <div
+        className="pointer-events-none absolute left-0 top-1/2 -translate-y-1/2"
+        style={{
+          width: `${connectorLength}px`,
+          opacity: arePillsVisible && connectorLength > 0 ? 1 : 0,
+          transition: 'opacity 220ms ease-in',
+        }}
+      >
+        <AnimatedConnector
+          isDarkMode={isDarkMode}
+          orientation="horizontal"
+          length={connectorLength}
+          begin="0s"
+          duration="2.4s"
+          highlightLine
+          className="overflow-visible"
+        />
+      </div>
       <div className="relative z-10 ml-auto flex items-center gap-2 min-w-0 flex-nowrap">
-        {nodes.map((node, index) => {
-          const connectorWidthPx =
-            nodes.length === 1 ? 170 : index === 0 ? 190 : 128;
-          const pulseDuration = 1.35 + index * 0.22;
-          const flowDuration = 1.08 + index * 0.18;
-          const flowDelay = index * 0.2;
-          const strandOffsets = [-11.4, -7.2, -3, 1.8, 5.7, 9.9];
-          const strandAmplitudes = [6.1, 5.4, 4.6, 5.2, 5.9, 6.4];
-          const strandOpacities = [0.54, 0.68, 0.84, 0.82, 0.66, 0.52];
-          const flowOffsets = [-8.1, 0.4, 7.6];
-          const connectorGradientPrefix = `${electricGraphId}-dependency-electric-${index}`;
-
-          return (
-            <div key={`${node}-${index}`} className="relative flex-shrink-0">
-              <div
-                className="pointer-events-none absolute right-full top-1/2"
-                style={{
-                  width: `${connectorWidthPx}px`,
-                  opacity: arePillsVisible ? 1 : 0,
-                  transition: 'opacity 280ms ease-in',
-                }}
-              >
-                <svg
-                  className="absolute left-0 top-1/2 h-10 w-full -translate-y-1/2 overflow-visible"
-                  viewBox={`0 0 100 ${ELECTRIC_CONNECTOR_VIEWBOX_HEIGHT}`}
-                  preserveAspectRatio="none"
-                >
-                  <defs>
-                    <linearGradient
-                      id={`${connectorGradientPrefix}-base`}
-                      x1="0%"
-                      y1="0%"
-                      x2="100%"
-                      y2="0%"
-                    >
-                      <stop offset="0%" stopColor={electricColorSoft} />
-                      <stop offset="25%" stopColor={electricColorMedium} />
-                      <stop offset="58%" stopColor={electricColorStrong} />
-                      <stop offset="100%" stopColor={electricColorSoft} />
-                    </linearGradient>
-                    <linearGradient
-                      id={`${connectorGradientPrefix}-flow`}
-                      x1="0%"
-                      y1="0%"
-                      x2="100%"
-                      y2="0%"
-                    >
-                      <stop offset="0%" stopColor="rgba(34, 197, 94, 0)" />
-                      <stop offset="45%" stopColor={electricColorStrong} />
-                      <stop offset="100%" stopColor="rgba(34, 197, 94, 0)" />
-                    </linearGradient>
-                  </defs>
-
-                  {strandOffsets.map((offset, strandIndex) => (
-                    <path
-                      key={`strand-${strandIndex}`}
-                      d={buildElectricWavePath(
-                        ELECTRIC_CONNECTOR_MIDLINE_Y + offset,
-                        strandAmplitudes[strandIndex],
-                        strandIndex * 0.6 + index * 0.5
-                      )}
-                      fill="none"
-                      stroke={`url(#${connectorGradientPrefix}-base)`}
-                      strokeWidth="0.95"
-                      strokeLinecap="round"
-                      style={{
-                        strokeOpacity: strandOpacities[strandIndex],
-                        filter:
-                          strandIndex === 2 || strandIndex === 3
-                            ? `drop-shadow(0 0 4px ${electricLineShadow})`
-                            : undefined,
-                        transformOrigin: '50% 50%',
-                        animation: `dependencyElectricUndulate ${pulseDuration + strandIndex * 0.1}s ease-in-out ${flowDelay + strandIndex * 0.06}s infinite, dependencyElectricResistance ${0.78 + strandIndex * 0.11}s steps(8, end) ${flowDelay + strandIndex * 0.03}s infinite, dependencyElectricOpacitySweep ${5.2 + strandIndex * 0.42}s ease-in-out ${flowDelay + strandIndex * 0.05}s infinite`,
-                      }}
-                    />
-                  ))}
-
-                  {flowOffsets.map((offset, flowIndex) => (
-                    <path
-                      key={`flow-${flowIndex}`}
-                      d={buildElectricWavePath(
-                        ELECTRIC_CONNECTOR_MIDLINE_Y + offset,
-                        3.6 + flowIndex * 0.8,
-                        flowIndex * 0.95 + index * 0.45
-                      )}
-                      fill="none"
-                      stroke={`url(#${connectorGradientPrefix}-flow)`}
-                      strokeWidth="1.1"
-                      strokeLinecap="round"
-                      strokeDasharray="16 140"
-                      style={{
-                        strokeOpacity: 0.92 - flowIndex * 0.16,
-                        animation: `dependencyElectricChargeTravel ${flowDuration + flowIndex * 0.2}s linear ${flowDelay + flowIndex * 0.1}s infinite, dependencyElectricResistance ${1.05 + flowIndex * 0.18}s steps(10, end) ${flowDelay + flowIndex * 0.07}s infinite, dependencyElectricOpacitySweep ${6 + flowIndex * 0.5}s ease-in-out ${flowDelay + flowIndex * 0.1}s infinite`,
-                      }}
-                    />
-                  ))}
-                </svg>
-              </div>
-
-              <div
-                className={`px-2 sm:px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold overflow-hidden ${boxClasses} ${
-                  isOnlineFlashVisible
-                    ? isDarkMode
-                      ? 'border-iii-success/80 bg-iii-success/20'
-                      : 'border-iii-success/70 bg-iii-success/10'
-                    : ''
-                }`}
-                style={{
-                  maxWidth: 'clamp(104px, 18vw, 220px)',
-                  transform: `${arePillsVisible ? 'translateY(0px)' : 'translateY(10px)'} ${isOnlineFlashVisible ? 'scale(1.02)' : 'scale(1)'}`,
-                  opacity: arePillsVisible ? 1 : 0,
-                  boxShadow: isOnlineFlashVisible
-                    ? '0 0 0 1px rgba(34, 197, 94, 0.65), 0 0 14px rgba(34, 197, 94, 0.45)'
-                    : undefined,
-                  transition:
-                    'transform 320ms ease-in, opacity 320ms ease-in, background-color 220ms ease-in, border-color 220ms ease-in, box-shadow 220ms ease-in',
-                }}
-                title={node}
-              >
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-semibold text-iii-success flex-shrink-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
-                  </span>
-                  <span className="truncate">{node}</span>
-                </div>
+        {nodes.map((node, index) => (
+          <div
+            key={`${node}-${index}`}
+            ref={index === nodes.length - 1 ? rightMostPillRef : undefined}
+            className="relative flex-shrink-0"
+          >
+            <div
+              className={`px-2 sm:px-3 py-1 rounded-2xl border text-[11px] sm:text-xs font-semibold overflow-hidden ${boxClasses}`}
+              style={{
+                maxWidth: 'clamp(104px, 18vw, 220px)',
+                borderColor: accentBorderColor,
+                borderWidth: '1.5px',
+                transform: `${arePillsVisible ? 'translateY(0px)' : 'translateY(10px)'} ${isOnlineFlashVisible ? 'scale(1.02)' : 'scale(1)'}`,
+                opacity: arePillsVisible ? 1 : 0,
+                boxShadow: isOnlineFlashVisible
+                  ? '0 0 0 1px rgba(34, 197, 94, 0.65), 0 0 14px rgba(34, 197, 94, 0.45)'
+                  : undefined,
+                transition:
+                  'transform 320ms ease-in, opacity 320ms ease-in, box-shadow 220ms ease-in',
+              }}
+              title={node}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-semibold text-iii-success flex-shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
+                </span>
+                <span className="truncate">{node}</span>
               </div>
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -624,10 +546,6 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   const isIII = variant === 'iii';
   const headerTitle = isIII ? 'iii' : title;
 
-  // Track revealed lines for animation
-  const [revealedLine, setRevealedLine] = useState(0);
-  const [scanComplete, setScanComplete] = useState(false);
-  const totalLinesRef = useRef(0);
   const titleRowRef = useRef<HTMLDivElement>(null);
 
   // Animation phases
@@ -637,32 +555,6 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
   const isSpotlight = animationPhase === 'spotlight';
 
   const lines = code.trim().split('\n');
-  totalLinesRef.current = lines.length;
-
-  // Animate lines revealing from bottom to top when spotlight starts
-  useEffect(() => {
-    if (isSpotlight && revealedLine === 0) {
-      // Start revealing from bottom
-      const totalLines = totalLinesRef.current;
-      let currentLine = totalLines;
-      setScanComplete(false);
-
-      const interval = setInterval(() => {
-        currentLine--;
-        setRevealedLine(totalLines - currentLine);
-
-        if (currentLine <= 0) {
-          clearInterval(interval);
-          setScanComplete(true);
-        }
-      }, 60); // 60ms per line for smooth animation
-
-      return () => clearInterval(interval);
-    } else if (!isSpotlight) {
-      setRevealedLine(0);
-      setScanComplete(false);
-    }
-  }, [isSpotlight]);
 
   // Detect architecture lines (alert) and business logic lines (accent)
   const architectureLines = new Set<number>();
@@ -915,32 +807,12 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
           isDarkMode ? 'scrollbar-brand-dark' : 'scrollbar-brand-light'
         }`}
       >
-        {/* Scan line effect during spotlight - constrained to marker area */}
-        {isSpotlight &&
-          revealedLine > 0 &&
-          revealedLine < totalLinesRef.current && (
-            <div
-              className="absolute left-0 w-1 h-1 pointer-events-none z-10"
-              style={{
-                bottom: `${(revealedLine / totalLinesRef.current) * 100}%`,
-                width: '4px',
-                height: '3px',
-                borderRadius: '2px',
-                background: isDarkMode
-                  ? 'var(--color-accent)'
-                  : 'var(--color-accent-light)',
-              }}
-            />
-          )}
-
         <Highlight
           theme={isDarkMode ? themes.nightOwl : themes.github}
           code={code.trim()}
           language={language as any}
         >
           {({ tokens, getLineProps, getTokenProps }) => {
-            const totalLines = tokens.length;
-
             return (
               <pre className="text-[9px] sm:text-[10px] md:text-xs font-mono leading-relaxed overflow-x-auto">
                 {tokens.map((line, i) => {
@@ -953,15 +825,9 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
                     shouldHighlight && isArchLine;
                   const extracted = shouldShowExtracted && isArchLine;
 
-                  // Calculate if this line has been revealed (bottom to top)
-                  const lineFromBottom = totalLines - lineNum + 1;
-                  const isRevealed = revealedLine >= lineFromBottom;
-
-                  // Spotlight phase: show markers only when revealed
-                  const showArchHighlight =
-                    isSpotlight && isArchLine && isRevealed;
-                  const showBizHighlight =
-                    isSpotlight && isBizLine && isRevealed;
+                  // Spotlight phase: keep architecture/business logic markers static
+                  const showArchHighlight = isSpotlight && isArchLine;
+                  const showBizHighlight = isSpotlight && isBizLine;
 
                   return (
                     <div
@@ -986,20 +852,12 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
 
                       {/* Spotlight architecture: warn (orange) */}
                       {showArchHighlight && (
-                        <span
-                          className={`absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-iii-warn ${
-                            !scanComplete ? 'animate-pulse' : ''
-                          }`}
-                        />
+                        <span className="absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-iii-warn" />
                       )}
 
                       {/* Business logic indicator bar (success/green) */}
                       {showBizHighlight && (
-                        <span
-                          className={`absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-iii-success ${
-                            !scanComplete ? 'animate-pulse' : ''
-                          }`}
-                        />
+                        <span className="absolute left-0 top-0 bottom-0 w-0.5 rounded-full bg-iii-success" />
                       )}
 
                       <span
@@ -1192,33 +1050,22 @@ export const DependencyVisualization: React.FC<
 
       {/* Legend - aligned below respective code blocks */}
       <div
-        className={`
-          hidden lg:grid grid-cols-2 gap-4 xl:gap-6
-          transition-all duration-1000 ease-out overflow-hidden
-          ${isLegendVisible ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'}
-        `}
+        className={`hidden lg:grid grid-cols-2 gap-4 xl:gap-6 ${
+          isLegendVisible ? '' : 'hidden'
+        }`}
       >
         {/* Architecture legend - below traditional code (left) */}
         <div className="flex justify-center">
           <div
             className={`
               flex items-center gap-3 px-5 py-3 rounded-lg
-              transition-all duration-700 ease-out
-              ${
-                isLegendVisible
-                  ? 'opacity-100 translate-y-0'
-                  : 'opacity-0 translate-y-4'
-              }
               ${
                 isDarkMode
                   ? 'bg-iii-dark/80 shadow-lg shadow-black/20'
                   : 'bg-white/80 shadow-lg shadow-black/5'
               }
             `}
-            style={{
-              transitionDelay: isLegendVisible ? '400ms' : '0ms',
-              backdropFilter: 'blur(8px)',
-            }}
+            style={{ backdropFilter: 'blur(8px)' }}
           >
             <div className="w-4 h-4 rounded bg-iii-warn" />
             <div className="flex flex-col">
@@ -1241,22 +1088,13 @@ export const DependencyVisualization: React.FC<
           <div
             className={`
               flex items-center gap-3 px-5 py-3 rounded-lg
-              transition-all duration-700 ease-out
-              ${
-                isLegendVisible
-                  ? 'opacity-100 translate-y-0'
-                  : 'opacity-0 translate-y-4'
-              }
               ${
                 isDarkMode
                   ? 'bg-iii-dark/80 shadow-lg shadow-black/20'
                   : 'bg-white/80 shadow-lg shadow-black/5'
               }
             `}
-            style={{
-              transitionDelay: isLegendVisible ? '600ms' : '0ms',
-              backdropFilter: 'blur(8px)',
-            }}
+            style={{ backdropFilter: 'blur(8px)' }}
           >
             <div className="w-4 h-4 rounded bg-iii-success" />
             <div className="flex flex-col">
@@ -1277,16 +1115,13 @@ export const DependencyVisualization: React.FC<
 
       {/* Mobile legend - stacked centered */}
       <div
-        className={`
-          lg:hidden flex justify-center transition-all duration-1000 ease-out overflow-hidden
-          ${isLegendVisible ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'}
-        `}
+        className={`lg:hidden flex justify-center ${
+          isLegendVisible ? '' : 'hidden'
+        }`}
       >
         <div
           className={`
             flex flex-col sm:flex-row items-center gap-4 sm:gap-6 px-5 py-3 rounded-lg
-            transition-all duration-700 ease-out
-            ${isLegendVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}
             ${isDarkMode ? 'bg-iii-dark/80 shadow-lg shadow-black/20' : 'bg-white/80 shadow-lg shadow-black/5'}
           `}
           style={{ backdropFilter: 'blur(8px)' }}

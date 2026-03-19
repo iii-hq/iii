@@ -425,7 +425,9 @@ export function ExampleCodeSection({
               isDarkMode ? 'text-iii-light/70' : 'text-iii-medium'
             }`}
           >
-            So you can focus on the code and not the infra
+            Every service integration to the iii engine is instantly available
+            across the entire application stack, so you can focus on the code
+            and not the infra
           </p>
         </div>
 
