@@ -544,7 +544,7 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
 }) => {
   const isTraditional = variant === 'traditional';
   const isIII = variant === 'iii';
-  const headerTitle = isIII ? 'iii' : title;
+  const headerTitle = isIII ? 'iii' : isTraditional ? 'Traditional' : title;
 
   const titleRowRef = useRef<HTMLDivElement>(null);
 

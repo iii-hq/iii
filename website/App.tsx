@@ -187,37 +187,56 @@ const App: React.FC = () => {
 
       <main className="flex-1 relative z-10 flex flex-col items-center w-full pt-16 md:pt-20">
         {/* Section 1: Hero - One Engine. Any Language. Anywhere. */}
-        <div className="w-full">
+        <div className="w-full" data-machine-section="hero">
           <HeroSection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 2: Hello World - Polyglot proof with IPC */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="hello-world"
+        >
           <HelloWorldSection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 3: Architecture (formerly Engine) - Trigger → Function → Workers */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="architecture"
+        >
           <EngineSection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 4: Triggers as Universal Adapters - Code Examples */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="examples"
+          data-machine-exclude="true"
+        >
           <ExampleCodeSection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 5: Observability - Trace-level visibility with OpenTelemetry */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="observability"
+        >
           <ObservabilitySection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 6: Agent-Ready - AI agents as first-class citizens */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="agent-ready"
+        >
           <AgentReadySection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 7: Footer + CTA - FAQ, Discord, Links */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="footer"
+        >
           <FooterSection isDarkMode={isDarkMode} />
         </div>
       </main>

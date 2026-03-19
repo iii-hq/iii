@@ -19,6 +19,7 @@ import {
   Cloud1Icon as CloudIcon,
 } from '../icons';
 import { Logo } from '../Logo';
+import { AnimatedConnector } from './AnimatedConnector';
 
 interface EngineSectionProps {
   isDarkMode?: boolean;
@@ -148,15 +149,15 @@ iii.register_function("users::create", create_user)`,
     },
   },
   {
-    id: 'discovery',
+    id: 'workers',
     icon: Share2,
-    name: 'Discovery',
+    name: 'Workers',
     tagline: 'The system knows itself.',
     description:
       'When a worker connects, every other worker learns what it can do. When it disconnects, its functions vanish. No config files. No service registries. No hardcoded URLs. The engine maintains a live registry.',
     highlights: [
       'Workers register → everyone is notified instantly',
-      'Workers disconnect → functions removed, no stale refs',
+      'Workers discovery → workers are upgradeable in real time',
       'trigger() by name — engine routes to the right worker',
       'Scale up, scale down — topology adapts in real time',
     ],
@@ -943,30 +944,13 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
 
               {/* Connector: Inputs → Engine */}
               <div className="flex flex-col items-center py-1">
-                <svg width="2" height="28" className="overflow-visible">
-                  <line
-                    x1="1"
-                    y1="0"
-                    x2="1"
-                    y2="28"
-                    stroke={
-                      isDarkMode ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)'
-                    }
-                    strokeWidth="1.5"
-                    strokeDasharray="4 3"
-                  />
-                  <circle
-                    r="2"
-                    fill={isDarkMode ? '#f3f724' : '#2f7fff'}
-                    opacity="0.7"
-                  >
-                    <animateMotion
-                      dur="1.5s"
-                      repeatCount="indefinite"
-                      path="M 1,0 L 1,28"
-                    />
-                  </circle>
-                </svg>
+                <AnimatedConnector
+                  isDarkMode={isDarkMode}
+                  orientation="vertical"
+                  length={28}
+                  duration="1.4s"
+                  className="overflow-visible"
+                />
               </div>
 
               {/* Engine Center */}
@@ -1012,30 +996,13 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
 
               {/* Connector: Engine → Outputs */}
               <div className="flex flex-col items-center py-1">
-                <svg width="2" height="28" className="overflow-visible">
-                  <line
-                    x1="1"
-                    y1="0"
-                    x2="1"
-                    y2="28"
-                    stroke={
-                      isDarkMode ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)'
-                    }
-                    strokeWidth="1.5"
-                    strokeDasharray="4 3"
-                  />
-                  <circle
-                    r="2"
-                    fill={isDarkMode ? '#f3f724' : '#2f7fff'}
-                    opacity="0.7"
-                  >
-                    <animateMotion
-                      dur="1.5s"
-                      repeatCount="indefinite"
-                      path="M 1,0 L 1,28"
-                    />
-                  </circle>
-                </svg>
+                <AnimatedConnector
+                  isDarkMode={isDarkMode}
+                  orientation="vertical"
+                  length={28}
+                  duration="1.4s"
+                  className="overflow-visible"
+                />
               </div>
 
               {/* Output nodes */}
@@ -1263,22 +1230,22 @@ function ParticleFlowDiagram({
         />
       ))}
 
-      {/* AMBIENT PARTICLES (12 forward + 5 reverse, fast, continuous) */}
+      {/* AMBIENT PARTICLES (denser bidirectional stream) */}
       {[0, 1, 2, 3].map((i) =>
         [0, 1, 2].map((j) => (
           <g key={`ambient-fwd-${i}-${j}`} opacity="0.3">
             <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="2.5s"
-                begin={`${i * 0.6 + j * 0.8}s`}
+                dur="2.4s"
+                begin={`${i * 0.45 + j * 0.52}s`}
                 repeatCount="indefinite"
                 path={leftPaths[i]}
               />
             </circle>
             <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="2.5s"
-                begin={`${i * 0.6 + j * 0.8 + 1.2}s`}
+                dur="2.4s"
+                begin={`${i * 0.45 + j * 0.52 + 1.1}s`}
                 repeatCount="indefinite"
                 path={rightPaths[i]}
               />
@@ -1286,22 +1253,21 @@ function ParticleFlowDiagram({
           </g>
         )),
       )}
-      {/* Reverse-direction ambient particles (~40% density) */}
-      {[0, 2].map((i) =>
+      {[0, 1, 2, 3].map((i) =>
         [0, 1].map((j) => (
           <g key={`ambient-rev-${i}-${j}`} opacity="0.2">
             <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="3s"
-                begin={`${i * 0.7 + j * 1.4}s`}
+                dur="2.8s"
+                begin={`${i * 0.4 + j * 1.05}s`}
                 repeatCount="indefinite"
                 path={leftPathsReverse[i]}
               />
             </circle>
             <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="3s"
-                begin={`${i * 0.7 + j * 1.4 + 0.5}s`}
+                dur="2.8s"
+                begin={`${i * 0.4 + j * 1.05 + 0.45}s`}
                 repeatCount="indefinite"
                 path={rightPathsReverse[i]}
               />
@@ -1442,7 +1408,7 @@ function ParticleFlowDiagram({
             <div
               className={`w-full h-full rounded-lg flex items-center gap-3 px-3 transition-all duration-300 ${
                 isActive
-                  ? 'border-2 border-dotted shadow-[0_0_15px_rgba(0,0,0,0.2)] scale-[1.02]'
+                  ? 'border-2 border-solid shadow-[0_0_15px_rgba(0,0,0,0.2)] scale-[1.02]'
                   : `border border-solid ${isDarkMode ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'} ${isMuted ? 'opacity-40' : 'hover:border-iii-medium/30'}`
               }`}
               style={
