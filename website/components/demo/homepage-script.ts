@@ -79,7 +79,7 @@ export const homepageFlow: Step[] = [
     id: 'reply-2',
     type: 'reply',
     content:
-      'Let me create a generic agent worker and subscribe it to the same event. The generic setup will come in handy later.',
+      'Let me create an agentic worker and subscribe it to the same event.',
     sendLabel: 'Send',
     delay: 250,
   },

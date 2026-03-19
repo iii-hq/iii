@@ -16,6 +16,7 @@ export function ReplyComposer({ step, isActive, onNext }: ReplyComposerProps) {
 
   const words = useMemo(() => step.content.split(" "), [step.content]);
   const speed = step.typingSpeed ?? 40;
+  const visibleContent = isDone ? step.content : displayedWords.join(" ");
 
   useEffect(() => {
     if (!isActive || isDone) return;
@@ -75,10 +76,10 @@ export function ReplyComposer({ step, isActive, onNext }: ReplyComposerProps) {
       style={isActive ? { animationFillMode: "forwards" } : undefined}
     >
       <div className="max-w-[85%] w-full">
-        <div className="rounded-lg border border-iii-medium/20 bg-iii-dark/80 overflow-hidden">
+        <div className="rounded-lg border border-iii-medium/20 bg-iii-dark/80">
           <div className="px-3 py-2.5 min-h-[40px]">
             <p className="text-sm text-iii-light/90 leading-relaxed">
-              {displayedWords.join(" ")}
+              {visibleContent}
               {isTyping && (
                 <span className="inline-block w-[2px] h-[14px] bg-iii-accent ml-0.5 animate-pulse align-middle" />
               )}

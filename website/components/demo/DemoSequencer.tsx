@@ -68,11 +68,20 @@ export function DemoSequencer({
 
   useEffect(() => {
     if (!scrollRef.current) return;
-    scrollRef.current.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: 'smooth',
+    const scroll = scrollRef.current;
+    const pin = () => {
+      requestAnimationFrame(() => {
+        scroll.scrollTop = scroll.scrollHeight;
+      });
+    };
+    const observer = new MutationObserver(pin);
+    observer.observe(scroll, {
+      childList: true,
+      subtree: true,
+      characterData: true,
     });
-  }, [visibleUpTo, currentIndex, isFinished, isDelaying]);
+    return () => observer.disconnect();
+  }, [sessionKey]);
 
   useEffect(() => {
     return () => clearDelay();
@@ -130,8 +139,8 @@ export function DemoSequencer({
 
   const containerHeight =
     mode === 'hero'
-      ? 'min-h-[280px] max-h-[560px]'
-      : 'min-h-[300px] max-h-[70vh]';
+      ? 'h-[560px]'
+      : 'h-[70vh]';
 
   return (
     <div
