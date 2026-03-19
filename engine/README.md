@@ -10,19 +10,19 @@
 
 You start building a backend and immediately need six different tools: an API framework, a task queue, a cron scheduler, pub/sub, a state store, and an observability pipeline. Each has its own config, its own deployment, its own failure modes. A simple "process this, then notify that" workflow touches three services before you write any business logic.
 
-iii replaces all of that with a single engine and two primitives: **Function** and **Trigger**.
+iii replaces all of that with a single engine and three primitives: **Function**, **Trigger**, and **Worker**.
 
-A Function is anything that does work. A Trigger is what causes it to run - an HTTP request, a cron schedule, a queue message, a state change. You write the function, declare what triggers it, and the engine handles discovery, routing, retries, and observability.
+A Function is anything that does work. A Trigger is what causes it to run — an HTTP request, a cron schedule, a queue message, a state change. A Worker is any process that registers Functions and Triggers — long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware. You write the function, declare what triggers it, connect a worker, and the engine handles routing, retries, and observability.
 
-One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI - iii gives your backend a single model for execution.
+One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI — iii gives your backend a single model for execution.
 
-## Three Concepts
+## Three Primitives
 
-| Concept       | What it does                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Function**  | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint. It can mutate state, invoke other functions, and modify databases. |
-| **Trigger**   | What causes a Function to run - explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event. |
-| **Discovery** | Functions and triggers register and deregister themselves without configuration. Once discovered, they are available across the entire backend. |
+| Primitive     | What it does |
+| ------------- | ------------ |
+| **Function**  | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint. |
+| **Trigger**   | What causes a Function to run — explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event. |
+| **Worker**    | Any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect and participate as first-class members. |
 
 ## Quick Start
 
@@ -78,9 +78,9 @@ npm install iii-sdk
 ```
 
 ```javascript
-import { init } from 'iii-sdk';
+import { registerWorker } from 'iii-sdk';
 
-const iii = init('ws://localhost:49134');
+const iii = registerWorker('ws://localhost:49134');
 
 iii.registerFunction({ id: 'math.add' }, async (input) => {
   return { sum: input.a + input.b };
@@ -123,23 +123,23 @@ iii.register_trigger({
 <summary>Rust</summary>
 
 ```rust
-use iii_sdk::{init, InitOptions};
+use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
 
-    iii.register_function("math.add", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "math.add".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(json!({ "sum": a + b }))
     });
 
-    iii.register_trigger("http", "math.add", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "math.add".into(), config: json!({
         "api_path": "add",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     Ok(())
 }

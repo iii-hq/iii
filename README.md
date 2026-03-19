@@ -11,9 +11,9 @@
 
 You start building a backend and immediately need six different tools: an API framework, a task queue, a cron scheduler, pub/sub, a state store, and an observability pipeline. Each has its own config, its own deployment, its own failure modes. A simple "process this, then notify that" workflow touches three services before you write any business logic.
 
-iii replaces all of that with a single engine and two primitives: **Function** and **Trigger**.
+iii replaces all of that with a single engine and three primitives: **Function**, **Trigger**, and **Worker**.
 
-A Function is anything that does work. A Trigger is what causes it to run - an HTTP request, a cron schedule, a queue message, a state change. You write the function, declare what triggers it, and the engine handles discovery, routing, retries, and observability.
+A Function is anything that does work. A Trigger is what causes it to run - an HTTP request, a cron schedule, a queue message, a state change. A Worker connects your functions to the engine. You write the function, declare what triggers it, connect a worker, and the engine handles routing, retries, and observability.
 
 One config file. One process. Everything discoverable. Think of it the way React gave frontend a single model for UI - iii gives your backend a single model for execution.
 
@@ -23,7 +23,7 @@ One config file. One process. Everything discoverable. Think of it the way React
 | ------------- | ------------ |
 | **Function**  | A unit of work. It receives input and optionally returns output. It can exist anywhere: locally, in the cloud, on serverless, or as a third-party HTTP endpoint. |
 | **Trigger**   | What causes a Function to run - explicitly from code, or automatically from an event source. Examples: HTTP route, cron schedule, queue topic, state change, stream event. |
-| **Discovery** | Functions and triggers register and deregister themselves without configuration. Once discovered, they are available across the entire backend. |
+| **Worker**    | The runtime that connects your functions and triggers to the engine. Workers register and deregister themselves without configuration. Once connected, their functions are available across the entire backend. |
 
 ## Quick Start
 
@@ -43,10 +43,10 @@ npm install iii-sdk
 ```
 
 ```javascript
-import { init, getContext } from 'iii-sdk';
+import { registerWorker, Logger } from 'iii-sdk';
 
-const iii = init('ws://localhost:49134');
-const { logger } = getContext();
+const iii = registerWorker('ws://localhost:49134');
+const logger = new Logger();
 
 iii.registerFunction({ id: 'math.add' }, async (input) => {
   return { sum: input.a + input.b };
@@ -98,26 +98,26 @@ logger.info("result", result)  # {"sum": 3}
 <summary>Rust</summary>
 
 ```rust
-use iii_sdk::{init, InitOptions, get_context, TriggerRequest};
+use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput, Logger};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = init("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
+    let logger = Logger::new();
 
-    iii.register_function("math.add", |input| async move {
+    iii.register_function(RegisterFunctionMessage { id: "math.add".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
         let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(json!({ "sum": a + b }))
     });
 
-    iii.register_trigger("http", "math.add", json!({
+    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "math.add".into(), config: json!({
         "api_path": "add",
         "http_method": "POST"
-    }))?;
+    }) })?;
 
     let result = iii.trigger(TriggerRequest::new("math.add", json!({ "a": 1, "b": 2 }))).await?;
-    let logger = get_context().logger;
     logger.info("result", &result); // {"sum":3}
 
     Ok(())

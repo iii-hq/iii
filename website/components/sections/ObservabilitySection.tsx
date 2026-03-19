@@ -15,10 +15,10 @@ interface Span {
 
 const spans: Span[] = [
   { name: "HTTP Request", duration: 120, offset: 0, color: "#2f7fff" },
-  { name: "api.handler", duration: 98, offset: 8, color: "#f3f724", indent: 1 },
+  { name: "api::handler", duration: 98, offset: 8, color: "#f3f724", indent: 1 },
   { name: "validate", duration: 12, offset: 14, color: "#1ce669", indent: 2 },
-  { name: "process.order", duration: 62, offset: 28, color: "#f3943d", indent: 2 },
-  { name: "notify.email", duration: 28, offset: 78, color: "#42e7e7", indent: 2 },
+  { name: "process::order", duration: 62, offset: 28, color: "#f3943d", indent: 2 },
+  { name: "notify::email", duration: 28, offset: 78, color: "#42e7e7", indent: 2 },
 ];
 
 const maxDuration = 130;

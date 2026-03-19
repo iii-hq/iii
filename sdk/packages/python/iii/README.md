@@ -15,9 +15,9 @@ pip install iii-sdk
 ## Hello World
 
 ```python
-from iii import III
+from iii import register_worker
 
-iii = III("ws://localhost:49134")
+iii = register_worker("ws://localhost:49134")
 
 def greet(data):
     return {"message": f"Hello, {data['name']}!"}
@@ -40,13 +40,14 @@ print(result)  # {"message": "Hello, world!"}
 
 | Operation                | Signature                                         | Description                                            |
 | ------------------------ | ------------------------------------------------- | ------------------------------------------------------ |
-| Initialize               | `III(url, options?)`                              | Create an SDK instance                                 |
-| Connect                  | `iii.connect()`                                   | Connect to the engine                                  |
+| Initialize               | `register_worker(url, options?)`                  | Create an SDK instance and auto-connect                |
 | Register function        | `iii.register_function({"id": id}, handler)`      | Register a function that can be invoked by name        |
 | Register trigger         | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
 | Invoke (await result)    | `iii.trigger({"function_id": id, "payload": data})` | Invoke a function and wait for the result           |
 | Invoke (fire-and-forget) | `iii.trigger({"function_id": id, ..., "action": TriggerAction.Void()})` | Fire-and-forget |
 | Shutdown                 | `iii.shutdown()`                                  | Disconnect and stop background thread                  |
+
+`register_worker()` creates the SDK instance and auto-connects to the engine.
 
 ### Registering Functions
 

@@ -1,0 +1,104 @@
+---
+title: 'Quickstart'
+description: 'Learn everything you need to start building with iii and the iii SDK'
+---
+
+This Quickstart will show how any project can leverage iii and the iii SDK to unify their backend stack.
+
+### 1. Create a new quickstart project
+
+<Warning title="install iii">
+  Make sure to install iii-cli and iii before proceeding:
+```bash
+curl -fsSL https://install.iii.dev/iii-cli/main/install.sh | sh
+iii-cli update
+```
+</Warning>
+
+The project setup will indicate that this project includes TypeScript, Python, and Rust languages. The README contains instructions for using Docker Compose in case not all of these runtimes are available on the system.
+
+```bash
+iii-cli create --template quickstart --directory quickstart
+cd quickstart
+```
+
+### 2. Run the Engine
+
+```bash
+iii --config iii-config.yaml
+```
+
+### 3. Open the project
+
+Open the project and README in your IDE. You can use this shorthand from a second terminal window in the project directory:
+
+<Tabs>
+  <Tab title="VS Code">
+
+```bash
+code . README.md
+```
+
+  </Tab>
+  <Tab title="Cursor">
+
+```bash
+cursor . README.md
+```
+
+  </Tab>
+  <Tab title="JetBrains">
+
+```bash
+idea . README.md
+```
+
+  </Tab>
+  <Tab title="Sublime">
+
+```bash
+subl . README.md
+```
+
+  </Tab>
+  <Tab title="Neovim">
+
+```bash
+nvim README.md
+```
+
+  </Tab>
+</Tabs>
+
+### 4. Continue with the README
+
+The README will explain what the project is doing and how to start
+the services that will connect to the iii engine and use it for their communication.
+
+After completing the project, explore the `worker.ts` file from the project
+directory and then navigate back here to learn more about how iii works and can be
+used to streamline backend orchestration.
+
+### 5. Try the iii Console
+
+iii also comes with a web console that shows logs, traces, and runtime state for the iii-powered application.
+Start it in a new terminal window with:
+
+```bash
+iii-cli console
+```
+
+Then open your web browser to: http://localhost:3113/
+
+<img src="/images/console/dashboard.png" alt="iii Console dashboard" />
+
+## Next Steps
+
+<Cards>
+  <Card title="How to use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="book-open">
+    Learn how to register functions, trigger them, and bind them to events.
+  </Card>
+  <Card title="Concepts" href="/primitives-and-concepts/functions-triggers-workers" icon="table-layout">
+    Understand Functions, Triggers, and Workers from a conceptual point of view.
+  </Card>
+</Cards>

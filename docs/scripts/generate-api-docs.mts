@@ -9,7 +9,7 @@ import type { SdkDoc, FunctionDoc, TypeDoc } from './types.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '../..')
-const DOCS_OUTPUT = resolve(__dirname, '../content/api-reference')
+const DOCS_OUTPUT = resolve(__dirname, '../api-reference')
 
 interface GenerationTarget {
   name: string

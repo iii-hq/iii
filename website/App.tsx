@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Terminal } from "./components/Terminal";
 import { ExampleCodeSection } from "./components/sections/ExampleCodeSection";
 import { HeroSection } from "./components/sections/HeroSection";
+import { InteractiveDemoFlowSection } from "./components/sections/InteractiveDemoFlowSection";
 import { HelloWorldSection } from "./components/sections/HelloWorldSection";
 import { EngineSection } from "./components/sections/EngineSection";
 import { AgentReadySection } from "./components/sections/AgentReadySection";
@@ -11,6 +12,8 @@ import { Navbar } from "./components/Navbar";
 import { MachineView } from "./components/MachineView";
 import { SectionsPreview } from "./pages/SectionsPreview";
 import { ManifestoPage } from "./pages/ManifestoPage";
+import { CookieConsent } from "./components/CookieConsent";
+import { useCookieConsent } from "./lib/useCookieConsent";
 import { KeySequence } from "./types";
 
 const AppRouter: React.FC = () => {
@@ -27,6 +30,7 @@ const AppRouter: React.FC = () => {
 };
 
 const App: React.FC = () => {
+  const { consent, accept, reject } = useCookieConsent();
   const [showTerminal, setShowTerminal] = useState(false);
   const [isGodMode, setIsGodMode] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -159,6 +163,9 @@ const App: React.FC = () => {
             </div>
           </div>
         )}
+        {consent === null && (
+          <CookieConsent onAccept={accept} onReject={reject} />
+        )}
       </>
     );
   }
@@ -189,6 +196,10 @@ const App: React.FC = () => {
         {/* Section 1: Hero - One Engine. Any Language. Anywhere. */}
         <div className="w-full" data-machine-section="hero">
           <HeroSection isDarkMode={isDarkMode} />
+        </div>
+
+        <div className="w-full">
+          <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 2: Hello World - Polyglot proof with IPC */}
@@ -272,6 +283,10 @@ const App: React.FC = () => {
           onClose={() => setShowTerminal(false)}
           isGodMode={isGodMode}
         />
+      )}
+
+      {consent === null && (
+        <CookieConsent onAccept={accept} onReject={reject} />
       )}
     </div>
   );

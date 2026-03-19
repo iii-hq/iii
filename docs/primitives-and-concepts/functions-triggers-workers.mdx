@@ -1,0 +1,61 @@
+---
+title: 'Primitives: Functions, Triggers, and Workers'
+description: 'Functions, Triggers, and Workers are how code gets defined, executed, and managed in a iii powered backend'
+---
+
+iii is built upon three core primitives: Functions, Triggers, and Workers.
+
+A **Function** is anything that can be triggered to do work; it receives input, and optionally returns output.
+It can exist anywhere be it locally, on cloud, on serverless, or even as a 3rd party HTTP endpoint. It can mutate state,
+invoke other functions, modify databases, and do anything that a typical function can do. 
+All application level Functions are treated the same within iii. 
+
+A **Trigger** is what causes a Function to run — either explicitly from code, or automatically from an event source
+like an HTTP request or cron job.
+
+A **Worker** is any process that can register Functions and Triggers to run one or more tasks. They are typically
+long running processes but can also be ephemeral processes, an agentic worker, or a legacy system leveraging middleware.
+
+<Info title="Uncontrolled Endpoints">
+iii's Functions are not magic. While uncontrolled 3rd party HTTP endpoints can be represented as Functions they won't have
+the same access to invocation, state, and other engine functionality as other Functions do.
+</Info>
+
+## Architecture
+```mermaid
+graph LR
+    subgraph W1[Worker A]
+        direction TB
+        F1([Function A])
+        F2([Function B])
+    end
+
+    W1 -- "trigger(id, data)" --> E[Engine]
+
+    subgraph W2[Worker B]
+        direction TB
+        F3([Function C])
+    end
+
+    W2 -- registerFunction --> E
+
+    F1 -- registerFunction --> E -- trigger --> W2
+```
+
+## Ready to Dive In?
+
+Head over to the [Functions & Triggers](/how-to/use-functions-and-triggers) HOWTO and start building
+a iii powered application; or visit the [Quickstart](/tutorials/quickstart) and try out a working example.
+
+## Still want to learn more?
+
+Check out how [Discovery](/primitives-and-concepts/discovery) works within iii and how it compares to other solutions.
+
+<Cards>
+  <Card title="How to use Functions & Triggers" href="/how-to/use-functions-and-triggers" icon="book-open">
+    Learn how to register functions, trigger them, and bind them to events.
+  </Card>
+  <Card title="Quickstart" href="/tutorials/quickstart" icon="terminal">
+    Follow the Quickstart and explore a live iii application.
+  </Card>
+</Cards>
