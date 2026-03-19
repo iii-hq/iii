@@ -34,24 +34,35 @@ const createPost = z.object({
   body: z.string().min(1),
 });
 
-async function sendCentralLog(event: string, data: Record<string, unknown>) {
+function sendCentralLog(event: string, data: Record<string, unknown>) {
   logger.info({ event, ...data });
-  await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ event, data }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 750);
+
+  void (async () => {
+    try {
+      await fetch(`${process.env.OBSERVABILITY_URL}/logs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event, data }),
+        signal: controller.signal,
+      });
+    } catch {
+      // Best-effort logging should never impact API behavior.
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  })();
 }
 
 app.get("/posts", async (_req, res) => {
   const span = tracer.startSpan("api.list_posts");
   try {
-    await sendCentralLog("api.list_posts", { count: posts.length });
+    sendCentralLog("api.list_posts", { count: posts.length });
     return res.json({ posts });
   } finally {
     span.end();
   }
-});
 });
 
 app.post("/posts", async (req, res) => {
@@ -64,12 +75,11 @@ app.post("/posts", async (req, res) => {
 
     const post: Post = { title: parsed.data.title, body: parsed.data.body };
     posts.unshift(post);
-    await sendCentralLog("api.create_post.created", { title: post.title });
+    sendCentralLog("api.create_post.created", { title: post.title });
     return res.status(201).json({ post });
   } finally {
     span.end();
   }
-});
 });
 
 app.listen(3000);

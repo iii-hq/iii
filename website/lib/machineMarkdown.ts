@@ -14,7 +14,8 @@ function normalizeText(value: string): string {
 
 function isHiddenElement(element: Element): boolean {
   const htmlElement = element as HTMLElement;
-  const style = window.getComputedStyle(htmlElement);
+  const win = element.ownerDocument?.defaultView || window;
+  const style = win.getComputedStyle(htmlElement);
   if (style.display === "none" || style.visibility === "hidden") {
     return true;
   }

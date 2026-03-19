@@ -26,6 +26,7 @@ const redis = createRedisClient({
 });
 const app = express();
 app.use(express.json());
+let temporalReady = false;
 
 async function sendCentralLog(event: string, data: Record<string, unknown>) {
   logger.info({ event, ...data });
@@ -76,11 +77,30 @@ async function bootTemporal() {
       },
     },
   });
-  void worker.run();
+  void worker.run().catch((error) => {
+    temporalReady = false;
+    logger.error({ err: error }, "workflow.worker_failed");
+  });
+  temporalReady = true;
 }
+
+const temporalReadyPromise = bootTemporal();
 
 app.post("/workflows/order", async (req, res) => {
   const span = tracer.startSpan("workflow.start_order_fulfillment");
+  try {
+    await temporalReadyPromise;
+  } catch (error) {
+    span.end();
+    res.status(503).json({ error: "workflow service unavailable" });
+    return;
+  }
+  if (!temporalReady) {
+    span.end();
+    res.status(503).json({ error: "workflow service unavailable" });
+    return;
+  }
+
   const orderId = req.body.orderId ?? `ord-${Date.now()}`;
   await setWorkflowState(orderId, "validate", "queued");
   const connection = await Connection.connect({
@@ -103,5 +123,10 @@ app.post("/workflows/order", async (req, res) => {
   });
 });
 
-void bootTemporal();
-app.listen(3007);
+temporalReadyPromise
+  .then(() => {
+    app.listen(3007);
+  })
+  .catch((error) => {
+    logger.error({ err: error }, "workflow.bootstrap_failed");
+  });
