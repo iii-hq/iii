@@ -93,5 +93,10 @@ async function bootFlags() {
   await redis.connect();
 }
 
-void bootFlags();
-app.listen(3009);
+bootFlags()
+  .then(() => {
+    app.listen(3009);
+  })
+  .catch((error) => {
+    logger.error({ err: error }, "feature_flags.bootstrap_failed");
+  });
