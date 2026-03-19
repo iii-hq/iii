@@ -52,12 +52,20 @@ app.get("/posts", async (_req, res) => {
 
 app.post("/posts", async (req, res) => {
   const span = tracer.startSpan("api.create_post");
-  const data = createPost.parse(req.body);
-  const post: Post = { title: data.title, body: data.body };
-  posts.unshift(post);
-  await sendCentralLog("api.create_post.created", { title: post.title });
-  span.end();
-  res.status(201).json({ post });
+  try {
+    const parsed = createPost.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid post payload" });
+    }
+
+    const post: Post = { title: parsed.data.title, body: parsed.data.body };
+    posts.unshift(post);
+    await sendCentralLog("api.create_post.created", { title: post.title });
+    return res.status(201).json({ post });
+  } finally {
+    span.end();
+  }
+});
 });
 
 app.listen(3000);
