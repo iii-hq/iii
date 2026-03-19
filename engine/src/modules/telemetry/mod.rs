@@ -1211,8 +1211,14 @@ mod tests {
         assert_eq!(props["iii_version"], env!("CARGO_PKG_VERSION"));
         assert!(props.get("env").is_some());
         assert!(props.get("install_method").is_some());
-        assert!(props.get("device_type").is_none(), "device_type should be removed");
-        assert!(props.get("environment").is_none(), "nested environment object should be removed");
+        assert!(
+            props.get("device_type").is_none(),
+            "device_type should be removed"
+        );
+        assert!(
+            props.get("environment").is_none(),
+            "nested environment object should be removed"
+        );
     }
 
     #[test]
@@ -1494,7 +1500,10 @@ mod tests {
         assert_eq!(cloned.install_id, ctx.install_id);
         assert_eq!(cloned.env_info.machine_id, ctx.env_info.machine_id);
         assert_eq!(cloned.env_info.is_container, ctx.env_info.is_container);
-        assert_eq!(cloned.env_info.container_runtime, ctx.env_info.container_runtime);
+        assert_eq!(
+            cloned.env_info.container_runtime,
+            ctx.env_info.container_runtime
+        );
         assert_eq!(cloned.env_info.timezone, ctx.env_info.timezone);
         assert_eq!(cloned.env_info.cpu_cores, ctx.env_info.cpu_cores);
     }

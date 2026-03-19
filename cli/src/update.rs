@@ -194,7 +194,9 @@ pub async fn update_binary(
 
     // Download and install
     let target_path = platform::binary_path(spec.name);
-    match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path).await {
+    match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path)
+        .await
+    {
         Ok(()) => {
             state.record_install(spec.name, latest_version.clone(), asset_name);
             telemetry::send_cli_update_succeeded(
@@ -276,7 +278,9 @@ pub async fn self_update(
     // consistent with install.sh and other managed binaries.
     let target_path = platform::binary_path(spec.name);
 
-    match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path).await {
+    match download::download_and_install(client, spec, asset, checksum_url.as_deref(), &target_path)
+        .await
+    {
         Ok(()) => {
             state.record_install(spec.name, latest_version.clone(), asset_name);
             telemetry::send_cli_update_succeeded(

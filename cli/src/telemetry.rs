@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use sha2::{Digest, Sha256};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 
@@ -361,7 +361,10 @@ mod tests {
         assert!(!event.device_id.is_empty());
         assert!(!event.insert_id.is_empty());
         assert_eq!(event.event_properties["target_binary"], "iii");
-        let user_props = event.user_properties.as_ref().expect("user_properties should be set");
+        let user_props = event
+            .user_properties
+            .as_ref()
+            .expect("user_properties should be set");
         assert!(user_props.get("cli_version").is_some());
         assert!(user_props.get("environment.os").is_some());
         assert!(user_props.get("install_method").is_some());
