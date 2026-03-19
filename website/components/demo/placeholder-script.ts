@@ -12,7 +12,8 @@ export const homepagePlaceholderFlow: Step[] = [
     sender: productOwner,
     content:
       "[Slack-like request arrives here. Keep this as a placeholder prompt for your scenario.]",
-    action: { label: "Open request" },
+    action: { label: "Pickup ticket" },
+    autoAdvance: 1200,
     delay: 500,
   },
   {
@@ -21,6 +22,7 @@ export const homepagePlaceholderFlow: Step[] = [
     content:
       "[Placeholder typed reply appears here. User clicks Send to continue the flow.]",
     sendLabel: "Send",
+    autoAdvance: 600,
     delay: 250,
   },
   {
@@ -55,6 +57,7 @@ export const homepagePlaceholderFlow: Step[] = [
     content:
       "[Another incoming request shows that reusable functionality can be shared without knowing implementation details.]",
     action: { label: "Respond" },
+    autoAdvance: 1200,
     delay: 450,
   },
   {
@@ -63,6 +66,7 @@ export const homepagePlaceholderFlow: Step[] = [
     content:
       "[Placeholder confirmation reply. This can be replaced with any onboarding guidance text.]",
     sendLabel: "Send",
+    autoAdvance: 600,
     delay: 220,
   },
   {

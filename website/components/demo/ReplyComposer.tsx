@@ -46,6 +46,15 @@ export function ReplyComposer({ step, isActive, onNext }: ReplyComposerProps) {
     onNext();
   };
 
+  useEffect(() => {
+    if (!isActive || !isDone || sent || !step.autoAdvance) return;
+    const timer = setTimeout(() => {
+      setSent(true);
+      onNext();
+    }, step.autoAdvance);
+    return () => clearTimeout(timer);
+  }, [isActive, isDone, sent, step.autoAdvance, onNext]);
+
   if (!isActive && sent) {
     return (
       <div className="flex justify-end">
@@ -77,7 +86,7 @@ export function ReplyComposer({ step, isActive, onNext }: ReplyComposerProps) {
           </div>
 
           <div className="flex justify-end px-3 py-2 border-t border-iii-medium/10">
-            {isDone && !sent ? (
+            {isDone && !sent && !step.autoAdvance ? (
               <button
                 onClick={handleSend}
                 className="px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 cursor-pointer animate-[fadeSlideIn_0.2s_ease-out_forwards]"

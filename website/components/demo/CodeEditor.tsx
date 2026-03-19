@@ -14,6 +14,7 @@ export function CodeEditor({ step, isActive, onNext }: CodeEditorProps) {
   const [writeDone, setWriteDone] = useState(false);
   const [completed, setCompleted] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const codeScrollRef = useRef<HTMLDivElement>(null);
 
   const lineDelay = step.lineDelay ?? 220;
   const codeToHighlight = useMemo(
@@ -43,6 +44,20 @@ export function CodeEditor({ step, isActive, onNext }: CodeEditorProps) {
     setCompleted(true);
     onNext();
   };
+
+  useEffect(() => {
+    if (!isActive || isWriting || writeDone) return;
+    const timer = setTimeout(handleWrite, 400);
+    return () => clearTimeout(timer);
+  }, [isActive, isWriting, writeDone]);
+
+  useEffect(() => {
+    if (!codeScrollRef.current) return;
+    codeScrollRef.current.scrollTo({
+      top: codeScrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [visibleLines]);
 
   useEffect(() => {
     return () => {
@@ -80,7 +95,7 @@ export function CodeEditor({ step, isActive, onNext }: CodeEditorProps) {
         </div>
       </div>
 
-      <div className="px-0 py-3 min-h-[80px] max-h-[300px] overflow-y-auto scrollbar-brand-dark">
+      <div ref={codeScrollRef} className="px-0 py-3 min-h-[80px] max-h-[300px] overflow-y-auto scrollbar-brand-dark">
         {visibleLines === 0 && !isWriting ? (
           <div className="flex items-center justify-center py-6">
             <span className="text-xs text-iii-medium/40 italic">Ready to write...</span>
@@ -137,23 +152,15 @@ export function CodeEditor({ step, isActive, onNext }: CodeEditorProps) {
 
       {isActive && (
         <div className="flex justify-end px-3 py-2 border-t border-iii-medium/10">
-          {!writeDone && !isWriting && (
-            <button
-              onClick={handleWrite}
-              className="px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 cursor-pointer animate-[socketPulseInline_2s_ease-in-out_infinite]"
-            >
-              {step.writeLabel ?? "Write it"}
-            </button>
-          )}
           {isWriting && (
             <span className="px-4 py-1.5 text-xs text-iii-medium/60 italic">writing...</span>
           )}
           {writeDone && !completed && (
             <button
               onClick={handleDone}
-              className="px-4 py-1.5 text-xs font-bold rounded bg-iii-success/90 text-iii-black hover:brightness-110 transition-all duration-200 cursor-pointer animate-[fadeSlideIn_0.2s_ease-out_forwards]"
+              className="px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 cursor-pointer animate-[fadeSlideIn_0.2s_ease-out_forwards]"
             >
-              {step.doneLabel ?? "Done"}
+              {step.doneLabel ?? "Deploy"}
             </button>
           )}
         </div>

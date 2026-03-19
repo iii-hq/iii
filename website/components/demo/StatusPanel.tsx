@@ -31,6 +31,12 @@ export function StatusPanel({ step, isActive, onNext }: StatusPanelProps) {
     return () => clearTimeout(timeout);
   }, []);
 
+  useEffect(() => {
+    if (!isActive || !step.autoAdvance) return;
+    const timer = setTimeout(onNext, step.autoAdvance);
+    return () => clearTimeout(timer);
+  }, [isActive, step.autoAdvance, onNext]);
+
   const icon = step.icon ? iconMap[step.icon] ?? "•" : "•";
   const classes = variantClasses[step.variant] ?? variantClasses.info;
 

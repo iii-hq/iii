@@ -163,8 +163,8 @@ iii.register_trigger(Trigger {
       'A Worker is any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect, register, and participate as first-class members of the mesh.',
     highlights: [
       'Workers register functions → immediately available to all',
-      'Workers disconnect → functions removed, no stale refs',
-      'Long-running, ephemeral, or agentic — all first-class',
+      'Worker discovery → workers are upgradeable in real time',
+      'Long-running, ephemeral, or agentic',
       'Scale up, scale down — topology adapts in real time',
     ],
     code: {

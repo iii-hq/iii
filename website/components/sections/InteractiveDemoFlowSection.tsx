@@ -1,4 +1,4 @@
-import { DemoSequencer, homepagePlaceholderFlow } from "../demo";
+import { DemoSequencer, homepageFlow } from '../demo';
 
 interface InteractiveDemoFlowSectionProps {
   isDarkMode?: boolean;
@@ -10,33 +10,25 @@ export function InteractiveDemoFlowSection({
   return (
     <section className="w-full">
       <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl mx-auto py-8 md:py-12 lg:py-20">
-        <div className="max-w-4xl mb-6 md:mb-8">
-          <p
-            className={`text-xs uppercase tracking-wider mb-2 ${
-              isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
-            }`}
-          >
-            Interactive Placeholder Flow
-          </p>
+        <div className="max-w-4xl mx-auto text-center mb-6 md:mb-8">
           <h2
-            className={`text-xl sm:text-2xl md:text-3xl font-bold font-chivo ${
-              isDarkMode ? "text-iii-light" : "text-iii-black"
+            className={`text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1] ${
+              isDarkMode ? 'text-iii-light' : 'text-iii-black'
             }`}
           >
-            Click through the orchestration story
+            The iii experience
           </h2>
           <p
-            className={`mt-2 text-sm md:text-base ${
-              isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
+            className={`mt-3 text-sm md:text-base lg:text-lg leading-relaxed ${
+              isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
             }`}
           >
-            This is intentionally placeholder content: Slack-like request, optional
-            reply composer, line-by-line Write it editor, and status checkpoints.
-            Each step drives the next.
+            The biggest advantage of iii is how simple it becomes to write and
+            extend backend software.
           </p>
         </div>
 
-        <DemoSequencer steps={homepagePlaceholderFlow} mode="hero" />
+        <DemoSequencer steps={homepageFlow} mode="hero" />
       </div>
     </section>
   );

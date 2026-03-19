@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { SlackMessageStep } from "./types";
 
 interface SlackMessageProps {
@@ -31,6 +31,15 @@ export function SlackMessage({ step, isActive, onNext }: SlackMessageProps) {
     onNext();
   };
 
+  useEffect(() => {
+    if (!isActive || clicked || !step.autoAdvance) return;
+    const timer = setTimeout(() => {
+      setClicked(true);
+      onNext();
+    }, step.autoAdvance);
+    return () => clearTimeout(timer);
+  }, [isActive, clicked, step.autoAdvance, onNext]);
+
   return (
     <div
       className={`flex gap-3 items-start ${
@@ -62,16 +71,7 @@ export function SlackMessage({ step, isActive, onNext }: SlackMessageProps) {
 
         <div className="text-sm text-iii-light/90 leading-relaxed">{step.content}</div>
 
-        {isActive && step.action && !clicked && (
-          <button
-            onClick={handleClick}
-            className="mt-3 px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 animate-[socketPulseInline_2s_ease-in-out_infinite] cursor-pointer"
-          >
-            {step.action.label}
-          </button>
-        )}
-
-        {isActive && !step.action && !clicked && (
+        {isActive && !step.autoAdvance && !step.action && !clicked && (
           <button
             onClick={handleClick}
             className="mt-2 text-[10px] text-iii-medium hover:text-iii-accent transition-colors cursor-pointer"
@@ -80,6 +80,15 @@ export function SlackMessage({ step, isActive, onNext }: SlackMessageProps) {
           </button>
         )}
       </div>
+
+      {isActive && !step.autoAdvance && step.action && !clicked && (
+        <button
+          onClick={handleClick}
+          className="self-end shrink-0 px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 animate-[socketPulseInline_2s_ease-in-out_infinite] cursor-pointer"
+        >
+          {step.action.label}
+        </button>
+      )}
     </div>
   );
 }

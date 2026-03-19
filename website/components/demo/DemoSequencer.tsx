@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DemoSequencerProps, Step } from "./types";
-import { SlackMessage } from "./SlackMessage";
-import { ReplyComposer } from "./ReplyComposer";
-import { CodeEditor } from "./CodeEditor";
-import { StatusPanel } from "./StatusPanel";
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { DemoSequencerProps, Step } from './types';
+import { SlackMessage } from './SlackMessage';
+import { ReplyComposer } from './ReplyComposer';
+import { CodeEditor } from './CodeEditor';
+import { StatusPanel } from './StatusPanel';
 
 export function DemoSequencer({
   steps,
-  mode = "hero",
+  mode = 'hero',
   onComplete,
-  className = "",
+  className = '',
 }: DemoSequencerProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [visibleUpTo, setVisibleUpTo] = useState(-1);
@@ -19,10 +19,6 @@ export function DemoSequencer({
   const delayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isFinished = currentIndex >= steps.length;
-  const activeStep = useMemo<Step | undefined>(
-    () => steps[currentIndex],
-    [steps, currentIndex],
-  );
 
   const clearDelay = useCallback(() => {
     if (!delayRef.current) return;
@@ -71,18 +67,10 @@ export function DemoSequencer({
   }, [steps, sessionKey, clearDelay]);
 
   useEffect(() => {
-    if (!activeStep?.autoAdvance) return;
-    if (isFinished || isDelaying || visibleUpTo < currentIndex) return;
-
-    const timeout = setTimeout(() => next(), activeStep.autoAdvance);
-    return () => clearTimeout(timeout);
-  }, [activeStep, isFinished, isDelaying, visibleUpTo, currentIndex, next]);
-
-  useEffect(() => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTo({
       top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
+      behavior: 'smooth',
     });
   }, [visibleUpTo, currentIndex, isFinished, isDelaying]);
 
@@ -95,10 +83,11 @@ export function DemoSequencer({
   };
 
   const renderStep = (step: Step, index: number) => {
-    const isActive = index === currentIndex && index <= visibleUpTo && !isFinished;
+    const isActive =
+      index === currentIndex && index <= visibleUpTo && !isFinished;
 
     switch (step.type) {
-      case "slack-message":
+      case 'slack-message':
         return (
           <SlackMessage
             key={`${sessionKey}-${step.id}`}
@@ -107,7 +96,7 @@ export function DemoSequencer({
             onNext={next}
           />
         );
-      case "reply":
+      case 'reply':
         return (
           <ReplyComposer
             key={`${sessionKey}-${step.id}`}
@@ -116,7 +105,7 @@ export function DemoSequencer({
             onNext={next}
           />
         );
-      case "code-editor":
+      case 'code-editor':
         return (
           <CodeEditor
             key={`${sessionKey}-${step.id}`}
@@ -125,7 +114,7 @@ export function DemoSequencer({
             onNext={next}
           />
         );
-      case "status":
+      case 'status':
         return (
           <StatusPanel
             key={`${sessionKey}-${step.id}`}
@@ -140,7 +129,9 @@ export function DemoSequencer({
   };
 
   const containerHeight =
-    mode === "hero" ? "min-h-[280px] max-h-[560px]" : "min-h-[300px] max-h-[70vh]";
+    mode === 'hero'
+      ? 'min-h-[280px] max-h-[560px]'
+      : 'min-h-[300px] max-h-[70vh]';
 
   return (
     <div
@@ -153,13 +144,15 @@ export function DemoSequencer({
             <span className="w-2 h-2 rounded-full bg-iii-warn/60" />
             <span className="w-2 h-2 rounded-full bg-iii-success/60" />
           </div>
-          <span className="text-xs text-iii-medium font-mono ml-2">iii interactive flow</span>
+          <span className="text-xs text-iii-medium font-mono ml-2">
+            iii interactive flow
+          </span>
         </div>
         <button
           onClick={handleRestart}
           className="text-[10px] text-iii-medium/60 hover:text-iii-accent transition-colors cursor-pointer"
         >
-          restart
+          start over
         </button>
       </div>
 
@@ -169,22 +162,26 @@ export function DemoSequencer({
       >
         {steps.map((step, index) => {
           if (index > visibleUpTo) return null;
-          return <div key={`${sessionKey}-${step.id}`}>{renderStep(step, index)}</div>;
+          return (
+            <div key={`${sessionKey}-${step.id}`}>
+              {renderStep(step, index)}
+            </div>
+          );
         })}
 
         {isDelaying && (
           <div className="flex gap-1.5 items-center px-2 py-2">
             <span
               className="w-1.5 h-1.5 rounded-full bg-iii-medium/40 animate-bounce"
-              style={{ animationDelay: "0ms" }}
+              style={{ animationDelay: '0ms' }}
             />
             <span
               className="w-1.5 h-1.5 rounded-full bg-iii-medium/40 animate-bounce"
-              style={{ animationDelay: "150ms" }}
+              style={{ animationDelay: '150ms' }}
             />
             <span
               className="w-1.5 h-1.5 rounded-full bg-iii-medium/40 animate-bounce"
-              style={{ animationDelay: "300ms" }}
+              style={{ animationDelay: '300ms' }}
             />
           </div>
         )}
@@ -192,9 +189,11 @@ export function DemoSequencer({
         {isFinished && (
           <div
             className="text-center py-6 animate-[fadeSlideIn_0.4s_ease-out_forwards] opacity-0"
-            style={{ animationFillMode: "forwards" }}
+            style={{ animationFillMode: 'forwards' }}
           >
-            <p className="text-sm text-iii-accent font-bold mb-1">[Flow complete placeholder]</p>
+            <p className="text-sm text-iii-accent font-bold mb-1">
+              [Flow complete placeholder]
+            </p>
             <p className="text-xs text-iii-medium">
               [Use this area for CTA text in homepage or onboarding]
             </p>
