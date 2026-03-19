@@ -1,4 +1,4 @@
-import React from "react";
+import React from 'react';
 
 interface CookieConsentProps {
   onAccept: () => void;
@@ -13,7 +13,7 @@ export const CookieConsent: React.FC<CookieConsentProps> = ({
     <div className="fixed bottom-0 inset-x-0 z-50 p-4 sm:p-6 pointer-events-none">
       <div className="max-w-xl mx-auto bg-iii-dark border border-iii-medium rounded-lg shadow-2xl p-4 sm:p-5 font-mono pointer-events-auto animate-fade-in-up">
         <p className="text-sm text-iii-medium-light mb-4">
-          This site uses tracking cookies to understand how visitors find us.{" "}
+          This site uses cookies to understand how visitors find us.{' '}
           <span className="text-iii-light">
             You can accept or decline non-essential cookies.
           </span>

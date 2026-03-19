@@ -41,7 +41,10 @@ iii.register_function(
     "ml::predict", predict
 )`;
 
-const rustCode = `use iii_sdk::{register_worker, Value, IIIError, TriggerRequest};
+const rustCode = `use iii_sdk::{
+    register_worker, IIIError, TriggerRequest,
+    Value,
+};
 use serde_json::json;
 
 async fn transform(
@@ -49,16 +52,21 @@ async fn transform(
 ) -> Result<Value, IIIError> {
     let nums: Vec<f64> =
         serde_json::from_value(input)?;
-    let result: Vec<f64> = nums
-        .iter().map(|x| x * 2.0)
-        .collect();
+    let result: Vec<f64> =
+        nums.iter().map(|x| x * 2.0).collect();
     Ok(json!(result))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), IIIError> {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
-    iii.register_function("data::transform", transform);
+    let iii = register_worker(
+        "ws://localhost:49134",
+        InitOptions::default(),
+    )?;
+    iii.register_function(
+        "data::transform",
+        transform,
+    );
     Ok(())
 }`;
 
@@ -108,7 +116,7 @@ export function HelloWorldSection({
       language: "rust",
     },
     {
-      title: "Node.js Orchestrator",
+      title: "Node.js Worker",
       subtitle: "Orchestrator",
       icon: NodeIcon,
       code: nodeCode,
@@ -271,7 +279,9 @@ export function HelloWorldSection({
             >
               <span className={accentColor}>IPC</span>{" "}
               <span className="hidden sm:inline">
-                <span className={accentColor}>Inter-process communication</span>{" "}
+                <span className={accentColor}>
+                  Inter-process communication
+                </span>{" "}
               </span>
               across languages, domains, and systems
             </span>
