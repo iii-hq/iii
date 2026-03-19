@@ -31,7 +31,7 @@ async fn subscribe_and_receive_published_messages() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let fn_id = format!("test.pubsub.rs.subscriber.{topic}");
+    let fn_id = format!("test::pubsub::rs::subscriber::{topic}");
     let fn_ref = iii.register_function(
         RegisterFunctionMessage::with_id(fn_id.clone()),
         move |data: Value| {
@@ -94,8 +94,8 @@ async fn topic_isolation() {
     let (tx_a, rx_a) = tokio::sync::oneshot::channel::<()>();
     let tx_a = Arc::new(Mutex::new(Some(tx_a)));
 
-    let fn_id_a = format!("test.pubsub.rs.topic_a.{topic_a}");
-    let fn_id_b = format!("test.pubsub.rs.topic_b.{topic_b}");
+    let fn_id_a = format!("test::pubsub::rs::topic_a::{topic_a}");
+    let fn_id_b = format!("test::pubsub::rs::topic_b::{topic_b}");
 
     let fn_a = iii.register_function(
         RegisterFunctionMessage::with_id(fn_id_a.clone()),

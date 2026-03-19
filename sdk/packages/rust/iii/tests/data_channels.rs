@@ -18,7 +18,7 @@ async fn stream_data_from_sender_to_processor() {
 
     let iii_for_processor = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.data.processor.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::data::processor::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_processor.clone();
             async move {
@@ -62,7 +62,7 @@ async fn stream_data_from_sender_to_processor() {
 
     let iii_for_sender = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.data.sender.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::data::sender::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_sender.clone();
             async move {
@@ -87,7 +87,7 @@ async fn stream_data_from_sender_to_processor() {
 
                 let result = iii
                     .trigger(TriggerRequest {
-                        function_id: "test.data.processor.rs".to_string(),
+                        function_id: "test::data::processor::rs".to_string(),
                         payload: json!({
                             "label": "metrics-batch",
                             "reader": channel.reader_ref,
@@ -115,7 +115,7 @@ async fn stream_data_from_sender_to_processor() {
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.data.sender.rs".to_string(),
+            function_id: "test::data::sender::rs".to_string(),
             payload: json!({"records": records}),
             action: None,
             timeout_ms: None,
@@ -153,7 +153,7 @@ async fn bidirectional_streaming() {
 
     let iii_for_worker = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.stream.worker.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::stream::worker::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_worker.clone();
             async move {
@@ -237,7 +237,7 @@ async fn bidirectional_streaming() {
 
     let iii_for_coord = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.stream.coordinator.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::stream::coordinator::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_coord.clone();
             async move {
@@ -288,7 +288,7 @@ async fn bidirectional_streaming() {
                     let writer_ref = output_channel.writer_ref.clone();
                     tokio::spawn(async move {
                         iii.trigger(TriggerRequest {
-                            function_id: "test.stream.worker.rs".to_string(),
+                            function_id: "test::stream::worker::rs".to_string(),
                             payload: json!({
                                 "reader": reader_ref,
                                 "writer": writer_ref,
@@ -336,7 +336,7 @@ async fn bidirectional_streaming() {
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.stream.coordinator.rs".to_string(),
+            function_id: "test::stream::coordinator::rs".to_string(),
             payload: json!({
                 "text": text,
                 "chunkSize": 10,

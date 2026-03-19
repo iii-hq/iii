@@ -79,13 +79,13 @@ async fn test_iii_fn_does_not_overwrite_existing_format() {
 async fn test_register_function_builder_sync() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
     let func_ref =
-        iii.register(RegisterFunction::new("test.add", add).description("Add two numbers"));
-    assert_eq!(func_ref.id, "test.add");
+        iii.register(RegisterFunction::new("test::add", add).description("Add two numbers"));
+    assert_eq!(func_ref.id, "test::add");
 }
 
 #[tokio::test]
 async fn test_register_function_builder_has_schema() {
-    let reg = RegisterFunction::new("test.add", add);
+    let reg = RegisterFunction::new("test::add", add);
     assert!(reg.request_format().is_some());
     let rf = reg.request_format().unwrap();
     assert_eq!(rf["name"], "request");
@@ -126,7 +126,7 @@ async fn test_schema_async_1arg() {
 async fn test_builder_description() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
     let _ref = iii.register(
-        RegisterFunction::new("test.greet", greet)
+        RegisterFunction::new("test::greet", greet)
             .description("Greet by name")
             .metadata(json!({"version": 1})),
     );
@@ -136,7 +136,7 @@ async fn test_builder_description() {
 async fn test_register_async() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
     let _ref = iii.register(
-        RegisterFunction::new_async("test.async_greet", async_greet).description("Async greet"),
+        RegisterFunction::new_async("test::async_greet", async_greet).description("Async greet"),
     );
 }
 

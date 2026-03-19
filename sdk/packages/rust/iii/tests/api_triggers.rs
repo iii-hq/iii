@@ -31,7 +31,7 @@ async fn get_endpoint() {
     let iii = common::shared_iii();
 
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.get.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::get::rs".to_string()),
         |_input: Value| async move {
             Ok(json!({
                 "status_code": 200,
@@ -42,7 +42,7 @@ async fn get_endpoint() {
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
-        function_id: "test.api.get.rs".to_string(),
+        function_id: "test::api::get::rs".to_string(),
         config: json!({
             "api_path": "test/rs/hello",
             "http_method": "GET",
@@ -70,7 +70,7 @@ async fn post_endpoint_with_body() {
     let iii = common::shared_iii();
 
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.post.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::post::rs".to_string()),
         |input: Value| async move {
             let body = input.get("body").cloned().unwrap_or(Value::Null);
             Ok(json!({
@@ -83,7 +83,7 @@ async fn post_endpoint_with_body() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.post.rs".to_string(),
+            function_id: "test::api::post::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/items",
                 "http_method": "POST",
@@ -112,7 +112,7 @@ async fn path_parameters() {
     let iii = common::shared_iii();
 
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.getbyid.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::getbyid::rs".to_string()),
         |input: Value| async move {
             let id = input
                 .get("path_params")
@@ -127,7 +127,7 @@ async fn path_parameters() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.getbyid.rs".to_string(),
+            function_id: "test::api::getbyid::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/items/:id",
                 "http_method": "GET",
@@ -157,7 +157,7 @@ async fn query_parameters() {
     let iii = common::shared_iii();
 
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.search.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::search::rs".to_string()),
         |input: Value| async move {
             let qp = input.get("query_params").cloned().unwrap_or(json!({}));
             let q = qp.get("q").and_then(|v| v.as_str()).unwrap_or_default();
@@ -169,7 +169,7 @@ async fn query_parameters() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.search.rs".to_string(),
+            function_id: "test::api::search::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/search",
                 "http_method": "GET",
@@ -200,7 +200,7 @@ async fn custom_status_code() {
     let iii = common::shared_iii();
 
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.notfound.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::notfound::rs".to_string()),
         |_input: Value| async move {
         Ok(json!({"status_code": 404, "body": {"error": "Not found"}}))
     });
@@ -208,7 +208,7 @@ async fn custom_status_code() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.notfound.rs".to_string(),
+            function_id: "test::api::notfound::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/missing",
                 "http_method": "GET",
@@ -246,7 +246,7 @@ async fn download_pdf_streaming() {
     let pdf_data = original_pdf.clone();
     let iii_for_handler = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.download.pdf.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::download::pdf::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
             let pdf_data = pdf_data.clone();
@@ -297,7 +297,7 @@ async fn download_pdf_streaming() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.download.pdf.rs".to_string(),
+            function_id: "test::api::download::pdf::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/download/pdf",
                 "http_method": "GET",
@@ -348,7 +348,7 @@ async fn upload_pdf_streaming() {
 
     let iii_for_handler = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.upload.pdf.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::upload::pdf::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
             let received = received_clone.clone();
@@ -419,7 +419,7 @@ async fn upload_pdf_streaming() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.upload.pdf.rs".to_string(),
+            function_id: "test::api::upload::pdf::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/upload/pdf",
                 "http_method": "POST",
@@ -461,7 +461,7 @@ async fn sse_streaming() {
     let events_clone = events.clone();
     let iii_for_handler = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.sse.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::sse::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
             let events = events_clone.clone();
@@ -527,7 +527,7 @@ async fn sse_streaming() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.sse.rs".to_string(),
+            function_id: "test::api::sse::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/sse",
                 "http_method": "GET",
@@ -590,7 +590,7 @@ async fn urlencoded_form_data() {
 
     let iii_for_handler = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.form.urlencoded.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::form::urlencoded::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
             async move {
@@ -676,7 +676,7 @@ async fn urlencoded_form_data() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.form.urlencoded.rs".to_string(),
+            function_id: "test::api::form::urlencoded::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/form/urlencoded",
                 "http_method": "POST",
@@ -739,7 +739,7 @@ async fn multipart_form_data() {
 
     let iii_for_handler = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage::with_id("test.api.form.multipart.rs".to_string()),
+        RegisterFunctionMessage::with_id("test::api::form::multipart::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
             async move {
@@ -829,7 +829,7 @@ async fn multipart_form_data() {
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
             trigger_type: "http".to_string(),
-            function_id: "test.api.form.multipart.rs".to_string(),
+            function_id: "test::api::form::multipart::rs".to_string(),
             config: json!({
                 "api_path": "test/rs/form/multipart",
                 "http_method": "POST",

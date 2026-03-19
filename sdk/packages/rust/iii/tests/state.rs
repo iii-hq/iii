@@ -263,7 +263,7 @@ async fn reactive_state() {
     let reactive_data_clone = reactive_data.clone();
 
     let fn_ref = iii.register_function(
-        RegisterFunctionMessage::with_id("test.state.rs.updated".to_string()),
+        RegisterFunctionMessage::with_id("test::state::rs::updated".to_string()),
         move |event: Value| {
             let reactive_data = reactive_data_clone.clone();
             async move {

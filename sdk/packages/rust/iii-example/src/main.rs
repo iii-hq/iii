@@ -82,18 +82,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let streams = Streams::new(iii.clone());
 
     iii.register(
-        RegisterFunction::new("example.echo", echo_message)
+        RegisterFunction::new("example::echo", echo_message)
             .description("Echo a message with repeat and formatting options"),
     );
 
     iii.register(
-        RegisterFunction::new_async("example.delay_echo", delay_echo)
+        RegisterFunction::new_async("example::delay_echo", delay_echo)
             .description("Echo with configurable delay"),
     );
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "example.echo".to_string(),
+            function_id: "example::echo".to_string(),
             payload: json!({"message": "hello", "repeat": 2, "uppercase": false, "prefix": "> "}),
             action: None,
             timeout_ms: None,
