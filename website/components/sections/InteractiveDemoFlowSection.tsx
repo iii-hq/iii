@@ -23,8 +23,8 @@ export function InteractiveDemoFlowSection({
               isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
             }`}
           >
-            The biggest advantage of iii is how simple it becomes to write and
-            extend backend software.
+            iii makes it unreasonably simple to write and extend backend
+            software.
           </p>
         </div>
 

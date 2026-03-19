@@ -127,7 +127,7 @@ export const homepageFlow: Step[] = [
     type: 'slack-message',
     sender: jordan,
     content:
-      "OK here's a tough one — the client says it could take a few weeks. We need to integrate a legacy application but we can't touch its codebase.",
+      "OK here's a tough one, could take more than a few days. We need to integrate a legacy application but we can't touch its codebase.",
     action: { label: 'View request' },
     delay: 500,
   },
@@ -135,7 +135,7 @@ export const homepageFlow: Step[] = [
     id: 'reply-3',
     type: 'reply',
     content:
-      "No problem. I'll write a hook for its API endpoints and connect it as a worker.",
+      "No problem. I'll write a worker for its API endpoints and connect it.",
     sendLabel: 'Send',
     delay: 250,
   },
@@ -228,7 +228,7 @@ export const homepageFlow: Step[] = [
     type: 'slack-message',
     sender: jordan,
     content:
-      "Excellent work! I've just heard from the client — they're experiencing some intermittent downtime. How long to investigate?",
+      "Excellent work! I've just heard from the client — they're experiencing some intermittent issues with AI evals. How long to investigate?",
     action: { label: 'View request' },
     delay: 500,
   },
@@ -237,6 +237,14 @@ export const homepageFlow: Step[] = [
     type: 'reply',
     content:
       "I've got end-to-end observability and traces, should only take a moment.",
+    sendLabel: 'Send',
+    delay: 1000,
+  },
+  {
+    id: 'reply-7',
+    type: 'reply',
+    content:
+      'There it is, turns out the prompt was including every company. I set it to only those over $50k ARR.',
     sendLabel: 'Send',
     delay: 250,
   },

@@ -26,7 +26,8 @@ export function ReplyComposer({ step, isActive, onNext }: ReplyComposerProps) {
 
     intervalRef.current = setInterval(() => {
       if (wordIndex < words.length) {
-        setDisplayedWords((prev) => [...prev, words[wordIndex]]);
+        const currentWord = words[wordIndex];
+        setDisplayedWords((prev) => [...prev, currentWord]);
         wordIndex += 1;
         return;
       }

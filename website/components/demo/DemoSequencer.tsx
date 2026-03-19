@@ -4,6 +4,7 @@ import { SlackMessage } from './SlackMessage';
 import { ReplyComposer } from './ReplyComposer';
 import { CodeEditor } from './CodeEditor';
 import { StatusPanel } from './StatusPanel';
+import { InstallShButton } from '../InstallShButton';
 
 export function DemoSequencer({
   steps,
@@ -137,10 +138,7 @@ export function DemoSequencer({
     }
   };
 
-  const containerHeight =
-    mode === 'hero'
-      ? 'h-[560px]'
-      : 'h-[70vh]';
+  const containerHeight = mode === 'hero' ? 'h-[560px]' : 'h-[70vh]';
 
   return (
     <div
@@ -200,18 +198,12 @@ export function DemoSequencer({
             className="text-center py-6 animate-[fadeSlideIn_0.4s_ease-out_forwards] opacity-0"
             style={{ animationFillMode: 'forwards' }}
           >
-            <p className="text-sm text-iii-accent font-bold mb-1">
-              [Flow complete placeholder]
+            <p className="text-sm text-iii-accent font-bold mb-3">
+              Try it for yourself
             </p>
-            <p className="text-xs text-iii-medium">
-              [Use this area for CTA text in homepage or onboarding]
-            </p>
-            <button
-              onClick={handleRestart}
-              className="mt-4 px-5 py-2 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 cursor-pointer"
-            >
-              Run again
-            </button>
+            <div className="flex justify-center">
+              <InstallShButton className="max-w-[280px]" />
+            </div>
           </div>
         )}
       </div>
