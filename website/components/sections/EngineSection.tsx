@@ -125,24 +125,28 @@ iii.register_function("users::create", create_user)`,
       'Same pattern for every event source',
     ],
     code: {
-      typescript: `await iii.trigger({ function_id: 'users::create', payload: { name: 'Alice' } })
+      typescript: `await iii.trigger({ function_id: 'users::create',
+                    payload: { name: 'Alice' } });
 
 iii.registerTrigger({
   type: 'http',
   function_id: 'users::create',
   config: {
     api_path: 'users',
-    http_method: 'POST'
-  }
-})`,
-      python: `await iii.trigger({"function_id": "users::create", "payload": {"name": "Alice"}})
+    http_method: 'POST',
+  },
+});
+
+`,
+      python: `await iii.trigger({"function_id": "users::create",
+                   "payload": {"name": "Alice"}})
 
 iii.register_trigger(
-    "http",
-    "users::create",
+    "http", "users::create",
     {"api_path": "users", "http_method": "POST"}
 )`,
-      rust: `iii.trigger(TriggerRequest::new("users::create", json!({"name": "Alice"}))).await?;
+      rust: `iii.trigger(TriggerRequest::new("users::create",
+            json!({"name": "Alice"}))).await?;
 
 iii.register_trigger(Trigger {
     trigger_type: "http".into(),
@@ -160,7 +164,7 @@ iii.register_trigger(Trigger {
     name: 'Worker',
     tagline: 'Any process that registers functions.',
     description:
-      'A Worker is any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect, register, and participate as first-class members of the mesh.',
+      'A Worker is any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect, register, and communicate seamlessly.',
     highlights: [
       'Workers register functions → immediately available to all',
       'Worker discovery → workers are upgradeable in real time',
@@ -168,21 +172,10 @@ iii.register_trigger(Trigger {
       'Scale up, scale down — topology adapts in real time',
     ],
     code: {
-      typescript: `const iii = registerWorker('ws://localhost:49134')
+      typescript: `const iii = registerWorker('ws://localhost:49134')`,
+      python: `iii = register_worker("ws://localhost:49134")`,
 
-const fns = await iii.listFunctions()
-const logs = iii.getLogs({ limit: 100 })
-const triggers = await iii.listTriggers()`,
-      python: `iii = register_worker("ws://localhost:49134")
-
-fns = await iii.list_functions()
-logs = iii.get_logs(limit=100)
-triggers = await iii.list_triggers()`,
-      rust: `let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
-
-let fns = iii.list_functions().await?;
-let logs = iii.get_logs(100).await?;
-let triggers = iii.list_triggers().await?;`,
+      rust: `let iii = register_worker("ws://localhost:49134", InitOptions::default())?;`,
     },
   },
 ];
@@ -747,25 +740,6 @@ function ConceptsIDE({
             </div>
 
             {/* Status bar */}
-            <div
-              className={`flex items-center justify-between px-4 py-1.5 border-t text-[10px] font-mono mt-auto ${borderColor} ${isDarkMode ? 'text-white/25' : 'text-black/25'}`}
-            >
-              <span>
-                {activeLang === 'rust'
-                  ? 'Rust'
-                  : activeLang === 'python'
-                    ? 'Python'
-                    : 'TypeScript'}
-              </span>
-              <span>
-                {activeLang === 'rust'
-                  ? 'worker.rs'
-                  : activeLang === 'python'
-                    ? 'worker.py'
-                    : 'worker.ts'}{' '}
-                &middot; {active.code[activeLang].split('\n').length} lines
-              </span>
-            </div>
           </div>
         </div>
       </div>
