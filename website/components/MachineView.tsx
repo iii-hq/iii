@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from "react";
-import { generateHomepageMarkdownFromDocument } from "../lib/machineMarkdown";
 import { Navbar } from "./Navbar";
 
 interface MachineViewProps {
@@ -20,13 +19,13 @@ export const MachineView: React.FC<MachineViewProps> = ({
 }) => {
   const [isLogoHovered, setIsLogoHovered] = useState(false);
   const [machineMarkdown, setMachineMarkdown] = useState(
-    "# iii Homepage (Auto-generated for AI)\n\nGenerating markdown from homepage...",
+    "# iii Homepage for AI\n\nLoading static machine markdown...",
   );
 
   useEffect(() => {
-    const fallbackMarkdown = `# iii Homepage (Auto-generated for AI)
+    const fallbackMarkdown = `# iii Homepage for AI
 
-Unable to parse homepage content in this session.
+Unable to load pre-built machine markdown in this session.
 
 ## Code Examples
 Code examples are intentionally omitted from this machine page.
@@ -35,57 +34,27 @@ For implementation details and source examples, visit:
 - https://github.com/iii-hq/skills`;
 
     let cancelled = false;
-    let retryTimer: number | null = null;
-    const iframe = document.createElement("iframe");
-    iframe.src = "/";
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.tabIndex = -1;
-    iframe.style.position = "fixed";
-    iframe.style.left = "-20000px";
-    iframe.style.top = "0";
-    iframe.style.opacity = "0";
-    iframe.style.pointerEvents = "none";
-    iframe.style.width = "1280px";
-    iframe.style.height = "4000px";
-    iframe.style.border = "0";
 
-    const attemptExtraction = (attempt = 0) => {
-      if (cancelled) {
-        return;
+    const loadStaticMarkdown = async () => {
+      try {
+        const response = await fetch("/ai.md");
+        if (!response.ok) {
+          throw new Error(`Failed to load /ai.md (${response.status})`);
+        }
+        const markdown = await response.text();
+        if (!cancelled) {
+          setMachineMarkdown(markdown || fallbackMarkdown);
+        }
+      } catch {
+        if (!cancelled) {
+          setMachineMarkdown(fallbackMarkdown);
+        }
       }
-      const doc = iframe.contentDocument;
-      const hasSections = doc?.querySelectorAll("[data-machine-section]").length;
-
-      if ((!doc || !hasSections) && attempt < 20) {
-        retryTimer = window.setTimeout(() => {
-          attemptExtraction(attempt + 1);
-        }, 150);
-        return;
-      }
-
-      if (!doc) {
-        setMachineMarkdown(fallbackMarkdown);
-        return;
-      }
-
-      const markdown = generateHomepageMarkdownFromDocument(doc);
-      setMachineMarkdown(markdown || fallbackMarkdown);
     };
-
-    const onLoad = () => {
-      attemptExtraction();
-    };
-
-    iframe.addEventListener("load", onLoad);
-    document.body.appendChild(iframe);
+    loadStaticMarkdown();
 
     return () => {
       cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-      iframe.removeEventListener("load", onLoad);
-      iframe.remove();
     };
   }, []);
 

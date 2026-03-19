@@ -1,5 +1,9 @@
 const MIN_TEXT_LENGTH = 14;
 
+interface MarkdownGenerationOptions {
+  skipLayoutChecks?: boolean;
+}
+
 const SECTION_TITLES: Record<string, string> = {
   hero: "Overview",
   "hello-world": "Polyglot Runtime",
@@ -12,12 +16,18 @@ function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function isHiddenElement(element: Element): boolean {
+function isHiddenElement(
+  element: Element,
+  options?: MarkdownGenerationOptions,
+): boolean {
   const htmlElement = element as HTMLElement;
   const win = element.ownerDocument?.defaultView || window;
   const style = win.getComputedStyle(htmlElement);
   if (style.display === "none" || style.visibility === "hidden") {
     return true;
+  }
+  if (options?.skipLayoutChecks) {
+    return false;
   }
   const rect = htmlElement.getBoundingClientRect();
   return rect.width === 0 || rect.height === 0;
@@ -47,6 +57,7 @@ function getHeadingLevel(tagName: string): number {
 function extractSectionMarkdown(
   section: HTMLElement,
   globalSeen: Set<string>,
+  options?: MarkdownGenerationOptions,
 ): string {
   const lines: string[] = [];
   const sectionId = section.getAttribute("data-machine-section") || "";
@@ -65,7 +76,7 @@ function extractSectionMarkdown(
   for (const candidate of candidates) {
     if (
       isInsideIgnoredNode(candidate) ||
-      isHiddenElement(candidate) ||
+      isHiddenElement(candidate, options) ||
       candidate.closest("nav")
     ) {
       continue;
@@ -102,7 +113,10 @@ function extractSectionMarkdown(
   return lines.join("\n");
 }
 
-export function generateHomepageMarkdownFromDocument(documentRef: Document): string {
+export function generateHomepageMarkdownFromDocument(
+  documentRef: Document,
+  options?: MarkdownGenerationOptions,
+): string {
   const sections = Array.from(
     documentRef.querySelectorAll<HTMLElement>("[data-machine-section]"),
   ).filter((section) => {
@@ -114,7 +128,7 @@ export function generateHomepageMarkdownFromDocument(documentRef: Document): str
 
   const globalSeen = new Set<string>();
   const chunks = sections
-    .map((section) => extractSectionMarkdown(section, globalSeen))
+    .map((section) => extractSectionMarkdown(section, globalSeen, options))
     .filter(Boolean);
 
   const intro = `# iii Homepage for AI

@@ -340,8 +340,27 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(() => {
-    return localStorage.getItem("iii_access_requested") === "true";
+    if (typeof window === "undefined") {
+      return false;
+    }
+    try {
+      return window.localStorage.getItem("iii_access_requested") === "true";
+    } catch {
+      return false;
+    }
   });
+
+  const persistAccessRequest = (requestedEmail: string) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem("iii_access_requested", "true");
+      window.localStorage.setItem("iii_access_email", requestedEmail);
+    } catch {
+      // Ignore storage failures (private mode, blocked storage, etc).
+    }
+  };
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -362,13 +381,11 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
         }
       }
       setIsSubmitted(true);
-      localStorage.setItem("iii_access_requested", "true");
-      localStorage.setItem("iii_access_email", email);
+      persistAccessRequest(email);
       setEmail("");
     } catch {
       setIsSubmitted(true);
-      localStorage.setItem("iii_access_requested", "true");
-      localStorage.setItem("iii_access_email", email);
+      persistAccessRequest(email);
       setEmail("");
     } finally {
       setIsSubmitting(false);
