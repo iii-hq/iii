@@ -30,7 +30,7 @@ Improving the documentation is a great way to contribute to Motia. If you find a
 
 ## Sharing Examples and Use Cases
 
-If you have built something interesting with Motia or have a real-world use case to share, we would love to showcase it in our [Examples](/docs/examples) section. You can contribute your examples by submitting a pull request to the [Motia Examples repository](https://github.com/MotiaDev/motia-examples).
+If you have built something interesting with Motia or have a real-world use case to share, we would love to showcase it in the [Motia Examples repository](https://github.com/MotiaDev/motia-examples). You can contribute your examples by submitting a pull request there.
 
 ## Spreading the Word
 

@@ -13,102 +13,109 @@
   },
   "favicon": "/images/favicon/favicon.svg",
   "navigation": {
-    "tabs": [
+    "versions": [
       {
-        "tab": "Documentation",
-        "groups": [
+        "version": "0.9.0",
+        "tag": "latest",
+        "tabs": [
           {
-            "group": "Getting Started",
-            "pages": ["index", "quickstart"]
-          },
-          {
-            "group": "Primitives & Concepts",
-            "pages": ["primitives-and-concepts/functions-triggers-workers", "primitives-and-concepts/discovery"]
-          },
-          {
-            "group": "How-to Guides",
-            "pages": [
-              "how-to/use-functions-and-triggers",
-              "how-to/use-queues",
-              "how-to/dead-letter-queues",
-              "how-to/expose-http-endpoint",
-              "how-to/manage-state",
-              "how-to/react-to-state-changes",
-              "how-to/use-trigger-conditions",
-              "how-to/schedule-cron-task",
-              "how-to/create-ephemeral-worker",
-              "how-to/stream-realtime-data",
-              "how-to/create-custom-trigger-type",
-              "how-to/configure-engine"
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": ["index", "quickstart"]
+              },
+              {
+                "group": "Primitives & Concepts",
+                "pages": ["primitives-and-concepts/functions-triggers-workers", "primitives-and-concepts/discovery"]
+              },
+              {
+                "group": "How-to Guides",
+                "pages": [
+                  "how-to/use-functions-and-triggers",
+                  "how-to/trigger-actions",
+                  "how-to/trigger-functions-from-cli",
+                  "how-to/use-queues",
+                  "how-to/dead-letter-queues",
+                  "how-to/expose-http-endpoint",
+                  "how-to/manage-state",
+                  "how-to/react-to-state-changes",
+                  "how-to/use-trigger-conditions",
+                  "how-to/schedule-cron-task",
+                  "how-to/create-ephemeral-worker",
+                  "how-to/stream-realtime-data",
+                  "how-to/create-custom-trigger-type",
+                  "how-to/configure-engine"
+                ]
+              },
+              {
+                "group": "Architecture",
+                "pages": [
+                  "architecture/index",
+                  "architecture/engine",
+                  "architecture/workers",
+                  "architecture/modules",
+                  "architecture/trigger-types",
+                  "architecture/channels",
+                  "architecture/queues"
+                ]
+              },
+              {
+                "group": "Modules",
+                "pages": [
+                  "modules/index",
+                  "modules/module-http",
+                  "modules/module-queue",
+                  "modules/module-cron",
+                  "modules/module-observability",
+                  "modules/module-stream",
+                  "modules/module-state",
+                  "modules/module-pubsub",
+                  "modules/module-exec",
+                  "modules/module-bridge"
+                ]
+              },
+              {
+                "group": "Console",
+                "pages": ["console/index"]
+              },
+              {
+                "group": "Advanced",
+                "pages": [
+                  "advanced/adapters",
+                  "advanced/architecture",
+                  "advanced/custom-modules",
+                  "advanced/deployment",
+                  "advanced/protocol",
+                  "advanced/telemetry"
+                ]
+              },
+              {
+                "group": "Examples",
+                "pages": [
+                  "examples/hello-world",
+                  "examples/todo-app",
+                  "examples/multi-trigger",
+                  "examples/conditions",
+                  "examples/state-management",
+                  "examples/cron",
+                  "examples/observability"
+                ]
+              }
             ]
           },
           {
-            "group": "Architecture",
-            "pages": [
-              "architecture/index",
-              "architecture/engine",
-              "architecture/workers",
-              "architecture/modules",
-              "architecture/trigger-types",
-              "architecture/channels",
-              "architecture/queue-system"
-            ]
-          },
-          {
-            "group": "Modules",
-            "pages": [
-              "modules/index",
-              "modules/module-http",
-              "modules/module-queue",
-              "modules/module-cron",
-              "modules/module-observability",
-              "modules/module-stream",
-              "modules/module-state",
-              "modules/module-pubsub",
-              "modules/module-exec",
-              "modules/module-bridge"
-            ]
-          },
-          {
-            "group": "Console",
-            "pages": ["console/index"]
-          },
-          {
-            "group": "Advanced",
-            "pages": [
-              "advanced/adapters",
-              "advanced/architecture",
-              "advanced/custom-modules",
-              "advanced/deployment",
-              "advanced/protocol",
-              "advanced/sdk-implementation",
-              "advanced/telemetry"
-            ]
-          },
-          {
-            "group": "Examples",
-            "pages": [
-              "examples/hello-world",
-              "examples/todo-app",
-              "examples/multi-trigger",
-              "examples/conditions",
-              "examples/state-management",
-              "examples/cron",
-              "examples/observability"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "SDKs",
-            "pages": [
-              "api-reference/sdk-node",
-              "api-reference/sdk-python",
-              "api-reference/sdk-rust",
-              "api-reference/disable-telemetry"
+            "tab": "API Reference",
+            "groups": [
+              {
+                "group": "SDKs",
+                "pages": [
+                  "api-reference/sdk-node",
+                  "api-reference/sdk-python",
+                  "api-reference/sdk-rust",
+                  "api-reference/disable-telemetry"
+                ]
+              }
             ]
           }
         ]

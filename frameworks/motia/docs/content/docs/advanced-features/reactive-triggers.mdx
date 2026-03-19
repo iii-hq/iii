@@ -14,7 +14,7 @@ State triggers fire when data in Motia's state store changes. The `condition` fu
 A common use case is triggering a Step when all parallel tasks complete:
 
 ```typescript
-import type { Handlers, StepConfig, StateTriggerInput } from 'motia'
+import { enqueue, logger, type Handlers, type StateTriggerInput, type StepConfig } from 'motia'
 
 type TaskProgress = {
   totalSteps: number
@@ -41,7 +41,7 @@ export const config = {
   flows: ['parallel-merge'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   logger.info('All parallel steps complete', {
     taskId: input.item_id,
     results: input.new_value.results,
@@ -90,7 +90,7 @@ Stream triggers fire when stream items are created, updated, deleted, or when cu
 ### Basic Stream Trigger
 
 ```typescript
-import type { Handlers, StepConfig, StreamWrapperMessage } from 'motia'
+import { enqueue, logger, type Handlers, type StepConfig, type StreamWrapperMessage } from 'motia'
 
 export const config = {
   name: 'OnDeploymentUpdate',
@@ -107,7 +107,7 @@ export const config = {
   flows: ['deployments'],
 } as const satisfies StepConfig
 
-export const handler: Handlers<typeof config> = async (input, { logger, enqueue }) => {
+export const handler: Handlers<typeof config> = async (input) => {
   logger.info('Deployment updated', {
     streamName: input.streamName,
     groupId: input.groupId,

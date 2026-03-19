@@ -35,13 +35,13 @@ def test_stream_data_from_sender_to_processor(iii_client: III):
 
     async def sender_handler(input_data):
         records = input_data["records"]
-        channel = await iii_client._async_create_channel()
+        channel = await iii_client.create_channel_async()
 
         payload = json.dumps(records).encode("utf-8")
         await channel.writer.write(payload)
         await channel.writer.close_async()
 
-        result = await iii_client._async_trigger({
+        result = await iii_client.trigger_async({
             "function_id": "test.data.processor",
             "payload": {
                 "label": "metrics-batch",
@@ -133,8 +133,8 @@ def test_bidirectional_streaming(iii_client: III):
         text = input_data["text"]
         chunk_size = input_data["chunkSize"]
 
-        input_channel = await iii_client._async_create_channel()
-        output_channel = await iii_client._async_create_channel()
+        input_channel = await iii_client.create_channel_async()
+        output_channel = await iii_client.create_channel_async()
 
         messages = []
         output_channel.reader.on_message(lambda msg: messages.append(json.loads(msg)))
@@ -147,7 +147,7 @@ def test_bidirectional_streaming(iii_client: III):
             offset = end
         await input_channel.writer.close_async()
 
-        worker_result = await iii_client._async_trigger({
+        worker_result = await iii_client.trigger_async({
             "function_id": "test.stream.worker",
             "payload": {
                 "reader": input_channel.reader_ref.model_dump(),

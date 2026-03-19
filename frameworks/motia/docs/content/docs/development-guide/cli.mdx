@@ -26,7 +26,7 @@ brew install motia-cli
 
 ### `motia-cli create [name]`
 
-Scaffold a new Motia project with sensible defaults including `iii-config.yaml`, example Steps, and the appropriate dependency files for your chosen language.
+Scaffold a new Motia project with sensible defaults including `config.yaml`, example Steps, and the appropriate dependency files for your chosen language.
 
 ```bash
 motia-cli create my-project
@@ -165,10 +165,10 @@ npx motia rules pull --force  # Overwrite existing
 ```bash
 motia-cli create my-project   # Scaffold a new project (choose Node.js, Python, or Mixed)
 cd my-project
-iii -c iii-config.yaml        # Starts the iii engine and your Motia Steps
+iii                           # Starts the iii engine and your Motia Steps
 ```
 
-The `iii` engine reads `iii-config.yaml`, starts all modules, and uses the ExecModule to build and run your Motia Steps automatically. File changes trigger hot-reload.
+The `iii` engine reads `config.yaml`, starts all modules, and uses the ExecModule to build and run your Motia Steps automatically. File changes trigger hot-reload.
 
 ---
 
@@ -178,7 +178,7 @@ The `iii` engine reads `iii-config.yaml`, starts all modules, and uses the ExecM
   <Card href="/docs/concepts/overview" title="Core Concepts">
     Learn about Steps, triggers, and the event-driven architecture
   </Card>
-  <Card href="/docs/examples" title="Examples">
+  <Card href="https://github.com/MotiaDev/motia-examples" title="Examples">
     Explore real-world patterns and use cases
   </Card>
 </Cards>

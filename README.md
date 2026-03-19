@@ -153,13 +153,24 @@ iii-cli console
 | `console/`     | Developer dashboard (React + Rust)                      | [console/README.md](console/README.md)  |
 | `frameworks/`  | Higher-level frameworks built on the SDK                 | [frameworks/motia/](frameworks/motia/)  |
 | `website/`     | iii website                                              | [website/](website/)                    |
-| `docs/`        | Documentation site (Fumadocs/MDX)                       | [docs/README.md](docs/README.md)        |
+| `docs/`        | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)        |
+
 
 See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain, and CI/CD details.
 
 ## Examples
 
 See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tutorials.
+
+## Docs Development
+
+The iii documentation lives in [`docs/`](docs/), which is a Mintlify docs site driven by [`docs/docs.json`](docs/docs.json).
+
+```bash
+pnpm dev:docs
+```
+
+This runs `npx mint dev` inside `docs/` and serves the docs locally, typically at `http://localhost:3000`.
 
 ## Resources
 

@@ -42,7 +42,7 @@ cargo build --release
 | `pnpm test:engine` | Test engine (Rust) only |
 | `pnpm test:rust` | Test entire Rust workspace |
 | `cargo test -p iii-sdk` | Test Rust SDK only |
-| `pnpm dev:docs` | Start iii docs dev server |
+| `pnpm dev:docs` | Start iii docs dev server from `docs/` with Mintlify |
 | `pnpm dev:motia-docs` | Start Motia docs dev server |
 | `pnpm dev:website` | Start website dev server |
 | `pnpm dev:console` | Start console frontend dev server |

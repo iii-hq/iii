@@ -9,7 +9,7 @@ Motia supports writing Steps in multiple languages within the same project. Each
 
 Each language has its own Motia SDK and its own process. The iii engine coordinates between them through shared infrastructure (queues, state, streams). A TypeScript Step can enqueue a message that a Python Step processes, and vice versa.
 
-```
+```text
 ┌──────────────────────────────────┐
 │            iii Engine            │
 │                                  │

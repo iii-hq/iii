@@ -10,10 +10,10 @@ modules::queue::QueueModule
 ```
 
 <Info title="How-to guidance">
-  For step-by-step instructions, see [Use Queues](../how-to/use-queues) and [Manage Failed Triggers](../how-to/dead-letter-queues).
+  For step-by-step instructions on configuring and using queues, see [Use Queues](../how-to/use-queues). For DLQ management, see [Manage Failed Triggers](../how-to/dead-letter-queues).
 </Info>
 
-## Queue modes
+## Queue Modes
 
 ### Topic-based queues
 
@@ -27,13 +27,13 @@ The producer knows the topic name; consumers register to receive it. Queue setti
 
 ### Named queues
 
-Define queues in `iii-config.yaml`, then enqueue function calls directly. No trigger registration.
+Define queues in `iii-config.yaml`, then enqueue function calls directly. No trigger registration needed.
 
 1. **Define queues** in `queue_configs` (see [Configuration](#configuration)).
 2. **Enqueue a function call** with `trigger({ function_id: 'orders::process', payload, action: TriggerAction.Enqueue({ queue: 'payment' }) })`. The engine routes the job to the named queue and invokes the function when a worker consumes it.
-3. **Action on the trigger**: the target function receives `payload` as its input. Retries, concurrency, and FIFO are configured in `iii-config.yaml`.
+3. **Action on the trigger**: the target function receives `payload` as its input. Retries, concurrency, and FIFO are configured centrally in `iii-config.yaml`.
 
-The producer targets the function and queue explicitly. Queue configuration is centralized.
+The producer targets the function and queue explicitly. Queue configuration is centralized. For a hands-on walkthrough, see [Use Queues](../how-to/use-queues).
 
 ### When to use which
 
@@ -44,7 +44,11 @@ The producer targets the function and queue explicitly. Queue configuration is c
 | **Config** | Optional `queue_config` on trigger | `queue_configs` in `iii-config.yaml` |
 | **Use case** | Pub/sub, multiple subscribers per topic | Direct function invocation with retries, FIFO, DLQ |
 
-Both modes are valid. Named queues offer config-driven retries, concurrency, and FIFO. See [Queue System](../architecture/queue-system) for design rationale.
+Both modes are valid. Named queues offer config-driven retries, concurrency, and FIFO ordering.
+
+<Info title="Trigger actions">
+  Named queues use the `Enqueue` trigger action. For a full comparison of synchronous, Void, and Enqueue invocation modes, see [Trigger Actions](../how-to/trigger-actions).
+</Info>
 
 ## Sample Configuration
 
@@ -87,7 +91,7 @@ Each entry in `queue_configs` defines an independent named queue with its own re
 </ResponseField>
 
 <ResponseField name="concurrency" type="u32">
-  Maximum number of jobs processed simultaneously from this queue. Defaults to `10`.
+  Maximum number of jobs processed simultaneously from this queue. Defaults to `10`. For FIFO queues, the engine overrides this to `prefetch=1` to guarantee ordering — see the note below.
 </ResponseField>
 
 <ResponseField name="type" type="string">
@@ -105,6 +109,10 @@ Each entry in `queue_configs` defines an independent named queue with its own re
 <ResponseField name="poll_interval_ms" type="u64">
   Worker poll interval in milliseconds. Defaults to `100`.
 </ResponseField>
+
+<Warning title="FIFO and concurrency">
+  When `type` is `fifo`, the engine sets `prefetch=1` regardless of the `concurrency` value. This ensures only one job is in-flight at a time, which is required for strict ordering. FIFO queues also retry failed jobs inline (blocking the queue) rather than in parallel.
+</Warning>
 
 ## Adapters
 
@@ -129,7 +137,11 @@ config:
 
 ### modules::queue::RedisAdapter
 
-Uses Redis as the queue backend. Enables message distribution across multiple engine instances. Does not support retries or dead-letter queues.
+Uses Redis as the queue backend for topic-based pub/sub. Enables message distribution across multiple engine instances.
+
+<Warning title="Limited named queue support">
+  The Redis adapter supports publishing to named queues but does not implement named queue consumption, retries, or dead-letter queues. It is suitable for topic-based pub/sub only. For full named queue support in multi-instance deployments, use the [RabbitMQ adapter](#modulesqueuerabbitmqadapter).
+</Warning>
 
 ```yaml
 class: modules::queue::RedisAdapter
@@ -157,15 +169,82 @@ config:
   The AMQP URL of the RabbitMQ instance to connect to.
 </ResponseField>
 
+#### Queue naming in RabbitMQ
+
+For each named queue defined in `queue_configs`, iii creates the following RabbitMQ resources:
+
+| Resource | Format | Example (`payment`) |
+|----------|--------|---------------------|
+| Main exchange | `iii.__fn_queue::<name>` | `iii.__fn_queue::payment` |
+| Main queue | `iii.__fn_queue::<name>.queue` | `iii.__fn_queue::payment.queue` |
+| Retry exchange | `iii.__fn_queue::<name>::retry` | `iii.__fn_queue::payment::retry` |
+| Retry queue | `iii.__fn_queue::<name>::retry.queue` | `iii.__fn_queue::payment::retry.queue` |
+| DLQ exchange | `iii.__fn_queue::<name>::dlq` | `iii.__fn_queue::payment::dlq` |
+| DLQ queue | `iii.__fn_queue::<name>::dlq.queue` | `iii.__fn_queue::payment::dlq.queue` |
+
+<Info title="Why so many resources?">
+  Each named queue creates six RabbitMQ objects to support delayed retry and dead-lettering. For the design rationale, see [Queue Architecture](/architecture/queues).
+</Info>
+
 ## Adapter Comparison
 
-|  | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
+| | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
 |---|---|---|---|
 | **Retries** | Yes | Yes | No |
 | **Dead-letter queue** | Yes | Yes | No |
 | **FIFO ordering** | Yes | Yes | No |
-| **Named queues** | Yes | Yes | No |
+| **Named queue consumption** | Yes | Yes | No (publish only) |
+| **Topic-based pub/sub** | Yes | Yes | Yes |
 | **Multi-instance** | No | Yes | Yes |
+| **External dependency** | None | RabbitMQ | Redis |
+
+<Info title="Choosing an adapter">
+  For practical guidance on which adapter to use in different deployment scenarios, see [Use Queues — Choosing an Adapter](../how-to/use-queues#choosing-an-adapter).
+</Info>
+
+## Builtin Functions
+
+The queue module registers the following functions automatically when it initializes. These are callable via `trigger()` from any SDK or via the `iii trigger` CLI command.
+
+### enqueue
+
+Publishes a message to a topic-based queue.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `topic` | `string` | The topic to publish to (required, non-empty) |
+| `data` | `any` | The payload to deliver to subscribers |
+
+Returns `null` on success.
+
+### iii::queue::redrive
+
+Moves all messages from a named queue's dead-letter queue back to the main queue. Each message gets its attempt counter reset to zero.
+
+**Input:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `queue` | `string` | The named queue whose DLQ should be redriven (required, non-empty) |
+
+**Output:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `queue` | `string` | The queue name that was redriven |
+| `redriven` | `number` | The number of messages moved back to the main queue |
+
+**CLI example:**
+
+```bash
+iii trigger \
+  --function-id='iii::queue::redrive' \
+  --payload='{"queue": "payment"}'
+```
+
+<Info title="DLQ operations">
+  For a complete guide on inspecting DLQ messages before redriving, see [Manage Failed Triggers](../how-to/dead-letter-queues).
+</Info>
 
 ## Queue Flow
 

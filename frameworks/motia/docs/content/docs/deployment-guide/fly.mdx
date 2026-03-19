@@ -59,6 +59,10 @@ Build your Motia project first:
 motia build
 ```
 
+<Callout type="warn">
+This Docker recipe is for JavaScript/TypeScript projects built with `motia build` (Bun runtime image). For Python-only or mixed projects, use the Python runtime pattern from the [Docker guide](/docs/deployment-guide/docker#python-steps) and include a Python ExecModule alongside the Node/Bun runtime as needed.
+</Callout>
+
 Then create a `Dockerfile` in your project root:
 
 ```dockerfile title="Dockerfile"

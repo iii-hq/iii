@@ -29,7 +29,7 @@ interface GriffeObject {
   value?: string | null
 }
 
-function annotationToString(ann: any): string {
+export function annotationToString(ann: any): string {
   if (!ann) return ''
   if (typeof ann === 'string') return ann
 
@@ -60,15 +60,18 @@ function annotationToString(ann: any): string {
   }
 }
 
-function extractDocstring(obj: GriffeObject): string {
+export function extractDocstring(obj: GriffeObject): string {
   if (!obj.docstring?.parsed) {
-    return obj.docstring?.value?.split('\n\nArgs:')[0]?.split('\n\nAttributes:')[0]?.trim() ?? ''
+    // Strip all Google-style sections from raw docstring
+    return obj.docstring?.value
+      ?.split(/\n\n(?:Args|Attributes|Returns|Raises|Examples?|Note|Yields|See Also):/)[0]
+      ?.trim() ?? ''
   }
   const textParts = obj.docstring.parsed.filter(p => p.kind === 'text')
   return textParts.map(p => typeof p.value === 'string' ? p.value : '').join('\n').trim()
 }
 
-function extractParams(obj: GriffeObject): ParamDoc[] {
+export function extractParams(obj: GriffeObject): ParamDoc[] {
   const docParams: Record<string, string> = {}
 
   if (obj.docstring?.parsed) {
@@ -114,19 +117,26 @@ function extractParams(obj: GriffeObject): ParamDoc[] {
     }))
 }
 
-function extractExamples(obj: GriffeObject): string[] {
+export function extractExamples(obj: GriffeObject): string[] {
   if (!obj.docstring?.value) return []
-  const exampleMatch = obj.docstring.value.match(/Examples?:\n([\s\S]*?)(?:\n\n\S|$)/)
+  const exampleMatch = obj.docstring.value.match(/Examples?:\n([\s\S]*?)(?:\n\n(?:[A-Z]\w*:)|\n\n\S|$)/)
   if (!exampleMatch) return []
   const code = exampleMatch[1]
     .split('\n')
-    .map(l => l.replace(/^\s{8}/, '').replace(/^>>> /, '').replace(/^\.\.\. /, ''))
+    .map(l => l.replace(/^\s{4,8}/, ''))   // strip leading indentation
+    .map(l => l.replace(/^>>> /, ''))        // strip doctest >>> prefix
+    .map(l => l.replace(/^\.\.\. /, ''))     // strip doctest ... prefix
     .filter(l => l.trim())
     .join('\n')
   return code ? [code] : []
 }
 
-function buildSignature(obj: GriffeObject): string {
+export function isAsync(obj: GriffeObject): boolean {
+  return (obj.labels ?? []).includes('async')
+}
+
+export function buildSignature(obj: GriffeObject): string {
+  const asyncPrefix = isAsync(obj) ? 'async ' : ''
   const params = (obj.parameters ?? [])
     .filter(p => p.name !== 'self' && p.name !== 'cls')
     .map(p => {
@@ -138,10 +148,10 @@ function buildSignature(obj: GriffeObject): string {
     .join(', ')
   const retStr = annotationToString(obj.returns?.annotation)
   const ret = retStr ? ` -> ${retStr}` : ''
-  return `(${params})${ret}`
+  return `${asyncPrefix}(${params})${ret}`
 }
 
-function griffeToFunction(obj: GriffeObject): FunctionDoc {
+export function griffeToFunction(obj: GriffeObject): FunctionDoc {
   return {
     name: obj.name,
     signature: buildSignature(obj),
@@ -155,8 +165,30 @@ function griffeToFunction(obj: GriffeObject): FunctionDoc {
   }
 }
 
-function griffeToType(obj: GriffeObject): TypeDoc {
+export function extractAttributeDescriptions(obj: GriffeObject): Record<string, string> {
+  const docstring = obj.docstring?.value ?? ''
+  const attrMatch = docstring.match(/Attributes:\n([\s\S]*?)(?:\n\n\S|\n\n$|$)/)
+  if (!attrMatch) return {}
+  const result: Record<string, string> = {}
+  let currentAttr = ''
+  let currentDesc = ''
+  for (const line of attrMatch[1].split('\n')) {
+    const attrLine = line.match(/^\s{4,8}(\w+):\s*(.*)/)
+    if (attrLine) {
+      if (currentAttr) result[currentAttr] = currentDesc.trim()
+      currentAttr = attrLine[1]
+      currentDesc = attrLine[2]
+    } else if (currentAttr && line.match(/^\s{8,}/)) {
+      currentDesc += ' ' + line.trim()
+    }
+  }
+  if (currentAttr) result[currentAttr] = currentDesc.trim()
+  return result
+}
+
+export function griffeToType(obj: GriffeObject): TypeDoc {
   const fields: ParamDoc[] = []
+  const attrDescs = extractAttributeDescriptions(obj)
 
   if (obj.members) {
     for (const [name, member] of Object.entries(obj.members)) {
@@ -165,7 +197,7 @@ function griffeToType(obj: GriffeObject): TypeDoc {
         fields.push({
           name: member.name,
           type: annotationToString(member.annotation) || 'Any',
-          description: extractDocstring(member),
+          description: extractDocstring(member) || attrDescs[member.name] || '',
           required: member.value === undefined || member.value === null,
         })
       }
@@ -183,7 +215,7 @@ function griffeToType(obj: GriffeObject): TypeDoc {
   }
 }
 
-function extractTypesFromModule(members: Record<string, GriffeObject>, skipClasses: Set<string>): TypeDoc[] {
+export function extractTypesFromModule(members: Record<string, GriffeObject>, skipClasses: Set<string>): TypeDoc[] {
   const types: TypeDoc[] = []
 
   for (const [name, member] of Object.entries(members)) {
@@ -196,9 +228,7 @@ function extractTypesFromModule(members: Record<string, GriffeObject>, skipClass
   return types
 }
 
-export function parseGriffe(jsonPath: string): SdkDoc {
-  const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
-
+export function parseGriffeData(raw: Record<string, any>): SdkDoc {
   const rootModule = raw['iii'] ?? raw
   const rootMembers: Record<string, GriffeObject> = rootModule.members ?? {}
 
@@ -206,7 +236,14 @@ export function parseGriffe(jsonPath: string): SdkDoc {
   const iiiSubMembers: Record<string, GriffeObject> = iiiSubmodule?.members ?? {}
   const iiiClass: GriffeObject | undefined = iiiSubMembers['III']
 
-  const registerWorker = rootMembers['register_worker']
+  // register_worker at root level is an alias (re-export) with no metadata.
+  // Resolve the real definition from the iii.iii submodule.
+  const registerWorkerAlias = rootMembers['register_worker']
+  const registerWorkerReal = iiiSubMembers['register_worker']
+  const registerWorker = (registerWorkerReal?.docstring?.value ? registerWorkerReal : null)
+    ?? (registerWorkerAlias?.docstring?.value ? registerWorkerAlias : null)
+    ?? registerWorkerReal
+    ?? registerWorkerAlias
 
   const methods: FunctionDoc[] = []
   if (iiiClass?.members) {
@@ -266,7 +303,7 @@ export function parseGriffe(jsonPath: string): SdkDoc {
       title: 'Python SDK',
       description: 'API reference for the iii SDK for Python.',
       installCommand: 'pip install iii-sdk',
-      importExample: 'from iii import III, register_worker',
+      importExample: 'from iii import register_worker, InitOptions',
     },
     initialization: {
       entryPoint: entryFn,
@@ -275,4 +312,8 @@ export function parseGriffe(jsonPath: string): SdkDoc {
     types,
     loggerSection,
   }
+}
+
+export function parseGriffe(jsonPath: string): SdkDoc {
+  return parseGriffeData(JSON.parse(readFileSync(jsonPath, 'utf-8')))
 }

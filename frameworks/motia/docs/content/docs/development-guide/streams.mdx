@@ -3,9 +3,6 @@ title: Real-time Streams
 description: Push live updates from your backend to connected clients without polling. Perfect for AI responses, chat apps, and long-running tasks.
 ---
 
-<video controls className="mb-8 w-full rounded-xl" poster="https://assets.motia.dev/images/gifs/v1/7-motia-streaming.gif">
-  <source src="https://assets.motia.dev/videos/mp4/site/v1/7-motia-streaming.mp4" type="video/mp4" />
-</video>
 
 ## Why Streams?
 
@@ -336,10 +333,10 @@ Provide an auth token when creating the stream client by embedding it in the Web
 
 ```tsx title="App.tsx"
 import { useMemo } from 'react'
-import { MotiaStreamProvider } from 'motia/stream-client-react'
+import { MotiaStreamProvider } from '@motiadev/stream-client-react'
 
 function AppShell({ session }: { session?: { streamToken?: string } }) {
-  const streamAddress = useMemo(() => new URL('ws://localhost:3000').toString(), [])
+  const streamAddress = useMemo(() => new URL('ws://localhost:3112').toString(), [])
   const protocols = useMemo(() => {
     return session?.streamToken ? ['Authorization', session.streamToken] : undefined
   }, [session?.streamToken])
@@ -393,7 +390,7 @@ Once you have streams working on the backend, connect them to your React app.
 ### Install
 
 ```bash
-npm install motia
+npm install @motiadev/stream-client-react
 ```
 
 ### Setup Provider
@@ -401,13 +398,15 @@ npm install motia
 Wrap your app with the provider:
 
 ```tsx title="App.tsx"
-import { MotiaStreamProvider } from 'motia/stream-client-react'
+import { useMemo } from 'react'
+import { MotiaStreamProvider } from '@motiadev/stream-client-react'
 
 function App() {
   const authToken = useAuthToken()
+  const protocols = useMemo(() => (authToken ? ['Authorization', authToken] : undefined), [authToken])
 
   return (
-    <MotiaStreamProvider address="ws://localhost:3000" authToken={authToken}>
+    <MotiaStreamProvider address="ws://localhost:3112" protocols={protocols}>
       {/* Your app */}
     </MotiaStreamProvider>
   )
@@ -417,7 +416,7 @@ function App() {
 ### Subscribe to Stream Updates
 
 ```tsx title="App.tsx"
-import { useStreamGroup } from 'motia/stream-client-react'
+import { useStreamGroup } from '@motiadev/stream-client-react'
 import { useTodoEndpoints, type Todo } from './hook/useTodoEndpoints'
 
 function App() {
@@ -452,6 +451,8 @@ function App() {
 ![Todo App in React](./../img/todo-react.png)
 
 Every time you call `createTodo()`, connected clients receive the update instantly. No polling needed.
+
+For a dedicated API reference covering `MotiaStreamProvider`, `useMotiaStream`, `useStreamGroup`, and `useStreamItem`, see [React Stream Client](/docs/development-guide/react-stream-client).
 
 ---
 
