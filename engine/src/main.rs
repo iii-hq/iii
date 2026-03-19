@@ -28,7 +28,8 @@ struct Cli {
     version: bool,
 
     /// Run with built-in defaults instead of a config file.
-    #[arg(long, global = true)]
+    /// Cannot be combined with --config.
+    #[arg(long, global = true, conflicts_with = "config")]
     use_default_config: bool,
 }
 
