@@ -14,11 +14,11 @@ err() {
     _err_msg=$(echo "$*" | tr '"' "'")
     if [ "$install_event_prefix" = "upgrade" ]; then
       iii_send_event "upgrade_failed" \
-        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_err_msg}\",\"error_message\":\"${_err_msg}\"" \
         "$telemetry_id" "$install_id"
     else
       iii_send_event "install_failed" \
-        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_err_msg}\",\"error_message\":\"${_err_msg}\"" \
         "$telemetry_id" "$install_id"
     fi
     wait
@@ -52,15 +52,15 @@ iii_gen_uuid() {
   fi
 }
 
-iii_ini_path() {
-  echo "${HOME}/.iii/telemetry.ini"
+iii_toml_path() {
+  echo "${HOME}/.iii/telemetry.toml"
 }
 
-iii_read_ini_key() {
-  _ini_section="$1"
-  _ini_key="$2"
-  _ini_file=$(iii_ini_path)
-  if [ ! -f "$_ini_file" ]; then
+iii_read_toml_key() {
+  _toml_section="$1"
+  _toml_key="$2"
+  _toml_file=$(iii_toml_path)
+  if [ ! -f "$_toml_file" ]; then
     echo ""
     return
   fi
@@ -68,13 +68,13 @@ iii_read_ini_key() {
   while IFS= read -r _line || [ -n "$_line" ]; do
     _line=$(printf '%s' "$_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     case "$_line" in
-      "[$_ini_section]") _in_section=1 ;;
+      "[$_toml_section]") _in_section=1 ;;
       "["*"]") _in_section=0 ;;
       *)
         if [ "$_in_section" = "1" ]; then
           case "$_line" in
-            "$_ini_key ="*|"$_ini_key= "*|"$_ini_key=")
-              _val=$(printf '%s' "$_line" | cut -d'=' -f2- | sed 's/^[[:space:]]*//')
+            "$_toml_key ="*|"$_toml_key= "*|"$_toml_key=")
+              _val=$(printf '%s' "$_line" | cut -d'=' -f2- | sed 's/^[[:space:]]*//;s/^"//;s/"$//')
               echo "$_val"
               return
               ;;
@@ -82,40 +82,40 @@ iii_read_ini_key() {
         fi
         ;;
     esac
-  done < "$_ini_file"
+  done < "$_toml_file"
   echo ""
 }
 
-iii_set_ini_key() {
-  _ini_section="$1"
-  _ini_key="$2"
-  _ini_value="$3"
-  _ini_file=$(iii_ini_path)
-  mkdir -p "$(dirname "$_ini_file")"
-  _tmp_file="${_ini_file}.tmp"
+iii_set_toml_key() {
+  _toml_section="$1"
+  _toml_key="$2"
+  _toml_value="$3"
+  _toml_file=$(iii_toml_path)
+  mkdir -p "$(dirname "$_toml_file")"
+  _tmp_file="${_toml_file}.tmp"
   _written=0
   _in_target=0
   _key_written=0
   : > "$_tmp_file"
-  if [ -f "$_ini_file" ]; then
+  if [ -f "$_toml_file" ]; then
     while IFS= read -r _line || [ -n "$_line" ]; do
       _trimmed=$(printf '%s' "$_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       case "$_trimmed" in
-        "[$_ini_section]")
+        "[$_toml_section]")
           printf '%s\n' "$_trimmed" >> "$_tmp_file"
           _in_target=1
           ;;
         "["*"]")
           if [ "$_in_target" = "1" ] && [ "$_key_written" = "0" ]; then
-            printf '%s = %s\n' "$_ini_key" "$_ini_value" >> "$_tmp_file"
+            printf '%s = "%s"\n' "$_toml_key" "$_toml_value" >> "$_tmp_file"
             _key_written=1
           fi
           _in_target=0
           printf '%s\n' "$_trimmed" >> "$_tmp_file"
           ;;
-        "$_ini_key ="*|"$_ini_key= "*|"$_ini_key=")
+        "$_toml_key ="*|"$_toml_key= "*|"$_toml_key=")
           if [ "$_in_target" = "1" ]; then
-            printf '%s = %s\n' "$_ini_key" "$_ini_value" >> "$_tmp_file"
+            printf '%s = "%s"\n' "$_toml_key" "$_toml_value" >> "$_tmp_file"
             _key_written=1
           else
             printf '%s\n' "$_line" >> "$_tmp_file"
@@ -128,20 +128,20 @@ iii_set_ini_key() {
           printf '%s\n' "$_line" >> "$_tmp_file"
           ;;
       esac
-    done < "$_ini_file"
+    done < "$_toml_file"
   fi
   if [ "$_key_written" = "0" ]; then
     if [ "$_in_target" = "1" ]; then
-      printf '%s = %s\n' "$_ini_key" "$_ini_value" >> "$_tmp_file"
+      printf '%s = "%s"\n' "$_toml_key" "$_toml_value" >> "$_tmp_file"
     else
-      printf '\n[%s]\n%s = %s\n' "$_ini_section" "$_ini_key" "$_ini_value" >> "$_tmp_file"
+      printf '\n[%s]\n%s = "%s"\n' "$_toml_section" "$_toml_key" "$_toml_value" >> "$_tmp_file"
     fi
   fi
-  mv "$_tmp_file" "$_ini_file"
+  mv "$_tmp_file" "$_toml_file"
 }
 
 iii_get_or_create_telemetry_id() {
-  _existing_id=$(iii_read_ini_key "identity" "id")
+  _existing_id=$(iii_read_toml_key "identity" "id")
   if [ -n "$_existing_id" ]; then
     echo "$_existing_id"
     return
@@ -151,7 +151,7 @@ iii_get_or_create_telemetry_id() {
   if [ -f "$_legacy_path" ]; then
     _legacy_id=$(cat "$_legacy_path" 2>/dev/null | tr -d '[:space:]')
     if [ -n "$_legacy_id" ]; then
-      iii_set_ini_key "identity" "id" "$_legacy_id"
+      iii_set_toml_key "identity" "id" "$_legacy_id"
       echo "$_legacy_id"
       return
     fi
@@ -159,7 +159,7 @@ iii_get_or_create_telemetry_id() {
 
   mkdir -p "${HOME}/.iii"
   _new_id=$(iii_gen_uuid)
-  iii_set_ini_key "identity" "id" "$_new_id"
+  iii_set_toml_key "identity" "id" "$_new_id"
   echo "$_new_id"
 }
 
@@ -201,7 +201,7 @@ iii_detect_from_version() {
 }
 
 iii_export_host_user_id() {
-  _huid=$(iii_read_ini_key "identity" "id")
+  _huid=$(iii_read_toml_key "identity" "id")
   if [ -z "$_huid" ]; then
     return 0
   fi
@@ -455,7 +455,7 @@ if [ -n "$from_version" ]; then
 else
   install_event_prefix="install"
   iii_send_event "install_started" \
-    "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"os\":\"$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)\",\"arch\":\"$(uname -m 2>/dev/null || echo unknown)\"" \
     "$telemetry_id" "$install_id"
 fi
 

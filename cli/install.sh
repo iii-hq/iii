@@ -66,11 +66,11 @@ err() {
     err_msg=$(echo "$*" | tr '"' "'")
     if [[ "$install_event_prefix" == "upgrade" ]]; then
       iii_send_event "upgrade_failed" \
-        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\",\"error_message\":\"${err_msg}\"" \
         "$telemetry_id"
     else
       iii_send_event "install_failed" \
-        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\"" \
+        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${err_msg}\",\"error_message\":\"${err_msg}\"" \
         "$telemetry_id"
     fi
     wait
@@ -119,16 +119,16 @@ iii_gen_uuid() {
   fi
 }
 
-iii_ini_path() {
-  echo "${HOME}/.iii/telemetry.ini"
+iii_toml_path() {
+  echo "${HOME}/.iii/telemetry.toml"
 }
 
-iii_read_ini_key() {
+iii_read_toml_key() {
   local section="$1"
   local key="$2"
-  local ini_file
-  ini_file=$(iii_ini_path)
-  if [[ ! -f "$ini_file" ]]; then
+  local toml_file
+  toml_file=$(iii_toml_path)
+  if [[ ! -f "$toml_file" ]]; then
     echo ""
     return
   fi
@@ -146,27 +146,30 @@ iii_read_ini_key() {
       lkey="${lkey%"${lkey##*[![:space:]]}"}"
       lval="${line#*=}"
       lval="${lval#"${lval%%[![:space:]]*}"}"
+      # Strip surrounding TOML quotes
+      lval="${lval#\"}"
+      lval="${lval%\"}"
       if [[ "$lkey" == "$key" ]]; then
         echo "$lval"
         return
       fi
     fi
-  done < "$ini_file"
+  done < "$toml_file"
   echo ""
 }
 
-iii_set_ini_key() {
+iii_set_toml_key() {
   local section="$1"
   local key="$2"
   local value="$3"
-  local ini_file
-  ini_file=$(iii_ini_path)
-  mkdir -p "$(dirname "$ini_file")"
-  local tmp_file="${ini_file}.tmp"
+  local toml_file
+  toml_file=$(iii_toml_path)
+  mkdir -p "$(dirname "$toml_file")"
+  local tmp_file="${toml_file}.tmp"
   local in_target=0
   local key_written=0
   : > "$tmp_file"
-  if [[ -f "$ini_file" ]]; then
+  if [[ -f "$toml_file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       local trimmed="${line#"${line%%[![:space:]]*}"}"
       trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
@@ -175,7 +178,7 @@ iii_set_ini_key() {
         in_target=1
       elif [[ "$trimmed" =~ ^\[.*\]$ ]]; then
         if [[ "$in_target" == "1" && "$key_written" == "0" ]]; then
-          printf '%s = %s\n' "$key" "$value" >> "$tmp_file"
+          printf '%s = "%s"\n' "$key" "$value" >> "$tmp_file"
           key_written=1
         fi
         in_target=0
@@ -184,7 +187,7 @@ iii_set_ini_key() {
         local lkey="${trimmed%%=*}"
         lkey="${lkey%"${lkey##*[![:space:]]}"}"
         if [[ "$lkey" == "$key" ]]; then
-          printf '%s = %s\n' "$key" "$value" >> "$tmp_file"
+          printf '%s = "%s"\n' "$key" "$value" >> "$tmp_file"
           key_written=1
         else
           printf '%s\n' "$line" >> "$tmp_file"
@@ -192,21 +195,21 @@ iii_set_ini_key() {
       else
         printf '%s\n' "$line" >> "$tmp_file"
       fi
-    done < "$ini_file"
+    done < "$toml_file"
   fi
   if [[ "$key_written" == "0" ]]; then
     if [[ "$in_target" == "1" ]]; then
-      printf '%s = %s\n' "$key" "$value" >> "$tmp_file"
+      printf '%s = "%s"\n' "$key" "$value" >> "$tmp_file"
     else
-      printf '\n[%s]\n%s = %s\n' "$section" "$key" "$value" >> "$tmp_file"
+      printf '\n[%s]\n%s = "%s"\n' "$section" "$key" "$value" >> "$tmp_file"
     fi
   fi
-  mv "$tmp_file" "$ini_file"
+  mv "$tmp_file" "$toml_file"
 }
 
 iii_get_or_create_telemetry_id() {
   local existing_id
-  existing_id=$(iii_read_ini_key "identity" "id")
+  existing_id=$(iii_read_toml_key "identity" "id")
   if [[ -n "$existing_id" ]]; then
     echo "$existing_id"
     return
@@ -217,7 +220,7 @@ iii_get_or_create_telemetry_id() {
     local legacy_id
     legacy_id=$(cat "$legacy_path" 2>/dev/null | tr -d '[:space:]')
     if [[ -n "$legacy_id" ]]; then
-      iii_set_ini_key "identity" "id" "$legacy_id"
+      iii_set_toml_key "identity" "id" "$legacy_id"
       echo "$legacy_id"
       return
     fi
@@ -226,7 +229,7 @@ iii_get_or_create_telemetry_id() {
   mkdir -p "${HOME}/.iii"
   local new_id
   new_id=$(iii_gen_uuid)
-  iii_set_ini_key "identity" "id" "$new_id"
+  iii_set_toml_key "identity" "id" "$new_id"
   echo "$new_id"
 }
 
@@ -260,7 +263,7 @@ iii_send_event() {
 
 iii_export_host_user_id() {
   local huid
-  huid=$(iii_read_ini_key "identity" "id")
+  huid=$(iii_read_toml_key "identity" "id")
   if [[ -z "$huid" ]]; then
     return 0
   fi
@@ -857,7 +860,7 @@ if [[ -n "$from_version" ]]; then
     "$telemetry_id"
 else
   iii_send_event "install_started" \
-    "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"os\":\"$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)\",\"arch\":\"$(uname -m 2>/dev/null || echo unknown)\"" \
     "$telemetry_id"
 fi
 

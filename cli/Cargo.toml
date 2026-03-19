@@ -28,6 +28,7 @@ dirs = "6"
 sha2 = "0.10"
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

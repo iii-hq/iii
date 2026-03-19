@@ -6,63 +6,40 @@ use serde::Serialize;
 const AMPLITUDE_ENDPOINT: &str = "https://api2.amplitude.com/2/httpapi";
 
 // ---------------------------------------------------------------------------
-// ~/.iii/telemetry.ini helpers
+// ~/.iii/telemetry.toml helpers (shared format with engine)
 // ---------------------------------------------------------------------------
 
-fn telemetry_ini_path() -> std::path::PathBuf {
+type TomlSections = BTreeMap<String, BTreeMap<String, String>>;
+
+fn telemetry_toml_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".iii")
-        .join("telemetry.ini")
+        .join("telemetry.toml")
 }
 
-fn parse_ini(content: &str) -> BTreeMap<String, BTreeMap<String, String>> {
-    let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    let mut current = String::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            current = line[1..line.len() - 1].to_string();
-        } else if let Some((key, val)) = line.split_once('=') {
-            let key = key.trim().to_string();
-            let val = val.trim().to_string();
-            if !key.is_empty() && !current.is_empty() {
-                sections.entry(current.clone()).or_default().insert(key, val);
-            }
-        }
-    }
+fn read_toml_key(section: &str, key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(telemetry_toml_path()).ok()?;
+    let sections: TomlSections = toml::from_str(&contents).ok()?;
     sections
-}
-
-fn serialize_ini(sections: &BTreeMap<String, BTreeMap<String, String>>) -> String {
-    let mut out = String::new();
-    for (section, keys) in sections {
-        out.push_str(&format!("[{}]\n", section));
-        for (k, v) in keys {
-            out.push_str(&format!("{} = {}\n", k, v));
-        }
-        out.push('\n');
-    }
-    out
-}
-
-fn read_ini_key(section: &str, key: &str) -> Option<String> {
-    let contents = std::fs::read_to_string(telemetry_ini_path()).ok()?;
-    parse_ini(&contents)
-        .remove(section)?
-        .remove(key)
+        .get(section)?
+        .get(key)
         .filter(|v| !v.is_empty())
+        .cloned()
 }
 
-fn set_ini_key(section: &str, key: &str, value: &str) {
-    let path = telemetry_ini_path();
+fn set_toml_key(section: &str, key: &str, value: &str) {
+    let path = telemetry_toml_path();
     let contents = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut sections = parse_ini(&contents);
+    let mut sections: TomlSections = toml::from_str(&contents).unwrap_or_default();
     sections
         .entry(section.to_string())
         .or_default()
         .insert(key.to_string(), value.to_string());
-    let serialized = serialize_ini(&sections);
+    let serialized = match toml::to_string(&sections) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -154,7 +131,7 @@ fn build_user_properties() -> serde_json::Value {
 }
 
 fn get_or_create_telemetry_id() -> String {
-    if let Some(id) = read_ini_key("identity", "id") {
+    if let Some(id) = read_toml_key("identity", "id") {
         return id;
     }
 
@@ -165,13 +142,13 @@ fn get_or_create_telemetry_id() -> String {
     if let Ok(id) = std::fs::read_to_string(&legacy_path) {
         let id = id.trim().to_string();
         if !id.is_empty() {
-            set_ini_key("identity", "id", &id);
+            set_toml_key("identity", "id", &id);
             return id;
         }
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    set_ini_key("identity", "id", &id);
+    set_toml_key("identity", "id", &id);
     id
 }
 
@@ -408,27 +385,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_ini_reads_identity_section() {
-        let content = "[identity]\nid = my-uuid\n\n[state]\nfirst_run_sent = true\n";
-        let sections = parse_ini(content);
-        assert_eq!(sections["identity"]["id"], "my-uuid");
-        assert_eq!(sections["state"]["first_run_sent"], "true");
-    }
+    fn test_toml_roundtrip() {
+        let mut sections: TomlSections = BTreeMap::new();
+        sections
+            .entry("identity".to_string())
+            .or_default()
+            .insert("id".to_string(), "abc-123".to_string());
+        sections
+            .entry("state".to_string())
+            .or_default()
+            .insert("first_run_sent".to_string(), "true".to_string());
 
-    #[test]
-    fn test_serialize_ini_roundtrip() {
-        let mut sections = BTreeMap::new();
-        let mut identity = BTreeMap::new();
-        identity.insert("id".to_string(), "abc-123".to_string());
-        sections.insert("identity".to_string(), identity);
-        let serialized = serialize_ini(&sections);
-        let parsed = parse_ini(&serialized);
+        let serialized = toml::to_string(&sections).unwrap();
+        let parsed: TomlSections = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed["identity"]["id"], "abc-123");
-    }
-
-    #[test]
-    fn test_parse_ini_empty_input() {
-        let sections = parse_ini("");
-        assert!(sections.is_empty());
+        assert_eq!(parsed["state"]["first_run_sent"], "true");
     }
 }

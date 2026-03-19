@@ -248,6 +248,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
 struct WorkerData {
     worker_count_total: usize,
     worker_count_motia: usize,
+    worker_count_by_language: HashMap<String, u64>,
     workers: Vec<String>,
     sdk_languages: Vec<String>,
     client_type: String,
@@ -322,6 +323,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     WorkerData {
         worker_count_total,
         worker_count_motia,
+        worker_count_by_language: runtime_counts,
         workers,
         sdk_languages,
         client_type,
@@ -687,6 +689,7 @@ impl Module for TelemetryModule {
                             "trigger_types": ft.trigger_types,
                             "worker_count_total": wd.worker_count_total,
                             "worker_count_motia": wd.worker_count_motia,
+                            "worker_count_by_language": wd.worker_count_by_language,
                             "workers": wd.workers,
                             "sdk_languages": wd.sdk_languages,
                             "client_type": wd.client_type,
