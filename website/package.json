@@ -15,7 +15,8 @@
     "motion": "^12.34.4",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "vite": "^8.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
@@ -25,7 +26,6 @@
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "tsx": "^4.20.6",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "typescript": "~5.8.2"
   }
 }
