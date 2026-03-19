@@ -9,7 +9,7 @@ use serde_json::json;
 #[derive(serde::Deserialize)]
 struct EchoInput {
     message: String,
-    repeat: i32,
+    repeat: u32,
     uppercase: bool,
     prefix: String,
 }

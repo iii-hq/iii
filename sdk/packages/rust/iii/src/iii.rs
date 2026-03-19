@@ -234,18 +234,27 @@ pub struct IIIFn<F = ()> {
 
 fn short_type_name<T: ?Sized>() -> &'static str {
     let full = std::any::type_name::<T>();
-    full.rsplit("::").next().unwrap_or(full)
+    // Strip module path: "alloc::string::String" -> "String"
+    let name = full.rsplit("::").next().unwrap_or(full);
+    // Strip generic params: "Vec<String>" -> "Vec"
+    match name.find('<') {
+        Some(pos) => &name[..pos],
+        None => name,
+    }
 }
 
 /// Maps a Rust type name to a RegisterFunctionFormat-compatible type string.
 fn format_type_name<T: ?Sized>() -> &'static str {
     let name = short_type_name::<T>();
     match name {
-        "String" | "str" => "string",
+        "String" | "str" | "&str" => "string",
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
         | "usize" | "f32" | "f64" => "number",
         "bool" => "boolean",
+        "Vec" => "array",
+        "HashMap" | "BTreeMap" => "map",
         "Value" => "object",
+        "Option" => "object",
         _ => "object",
     }
 }
@@ -747,6 +756,24 @@ impl III {
     /// );
     /// ```
     /// Register a function using a [`RegisterFunction`] builder.
+    ///
+    /// This is the recommended API — combines ID, handler, and auto-generated
+    /// `request_format`/`response_format` schemas in one step.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Input { name: String }
+    /// fn greet(input: Input) -> Result<String, String> {
+    ///     Ok(format!("Hello, {}!", input.name))
+    /// }
+    ///
+    /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    /// iii.register(RegisterFunction::new("greet", greet).description("Greet by name"));
+    /// ```
     pub fn register(&self, reg: RegisterFunction) -> FunctionRef {
         self.register_function_inner(reg.message, Some(reg.handler))
     }

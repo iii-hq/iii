@@ -531,8 +531,8 @@ use iii_sdk::{iii_fn, RegisterFunctionMessage};
 fn add(a: i32, b: i32) -> Result<i32, String> { Ok(a + b) }
 
 iii.register_function(
-    RegisterFunctionMessage { id: "add".into(), ..Default::default() },
-    iii_fn(add),  // JSON input: [3, 4]
+    RegisterFunctionMessage::with_id("add".to_string()),
+    iii_fn(add),  // JSON input: {"a": 1, "b": 2}
 );
 ```
 
@@ -550,7 +550,7 @@ async fn fetch(url: String) -> Result<String, String> {
 }
 
 iii.register_function(
-    RegisterFunctionMessage { id: "fetch".into(), ..Default::default() },
+    RegisterFunctionMessage::with_id("fetch".to_string()),
     iii_async_fn(fetch),  // JSON input: "https://..."
 );
 ```
