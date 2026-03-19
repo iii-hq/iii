@@ -6,6 +6,33 @@ import { CodeEditor } from './CodeEditor';
 import { StatusPanel } from './StatusPanel';
 import { InstallShButton } from '../InstallShButton';
 
+function SlackLogo() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="w-3.5 h-3.5 shrink-0"
+      aria-hidden="true"
+    >
+      <path
+        fill="#E01E5A"
+        d="M5.042 15.165a2.528 2.528 0 1 1-2.527-2.527h2.527v2.527zm1.273 0a2.528 2.528 0 1 1 5.055 0v6.319a2.528 2.528 0 0 1-5.055 0v-6.319z"
+      />
+      <path
+        fill="#36C5F0"
+        d="M8.842 5.042a2.528 2.528 0 1 1 2.528-2.527v2.527H8.842zm0 1.273a2.528 2.528 0 1 1 0 5.055H2.527a2.528 2.528 0 0 1 0-5.055h6.315z"
+      />
+      <path
+        fill="#2EB67D"
+        d="M18.958 8.842a2.528 2.528 0 1 1 2.527 2.528h-2.527V8.842zm-1.273 0a2.528 2.528 0 1 1-5.055 0V2.527a2.528 2.528 0 0 1 5.055 0v6.315z"
+      />
+      <path
+        fill="#ECB22E"
+        d="M15.158 18.965a2.528 2.528 0 1 1-2.528 2.527v-2.527h2.528zm0-1.273a2.528 2.528 0 1 1 0-5.055h6.315a2.528 2.528 0 0 1 0 5.055h-6.315z"
+      />
+    </svg>
+  );
+}
+
 export function DemoSequencer({
   steps,
   mode = 'hero',
@@ -146,13 +173,14 @@ export function DemoSequencer({
     >
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-iii-medium/10 bg-iii-dark/40 shrink-0">
         <div className="flex items-center gap-2">
-          <div className="flex gap-1">
-            <span className="w-2 h-2 rounded-full bg-iii-alert/60" />
-            <span className="w-2 h-2 rounded-full bg-iii-warn/60" />
-            <span className="w-2 h-2 rounded-full bg-iii-success/60" />
+          <div className="flex items-center gap-1.5" aria-hidden="true">
+            <span className="h-2.5 w-2.5 rounded-full bg-iii-alert shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-iii-warn shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]" />
+            <span className="h-2.5 w-2.5 rounded-full bg-iii-success shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]" />
           </div>
-          <span className="text-xs text-iii-medium font-mono ml-2">
-            iii interactive flow
+          <span className="flex items-center gap-1.5 ml-2">
+            <SlackLogo />
+            <span className="text-xs text-iii-medium font-mono">Slack</span>
           </span>
         </div>
         <button

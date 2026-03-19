@@ -201,7 +201,7 @@ export const homepageFlow: Step[] = [
     type: 'slack-message',
     sender: jordan,
     content: 'When did you find the time to do that?',
-    action: { label: 'View' },
+    action: { label: 'Reply' },
     delay: 600,
   },
   {
