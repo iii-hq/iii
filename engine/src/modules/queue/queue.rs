@@ -45,12 +45,12 @@ pub struct QueueInput {
     data: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct RedriveInput {
     queue: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RedriveResult {
     pub queue: String,
     pub redriven: u64,

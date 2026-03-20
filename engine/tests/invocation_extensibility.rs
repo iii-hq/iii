@@ -139,17 +139,17 @@ async fn worker_pid_is_stored_and_listed() {
 
 #[cfg(test)]
 mod schema_tests {
+    use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
-    use schemars::JsonSchema;
     use std::sync::Arc;
 
+    use function_macros::{function, service};
     use iii::{
         engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
         function::FunctionResult,
         protocol::ErrorBody,
     };
-    use function_macros::{function, service};
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
     struct TestInput {
@@ -171,20 +171,14 @@ mod schema_tests {
     #[service]
     impl SchemaTestService {
         #[function(id = "test.typed_schema", description = "test typed schema")]
-        pub async fn typed_fn(
-            &self,
-            input: TestInput,
-        ) -> FunctionResult<TestOutput, ErrorBody> {
+        pub async fn typed_fn(&self, input: TestInput) -> FunctionResult<TestOutput, ErrorBody> {
             FunctionResult::Success(TestOutput {
                 result: format!("{}:{}", input.name, input.count),
             })
         }
 
         #[function(id = "test.raw_json", description = "test raw json")]
-        pub async fn raw_fn(
-            &self,
-            input: Value,
-        ) -> FunctionResult<Option<Value>, ErrorBody> {
+        pub async fn raw_fn(&self, input: Value) -> FunctionResult<Option<Value>, ErrorBody> {
             FunctionResult::Success(Some(input))
         }
 
@@ -214,8 +208,14 @@ mod schema_tests {
             .expect("request_format should be Some");
         assert_eq!(req_schema["type"], "object");
         let props = req_schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("name"), "schema should have 'name' property");
-        assert!(props.contains_key("count"), "schema should have 'count' property");
+        assert!(
+            props.contains_key("name"),
+            "schema should have 'name' property"
+        );
+        assert!(
+            props.contains_key("count"),
+            "schema should have 'count' property"
+        );
 
         // response_format should contain a JSON Schema for TestOutput
         let res_schema = func
@@ -224,7 +224,10 @@ mod schema_tests {
             .expect("response_format should be Some");
         assert_eq!(res_schema["type"], "object");
         let props = res_schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("result"), "schema should have 'result' property");
+        assert!(
+            props.contains_key("result"),
+            "schema should have 'result' property"
+        );
     }
 
     #[tokio::test]

@@ -105,10 +105,12 @@ fn needs_serialization(return_type: &syn::Type) -> bool {
 }
 
 /// Extracts the success type `T` from `FunctionResult<T, E>`.
+///
 /// Returns `None` if:
 /// - The return type is not `FunctionResult<T, E>`
 /// - `T` is `Option<Value>` or `Option<serde_json::Value>` (raw JSON, no schema)
 /// - `T` is `()`
+///
 /// Returns `Some(token_stream)` with the success type otherwise.
 fn extract_success_type(return_type: &syn::Type) -> Option<TokenStream2> {
     let type_path = match return_type {
@@ -133,33 +135,26 @@ fn extract_success_type(return_type: &syn::Type) -> Option<TokenStream2> {
     };
 
     // Check for unit type ()
-    if let syn::Type::Tuple(tuple) = success_ty {
-        if tuple.elems.is_empty() {
-            return None;
-        }
+    if let syn::Type::Tuple(tuple) = success_ty
+        && tuple.elems.is_empty()
+    {
+        return None;
     }
 
     // Check if it's Option<Value> or Option<serde_json::Value>
-    if let syn::Type::Path(opt_path) = success_ty {
-        if let Some(opt_seg) = opt_path.path.segments.last() {
-            if opt_seg.ident == "Option" {
-                if let syn::PathArguments::AngleBracketed(opt_args) = &opt_seg.arguments {
-                    if let Some(syn::GenericArgument::Type(syn::Type::Path(val_path))) =
-                        opt_args.args.first()
-                    {
-                        if val_path
-                            .path
-                            .segments
-                            .last()
-                            .map(|seg| seg.ident == "Value")
-                            .unwrap_or(false)
-                        {
-                            return None; // Option<Value> -> no schema
-                        }
-                    }
-                }
-            }
-        }
+    if let syn::Type::Path(opt_path) = success_ty
+        && let Some(opt_seg) = opt_path.path.segments.last()
+        && opt_seg.ident == "Option"
+        && let syn::PathArguments::AngleBracketed(opt_args) = &opt_seg.arguments
+        && let Some(syn::GenericArgument::Type(syn::Type::Path(val_path))) = opt_args.args.first()
+        && val_path
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident == "Value")
+            .unwrap_or(false)
+    {
+        return None; // Option<Value> -> no schema
     }
 
     Some(quote! { #success_ty })
@@ -206,8 +201,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .sig
                         .inputs
                         .iter()
-                        .skip_while(|arg| matches!(arg, syn::FnArg::Receiver(_)))
-                        .next()
+                        .find(|arg| !matches!(arg, syn::FnArg::Receiver(_)))
                     {
                         Some(syn::FnArg::Typed(pat_type)) => {
                             let ty = &*pat_type.ty;
@@ -277,19 +271,18 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                     };
 
                     // Generate response_format schema
-                    let response_format_expr =
-                        match extract_success_type(return_type) {
-                            Some(success_ty) => {
-                                quote! {
-                                    Some(
-                                        serde_json::to_value(
-                                            schemars::schema_for!(#success_ty)
-                                        ).unwrap()
-                                    )
-                                }
+                    let response_format_expr = match extract_success_type(return_type) {
+                        Some(success_ty) => {
+                            quote! {
+                                Some(
+                                    serde_json::to_value(
+                                        schemars::schema_for!(#success_ty)
+                                    ).unwrap()
+                                )
                             }
-                            None => quote! { None },
-                        };
+                        }
+                        None => quote! { None },
+                    };
 
                     generated.push(quote! {
                         {
