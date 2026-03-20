@@ -511,29 +511,32 @@ for async functions, then pass to [`III::register`](#register).
 | Args | JSON input format | Deserialization |
 | --- | --- | --- |
 | 0 | ignored | none |
-| 1 | `{"field": "value"}` | Entire JSON deserialized as the arg type (use `#[derive(Deserialize)]` structs) |
-| 2–8 | `[val1, val2, ...]` | JSON array deserialized as positional tuple |
+| 1 | `{"field": "value"}` | Entire JSON deserialized as the arg type (use `#[derive(Deserialize, JsonSchema)]` structs) |
 
 **Auto-generated schemas:** `request_format` and `response_format` are automatically
-populated from the function's type signature using Rust type names mapped to
-`string`, `number`, `boolean`, or `object`.
+populated as [JSON Schema (draft-07)](http://json-schema.org/draft-07/schema#) using
+[`schemars`](https://docs.rs/schemars). Input and output types must derive
+`schemars::JsonSchema` alongside `serde::Deserialize`/`serde::Serialize`.
 
 ### iii_fn
 
 `pub fn iii_fn<F, M>(f: F) -> IIIFn<F>`
 
-Wraps a **sync** function into an III-compatible handler. Supports 0–8 parameters.
-Use with [`register_function`](#register_function) or prefer [`RegisterFunction::new`](#registerfunction) with [`register`](#register).
+Wraps a **sync** function into an III-compatible handler.
+The input type must implement `DeserializeOwned + JsonSchema` and the return
+type must implement `Serialize + JsonSchema`.
 
 ```rust
-use iii_sdk::{iii_fn, RegisterFunctionMessage};
+use iii_sdk::{iii_fn, RegisterFunction};
+use serde::Deserialize;
+use schemars::JsonSchema;
 
-fn add(a: i32, b: i32) -> Result<i32, String> { Ok(a + b) }
+#[derive(Deserialize, JsonSchema)]
+struct AddInput { a: i32, b: i32 }
 
-iii.register_function(
-    RegisterFunctionMessage::with_id("add".to_string()),
-    iii_fn(add),  // JSON input: {"a": 1, "b": 2}
-);
+fn add(input: AddInput) -> Result<i32, String> { Ok(input.a + input.b) }
+
+iii.register_function(RegisterFunction::new("add", add));
 ```
 
 ### iii_async_fn
@@ -543,16 +546,13 @@ iii.register_function(
 Wraps an **async** function into an III-compatible handler. Same semantics as [`iii_fn`](#iii_fn).
 
 ```rust
-use iii_sdk::{iii_async_fn, RegisterFunctionMessage};
+use iii_sdk::{iii_async_fn, RegisterFunction};
 
 async fn fetch(url: String) -> Result<String, String> {
     Ok(format!("fetched {}", url))
 }
 
-iii.register_function(
-    RegisterFunctionMessage::with_id("fetch".to_string()),
-    iii_async_fn(fetch),  // JSON input: "https://..."
-);
+iii.register_function(RegisterFunction::new_async("fetch", fetch));
 ```
 
 ### InitOptions
