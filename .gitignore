@@ -39,3 +39,4 @@ sdk/packages/python/iii/api-docs.json
 
 .planning/
 iii_workers/
+.gstack/

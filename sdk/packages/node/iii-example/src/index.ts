@@ -4,6 +4,11 @@ import { streams } from './stream'
 import type { Todo } from './types'
 import './http-example'
 import './iii-zod-example'
+import './queue-basic'
+import './queue-ecommerce'
+import './queue-bulk-email'
+import './queue-financial'
+import './queue-dlq'
 
 useApi(
   {

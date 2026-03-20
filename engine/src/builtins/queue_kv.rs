@@ -364,19 +364,17 @@ impl QueueKvStore {
         removed
     }
 
-    pub async fn llen(&self, key: &str) -> usize {
-        let lists = self.lists.read().await;
-        lists.get(key).map_or(0, |list| list.len())
-    }
-
-    /// Returns up to `count` elements from the front of the list without removing them.
-    /// If count is 0 or the list doesn't exist, returns an empty Vec.
-    pub async fn lrange(&self, key: &str, count: usize) -> Vec<String> {
+    pub async fn lrange(&self, key: &str, offset: usize, limit: usize) -> Vec<String> {
         let lists = self.lists.read().await;
         lists
             .get(key)
-            .map(|list| list.iter().take(count).cloned().collect())
+            .map(|list| list.iter().skip(offset).take(limit).cloned().collect())
             .unwrap_or_default()
+    }
+
+    pub async fn llen(&self, key: &str) -> usize {
+        let lists = self.lists.read().await;
+        lists.get(key).map_or(0, |list| list.len())
     }
 
     pub async fn zadd(&self, key: &str, score: i64, member: String) {
@@ -546,6 +544,99 @@ mod tests {
         // Then job2 (newest lpush)
         let popped = kv_store.rpop(key).await;
         assert_eq!(popped, Some("job2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_lrange_with_offset_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_offset_zero";
+
+        // lpush adds to front: [c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+
+        // offset=0, limit=2 => first two items
+        let result = kv_store.lrange(key, 0, 2).await;
+        assert_eq!(result, vec!["c".to_string(), "b".to_string()]);
+
+        // offset=0, limit=5 => all items (limit exceeds length)
+        let result = kv_store.lrange(key, 0, 5).await;
+        assert_eq!(
+            result,
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+
+        // offset=0, limit=3 => exactly all items
+        let result = kv_store.lrange(key, 0, 3).await;
+        assert_eq!(
+            result,
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lrange_with_offset() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_offset";
+
+        // lpush adds to front: [d, c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+        kv_store.lpush(key, "d".to_string()).await;
+
+        // offset=1, limit=2 => skip first, take next two
+        let result = kv_store.lrange(key, 1, 2).await;
+        assert_eq!(result, vec!["c".to_string(), "b".to_string()]);
+
+        // offset=2, limit=10 => skip first two, take rest
+        let result = kv_store.lrange(key, 2, 10).await;
+        assert_eq!(result, vec!["b".to_string(), "a".to_string()]);
+
+        // offset=3, limit=1 => skip three, take one (last item)
+        let result = kv_store.lrange(key, 3, 1).await;
+        assert_eq!(result, vec!["a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_lrange_offset_beyond_length() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_beyond";
+
+        // lpush adds to front: [b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+
+        // offset=2 with 2 items => empty
+        let result = kv_store.lrange(key, 2, 5).await;
+        assert!(result.is_empty());
+
+        // offset=100 => well beyond length => empty
+        let result = kv_store.lrange(key, 100, 10).await;
+        assert!(result.is_empty());
+
+        // non-existent key => empty
+        let result = kv_store.lrange("nonexistent", 0, 10).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lrange_limit_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_limit_zero";
+
+        // lpush adds to front: [c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+
+        // limit=0 always returns empty regardless of offset
+        let result = kv_store.lrange(key, 0, 0).await;
+        assert!(result.is_empty());
+
+        let result = kv_store.lrange(key, 1, 0).await;
+        assert!(result.is_empty());
     }
 
     #[tokio::test]

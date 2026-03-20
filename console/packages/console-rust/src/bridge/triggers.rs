@@ -98,6 +98,40 @@ pub fn register_triggers(bridge: &III) -> Result<(), IIIError> {
         ),
         // Function invocation endpoint
         ("engine::console::invoke", "_console/invoke", "POST"),
+        // Queue management endpoints
+        ("engine::console::queues_list", "_console/queues", "GET"),
+        (
+            "engine::console::queue_detail",
+            "_console/queues/:topic",
+            "GET",
+        ),
+        (
+            "engine::console::queue_publish",
+            "_console/queues/:topic/publish",
+            "POST",
+        ),
+        // DLQ management endpoints
+        ("engine::console::dlq_list", "_console/dlq", "GET"),
+        (
+            "engine::console::dlq_messages",
+            "_console/dlq/:topic/messages",
+            "POST",
+        ),
+        (
+            "engine::console::dlq_redrive",
+            "_console/dlq/:topic/redrive",
+            "POST",
+        ),
+        (
+            "engine::console::dlq_redrive_message",
+            "_console/dlq/:topic/messages/:id/redrive",
+            "POST",
+        ),
+        (
+            "engine::console::dlq_discard_message",
+            "_console/dlq/:topic/messages/:id/discard",
+            "DELETE",
+        ),
     ];
 
     // Register each trigger with the bridge

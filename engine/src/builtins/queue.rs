@@ -664,6 +664,63 @@ impl BuiltinQueue {
         }
     }
 
+    pub async fn dlq_peek(
+        &self,
+        queue: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Vec<crate::modules::queue::DlqMessage> {
+        let dlq_key = self.dlq_key(queue);
+        let items = self
+            .kv_store
+            .lrange(&dlq_key, offset as usize, limit as usize)
+            .await;
+        let mut messages = Vec::new();
+        for item in items {
+            if let Ok(failed_data) = serde_json::from_str::<Value>(&item) {
+                let job = failed_data.get("job");
+                let error = failed_data
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let failed_at = failed_data
+                    .get("failed_at")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let id = job
+                    .and_then(|j| j.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let data = job
+                    .and_then(|j| j.get("data"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let retries = job
+                    .and_then(|j| j.get("attempts_made"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let size_bytes = item.len() as u64;
+                messages.push(crate::modules::queue::DlqMessage {
+                    id: id.to_string(),
+                    payload: data,
+                    error: error.to_string(),
+                    failed_at: failed_at / 1000, // stored as millis, API expects seconds
+                    retries,
+                    size_bytes,
+                });
+            }
+        }
+        messages
+    }
+
+    pub async fn queue_depth(&self, queue: &str) -> u64 {
+        let waiting_key = self.waiting_key(queue);
+        let active_key = self.active_key(queue);
+        let waiting = self.kv_store.llen(&waiting_key).await as u64;
+        let active = self.kv_store.llen(&active_key).await as u64;
+        waiting + active
+    }
+
     pub async fn dlq_count(&self, queue: &str) -> u64 {
         let dlq_key = self.dlq_key(queue);
         self.kv_store.llen(&dlq_key).await as u64
@@ -671,7 +728,7 @@ impl BuiltinQueue {
 
     pub async fn dlq_messages(&self, queue: &str, count: usize) -> Vec<Value> {
         let dlq_key = self.dlq_key(queue);
-        let raw_items = self.kv_store.lrange(&dlq_key, count).await;
+        let raw_items = self.kv_store.lrange(&dlq_key, 0, count).await;
         raw_items
             .into_iter()
             .filter_map(|item| serde_json::from_str::<Value>(&item).ok())
@@ -713,6 +770,92 @@ impl BuiltinQueue {
         tracing::info!(queue = %queue, count = %count, "DLQ jobs redriven");
 
         count
+    }
+
+    pub async fn dlq_redrive_message(&self, queue: &str, message_id: &str) -> bool {
+        let dlq_key = self.dlq_key(queue);
+        let mut found = false;
+        let mut remaining = Vec::new();
+
+        // Drain all items from the DLQ
+        while let Some(item) = self.kv_store.rpop(&dlq_key).await {
+            if !found {
+                if let Ok(failed_data) = serde_json::from_str::<Value>(&item)
+                    && let Some(job_value) = failed_data.get("job")
+                    && let Ok(job) = serde_json::from_value::<Job>(job_value.clone())
+                {
+                    if job.id == message_id {
+                        // Found the target message - reset attempts and re-enqueue
+                        let mut redriven_job = job;
+                        redriven_job.attempts_made = 0;
+
+                        let job_key = self.job_key(queue, &redriven_job.id);
+                        let job_json = serde_json::to_value(&redriven_job)
+                            .expect("Job serialization failed - this is a bug");
+                        self.kv_store.set_job(&job_key, job_json).await;
+
+                        let waiting_key = self.waiting_key(queue);
+                        self.kv_store.lpush(&waiting_key, redriven_job.id).await;
+
+                        found = true;
+                        continue;
+                    }
+                }
+            }
+            // Keep non-matching items to push back
+            remaining.push(item);
+        }
+
+        // Push remaining items back to the DLQ in original order.
+        // rpop gave us items tail-to-head (oldest first), so rpush
+        // restores them to the same positions.
+        for item in remaining {
+            self.kv_store.rpush(&dlq_key, item).await;
+        }
+
+        if found {
+            self.pubsub.send_msg(serde_json::json!({
+                "topic": format!("queue:job:{}", queue),
+                "type": "available",
+            }));
+            tracing::info!(queue = %queue, message_id = %message_id, "Single DLQ job redriven");
+        }
+
+        found
+    }
+
+    pub async fn dlq_discard_message(&self, queue: &str, message_id: &str) -> bool {
+        let dlq_key = self.dlq_key(queue);
+        let mut found = false;
+        let mut remaining = Vec::new();
+
+        while let Some(item) = self.kv_store.rpop(&dlq_key).await {
+            if !found {
+                if let Ok(failed_data) = serde_json::from_str::<Value>(&item)
+                    && let Some(job_value) = failed_data.get("job")
+                    && let Ok(job) = serde_json::from_value::<Job>(job_value.clone())
+                {
+                    if job.id == message_id {
+                        // Discard: delete the job record and don't re-enqueue
+                        let job_key = self.job_key(queue, &job.id);
+                        self.kv_store.delete_job(&job_key).await;
+                        found = true;
+                        continue;
+                    }
+                }
+            }
+            remaining.push(item);
+        }
+
+        for item in remaining {
+            self.kv_store.rpush(&dlq_key, item).await;
+        }
+
+        if found {
+            tracing::info!(queue = %queue, message_id = %message_id, "DLQ message discarded");
+        }
+
+        found
     }
 }
 
@@ -2168,5 +2311,329 @@ mod tests {
 
         let subs = queue.subscriptions.read().await;
         assert_eq!(subs.len(), 1, "Subscription should be created");
+    }
+
+    // =========================================================================
+    // dlq_peek tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_dlq_peek_empty() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let messages = queue.dlq_peek("test_queue", 0, 10).await;
+        assert!(messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_dlq_peek_returns_messages() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let data = serde_json::json!({"key": "value"});
+        let job_id = queue.push("test_queue", data.clone(), None, None).await;
+        let job = queue.pop("test_queue").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "test error")
+            .await
+            .unwrap();
+
+        let messages = queue.dlq_peek("test_queue", 0, 10).await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, job_id);
+        assert_eq!(messages[0].error, "test error");
+        assert_eq!(messages[0].payload, data);
+        assert!(messages[0].size_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn test_dlq_peek_with_offset_and_limit() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        for i in 0..3 {
+            let data = serde_json::json!({"index": i});
+            queue.push("test_queue", data, None, None).await;
+            let job = queue.pop("test_queue").await.unwrap();
+            queue
+                .nack("test_queue", &job.id, &format!("error {}", i))
+                .await
+                .unwrap();
+        }
+
+        let all = queue.dlq_peek("test_queue", 0, 10).await;
+        assert_eq!(all.len(), 3);
+
+        let offset = queue.dlq_peek("test_queue", 1, 10).await;
+        assert_eq!(offset.len(), 2);
+
+        let limited = queue.dlq_peek("test_queue", 0, 2).await;
+        assert_eq!(limited.len(), 2);
+
+        let page = queue.dlq_peek("test_queue", 1, 1).await;
+        assert_eq!(page.len(), 1);
+
+        let beyond = queue.dlq_peek("test_queue", 10, 10).await;
+        assert!(beyond.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_dlq_peek_skips_malformed_entries() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        // Push a valid DLQ entry
+        let data = serde_json::json!({"key": "value"});
+        queue.push("test_queue", data, None, None).await;
+        let job = queue.pop("test_queue").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "test error")
+            .await
+            .unwrap();
+
+        // Push a malformed entry directly to the DLQ
+        let dlq_key = queue.dlq_key("test_queue");
+        kv_store
+            .lpush(&dlq_key, "not valid json{{{".to_string())
+            .await;
+
+        // dlq_peek should return only the valid entry (malformed is skipped)
+        let messages = queue.dlq_peek("test_queue", 0, 10).await;
+        assert_eq!(messages.len(), 1);
+    }
+
+    // =========================================================================
+    // dlq_redrive_message tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_dlq_redrive_message_found() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let data = serde_json::json!({"key": "value"});
+        let job_id = queue.push("test_queue", data, None, None).await;
+        let job = queue.pop("test_queue").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "test error")
+            .await
+            .unwrap();
+
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+
+        let found = queue.dlq_redrive_message("test_queue", &job_id).await;
+        assert!(found);
+        assert_eq!(queue.dlq_count("test_queue").await, 0);
+
+        let requeued = queue.pop("test_queue").await;
+        assert!(requeued.is_some());
+        let requeued_job = requeued.unwrap();
+        assert_eq!(requeued_job.id, job_id);
+        assert_eq!(requeued_job.attempts_made, 0);
+    }
+
+    #[tokio::test]
+    async fn test_dlq_redrive_message_not_found() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let data = serde_json::json!({"key": "value"});
+        queue.push("test_queue", data, None, None).await;
+        let job = queue.pop("test_queue").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "test error")
+            .await
+            .unwrap();
+
+        let found = queue
+            .dlq_redrive_message("test_queue", "nonexistent-id")
+            .await;
+        assert!(!found);
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_dlq_redrive_message_preserves_other_messages() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let mut job_ids = Vec::new();
+        for i in 0..3 {
+            let data = serde_json::json!({"index": i});
+            let id = queue.push("test_queue", data, None, None).await;
+            let job = queue.pop("test_queue").await.unwrap();
+            queue
+                .nack("test_queue", &job.id, &format!("error {}", i))
+                .await
+                .unwrap();
+            job_ids.push(id);
+        }
+
+        assert_eq!(queue.dlq_count("test_queue").await, 3);
+
+        let found = queue.dlq_redrive_message("test_queue", &job_ids[1]).await;
+        assert!(found);
+        assert_eq!(queue.dlq_count("test_queue").await, 2);
+
+        // Verify the redriven job is back in the waiting queue
+        let requeued = queue.pop("test_queue").await;
+        assert!(requeued.is_some());
+        assert_eq!(requeued.unwrap().id, job_ids[1]);
+    }
+
+    // =========================================================================
+    // dlq_discard_message tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_dlq_discard_message_found() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let data = serde_json::json!({"key": "value"});
+        let job_id = queue.push("test_queue", data, None, None).await;
+        let job = queue.pop("test_queue").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "test error")
+            .await
+            .unwrap();
+
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+
+        let found = queue.dlq_discard_message("test_queue", &job_id).await;
+        assert!(found);
+        assert_eq!(queue.dlq_count("test_queue").await, 0);
+
+        // The job should NOT be re-enqueued
+        let requeued = queue.pop("test_queue").await;
+        assert!(requeued.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dlq_discard_message_not_found() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let data = serde_json::json!({"key": "value"});
+        queue.push("test_queue", data, None, None).await;
+        let job = queue.pop("test_queue").await.unwrap();
+        queue
+            .nack("test_queue", &job.id, "test error")
+            .await
+            .unwrap();
+
+        let found = queue
+            .dlq_discard_message("test_queue", "nonexistent-id")
+            .await;
+        assert!(!found);
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_dlq_discard_message_preserves_other_messages() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        let mut job_ids = Vec::new();
+        for i in 0..3 {
+            let data = serde_json::json!({"index": i});
+            let id = queue.push("test_queue", data, None, None).await;
+            let job = queue.pop("test_queue").await.unwrap();
+            queue
+                .nack("test_queue", &job.id, &format!("error {}", i))
+                .await
+                .unwrap();
+            job_ids.push(id);
+        }
+
+        let found = queue.dlq_discard_message("test_queue", &job_ids[1]).await;
+        assert!(found);
+        assert_eq!(queue.dlq_count("test_queue").await, 2);
+    }
+
+    // =========================================================================
+    // queue_depth tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_queue_depth() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig::default();
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        assert_eq!(queue.queue_depth("test_queue").await, 0);
+
+        queue
+            .push("test_queue", serde_json::json!({"a": 1}), None, None)
+            .await;
+        queue
+            .push("test_queue", serde_json::json!({"b": 2}), None, None)
+            .await;
+        assert_eq!(queue.queue_depth("test_queue").await, 2);
+
+        // Pop moves from waiting to active, depth should stay same
+        let _job = queue.pop("test_queue").await;
+        assert_eq!(queue.queue_depth("test_queue").await, 2);
     }
 }
