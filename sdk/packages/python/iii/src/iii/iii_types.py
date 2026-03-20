@@ -334,16 +334,18 @@ class FunctionInfo(BaseModel):
     Attributes:
         function_id: Unique identifier of the function.
         description: Human-readable description.
-        request_format: Schema describing expected input.
-        response_format: Schema describing expected output.
+        request_format: Schema describing expected input (JSON Schema or custom format).
+        response_format: Schema describing expected output (JSON Schema or custom format).
         metadata: Arbitrary metadata attached to the function.
     """
 
     function_id: str = Field(description="Unique identifier of the function.")
     description: str | None = Field(default=None, description="Human-readable description.")
-    request_format: RegisterFunctionFormat | None = Field(default=None, description="Schema describing expected input.")
-    response_format: RegisterFunctionFormat | None = Field(
-        default=None, description="Schema describing expected output."
+    request_format: dict[str, Any] | None = Field(
+        default=None, description="Schema describing expected input (JSON Schema or custom format)."
+    )
+    response_format: dict[str, Any] | None = Field(
+        default=None, description="Schema describing expected output (JSON Schema or custom format)."
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
 
