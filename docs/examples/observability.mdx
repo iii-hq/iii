@@ -144,8 +144,9 @@ use serde_json::json;
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-iii.register_function(RegisterFunctionMessage::with_id("orders.create".into()), |input| async move {
-    let logger = Logger();
+iii.register_function((RegisterFunctionMessage::with_id("orders.create".into()), |input| async move {
+    let logger = Logger());
+
     let req: ApiRequest = serde_json::from_value(input)?;
 
     let customer_id = req.body["customerId"].as_str().unwrap_or("").to_string();
@@ -287,8 +288,9 @@ iii.register_trigger({"type": "queue", "function_id": "order.process", "config":
 use iii_sdk::{Logger, TriggerRequest, TriggerAction, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function(RegisterFunctionMessage::with_id("order.process".into()), |input| async move {
-    let logger = Logger();
+iii.register_function((RegisterFunctionMessage::with_id("order.process".into()), |input| async move {
+    let logger = Logger());
+
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
     logger.info("Processing order", Some(json!({
@@ -374,8 +376,9 @@ iii.register_trigger({"type": "queue", "function_id": "order.notify", "config": 
 use iii_sdk::{Logger, RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
-iii.register_function(RegisterFunctionMessage::with_id("order.notify".into()), |input| async move {
-    let logger = Logger();
+iii.register_function((RegisterFunctionMessage::with_id("order.notify".into()), |input| async move {
+    let logger = Logger());
+
     let order_id = input["orderId"].as_str().unwrap_or("unknown");
 
     logger.info("Sending order notification", Some(json!({

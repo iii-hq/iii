@@ -200,6 +200,29 @@ pub trait IntoFunctionHandler {
     fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler>;
 }
 
+/// Trait for types that can be passed to [`III::register_function`].
+///
+/// Implemented for:
+/// - [`RegisterFunction`] — the builder API (recommended)
+/// - `(RegisterFunctionMessage, H)` — the legacy tuple API
+pub trait IntoFunctionRegistration {
+    fn into_registration(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>);
+}
+
+impl IntoFunctionRegistration for RegisterFunction {
+    fn into_registration(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>) {
+        (self.message, Some(self.handler))
+    }
+}
+
+impl<H: IntoFunctionHandler> IntoFunctionRegistration for (RegisterFunctionMessage, H) {
+    fn into_registration(self) -> (RegisterFunctionMessage, Option<RemoteFunctionHandler>) {
+        let (mut message, handler) = self;
+        let handler = handler.into_parts(&mut message);
+        (message, handler)
+    }
+}
+
 impl IntoFunctionHandler for HttpInvocationConfig {
     fn into_parts(self, message: &mut RegisterFunctionMessage) -> Option<RemoteFunctionHandler> {
         message.invocation = Some(self);
@@ -755,10 +778,7 @@ impl III {
     ///     },
     /// );
     /// ```
-    /// Register a function using a [`RegisterFunction`] builder.
-    ///
-    /// This is the recommended API — combines ID, handler, and auto-generated
-    /// `request_format`/`response_format` schemas in one step.
+    /// Register a function using the [`RegisterFunction`] builder (recommended).
     ///
     /// # Examples
     /// ```rust,no_run
@@ -772,18 +792,21 @@ impl III {
     /// }
     ///
     /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register(RegisterFunction::new("greet", greet).description("Greet by name"));
+    /// iii.register_function(RegisterFunction::new("greet", greet));
     /// ```
-    pub fn register(&self, reg: RegisterFunction) -> FunctionRef {
-        self.register_function_inner(reg.message, Some(reg.handler))
-    }
-
-    pub fn register_function<H: IntoFunctionHandler>(
-        &self,
-        mut message: RegisterFunctionMessage,
-        handler: H,
-    ) -> FunctionRef {
-        let handler = handler.into_parts(&mut message);
+    ///
+    /// Also accepts the legacy two-argument form for backward compatibility:
+    /// ```rust,no_run
+    /// # use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
+    /// # use serde_json::{json, Value};
+    /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    /// iii.register_function((
+    ///     RegisterFunctionMessage::with_id("echo".to_string()),
+    ///     |input: Value| async move { Ok(json!({"echo": input})) },
+    /// ));
+    /// ```
+    pub fn register_function<R: IntoFunctionRegistration>(&self, registration: R) -> FunctionRef {
+        let (message, handler) = registration.into_registration();
         self.register_function_inner(message, handler)
     }
 
@@ -1046,7 +1069,7 @@ impl III {
                 .contains_key(&function_id);
             if !function_exists {
                 let iii = self.clone();
-                self.register_function(
+                self.register_function((
                     RegisterFunctionMessage {
                         id: function_id.clone(),
                         description: None,
@@ -1073,7 +1096,7 @@ impl III {
                             Ok(Value::Null)
                         }
                     },
-                );
+                ));
             }
 
             match self.register_trigger(RegisterTriggerInput {
@@ -1723,7 +1746,7 @@ mod tests {
             auth: None,
         };
 
-        let func_ref = iii.register_function(
+        let func_ref = iii.register_function((
             RegisterFunctionMessage {
                 id: "external::my_lambda".to_string(),
                 description: None,
@@ -1733,7 +1756,7 @@ mod tests {
                 invocation: None,
             },
             config,
-        );
+        ));
 
         assert_eq!(func_ref.id, "external::my_lambda");
         assert_eq!(iii.inner.functions.lock().unwrap().len(), 1);
@@ -1755,7 +1778,7 @@ mod tests {
             auth: None,
         };
 
-        iii.register_function(
+        iii.register_function((
             RegisterFunctionMessage {
                 id: "".to_string(),
                 description: None,
@@ -1765,7 +1788,7 @@ mod tests {
                 invocation: None,
             },
             config,
-        );
+        ));
     }
 
     #[tokio::test]

@@ -137,7 +137,7 @@ async fn delivers_queue_events_to_external_http_function() {
     let topic = unique_topic("test::http_external::topic::rs");
     let payload = json!({"hello": "world", "count": 1});
 
-    let http_fn = iii.register_function(
+    let http_fn = iii.register_function((
         RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
@@ -188,7 +188,7 @@ async fn registers_and_unregisters_external_http_function() {
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::reg_unreg::rs");
 
-    let http_fn = iii.register_function(
+    let http_fn = iii.register_function((
         RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
@@ -229,7 +229,7 @@ async fn delivers_events_with_custom_headers() {
     custom_headers.insert("x-custom-header".to_string(), "test-value".to_string());
     custom_headers.insert("x-another".to_string(), "123".to_string());
 
-    let http_fn = iii.register_function(
+    let http_fn = iii.register_function((
         RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
@@ -291,7 +291,7 @@ async fn delivers_events_to_multiple_external_functions() {
     let payload_a = json!({"source": "topic-a", "value": 1});
     let payload_b = json!({"source": "topic-b", "value": 2});
 
-    let http_fn_a = iii.register_function(
+    let http_fn_a = iii.register_function((
         RegisterFunctionMessage::with_id(function_id_a.clone()),
         HttpInvocationConfig {
             url: probe_a.url(),
@@ -301,7 +301,7 @@ async fn delivers_events_to_multiple_external_functions() {
             auth: None,
         },
     );
-    let http_fn_b = iii.register_function(
+    let http_fn_b = iii.register_function((
         RegisterFunctionMessage::with_id(function_id_b.clone()),
         HttpInvocationConfig {
             url: probe_b.url(),
@@ -374,7 +374,7 @@ async fn stops_delivering_events_after_unregister() {
     let payload_before = json!({"phase": "before-unregister"});
     let payload_after = json!({"phase": "after-unregister"});
 
-    let http_fn = iii.register_function(
+    let http_fn = iii.register_function((
         RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
@@ -445,7 +445,7 @@ async fn delivers_events_using_put_method() {
     let topic = unique_topic("test::http_external::put::rs");
     let payload = json!({"method_test": "put", "value": 42});
 
-    let http_fn = iii.register_function(
+    let http_fn = iii.register_function((
         RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),

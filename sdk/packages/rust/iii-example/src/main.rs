@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
 
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage {
             id: "api::get::error-test".to_string(),
             description: None,
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Intentional error for OTEL stacktrace testing".into(),
             ))
         },
-    );
+    ));
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
         function_id: "api::get::error-test".to_string(),
@@ -81,12 +81,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a Streams instance for atomic updates
     let streams = Streams::new(iii.clone());
 
-    iii.register(
+    iii.register_function(
         RegisterFunction::new("example::echo", echo_message)
             .description("Echo a message with repeat and formatting options"),
     );
 
-    iii.register(
+    iii.register_function(
         RegisterFunction::new_async("example::delay_echo", delay_echo)
             .description("Echo with configurable delay"),
     );

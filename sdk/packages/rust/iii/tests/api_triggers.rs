@@ -30,7 +30,7 @@ fn test_pdf_path() -> PathBuf {
 async fn get_endpoint() {
     let iii = common::shared_iii();
 
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::get::rs".to_string()),
         |_input: Value| async move {
             Ok(json!({
@@ -69,7 +69,7 @@ async fn get_endpoint() {
 async fn post_endpoint_with_body() {
     let iii = common::shared_iii();
 
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::post::rs".to_string()),
         |input: Value| async move {
             let body = input.get("body").cloned().unwrap_or(Value::Null);
@@ -111,7 +111,7 @@ async fn post_endpoint_with_body() {
 async fn path_parameters() {
     let iii = common::shared_iii();
 
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::getbyid::rs".to_string()),
         |input: Value| async move {
             let id = input
@@ -156,7 +156,7 @@ async fn path_parameters() {
 async fn query_parameters() {
     let iii = common::shared_iii();
 
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::search::rs".to_string()),
         |input: Value| async move {
             let qp = input.get("query_params").cloned().unwrap_or(json!({}));
@@ -199,7 +199,7 @@ async fn query_parameters() {
 async fn custom_status_code() {
     let iii = common::shared_iii();
 
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::notfound::rs".to_string()),
         |_input: Value| async move {
         Ok(json!({"status_code": 404, "body": {"error": "Not found"}}))
@@ -245,7 +245,7 @@ async fn download_pdf_streaming() {
 
     let pdf_data = original_pdf.clone();
     let iii_for_handler = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::download::pdf::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
@@ -347,7 +347,7 @@ async fn upload_pdf_streaming() {
     let received_clone = received.clone();
 
     let iii_for_handler = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::upload::pdf::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
@@ -460,7 +460,7 @@ async fn sse_streaming() {
 
     let events_clone = events.clone();
     let iii_for_handler = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::sse::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
@@ -589,7 +589,7 @@ async fn urlencoded_form_data() {
     let iii = common::shared_iii();
 
     let iii_for_handler = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::form::urlencoded::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();
@@ -738,7 +738,7 @@ async fn multipart_form_data() {
     let iii = common::shared_iii();
 
     let iii_for_handler = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::api::form::multipart::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_handler.clone();

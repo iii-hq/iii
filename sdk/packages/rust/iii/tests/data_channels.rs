@@ -17,7 +17,7 @@ async fn stream_data_from_sender_to_processor() {
     let iii = common::shared_iii();
 
     let iii_for_processor = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::data::processor::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_processor.clone();
@@ -61,7 +61,7 @@ async fn stream_data_from_sender_to_processor() {
     );
 
     let iii_for_sender = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::data::sender::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_sender.clone();
@@ -152,7 +152,7 @@ async fn bidirectional_streaming() {
     let iii = common::shared_iii();
 
     let iii_for_worker = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::stream::worker::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_worker.clone();
@@ -236,7 +236,7 @@ async fn bidirectional_streaming() {
     );
 
     let iii_for_coord = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::stream::coordinator::rs".to_string()),
         move |input: Value| {
             let iii = iii_for_coord.clone();

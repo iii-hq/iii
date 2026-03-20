@@ -217,8 +217,9 @@ use iii_sdk::{III, IIIError, ChannelReader, extract_channel_refs, ChannelDirecti
 use serde_json::{json, Value};
 
 let iii_for_processor = iii.clone();
-iii.register_function(RegisterFunctionMessage::with_id("data.processor".into()), move |input: Value| {
-    let iii = iii_for_processor.clone();
+iii.register_function((RegisterFunctionMessage::with_id("data.processor".into()), move |input: Value| {
+    let iii = iii_for_processor.clone());
+
     async move {
         let label = input["label"].as_str().unwrap_or_default().to_string();
 
@@ -255,8 +256,9 @@ iii.register_function(RegisterFunctionMessage::with_id("data.processor".into()),
 });
 
 let iii_for_sender = iii.clone();
-iii.register_function(RegisterFunctionMessage::with_id("data.sender".into()), move |input: Value| {
-    let iii = iii_for_sender.clone();
+iii.register_function((RegisterFunctionMessage::with_id("data.sender".into()), move |input: Value| {
+    let iii = iii_for_sender.clone());
+
     async move {
         let records = input["records"].clone();
         let channel = iii.create_channel(None).await
@@ -459,8 +461,9 @@ use iii_sdk::{III, IIIError, ChannelReader, ChannelWriter, extract_channel_refs,
 use serde_json::{json, Value};
 
 let iii_for_worker = iii.clone();
-iii.register_function(RegisterFunctionMessage::with_id("stream.worker".into()), move |input: Value| {
-    let iii = iii_for_worker.clone();
+iii.register_function((RegisterFunctionMessage::with_id("stream.worker".into()), move |input: Value| {
+    let iii = iii_for_worker.clone());
+
     async move {
         let refs = extract_channel_refs(&input);
 
@@ -508,8 +511,9 @@ iii.register_function(RegisterFunctionMessage::with_id("stream.worker".into()), 
 });
 
 let iii_for_coord = iii.clone();
-iii.register_function(RegisterFunctionMessage::with_id("stream.coordinator".into()), move |input: Value| {
-    let iii = iii_for_coord.clone();
+iii.register_function((RegisterFunctionMessage::with_id("stream.coordinator".into()), move |input: Value| {
+    let iii = iii_for_coord.clone());
+
     async move {
         let text = input["text"].as_str().unwrap_or_default().to_string();
         let chunk_size = input["chunkSize"].as_u64().unwrap_or(10) as usize;

@@ -32,7 +32,7 @@ async fn subscribe_and_receive_published_messages() {
     let tx = Arc::new(Mutex::new(Some(tx)));
 
     let fn_id = format!("test::pubsub::rs::subscriber::{topic}");
-    let fn_ref = iii.register_function(
+    let fn_ref = iii.register_function((
         RegisterFunctionMessage::with_id(fn_id.clone()),
         move |data: Value| {
             let received = received_clone.clone();
@@ -97,7 +97,7 @@ async fn topic_isolation() {
     let fn_id_a = format!("test::pubsub::rs::topic_a::{topic_a}");
     let fn_id_b = format!("test::pubsub::rs::topic_b::{topic_b}");
 
-    let fn_a = iii.register_function(
+    let fn_a = iii.register_function((
         RegisterFunctionMessage::with_id(fn_id_a.clone()),
         move |data: Value| {
             let received = received_a_clone.clone();
@@ -112,7 +112,7 @@ async fn topic_isolation() {
         },
     );
 
-    let fn_b = iii.register_function(
+    let fn_b = iii.register_function((
         RegisterFunctionMessage::with_id(fn_id_b.clone()),
         move |data: Value| {
             let received = received_b_clone.clone();

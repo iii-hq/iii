@@ -23,7 +23,7 @@ async fn get_health_status(http_url: &str) -> u16 {
 async fn register_healthcheck_function_and_trigger() {
     let iii = common::shared_iii();
 
-    let fn_ref = iii.register_function(
+    let fn_ref = iii.register_function((
         RegisterFunctionMessage::with_id("test::healthcheck::rs".to_string()),
         |_input: Value| async move {
             Ok(json!({

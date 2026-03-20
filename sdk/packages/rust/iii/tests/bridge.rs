@@ -28,7 +28,7 @@ async fn register_and_invoke_function() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
 
-    let fn_ref = iii.register_function(
+    let fn_ref = iii.register_function((
         RegisterFunctionMessage::with_id("test::bridge::rs::echo".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
@@ -66,7 +66,7 @@ async fn invoke_function_fire_and_forget() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let fn_ref = iii.register_function(
+    let fn_ref = iii.register_function((
         RegisterFunctionMessage::with_id("test::bridge::rs::receiver".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
@@ -109,11 +109,11 @@ async fn invoke_function_fire_and_forget() {
 async fn list_registered_functions() {
     let iii = common::shared_iii();
 
-    let fn1 = iii.register_function(
+    let fn1 = iii.register_function((
         RegisterFunctionMessage::with_id("test::bridge::rs::list::func1".to_string()),
         |_: Value| async move { Ok(json!({})) },
     );
-    let fn2 = iii.register_function(
+    let fn2 = iii.register_function((
         RegisterFunctionMessage::with_id("test::bridge::rs::list::func2".to_string()),
         |_: Value| async move { Ok(json!({})) },
     );

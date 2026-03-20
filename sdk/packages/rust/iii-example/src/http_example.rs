@@ -8,7 +8,7 @@ pub fn setup(iii: &III) {
     let client = reqwest::Client::new();
 
     let get_client = client.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage {
             id: "api::get::http::rust::fetch".to_string(),
             description: None,
@@ -53,7 +53,7 @@ pub fn setup(iii: &III) {
                 Ok(serde_json::to_value(api_response)?)
             }
         },
-    );
+    ));
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
@@ -68,7 +68,7 @@ pub fn setup(iii: &III) {
     .expect("failed to register GET http-fetch trigger");
 
     let post_client = client.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage {
             id: "api::post::http::rust::fetch".to_string(),
             description: None,
@@ -120,7 +120,7 @@ pub fn setup(iii: &III) {
                 Ok(serde_json::to_value(api_response)?)
             }
         },
-    );
+    ));
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),

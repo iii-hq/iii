@@ -19,7 +19,7 @@ async fn enqueue_returns_acknowledgement() {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::queue::echo::rs".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
@@ -89,7 +89,7 @@ async fn enqueue_fifo_with_valid_group_field() {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::queue::fifo::rs".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
@@ -168,7 +168,7 @@ async fn void_returns_null_immediately() {
 
     let call_count = Arc::new(Mutex::new(0u32));
     let count_clone = call_count.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::queue::void::rs".to_string()),
         move |_input: Value| {
             let count = count_clone.clone();
@@ -204,7 +204,7 @@ async fn enqueue_multiple_messages_all_processed() {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::queue::multi::rs".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
@@ -258,7 +258,7 @@ async fn chained_enqueue() {
 
     let b_received = Arc::new(Mutex::new(Vec::new()));
     let b_received_clone = b_received.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::queue::chain::b::rs".to_string()),
         move |input: Value| {
             let b_received = b_received_clone.clone();
@@ -272,7 +272,7 @@ async fn chained_enqueue() {
     let a_received = Arc::new(Mutex::new(Vec::new()));
     let a_received_clone = a_received.clone();
     let iii_for_a = iii.clone();
-    iii.register_function(
+    iii.register_function((
         RegisterFunctionMessage::with_id("test::queue::chain::a::rs".to_string()),
         move |input: Value| {
             let a_received = a_received_clone.clone();

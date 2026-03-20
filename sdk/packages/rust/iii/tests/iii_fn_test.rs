@@ -132,11 +132,11 @@ async fn test_async_error_propagation() {
 #[tokio::test]
 async fn test_register_function_iii_fn() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
-    let _ref = iii.register_function(test_msg(), iii_fn(greet));
+    let _ref = iii.register_function((test_msg(), iii_fn(greet)));
 }
 
 #[tokio::test]
 async fn test_register_function_iii_async_fn() {
     let iii = iii_sdk::register_worker("ws://localhost:1234", iii_sdk::InitOptions::default());
-    let _ref = iii.register_function(test_msg(), iii_async_fn(async_greet));
+    let _ref = iii.register_function((test_msg(), iii_async_fn(async_greet)));
 }
