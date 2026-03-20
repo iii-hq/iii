@@ -9,6 +9,7 @@ mod registry;
 mod state;
 mod telemetry;
 mod update;
+mod workers;
 
 use std::process;
 
@@ -16,6 +17,7 @@ use clap::Parser;
 use colored::Colorize;
 
 use cli::{Cli, CommandInfo};
+use error::WorkerError;
 
 #[tokio::main]
 async fn main() {
@@ -31,8 +33,20 @@ async fn run(cli: Cli) -> i32 {
         CommandInfo::Dispatch { command, args } => {
             handle_dispatch(command, args, cli.no_update_check).await
         }
+        CommandInfo::Install { worker_name, force } => match worker_name {
+            Some(name) => match parse_worker_arg(name) {
+                Ok((name, version)) => handle_install_single(name, version, force).await,
+                Err(e) => {
+                    eprintln!("{} {}", "error:".red(), e);
+                    1
+                }
+            },
+            None => handle_install_all(force).await,
+        },
+        CommandInfo::Uninstall { worker_name } => handle_uninstall(worker_name),
         CommandInfo::Update { target } => handle_update(target).await,
-        CommandInfo::List => handle_list(),
+        CommandInfo::List => handle_worker_list(),
+        CommandInfo::Info { worker_name } => handle_info(worker_name).await,
     }
 }
 
@@ -195,6 +209,272 @@ async fn handle_dispatch(command: &str, args: &[String], no_update_check: bool) 
     }
 }
 
+/// Parse a worker argument that may contain an @version suffix.
+/// Returns (name, optional_version). Rejects empty name or empty version.
+fn parse_worker_arg(input: &str) -> Result<(&str, Option<&str>), WorkerError> {
+    if let Some((name, version)) = input.rsplit_once('@') {
+        if name.is_empty() {
+            return Err(WorkerError::InvalidWorkerName {
+                name: input.to_string(),
+            });
+        }
+        if version.is_empty() {
+            return Err(WorkerError::InvalidWorkerName {
+                name: input.to_string(),
+            });
+        }
+        Ok((name, Some(version)))
+    } else {
+        Ok((input, None))
+    }
+}
+
+/// Handle the install command for a single worker.
+async fn handle_install_single(worker_name: &str, version: Option<&str>, force: bool) -> i32 {
+    let client = match github::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} Failed to create HTTP client: {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    // Use current directory as project root
+    let project_dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to determine current directory: {}",
+                "error:".red(),
+                e
+            );
+            return 1;
+        }
+    };
+
+    let version_display = version.map(|v| format!("@{}", v)).unwrap_or_default();
+    eprintln!(
+        "  Installing worker {}{}...",
+        worker_name.bold(),
+        version_display
+    );
+
+    match workers::install::install_worker(worker_name, version, &project_dir, &client, force).await
+    {
+        Ok(workers::install::InstallOutcome::Installed {
+            name,
+            version: ver,
+            config_updated,
+        }) => {
+            eprintln!("  {} {} v{} installed successfully", "✓".green(), name, ver);
+            if config_updated {
+                eprintln!(
+                    "  {} config.yaml updated with default configuration",
+                    "✓".green()
+                );
+            }
+            0
+        }
+        Ok(workers::install::InstallOutcome::Updated {
+            name,
+            old_version,
+            new_version,
+            config_updated,
+        }) => {
+            eprintln!(
+                "  {} {} updated {} -> {}",
+                "✓".green(),
+                name,
+                old_version,
+                new_version
+            );
+            if config_updated {
+                eprintln!(
+                    "  {} config.yaml updated with default configuration",
+                    "✓".green()
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            1
+        }
+    }
+}
+
+/// Handle bulk install: read iii.toml and install all workers listed there.
+async fn handle_install_all(force: bool) -> i32 {
+    let project_dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to determine current directory: {}",
+                "error:".red(),
+                e
+            );
+            return 1;
+        }
+    };
+
+    let manifest = match workers::manifest::read_manifest(&project_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    if manifest.is_empty() {
+        eprintln!("  No workers defined in iii.toml. Nothing to install.");
+        return 0;
+    }
+
+    let client = match github::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} Failed to create HTTP client: {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    eprintln!("  Installing {} worker(s) from iii.toml...", manifest.len());
+    eprintln!();
+
+    let mut failed = 0u32;
+    let mut installed = 0u32;
+    let mut up_to_date = 0u32;
+
+    for (name, version) in &manifest {
+        let binary_path = workers::storage::worker_binary_path(&project_dir, name);
+        if binary_path.exists() {
+            let installed_version = workers::storage::read_installed_version(&project_dir, name);
+            if installed_version.as_deref() == Some(version.as_str()) {
+                eprintln!(
+                    "  {} {} v{} (already installed)",
+                    "-".dimmed(),
+                    name,
+                    version
+                );
+                up_to_date += 1;
+                continue;
+            }
+            eprintln!(
+                "  Updating {} (installed: {}, manifest: v{})...",
+                name.bold(),
+                installed_version
+                    .as_deref()
+                    .map_or("unknown".to_string(), |v| format!("v{}", v)),
+                version
+            );
+        } else {
+            eprintln!("  Installing {}@{}...", name.bold(), version);
+        }
+
+        match workers::install::install_worker(
+            name,
+            Some(version.as_str()),
+            &project_dir,
+            &client,
+            force,
+        )
+        .await
+        {
+            Ok(workers::install::InstallOutcome::Installed {
+                name: n,
+                version: v,
+                config_updated,
+            }) => {
+                eprintln!("  {} {} v{} installed", "✓".green(), n, v);
+                if config_updated {
+                    eprintln!("  {} config.yaml updated", "✓".green());
+                }
+                installed += 1;
+            }
+            Ok(workers::install::InstallOutcome::Updated {
+                name: n,
+                old_version,
+                new_version,
+                config_updated,
+            }) => {
+                eprintln!(
+                    "  {} {} updated {} -> {}",
+                    "✓".green(),
+                    n,
+                    old_version,
+                    new_version
+                );
+                if config_updated {
+                    eprintln!("  {} config.yaml updated", "✓".green());
+                }
+                installed += 1;
+            }
+            Err(e) => {
+                eprintln!("  {} {} failed: {}", "✗".red(), name, e);
+                failed += 1;
+            }
+        }
+    }
+
+    eprintln!();
+    if failed > 0 {
+        eprintln!(
+            "  {} installed, {} up to date, {} failed",
+            installed, up_to_date, failed
+        );
+        1
+    } else {
+        eprintln!("  {} installed, {} up to date", installed, up_to_date);
+        0
+    }
+}
+
+/// Handle the uninstall command for workers.
+fn handle_uninstall(worker_name: &str) -> i32 {
+    let project_dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to determine current directory: {}",
+                "error:".red(),
+                e
+            );
+            return 1;
+        }
+    };
+
+    eprintln!("  Uninstalling worker {}...", worker_name.bold());
+
+    match workers::uninstall::uninstall_worker(worker_name, &project_dir) {
+        Ok(outcome) => {
+            if outcome.binary_removed {
+                eprintln!("  {} Removed binary", "✓".green());
+            } else {
+                eprintln!("  {} Binary already absent", "-".dimmed());
+            }
+            eprintln!("  {} Removed from iii.toml", "✓".green());
+            if outcome.config_removed {
+                eprintln!("  {} Removed config.yaml block", "✓".green());
+            } else {
+                eprintln!("  {} No config.yaml block found", "-".dimmed());
+            }
+            for warning in &outcome.warnings {
+                eprintln!("  {} {}", "warning:".yellow(), warning);
+            }
+            eprintln!(
+                "  {} {} uninstalled successfully",
+                "✓".green(),
+                outcome.name
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            1
+        }
+    }
+}
+
 /// Handle the update command.
 async fn handle_update(target: Option<&str>) -> i32 {
     let client = match github::build_client() {
@@ -281,56 +561,103 @@ async fn handle_update(target: Option<&str>) -> i32 {
     }
 }
 
-/// Handle the list command.
-fn handle_list() -> i32 {
-    let app_state = match state::AppState::load(&platform::state_file_path()) {
-        Ok(s) => s,
+/// Handle the list command for workers (reads iii.toml).
+fn handle_worker_list() -> i32 {
+    let project_dir = match std::env::current_dir() {
+        Ok(d) => d,
         Err(e) => {
-            eprintln!("{} Failed to load state: {}", "error:".red(), e);
+            eprintln!(
+                "{} Failed to determine current directory: {}",
+                "error:".red(),
+                e
+            );
             return 1;
         }
     };
 
-    if app_state.binaries.is_empty() {
-        eprintln!("  No binaries installed yet. Run a command to auto-install its dependency.");
-        eprintln!(
-            "  Available commands: {}",
-            registry::available_commands().join(", ")
-        );
+    let workers = match workers::manifest::read_manifest(&project_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    if workers.is_empty() {
+        eprintln!("  No workers installed. Run `iii install <worker>` to get started.");
         return 0;
     }
 
-    eprintln!("  Installed binaries:");
     eprintln!();
-
-    for (name, binary_state) in &app_state.binaries {
-        let cmd = registry::REGISTRY
-            .iter()
-            .find(|s| s.name == name)
-            .and_then(|s| s.commands.first())
-            .map(|c| {
-                if c.cli_command == "motia" {
-                    "sdk motia"
-                } else {
-                    c.cli_command
-                }
-            })
-            .unwrap_or("?");
-
-        eprintln!(
-            "  {} {} (v{}) — installed {} — command: iii-cli {}",
-            "•".dimmed(),
-            name.bold(),
-            binary_state.version,
-            binary_state.installed_at.format("%Y-%m-%d"),
-            cmd,
-        );
+    eprintln!("  {:20} {}", "WORKER".bold(), "VERSION".bold());
+    eprintln!("  {:20} {}", "------".dimmed(), "-------".dimmed());
+    for (name, version) in &workers {
+        eprintln!("  {:20} {}", name, version);
     }
-
     eprintln!();
+    0
+}
+
+/// Handle the info command for a worker (fetches registry + GitHub).
+async fn handle_info(worker_name: &str) -> i32 {
+    let client = match github::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} Failed to create HTTP client: {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    // Fetch registry
+    let registry_manifest = match workers::registry::fetch_registry(&client).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    // Resolve worker
+    let worker_entry = match registry_manifest.resolve(worker_name) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{} {}", "error:".red(), e);
+            return 1;
+        }
+    };
+
+    // Build BinarySpec for fetch_latest_release
+    let spec = workers::spec::leaked_binary_spec(worker_name, worker_entry);
+
+    // Fetch latest version from GitHub
+    let version_display = match github::fetch_latest_release(&client, &spec).await {
+        Ok(release) => match github::parse_release_version(&release.tag_name) {
+            Ok(v) => format!("{}", v),
+            Err(_) => release.tag_name.clone(),
+        },
+        Err(_) => "unknown".to_string(),
+    };
+
+    // Display info card
+    eprintln!();
+    eprintln!("  {}: {}", "Name".bold(), worker_name);
+    eprintln!("  {}: {}", "Description".bold(), worker_entry.description);
+    eprintln!("  {}: {}", "Latest version".bold(), version_display);
+    eprintln!("  {}: {}", "Repository".bold(), worker_entry.repo);
     eprintln!(
-        "  Storage: {}",
-        platform::bin_dir().display().to_string().dimmed()
+        "  {}: {}",
+        "Platforms".bold(),
+        worker_entry.supported_targets.join(", ")
     );
+    eprintln!(
+        "  {}: {}",
+        "Checksum verified".bold(),
+        if worker_entry.has_checksum {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    eprintln!();
     0
 }
