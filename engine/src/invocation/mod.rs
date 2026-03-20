@@ -13,6 +13,8 @@ use tokio::sync::oneshot::{self, error::RecvError};
 use tracing::Instrument;
 use uuid::Uuid;
 
+use crate::telemetry::SpanExt;
+
 use crate::{
     function::{Function, FunctionResult},
     modules::observability::metrics::get_engine_metrics,
@@ -99,7 +101,8 @@ impl InvocationHandler {
             function_id = %function_id,
             // Tag internal vs user functions for filtering
             "iii.function.kind" = %function_kind,
-        );
+        )
+        .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
         async {
             let (sender, receiver) = tokio::sync::oneshot::channel();

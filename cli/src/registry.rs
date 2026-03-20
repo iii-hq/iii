@@ -162,22 +162,6 @@ pub fn all_binaries() -> Vec<&'static BinarySpec> {
     REGISTRY.iter().collect()
 }
 
-/// List all available CLI command names (using user-facing paths).
-pub fn available_commands() -> Vec<&'static str> {
-    REGISTRY
-        .iter()
-        .flat_map(|spec| {
-            spec.commands.iter().map(|m| {
-                if m.cli_command == "motia" {
-                    "sdk motia"
-                } else {
-                    m.cli_command
-                }
-            })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,19 +222,6 @@ mod tests {
 
         let spec = resolve_binary_for_update("iii-console").unwrap();
         assert_eq!(spec.name, "iii-console");
-    }
-
-    #[test]
-    fn test_available_commands() {
-        let cmds = available_commands();
-        assert!(cmds.contains(&"console"));
-        assert!(cmds.contains(&"create"));
-        assert!(cmds.contains(&"sdk motia"));
-        assert!(cmds.contains(&"start"));
-        assert!(
-            !cmds.contains(&"motia"),
-            "motia should be namespaced as 'sdk motia'"
-        );
     }
 
     #[test]

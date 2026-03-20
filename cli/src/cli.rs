@@ -57,6 +57,24 @@ pub enum Commands {
         args: Vec<String>,
     },
 
+    /// Install a worker from the registry (or all workers from iii.toml if no name given)
+    Install {
+        /// Worker name to install, optionally with version (e.g., "pdfkit" or "pdfkit@1.0.0")
+        #[arg(value_name = "WORKER[@VERSION]")]
+        worker_name: Option<String>,
+
+        /// Overwrite existing config.yaml entries without prompting
+        #[arg(long, short)]
+        force: bool,
+    },
+
+    /// Uninstall a worker (removes binary, manifest entry, and config)
+    Uninstall {
+        /// Worker name to uninstall (e.g., "pdfkit")
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
+    },
+
     /// Update iii-cli and managed binaries to their latest versions
     Update {
         /// Specific command or binary to update (e.g., "console", "self").
@@ -66,8 +84,15 @@ pub enum Commands {
         target: Option<String>,
     },
 
-    /// Show installed binaries and their versions
+    /// List installed workers and their versions
     List,
+
+    /// Show details about a worker from the registry
+    Info {
+        /// Worker name to inspect (e.g., "pdfkit")
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
+    },
 }
 
 /// SDK subcommands
@@ -107,10 +132,20 @@ pub fn extract_command_info(cmd: &Commands) -> CommandInfo<'_> {
             command: "start",
             args,
         },
+        Commands::Install { worker_name, force } => CommandInfo::Install {
+            worker_name: worker_name.as_deref(),
+            force: *force,
+        },
+        Commands::Uninstall { worker_name } => CommandInfo::Uninstall {
+            worker_name: worker_name.as_str(),
+        },
         Commands::Update { target } => CommandInfo::Update {
             target: target.as_deref(),
         },
         Commands::List => CommandInfo::List,
+        Commands::Info { worker_name } => CommandInfo::Info {
+            worker_name: worker_name.as_str(),
+        },
     }
 }
 
@@ -123,6 +158,15 @@ pub enum CommandInfo<'a> {
     },
     /// Update command
     Update { target: Option<&'a str> },
+    /// Install a worker
+    Install {
+        worker_name: Option<&'a str>,
+        force: bool,
+    },
+    /// Uninstall a worker
+    Uninstall { worker_name: &'a str },
     /// List installed binaries
     List,
+    /// Inspect worker details
+    Info { worker_name: &'a str },
 }

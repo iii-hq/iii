@@ -56,3 +56,4 @@ opentelemetry = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "trace", "testing"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
 serial_test = "3"
+tokio = { version = "1", features = ["test-util"] }

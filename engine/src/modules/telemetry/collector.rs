@@ -81,48 +81,30 @@ impl Default for TelemetryCollector {
 }
 
 impl TelemetryCollector {
-    /// Returns all counter values as a JSON snapshot.
+    /// Returns all counter values as a flat JSON snapshot.
     pub fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({
-            "cron": {
-                "executions": self.cron_executions.load(Ordering::Relaxed),
-            },
-            "queue": {
-                "emits": self.queue_emits.load(Ordering::Relaxed),
-                "consumes": self.queue_consumes.load(Ordering::Relaxed),
-            },
-            "state": {
-                "sets": self.state_sets.load(Ordering::Relaxed),
-                "gets": self.state_gets.load(Ordering::Relaxed),
-                "deletes": self.state_deletes.load(Ordering::Relaxed),
-                "updates": self.state_updates.load(Ordering::Relaxed),
-            },
-            "stream": {
-                "sets": self.stream_sets.load(Ordering::Relaxed),
-                "gets": self.stream_gets.load(Ordering::Relaxed),
-                "deletes": self.stream_deletes.load(Ordering::Relaxed),
-                "lists": self.stream_lists.load(Ordering::Relaxed),
-                "updates": self.stream_updates.load(Ordering::Relaxed),
-            },
-            "pubsub": {
-                "publishes": self.pubsub_publishes.load(Ordering::Relaxed),
-                "subscribes": self.pubsub_subscribes.load(Ordering::Relaxed),
-            },
-            "kv": {
-                "sets": self.kv_sets.load(Ordering::Relaxed),
-                "gets": self.kv_gets.load(Ordering::Relaxed),
-                "deletes": self.kv_deletes.load(Ordering::Relaxed),
-            },
-            "api": {
-                "requests": self.api_requests.load(Ordering::Relaxed),
-            },
-            "registrations": {
-                "functions": self.function_registrations.load(Ordering::Relaxed),
-                "triggers": self.trigger_registrations.load(Ordering::Relaxed),
-            },
-            "workers": {
-                "peak_active": self.peak_active_workers.load(Ordering::Relaxed),
-            },
+            "cron_executions": self.cron_executions.load(Ordering::Relaxed),
+            "queue_emits": self.queue_emits.load(Ordering::Relaxed),
+            "queue_consumes": self.queue_consumes.load(Ordering::Relaxed),
+            "state_sets": self.state_sets.load(Ordering::Relaxed),
+            "state_gets": self.state_gets.load(Ordering::Relaxed),
+            "state_deletes": self.state_deletes.load(Ordering::Relaxed),
+            "state_updates": self.state_updates.load(Ordering::Relaxed),
+            "stream_sets": self.stream_sets.load(Ordering::Relaxed),
+            "stream_gets": self.stream_gets.load(Ordering::Relaxed),
+            "stream_deletes": self.stream_deletes.load(Ordering::Relaxed),
+            "stream_lists": self.stream_lists.load(Ordering::Relaxed),
+            "stream_updates": self.stream_updates.load(Ordering::Relaxed),
+            "pubsub_publishes": self.pubsub_publishes.load(Ordering::Relaxed),
+            "pubsub_subscribes": self.pubsub_subscribes.load(Ordering::Relaxed),
+            "kv_sets": self.kv_sets.load(Ordering::Relaxed),
+            "kv_gets": self.kv_gets.load(Ordering::Relaxed),
+            "kv_deletes": self.kv_deletes.load(Ordering::Relaxed),
+            "api_requests": self.api_requests.load(Ordering::Relaxed),
+            "function_registrations": self.function_registrations.load(Ordering::Relaxed),
+            "trigger_registrations": self.trigger_registrations.load(Ordering::Relaxed),
+            "peak_active_workers": self.peak_active_workers.load(Ordering::Relaxed),
         })
     }
 }
@@ -282,27 +264,27 @@ mod tests {
         let c = TelemetryCollector::default();
         let snap = c.snapshot();
 
-        assert_eq!(snap["cron"]["executions"], 0);
-        assert_eq!(snap["queue"]["emits"], 0);
-        assert_eq!(snap["queue"]["consumes"], 0);
-        assert_eq!(snap["state"]["sets"], 0);
-        assert_eq!(snap["state"]["gets"], 0);
-        assert_eq!(snap["state"]["deletes"], 0);
-        assert_eq!(snap["state"]["updates"], 0);
-        assert_eq!(snap["stream"]["sets"], 0);
-        assert_eq!(snap["stream"]["gets"], 0);
-        assert_eq!(snap["stream"]["deletes"], 0);
-        assert_eq!(snap["stream"]["lists"], 0);
-        assert_eq!(snap["stream"]["updates"], 0);
-        assert_eq!(snap["pubsub"]["publishes"], 0);
-        assert_eq!(snap["pubsub"]["subscribes"], 0);
-        assert_eq!(snap["kv"]["sets"], 0);
-        assert_eq!(snap["kv"]["gets"], 0);
-        assert_eq!(snap["kv"]["deletes"], 0);
-        assert_eq!(snap["api"]["requests"], 0);
-        assert_eq!(snap["registrations"]["functions"], 0);
-        assert_eq!(snap["registrations"]["triggers"], 0);
-        assert_eq!(snap["workers"]["peak_active"], 0);
+        assert_eq!(snap["cron_executions"], 0);
+        assert_eq!(snap["queue_emits"], 0);
+        assert_eq!(snap["queue_consumes"], 0);
+        assert_eq!(snap["state_sets"], 0);
+        assert_eq!(snap["state_gets"], 0);
+        assert_eq!(snap["state_deletes"], 0);
+        assert_eq!(snap["state_updates"], 0);
+        assert_eq!(snap["stream_sets"], 0);
+        assert_eq!(snap["stream_gets"], 0);
+        assert_eq!(snap["stream_deletes"], 0);
+        assert_eq!(snap["stream_lists"], 0);
+        assert_eq!(snap["stream_updates"], 0);
+        assert_eq!(snap["pubsub_publishes"], 0);
+        assert_eq!(snap["pubsub_subscribes"], 0);
+        assert_eq!(snap["kv_sets"], 0);
+        assert_eq!(snap["kv_gets"], 0);
+        assert_eq!(snap["kv_deletes"], 0);
+        assert_eq!(snap["api_requests"], 0);
+        assert_eq!(snap["function_registrations"], 0);
+        assert_eq!(snap["trigger_registrations"], 0);
+        assert_eq!(snap["peak_active_workers"], 0);
     }
 
     #[test]
@@ -328,43 +310,55 @@ mod tests {
 
         let snap = c.snapshot();
 
-        assert_eq!(snap["cron"]["executions"], 5);
-        assert_eq!(snap["queue"]["emits"], 10);
-        assert_eq!(snap["queue"]["consumes"], 8);
-        assert_eq!(snap["state"]["sets"], 3);
-        assert_eq!(snap["state"]["gets"], 7);
-        assert_eq!(snap["api"]["requests"], 42);
-        assert_eq!(snap["registrations"]["functions"], 2);
-        assert_eq!(snap["registrations"]["triggers"], 4);
-        assert_eq!(snap["workers"]["peak_active"], 6);
-        assert_eq!(snap["kv"]["sets"], 11);
-        assert_eq!(snap["kv"]["gets"], 20);
-        assert_eq!(snap["kv"]["deletes"], 1);
-        assert_eq!(snap["pubsub"]["publishes"], 15);
-        assert_eq!(snap["pubsub"]["subscribes"], 9);
-        assert_eq!(snap["stream"]["sets"], 13);
-        assert_eq!(snap["stream"]["updates"], 2);
+        assert_eq!(snap["cron_executions"], 5);
+        assert_eq!(snap["queue_emits"], 10);
+        assert_eq!(snap["queue_consumes"], 8);
+        assert_eq!(snap["state_sets"], 3);
+        assert_eq!(snap["state_gets"], 7);
+        assert_eq!(snap["api_requests"], 42);
+        assert_eq!(snap["function_registrations"], 2);
+        assert_eq!(snap["trigger_registrations"], 4);
+        assert_eq!(snap["peak_active_workers"], 6);
+        assert_eq!(snap["kv_sets"], 11);
+        assert_eq!(snap["kv_gets"], 20);
+        assert_eq!(snap["kv_deletes"], 1);
+        assert_eq!(snap["pubsub_publishes"], 15);
+        assert_eq!(snap["pubsub_subscribes"], 9);
+        assert_eq!(snap["stream_sets"], 13);
+        assert_eq!(snap["stream_updates"], 2);
     }
 
     #[test]
-    fn test_snapshot_has_all_top_level_keys() {
+    fn test_snapshot_has_all_flat_keys() {
         let c = TelemetryCollector::default();
         let snap = c.snapshot();
         let expected_keys = [
-            "cron",
-            "queue",
-            "state",
-            "stream",
-            "pubsub",
-            "kv",
-            "api",
-            "registrations",
-            "workers",
+            "cron_executions",
+            "queue_emits",
+            "queue_consumes",
+            "state_sets",
+            "state_gets",
+            "state_deletes",
+            "state_updates",
+            "stream_sets",
+            "stream_gets",
+            "stream_deletes",
+            "stream_lists",
+            "stream_updates",
+            "pubsub_publishes",
+            "pubsub_subscribes",
+            "kv_sets",
+            "kv_gets",
+            "kv_deletes",
+            "api_requests",
+            "function_registrations",
+            "trigger_registrations",
+            "peak_active_workers",
         ];
         for key in &expected_keys {
             assert!(
                 snap.get(key).is_some(),
-                "snapshot should have top-level key '{}'",
+                "snapshot should have flat key '{}'",
                 key
             );
         }

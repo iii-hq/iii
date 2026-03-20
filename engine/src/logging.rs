@@ -906,6 +906,7 @@ mod tests {
                     "memory_max_spans": 321
                 })),
             }],
+            workers: vec![],
         };
 
         let otel = extract_otel_config(&cfg);
@@ -922,6 +923,7 @@ mod tests {
         let cfg = EngineConfig {
             port: 3000,
             modules: vec![],
+            workers: vec![],
         };
 
         let otel = extract_otel_config(&cfg);

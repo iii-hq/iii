@@ -119,6 +119,38 @@ async fn fetch_latest_release_by_prefix(
     }
 }
 
+/// Fetch a specific release by its tag name from a GitHub repository.
+pub async fn fetch_release_by_tag(
+    client: &reqwest::Client,
+    repo: &str,
+    tag: &str,
+) -> Result<Release, IiiGithubError> {
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/tags/{}",
+        repo, tag
+    );
+
+    let response = client.get(&url).send().await?;
+
+    match response.status() {
+        status if status.is_success() => {
+            let release: Release = response.json().await?;
+            Ok(release)
+        }
+        status if status == reqwest::StatusCode::FORBIDDEN => {
+            Err(IiiGithubError::Network(NetworkError::RateLimited))
+        }
+        status if status == reqwest::StatusCode::NOT_FOUND => Err(IiiGithubError::Registry(
+            RegistryError::NoReleasesAvailable {
+                binary: tag.to_string(),
+            },
+        )),
+        _status => Err(IiiGithubError::Network(NetworkError::RequestFailed(
+            response.error_for_status().unwrap_err(),
+        ))),
+    }
+}
+
 /// Helper error that can be either Network or Registry.
 #[derive(Debug, thiserror::Error)]
 pub enum IiiGithubError {

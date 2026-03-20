@@ -117,6 +117,10 @@ impl ChannelWriter {
     }
 
     pub async fn close(&self) -> Result<(), IIIError> {
+        // Delay the close frame slightly to allow the TCP stack to flush
+        // all buffered send() data. Without this, the close frame can arrive
+        // at the engine before all data frames, causing data truncation.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let mut guard = self.ws.lock().await;
         if let Some(ws) = guard.as_mut() {
             ws.send(WsMessage::Close(None)).await?;
@@ -267,5 +271,114 @@ fn extract_refs_recursive(
             };
             extract_refs_recursive(item, path, refs);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // ChannelWriter::close() – timing and state tests
+    // ---------------------------------------------------------------------------
+
+    /// close() must sleep at least 10 ms before clearing the ws field, even when
+    /// there is no live WebSocket connection (ws = None).
+    #[tokio::test]
+    async fn close_sleeps_before_clearing_ws() {
+        tokio::time::pause();
+
+        let writer = ChannelWriter {
+            url: "ws://test".to_string(),
+            ws: Arc::new(Mutex::new(None)),
+        };
+
+        let start = tokio::time::Instant::now();
+        writer.close().await.expect("close() should not fail");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= std::time::Duration::from_millis(10),
+            "expected at least 10 ms elapsed, got {:?}",
+            elapsed
+        );
+    }
+
+    /// close() must return Ok(()) when the writer was never connected (ws = None).
+    #[tokio::test]
+    async fn close_when_not_connected_succeeds() {
+        let writer = ChannelWriter {
+            url: "ws://test".to_string(),
+            ws: Arc::new(Mutex::new(None)),
+        };
+
+        let result = writer.close().await;
+        assert!(result.is_ok(), "expected Ok(()), got {:?}", result);
+    }
+
+    /// After close() completes, ws must be None regardless of its initial value.
+    #[tokio::test]
+    async fn close_sets_ws_to_none() {
+        let writer = ChannelWriter {
+            url: "ws://test".to_string(),
+            ws: Arc::new(Mutex::new(None)),
+        };
+
+        writer.close().await.expect("close() should not fail");
+
+        let guard = writer.ws.lock().await;
+        assert!(
+            guard.is_none(),
+            "expected ws to be None after close(), but it was Some"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_channel_url helper
+    // ---------------------------------------------------------------------------
+
+    /// build_channel_url must produce the correct URL structure including query
+    /// parameters for key and direction.
+    #[test]
+    fn build_channel_url_formats_correctly() {
+        let url = build_channel_url("http://engine", "chan-1", "mykey", "write");
+        assert_eq!(url, "http://engine/ws/channels/chan-1?key=mykey&dir=write");
+    }
+
+    /// build_channel_url must strip a trailing slash from the base URL so the
+    /// resulting URL does not contain a double slash.
+    #[test]
+    fn build_channel_url_strips_trailing_slash_from_base() {
+        let url = build_channel_url("http://engine/", "chan-2", "k", "read");
+        assert_eq!(url, "http://engine/ws/channels/chan-2?key=k&dir=read");
+    }
+
+    // ---------------------------------------------------------------------------
+    // urlencoded helper
+    // ---------------------------------------------------------------------------
+
+    /// urlencoded must percent-encode characters outside the unreserved set
+    /// (letters, digits, -, _, ., ~).
+    #[test]
+    fn urlencoded_encodes_special_chars() {
+        let encoded = urlencoded("hello world+/=");
+        assert_eq!(encoded, "hello%20world%2B%2F%3D");
+    }
+
+    /// urlencoded must leave unreserved characters (A-Z, a-z, 0-9, -, _, ., ~)
+    /// unchanged.
+    #[test]
+    fn urlencoded_leaves_unreserved_chars_unchanged() {
+        let input = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~";
+        assert_eq!(urlencoded(input), input);
+    }
+
+    /// urlencoded must produce an empty string for an empty input.
+    #[test]
+    fn urlencoded_returns_empty_for_empty_input() {
+        assert_eq!(urlencoded(""), "");
     }
 }

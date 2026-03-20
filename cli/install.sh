@@ -18,6 +18,9 @@ BIN_NAME="${BIN_NAME:-iii-cli}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BREW_FORMULA="${BREW_FORMULA:-$BIN_NAME}"
 
+AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
+AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-e8fb1f8d290a72dbb2d9b264926be4bf}"
+
 # Validate REPO format (owner/repo)
 if [[ ! "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
   echo "error: REPO must match owner/repo format (got: $REPO)" >&2
@@ -57,7 +60,22 @@ NC='\033[0m'
 # --- Helper functions ---------------------------------------------------------
 
 err() {
+  local stage="$1"; shift
   printf "${RED}error:${NC} %s\n" "$*" >&2
+  if [[ -n "${install_event_prefix:-}" && -n "${install_id:-}" && -n "${telemetry_id:-}" ]]; then
+    local err_msg
+    err_msg=$(echo "$*" | tr '"' "'")
+    if [[ "$install_event_prefix" == "upgrade" ]]; then
+      iii_send_event "upgrade_failed" \
+        "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${stage}\",\"error_message\":\"${err_msg}\"" \
+        "$telemetry_id"
+    else
+      iii_send_event "install_failed" \
+        "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${stage}\",\"error_message\":\"${err_msg}\"" \
+        "$telemetry_id"
+    fi
+    wait
+  fi
   exit 1
 }
 
@@ -75,6 +93,189 @@ print_message() {
   esac
 
   printf "${color}%s${NC}\n" "$message"
+}
+
+# --- Telemetry helpers --------------------------------------------------------
+
+iii_telemetry_enabled() {
+  if [[ "${III_TELEMETRY_ENABLED:-}" == "false" || "${III_TELEMETRY_ENABLED:-}" == "0" ]]; then
+    return 1
+  fi
+  local ci_vars=(CI GITHUB_ACTIONS GITLAB_CI CIRCLECI JENKINS_URL TRAVIS BUILDKITE TF_BUILD CODEBUILD_BUILD_ID BITBUCKET_BUILD_NUMBER DRONE TEAMCITY_VERSION)
+  for v in "${ci_vars[@]}"; do
+    if [[ -n "${!v:-}" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+iii_gen_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  else
+    od -x /dev/urandom 2>/dev/null | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}' | head -c 36 || echo "00000000-0000-0000-0000-000000000000"
+  fi
+}
+
+iii_toml_path() {
+  echo "${HOME}/.iii/telemetry.toml"
+}
+
+iii_read_toml_key() {
+  local section="$1"
+  local key="$2"
+  local toml_file
+  toml_file=$(iii_toml_path)
+  if [[ ! -f "$toml_file" ]]; then
+    echo ""
+    return
+  fi
+  local in_section=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [[ "$line" == "[$section]" ]]; then
+      in_section=1
+    elif [[ "$line" =~ ^\[.*\]$ ]]; then
+      in_section=0
+    elif [[ "$in_section" == "1" ]]; then
+      local lkey lval
+      lkey="${line%%=*}"
+      lkey="${lkey%"${lkey##*[![:space:]]}"}"
+      lval="${line#*=}"
+      lval="${lval#"${lval%%[![:space:]]*}"}"
+      # Strip surrounding TOML quotes
+      lval="${lval#\"}"
+      lval="${lval%\"}"
+      if [[ "$lkey" == "$key" ]]; then
+        echo "$lval"
+        return
+      fi
+    fi
+  done < "$toml_file"
+  echo ""
+}
+
+iii_set_toml_key() {
+  local section="$1"
+  local key="$2"
+  local value="$3"
+  local toml_file
+  toml_file=$(iii_toml_path)
+  mkdir -p "$(dirname "$toml_file")"
+  local tmp_file="${toml_file}.tmp"
+  local in_target=0
+  local key_written=0
+  : > "$tmp_file"
+  if [[ -f "$toml_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      local trimmed="${line#"${line%%[![:space:]]*}"}"
+      trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+      if [[ "$trimmed" == "[$section]" ]]; then
+        printf '%s\n' "$trimmed" >> "$tmp_file"
+        in_target=1
+      elif [[ "$trimmed" =~ ^\[.*\]$ ]]; then
+        if [[ "$in_target" == "1" && "$key_written" == "0" ]]; then
+          printf '%s = "%s"\n' "$key" "$value" >> "$tmp_file"
+          key_written=1
+        fi
+        in_target=0
+        printf '%s\n' "$trimmed" >> "$tmp_file"
+      elif [[ "$in_target" == "1" ]]; then
+        local lkey="${trimmed%%=*}"
+        lkey="${lkey%"${lkey##*[![:space:]]}"}"
+        if [[ "$lkey" == "$key" ]]; then
+          printf '%s = "%s"\n' "$key" "$value" >> "$tmp_file"
+          key_written=1
+        else
+          printf '%s\n' "$line" >> "$tmp_file"
+        fi
+      else
+        printf '%s\n' "$line" >> "$tmp_file"
+      fi
+    done < "$toml_file"
+  fi
+  if [[ "$key_written" == "0" ]]; then
+    if [[ "$in_target" == "1" ]]; then
+      printf '%s = "%s"\n' "$key" "$value" >> "$tmp_file"
+    else
+      printf '\n[%s]\n%s = "%s"\n' "$section" "$key" "$value" >> "$tmp_file"
+    fi
+  fi
+  mv "$tmp_file" "$toml_file"
+}
+
+iii_get_or_create_telemetry_id() {
+  local existing_id
+  existing_id=$(iii_read_toml_key "identity" "id")
+  if [[ -n "$existing_id" ]]; then
+    echo "$existing_id"
+    return
+  fi
+
+  local legacy_path="${HOME}/.iii/telemetry_id"
+  if [[ -f "$legacy_path" ]]; then
+    local legacy_id
+    legacy_id=$(cat "$legacy_path" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$legacy_id" ]]; then
+      iii_set_toml_key "identity" "id" "$legacy_id"
+      echo "$legacy_id"
+      return
+    fi
+  fi
+
+  mkdir -p "${HOME}/.iii"
+  local new_id
+  new_id="auto-$(iii_gen_uuid)"
+  iii_set_toml_key "identity" "id" "$new_id"
+  echo "$new_id"
+}
+
+iii_send_event() {
+  local event_type="$1"
+  local event_props="$2"
+  local device_id="$3"
+
+  if [[ -z "$AMPLITUDE_API_KEY" ]]; then
+    return 0
+  fi
+
+  if ! iii_telemetry_enabled; then
+    return 0
+  fi
+
+  local os_name
+  os_name=$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+  local ts
+  ts=$(date +%s 2>/dev/null || echo "0")
+  local ts_ms=$(( ts * 1000 ))
+  local insert_id
+  insert_id=$(iii_gen_uuid)
+
+  local payload="{\"api_key\":\"${AMPLITUDE_API_KEY}\",\"events\":[{\"device_id\":\"${device_id}\",\"user_id\":\"${device_id}\",\"event_type\":\"${event_type}\",\"event_properties\":{${event_props}},\"platform\":\"install-script\",\"os_name\":\"${os_name}\",\"app_version\":\"script\",\"time\":${ts_ms},\"insert_id\":\"${insert_id}\",\"ip\":\"\$remote\"}]}"
+
+  curl -s -o /dev/null -X POST "$AMPLITUDE_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    --data-raw "$payload" &
+}
+
+iii_export_host_user_id() {
+  local huid
+  huid=$(iii_read_toml_key "identity" "id")
+  if [[ -z "$huid" ]]; then
+    return 0
+  fi
+  local export_line="export III_HOST_USER_ID=\"${huid}\""
+  local profile
+  for profile in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+    if [[ -f "$profile" ]] && ! grep -qF "III_HOST_USER_ID" "$profile" 2>/dev/null; then
+      printf '\n# iii host correlation\n%s\n' "$export_line" >> "$profile"
+      break
+    fi
+  done
 }
 
 check_homebrew() {
@@ -163,14 +364,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     -v|--version)
       if [[ -z "${2:-}" ]]; then
-        err "--version requires an argument"
+        err "args" "--version requires an argument"
       fi
       requested_version="$2"
       shift 2
       ;;
     -b|--binary)
       if [[ -z "${2:-}" ]]; then
-        err "--binary requires an argument"
+        err "args" "--binary requires an argument"
       fi
       binary_path="$2"
       shift 2
@@ -200,7 +401,7 @@ if [[ -n "$requested_version" ]]; then
   local_ver="${requested_version#iii/}"
   local_ver="${local_ver#v}"
   if [[ ! "$local_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-    err "invalid version format: $requested_version (expected: X.Y.Z or X.Y.Z-pre)"
+    err "args" "invalid version format: $requested_version (expected: X.Y.Z or X.Y.Z-pre)"
   fi
   unset local_ver
 fi
@@ -208,7 +409,7 @@ fi
 # --- Dependency checks --------------------------------------------------------
 
 if ! command -v curl >/dev/null 2>&1; then
-  err "curl is required but not found"
+  err "dependency" "curl is required but not found"
 fi
 
 # --- Version check ------------------------------------------------------------
@@ -380,7 +581,7 @@ if [[ -z "$binary_path" ]]; then
         os="unknown-linux-gnu"
         ;;
       *)
-        err "unsupported OS: $uname_s"
+        err "platform" "unsupported OS: $uname_s"
         ;;
     esac
 
@@ -393,7 +594,7 @@ if [[ -z "$binary_path" ]]; then
         arch="aarch64"
         ;;
       *)
-        err "unsupported architecture: $uname_m"
+        err "platform" "unsupported architecture: $uname_m"
         ;;
     esac
 
@@ -435,23 +636,23 @@ if [[ -z "$binary_path" ]]; then
     printf "${MUTED}Installing ${NC}%s ${MUTED}version: ${NC}%s\n" "$BIN_NAME" "$requested_version"
     _tag="v${_bare}"
     api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
-    json=$(github_api "$api_url") || err "release tag not found: $requested_version (tried tag: $_tag)"
+    json=$(github_api "$api_url") || err "download" "release tag not found: $requested_version (tried tag: $_tag)"
   else
     printf "${MUTED}Installing ${NC}%s ${MUTED}latest version${NC}\n" "$BIN_NAME"
     api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
-    json_list=$(github_api "$api_url") || err "failed to fetch releases from $REPO"
+    json_list=$(github_api "$api_url") || err "download" "failed to fetch releases from $REPO"
     if command -v jq >/dev/null 2>&1; then
       json=$(printf '%s' "$json_list" \
         | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("v"))))')
-      [[ "$json" == "null" || -z "$json" ]] && err "no stable iii release found"
+      [[ "$json" == "null" || -z "$json" ]] && err "download" "no stable iii release found"
     else
       _tag=$(printf '%s' "$json_list" \
         | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"' \
         | head -n 1 \
         | sed -E 's/.*"(v[^"]+)".*/\1/')
-      [[ -z "$_tag" ]] && err "could not determine latest release"
+      [[ -z "$_tag" ]] && err "download" "could not determine latest release"
       api_url="https://api.github.com/repos/$REPO/releases/tags/$_tag"
-      json=$(github_api "$api_url") || err "failed to fetch release $_tag"
+      json=$(github_api "$api_url") || err "download" "failed to fetch release $_tag"
     fi
   fi
 
@@ -468,7 +669,7 @@ if [[ -z "$binary_path" ]]; then
   specific_version="${specific_version#v}"
 
   if [[ -z "$specific_version" ]]; then
-    err "could not determine version from release response"
+    err "download" "could not determine version from release response"
   fi
 
   if [[ -z "$requested_version" ]]; then
@@ -552,7 +753,7 @@ download_and_install() {
     fi
     if [[ -n "$actual_hash" ]]; then
       if [[ "$actual_hash" != "$expected_hash" ]]; then
-        err "checksum verification failed (expected: $expected_hash, got: $actual_hash)"
+        err "checksum" "checksum verification failed (expected: $expected_hash, got: $actual_hash)"
       fi
       print_message muted "Checksum verified"
     else
@@ -566,17 +767,17 @@ download_and_install() {
   case "$asset_name" in
     *.tar.gz|*.tgz)
       if ! command -v tar >/dev/null 2>&1; then
-        err "tar is required to extract $asset_name"
+        err "extract" "tar is required to extract $asset_name"
       fi
       # Check for path traversal entries before extracting
       if tar -tzf "$tmpdir/$asset_name" | grep -qE '(^|/)\.\.(/|$)'; then
-        err "archive contains path traversal entries"
+        err "extract" "archive contains path traversal entries"
       fi
       tar --no-same-owner -xzf "$tmpdir/$asset_name" -C "$tmpdir"
       ;;
     *.zip)
       if ! command -v unzip >/dev/null 2>&1; then
-        err "unzip is required to extract $asset_name"
+        err "extract" "unzip is required to extract $asset_name"
       fi
       unzip -q "$tmpdir/$asset_name" -d "$tmpdir"
       ;;
@@ -595,12 +796,12 @@ download_and_install() {
   fi
 
   if [[ -z "${bin_file:-}" || ! -f "$bin_file" ]]; then
-    err "binary '$BIN_NAME' not found in downloaded asset"
+    err "binary_lookup" "binary '$BIN_NAME' not found in downloaded asset"
   fi
 
   # Reject symlinks to prevent symlink attacks
   if [[ -L "$bin_file" ]]; then
-    err "binary is a symlink, refusing to install"
+    err "binary_lookup" "binary is a symlink, refusing to install"
   fi
 
   # Install the binary
@@ -618,7 +819,7 @@ download_and_install() {
 
 install_from_binary() {
   if [[ ! -f "$binary_path" ]]; then
-    err "binary not found at: $binary_path"
+    err "install" "binary not found at: $binary_path"
   fi
 
   mkdir -p "$INSTALL_DIR"
@@ -639,6 +840,31 @@ install_from_binary() {
   printf "\n${MUTED}Installing ${NC}%s ${MUTED}from: ${NC}%s\n" "$BIN_NAME" "$binary_path"
 }
 
+# --- Telemetry init -----------------------------------------------------------
+
+install_id=$(iii_gen_uuid)
+telemetry_id=$(iii_get_or_create_telemetry_id)
+install_event_prefix="install"
+
+from_version=""
+if [[ -z "$binary_path" ]]; then
+  if command -v "$BIN_NAME" >/dev/null 2>&1; then
+    from_version=$("$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")
+    from_version="${from_version#v}"
+  fi
+fi
+
+if [[ -n "$from_version" ]]; then
+  install_event_prefix="upgrade"
+  iii_send_event "upgrade_started" \
+    "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+else
+  iii_send_event "install_started" \
+    "\"install_id\":\"${install_id}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"os\":\"$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)\",\"arch\":\"$(uname -m 2>/dev/null || echo unknown)\"" \
+    "$telemetry_id"
+fi
+
 # --- Main dispatch ------------------------------------------------------------
 
 if [[ -n "$binary_path" ]]; then
@@ -646,6 +872,21 @@ if [[ -n "$binary_path" ]]; then
 else
   download_and_install
 fi
+
+installed_version=$("$INSTALL_DIR/$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")
+installed_version="${installed_version#v}"
+
+if [[ "$install_event_prefix" == "upgrade" ]]; then
+  iii_send_event "upgrade_succeeded" \
+    "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version}\",\"to_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+else
+  iii_send_event "install_succeeded" \
+    "\"install_id\":\"${install_id}\",\"installed_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \
+    "$telemetry_id"
+fi
+
+iii_export_host_user_id
 
 # --- PATH modification --------------------------------------------------------
 
@@ -766,5 +1007,5 @@ if [[ -x "$INSTALL_DIR/$BIN_NAME" ]]; then
   printf "\n"
   printf "\n"
 else
-  err "installation failed: binary not executable at $INSTALL_DIR/$BIN_NAME"
+  err "install" "installation failed: binary not executable at $INSTALL_DIR/$BIN_NAME"
 fi
