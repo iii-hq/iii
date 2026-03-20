@@ -16,19 +16,15 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from .channels import ChannelReader, ChannelWriter
-from .iii_constants import (
-    DEFAULT_RECONNECTION_CONFIG,
-    MAX_QUEUE_SIZE,
-    FunctionRef,
-    IIIConnectionState,
-    InitOptions,
-)
+from .format_utils import extract_request_format, extract_response_format
+from .iii_constants import DEFAULT_RECONNECTION_CONFIG, MAX_QUEUE_SIZE, FunctionRef, IIIConnectionState, InitOptions
 from .iii_types import (
     FunctionInfo,
     HttpInvocationConfig,
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
+    RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
     RegisterServiceInput,
@@ -47,14 +43,7 @@ from .iii_types import (
     UnregisterTriggerTypeMessage,
     WorkerInfo,
 )
-from .stream import (
-    IStream,
-    StreamDeleteInput,
-    StreamGetInput,
-    StreamListGroupsInput,
-    StreamListInput,
-    StreamSetInput,
-)
+from .stream import IStream, StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput, StreamSetInput
 from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
@@ -682,8 +671,13 @@ class III:
 
     def register_function(
         self,
-        func: RegisterFunctionInput | dict[str, Any],
+        func_or_id: RegisterFunctionInput | dict[str, Any] | str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
+        *,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        request_format: RegisterFunctionFormat | None = None,
+        response_format: RegisterFunctionFormat | None = None,
     ) -> FunctionRef:
         """Register a function with the engine.
 
@@ -695,14 +689,27 @@ class III:
         block the event loop.  Each handler receives a single ``data``
         argument containing the trigger payload.
 
+        When ``func_or_id`` is a ``str``, the simplified API is used:
+        ``request_format`` and ``response_format`` are auto-extracted
+        from the handler's type hints when not explicitly provided.
+
         Args:
-            func: A ``RegisterFunctionInput`` or dict with ``id`` and
-                optional ``description``, ``metadata``,
-                ``request_format``, ``response_format``.
+            func_or_id: A ``RegisterFunctionInput``, dict with ``id``, or
+                a plain string function ID.  When a string is passed, use
+                keyword arguments for ``description``, ``metadata``,
+                ``request_format``, and ``response_format``.
             handler_or_invocation: A callable handler or
                 ``HttpInvocationConfig``.  Callable handlers receive one
                 positional argument (``data`` -- the trigger payload) and
                 may return a value.
+            description: Human-readable description (only with string ID).
+            metadata: Arbitrary metadata (only with string ID).
+            request_format: Schema describing expected input (only with
+                string ID).  Auto-extracted from handler type hints when
+                omitted.
+            response_format: Schema describing expected output (only with
+                string ID).  Auto-extracted from handler type hints when
+                omitted.
 
         Returns:
             A ``FunctionRef`` with an ``id`` attribute and an
@@ -719,9 +726,35 @@ class III:
             ...     return {'message': f"Hello, {data['name']}!"}
             >>> fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
             >>> fn.unregister()
+
+            >>> from pydantic import BaseModel
+            >>> class GreetInput(BaseModel):
+            ...     name: str
+            >>> class GreetOutput(BaseModel):
+            ...     message: str
+            >>> async def greet(data: GreetInput) -> GreetOutput:
+            ...     return GreetOutput(message=f"Hello, {data.name}!")
+            >>> fn = iii.register_function("greet", greet, description="Greets a user")
         """
-        if isinstance(func, dict):
-            func = RegisterFunctionInput(**func)
+        if isinstance(func_or_id, str):
+            # Simplified API: auto-extract formats from handler type hints
+            handler_for_extraction = handler_or_invocation if callable(handler_or_invocation) else None
+            if request_format is None and handler_for_extraction is not None:
+                request_format = extract_request_format(handler_for_extraction)
+            if response_format is None and handler_for_extraction is not None:
+                response_format = extract_response_format(handler_for_extraction)
+            func = RegisterFunctionInput(
+                id=func_or_id,
+                description=description,
+                metadata=metadata,
+                request_format=request_format,
+                response_format=response_format,
+            )
+        elif isinstance(func_or_id, dict):
+            func = RegisterFunctionInput(**func_or_id)
+        else:
+            func = func_or_id
+
         if not func.id or not func.id.strip():
             raise ValueError("id is required")
         if func.id in self._functions:

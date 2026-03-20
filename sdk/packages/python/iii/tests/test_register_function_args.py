@@ -45,6 +45,7 @@ def test_register_function_input_with_all_fields() -> None:
 # FakeWs helpers
 # ---------------------------------------------------------------------------
 
+
 class FakeWebSocket:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
@@ -86,6 +87,7 @@ def _make_client() -> III:
 # Two-arg register_function tests
 # ---------------------------------------------------------------------------
 
+
 def test_register_function_dict_with_request_format(monkeypatch: pytest.MonkeyPatch) -> None:
     """register_function accepts a dict as first arg, with request_format."""
     ws = _patch_ws(monkeypatch)
@@ -125,12 +127,22 @@ def test_register_function_model_with_both_formats(monkeypatch: pytest.MonkeyPat
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
-    req_fmt = RegisterFunctionFormat(name="input", type="object", body=[
-        RegisterFunctionFormat(name="query", type="string", required=True),
-    ])
-    res_fmt = RegisterFunctionFormat(name="output", type="object", body=[
-        RegisterFunctionFormat(name="items", type="array", items=RegisterFunctionFormat(name="item", type="string")),
-    ])
+    req_fmt = RegisterFunctionFormat(
+        name="input",
+        type="object",
+        body=[
+            RegisterFunctionFormat(name="query", type="string", required=True),
+        ],
+    )
+    res_fmt = RegisterFunctionFormat(
+        name="output",
+        type="object",
+        body=[
+            RegisterFunctionFormat(
+                name="items", type="array", items=RegisterFunctionFormat(name="item", type="string")
+            ),
+        ],
+    )
 
     async def handler(data: Any) -> Any:
         return {"items": []}
@@ -182,9 +194,13 @@ def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyP
 
     from iii import HttpInvocationConfig
 
-    req_fmt = RegisterFunctionFormat(name="input", type="object", body=[
-        RegisterFunctionFormat(name="payload", type="string"),
-    ])
+    req_fmt = RegisterFunctionFormat(
+        name="input",
+        type="object",
+        body=[
+            RegisterFunctionFormat(name="payload", type="string"),
+        ],
+    )
 
     client.register_function(
         {"id": "external::with_format", "request_format": req_fmt},
@@ -203,8 +219,7 @@ def test_register_function_dict_with_http_invocation(monkeypatch: pytest.MonkeyP
 
 def test_register_function_input_importable_from_top_level() -> None:
     """RegisterFunctionInput and RegisterFunctionFormat should be importable from iii."""
-    from iii import RegisterFunctionInput
-    from iii.iii_types import RegisterFunctionFormat
+    from iii import RegisterFunctionFormat, RegisterFunctionInput
 
     fmt = RegisterFunctionFormat(name="test", type="string")
     assert fmt.name == "test"
@@ -212,3 +227,180 @@ def test_register_function_input_importable_from_top_level() -> None:
     inp = RegisterFunctionInput(id="test.fn", request_format=fmt)
     assert inp.id == "test.fn"
     assert inp.request_format is not None
+
+
+# ---------------------------------------------------------------------------
+# Simplified string-id API with auto-extraction
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+
+class UserInput(BaseModel):
+    name: str
+    age: int = Field(description="Age in years")
+    nickname: str | None = None
+
+
+class UserOutput(BaseModel):
+    message: str
+    tags: list[str] = Field(default_factory=list)
+
+
+def test_register_function_str_id_auto_extracts_formats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """String ID triggers auto-extraction of request/response formats from handler."""
+    ws = _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: UserInput) -> UserOutput:
+        return UserOutput(message=f"Hello {data.name}")
+
+    client.register_function("demo.auto", handler, description="Auto-extract demo")
+    time.sleep(0.02)
+
+    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.auto"]
+    assert len(reg_msgs) == 1
+    msg = reg_msgs[0]
+
+    assert msg.get("description") == "Auto-extract demo"
+
+    # Check request_format was auto-extracted
+    req_fmt = msg.get("request_format")
+    assert req_fmt is not None
+    assert req_fmt["type"] == "object"
+    body_names = {f["name"] for f in req_fmt["body"]}
+    assert body_names == {"name", "age", "nickname"}
+    age_field = next(f for f in req_fmt["body"] if f["name"] == "age")
+    assert age_field["description"] == "Age in years"
+    nickname_field = next(f for f in req_fmt["body"] if f["name"] == "nickname")
+    assert nickname_field["required"] is False
+
+    # Check response_format was auto-extracted
+    res_fmt = msg.get("response_format")
+    assert res_fmt is not None
+    assert res_fmt["type"] == "object"
+    res_body_names = {f["name"] for f in res_fmt["body"]}
+    assert res_body_names == {"message", "tags"}
+    tags_field = next(f for f in res_fmt["body"] if f["name"] == "tags")
+    assert tags_field["type"] == "array"
+
+    client.shutdown()
+
+
+def test_register_function_str_id_explicit_formats_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit formats take priority over auto-extraction."""
+    ws = _patch_ws(monkeypatch)
+    client = _make_client()
+
+    explicit_req = RegisterFunctionFormat(name="custom_input", type="string")
+    explicit_res = RegisterFunctionFormat(name="custom_output", type="number")
+
+    async def handler(data: UserInput) -> UserOutput:
+        return UserOutput(message="hi")
+
+    client.register_function(
+        "demo.explicit",
+        handler,
+        request_format=explicit_req,
+        response_format=explicit_res,
+    )
+    time.sleep(0.02)
+
+    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.explicit"]
+    assert len(reg_msgs) == 1
+    msg = reg_msgs[0]
+
+    # Explicit formats should be used, not auto-extracted ones
+    assert msg["request_format"]["name"] == "custom_input"
+    assert msg["request_format"]["type"] == "string"
+    assert msg["response_format"]["name"] == "custom_output"
+    assert msg["response_format"]["type"] == "number"
+
+    client.shutdown()
+
+
+def test_register_function_str_id_no_annotations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """String ID with handler lacking type hints sends no formats."""
+    ws = _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data):
+        return data
+
+    client.register_function("demo.no_hints", handler)
+    time.sleep(0.02)
+
+    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.no_hints"]
+    assert len(reg_msgs) == 1
+    assert "request_format" not in reg_msgs[0]
+    assert "response_format" not in reg_msgs[0]
+
+    client.shutdown()
+
+
+def test_register_function_str_id_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """String ID supports metadata keyword argument."""
+    ws = _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: str) -> str:
+        return data
+
+    client.register_function("demo.meta", handler, metadata={"version": "2.0"})
+    time.sleep(0.02)
+
+    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.meta"]
+    assert len(reg_msgs) == 1
+    assert reg_msgs[0]["metadata"] == {"version": "2.0"}
+
+    # Verify primitive types were auto-extracted
+    assert reg_msgs[0]["request_format"]["type"] == "string"
+    assert reg_msgs[0]["response_format"]["type"] == "string"
+
+    client.shutdown()
+
+
+def test_register_function_backward_compat_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dict API still works unchanged (backward compat)."""
+    ws = _patch_ws(monkeypatch)
+    client = _make_client()
+
+    async def handler(data: UserInput) -> UserOutput:
+        return UserOutput(message="hi")
+
+    # Using dict — should NOT auto-extract (backward compat)
+    client.register_function({"id": "demo.dict_compat"}, handler)
+    time.sleep(0.02)
+
+    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.dict_compat"]
+    assert len(reg_msgs) == 1
+    # Dict path does not auto-extract
+    assert "request_format" not in reg_msgs[0]
+    assert "response_format" not in reg_msgs[0]
+
+    client.shutdown()
+
+
+def test_register_function_str_id_with_http_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """String ID with HttpInvocationConfig doesn't attempt auto-extraction."""
+    ws = _patch_ws(monkeypatch)
+    client = _make_client()
+
+    from iii import HttpInvocationConfig
+
+    client.register_function(
+        "demo.http",
+        HttpInvocationConfig(url="https://example.com/fn", method="POST"),
+        description="HTTP function",
+    )
+    time.sleep(0.02)
+
+    reg_msgs = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.http"]
+    assert len(reg_msgs) == 1
+    assert reg_msgs[0]["invocation"]["url"] == "https://example.com/fn"
+    assert reg_msgs[0]["description"] == "HTTP function"
+    # No auto-extraction since HttpInvocationConfig is not callable
+    assert "request_format" not in reg_msgs[0]
+    assert "response_format" not in reg_msgs[0]
+
+    client.shutdown()

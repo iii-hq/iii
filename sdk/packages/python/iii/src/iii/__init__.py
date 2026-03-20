@@ -1,6 +1,7 @@
 """III SDK for Python."""
 
 from .channels import ChannelReader, ChannelWriter
+from .format_utils import extract_request_format, extract_response_format, python_type_to_format
 from .iii import TriggerAction, register_worker
 from .iii_constants import FunctionRef, InitOptions, ReconnectionConfig, TelemetryOptions
 from .iii_types import (
@@ -9,6 +10,7 @@ from .iii_types import (
     HttpAuthConfig,
     HttpInvocationConfig,
     MessageType,
+    RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
     RegisterServiceInput,
@@ -56,6 +58,7 @@ __all__ = [
     "HttpAuthConfig",
     "HttpInvocationConfig",
     "MessageType",
+    "RegisterFunctionFormat",
     "RegisterFunctionInput",
     "RegisterFunctionMessage",
     "RegisterServiceInput",
@@ -88,4 +91,8 @@ __all__ = [
     "StreamContext",
     # Utilities
     "http",
+    # Format extraction
+    "extract_request_format",
+    "extract_response_format",
+    "python_type_to_format",
 ]
