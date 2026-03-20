@@ -78,3 +78,8 @@ Use the adaptations below when they apply to the task.
 - Failed jobs exhaust retries and move to a DLQ — see the [dead-letter-queues HOWTO](https://iii.dev/docs/how-to/dead-letter-queues)
 - DLQ support for named queues is provided by the Builtin and RabbitMQ adapters (Redis is pub/sub only)
 - Cron expressions use 7-position numeric format: `0 0 * * * * *` (every hour)
+
+## Pattern Boundaries
+
+- If the task is "model HTTP endpoints as HTTP-invoked `registerFunction` functions" (including `{ path, id }` arrays iterated into registration), prefer `http-invoked-functions`.
+- Stay with `workflow-orchestration` when durable step sequencing, queue retries/backoff, and workflow progress tracking are the primary concerns.

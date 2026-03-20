@@ -71,3 +71,8 @@ Use the adaptations below when they apply to the task.
 - Define queue configs (retries, concurrency) in `iii-config.yaml` under `queue_configs`
 - State scope should be named for your domain (e.g. `research-tasks`, `support-tickets`)
 - `functionId` segments should reflect your agent hierarchy (e.g. `agents::researcher`, `agents::critic`)
+
+## Pattern Boundaries
+
+- If a request is about adapting existing HTTP endpoints into `registerFunction` (including prompts asking for `{ path, id }` endpoint maps + loops), prefer `http-invoked-functions`.
+- Stay with `agentic-backend` when the primary problem is multi-agent orchestration, queue handoffs, approval gates, and shared context.

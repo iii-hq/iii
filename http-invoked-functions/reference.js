@@ -24,6 +24,26 @@ const iii = registerWorker(process.env.III_ENGINE_URL || 'ws://localhost:49134',
 })
 
 // ---------------------------------------------------------------------------
+// Data-driven registration for immutable legacy endpoints
+// ---------------------------------------------------------------------------
+const legacyBaseUrl = process.env.LEGACY_API_URL || 'https://legacy.internal.example.com'
+const legacyEndpoints = [
+  { path: '/webhook', id: 'legacy::webhook' },
+  { path: '/orders', id: 'legacy::orders' },
+]
+
+legacyEndpoints.forEach(({ path, id }) => {
+  iii.registerFunction(
+    { id, description: `Proxy legacy endpoint ${path}` },
+    {
+      url: `${legacyBaseUrl}${path}`,
+      method: 'POST',
+      timeout_ms: 8000,
+    },
+  )
+})
+
+// ---------------------------------------------------------------------------
 // HTTP-invoked function: Slack webhook (bearer auth)
 // ---------------------------------------------------------------------------
 iii.registerFunction(

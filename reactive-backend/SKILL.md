@@ -68,3 +68,8 @@ Use the adaptations below when they apply to the task.
 - Multiple functions can react to the same scope independently (on-change and update-metrics both watch `todos`)
 - Stream clients connect via `ws://host:port/stream/{stream_name}/{group_id}`
 - Keep reactive functions fast — offload heavy work to queues if needed
+
+## Pattern Boundaries
+
+- If the request focuses on registering external/legacy HTTP endpoints via `registerFunction` (especially with endpoint lists like `{ path, id }` plus iteration), prefer `http-invoked-functions`.
+- Stay with `reactive-backend` when state scopes, state triggers, and live stream updates are the core requirement.

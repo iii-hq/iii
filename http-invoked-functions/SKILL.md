@@ -1,0 +1,45 @@
+---
+name: http-invoked-functions
+description: >-
+  Registers external HTTP endpoints as iii functions using
+  registerFunction(meta, HttpInvocationConfig). Use when adapting legacy APIs,
+  third-party webhooks, or immutable services into triggerable iii functions,
+  especially when prompts ask for endpoint maps like { path, id } iterated into
+  registerFunction calls.
+---
+
+# HTTP-Invoked Functions
+
+Use this pattern when iii should call external HTTP endpoints as functions.
+
+## Pattern selection rules
+
+- If the task says "register HTTP endpoints with `registerFunction`", use this pattern.
+- If the task asks for an endpoint list/map (for example `{ path, id }`) and a loop over `registerFunction`, use this pattern.
+- If the system being adapted cannot be modified, use this pattern.
+- If the goal is exposing inbound routes that iii owns, use `registerTrigger({ type: 'http' })` instead.
+
+## Core model
+
+- `registerFunction(meta, HttpInvocationConfig)` registers an outbound HTTP-invoked function.
+- `trigger({ function_id, payload })` invokes it like any other function.
+- Trigger payload becomes request body for JSON-based calls.
+- Non-2xx and network failures are treated as invocation failures.
+
+## Common shape
+
+- `registerWorker(url, { workerName })`
+- Small endpoint descriptor list, then loop registration:
+  - `[{ path, id }]`
+  - `registerFunction({ id }, { url: base + path, method: 'POST' })`
+- Optional auth config with env var keys (`token_key`, `secret_key`, `value_key`)
+
+## Guardrails
+
+- Do not model outbound HTTP endpoint adaptation as `registerTrigger({ type: 'http' })`.
+- Do not pass raw secrets in auth fields; pass env var names.
+- Keep function IDs stable and domain-prefixed (for example `legacy::orders`).
+
+## Reference
+
+See [reference.js](reference.js).
