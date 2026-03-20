@@ -255,42 +255,13 @@ pub struct IIIFn<F = ()> {
     _marker: std::marker::PhantomData<F>,
 }
 
-fn short_type_name<T: ?Sized>() -> &'static str {
-    let full = std::any::type_name::<T>();
-    // Strip module path: "alloc::string::String" -> "String"
-    let name = full.rsplit("::").next().unwrap_or(full);
-    // Strip generic params: "Vec<String>" -> "Vec"
-    match name.find('<') {
-        Some(pos) => &name[..pos],
-        None => name,
-    }
-}
-
-/// Maps a Rust type name to a RegisterFunctionFormat-compatible type string.
-fn format_type_name<T: ?Sized>() -> &'static str {
-    let name = short_type_name::<T>();
-    match name {
-        "String" | "str" | "&str" => "string",
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" | "f32" | "f64" => "number",
-        "bool" => "boolean",
-        "Vec" => "array",
-        "HashMap" | "BTreeMap" => "map",
-        "Value" => "object",
-        "Option" => "object",
-        _ => "object",
-    }
-}
-
-fn make_format(name: &str, type_str: &str) -> Value {
-    serde_json::json!({ "name": name, "type": type_str })
-}
-
-fn make_response_format<R: ?Sized>() -> Option<Value> {
-    Some(serde_json::json!({
-        "name": "response",
-        "type": format_type_name::<R>()
-    }))
+fn json_schema_for<T: schemars::JsonSchema>() -> Option<Value> {
+    serde_json::to_value(
+        schemars::r#gen::SchemaSettings::draft07()
+            .into_generator()
+            .into_root_schema_for::<T>(),
+    )
+    .ok()
 }
 
 /// Helper trait used internally to convert a sync function into a
@@ -310,8 +281,8 @@ pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
 impl<F, T, R, E> IntoSyncHandler<(T, R, E)> for F
 where
     F: Fn(T) -> Result<R, E> + Send + Sync + 'static,
-    T: serde::de::DeserializeOwned + Send + 'static,
-    R: serde::Serialize + Send + 'static,
+    T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
+    R: serde::Serialize + schemars::JsonSchema + Send + 'static,
     E: std::fmt::Display + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
@@ -327,11 +298,11 @@ where
     }
 
     fn request_format() -> Option<Value> {
-        Some(make_format("request", format_type_name::<T>()))
+        json_schema_for::<T>()
     }
 
     fn response_format() -> Option<Value> {
-        make_response_format::<R>()
+        json_schema_for::<R>()
     }
 }
 
@@ -401,9 +372,9 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
 impl<F, T, Fut, R, E> IntoAsyncHandler<(T, Fut, R, E)> for F
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
     Fut: std::future::Future<Output = Result<R, E>> + Send + 'static,
-    R: serde::Serialize + Send + 'static,
+    R: serde::Serialize + schemars::JsonSchema + Send + 'static,
     E: std::fmt::Display + Send + 'static,
 {
     fn into_handler(self) -> RemoteFunctionHandler {
@@ -430,11 +401,11 @@ where
     }
 
     fn request_format() -> Option<Value> {
-        Some(make_format("request", format_type_name::<T>()))
+        json_schema_for::<T>()
     }
 
     fn response_format() -> Option<Value> {
-        make_response_format::<R>()
+        json_schema_for::<R>()
     }
 }
 

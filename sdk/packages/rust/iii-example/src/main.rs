@@ -6,7 +6,7 @@ use iii_sdk::{
 };
 use serde_json::json;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct EchoInput {
     message: String,
     repeat: u32,
@@ -22,7 +22,7 @@ fn echo_message(input: EchoInput) -> Result<serde_json::Value, String> {
     Ok(json!({ "echo": format!("{}{}", input.prefix, result) }))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DelayEchoInput {
     message: String,
     delay_ms: u64,

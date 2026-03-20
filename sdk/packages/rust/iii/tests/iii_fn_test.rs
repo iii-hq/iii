@@ -4,7 +4,7 @@ use iii_sdk::{
 use serde::Deserialize;
 use serde_json::json;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct GreetInput {
     name: String,
 }

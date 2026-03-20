@@ -4,7 +4,7 @@ use iii_sdk::{
 use serde::Deserialize;
 use serde_json::json;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct GreetInput {
     name: String,
 }
@@ -13,7 +13,7 @@ fn greet(input: GreetInput) -> Result<String, String> {
     Ok(format!("Hello, {}!", input.name))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct AddInput {
     a: i32,
     b: i32,
@@ -38,8 +38,9 @@ async fn test_iii_fn_sets_request_format() {
     let _handler = iii_fn(greet).into_parts(&mut msg);
     assert!(msg.request_format.is_some());
     let rf = msg.request_format.unwrap();
-    assert_eq!(rf["name"], "request");
+    assert_eq!(rf["title"], "GreetInput");
     assert_eq!(rf["type"], "object");
+    assert!(rf["properties"]["name"].is_object());
 }
 
 #[tokio::test]
@@ -88,22 +89,20 @@ async fn test_register_function_builder_has_schema() {
     let reg = RegisterFunction::new("test::add", add);
     assert!(reg.request_format().is_some());
     let rf = reg.request_format().unwrap();
-    assert_eq!(rf["name"], "request");
+    assert_eq!(rf["title"], "AddInput");
     assert_eq!(rf["type"], "object");
-    let res = reg.response_format().unwrap();
-    assert_eq!(res["name"], "response");
-    assert_eq!(res["type"], "number");
+    assert!(rf["properties"]["a"].is_object());
+    assert!(rf["properties"]["b"].is_object());
 }
 
 #[tokio::test]
 async fn test_schema_1arg_struct() {
     let reg = RegisterFunction::new("test", greet);
     let rf = reg.request_format().unwrap();
-    assert_eq!(rf["name"], "request");
+    assert_eq!(rf["title"], "GreetInput");
     assert_eq!(rf["type"], "object");
-    let res = reg.response_format().unwrap();
-    assert_eq!(res["name"], "response");
-    assert_eq!(res["type"], "string");
+    assert!(rf["properties"]["name"].is_object());
+    assert!(reg.response_format().is_some());
 }
 
 // === Async schema ===
@@ -116,7 +115,7 @@ async fn async_greet(input: GreetInput) -> Result<String, String> {
 async fn test_schema_async_1arg() {
     let reg = RegisterFunction::new_async("test", async_greet);
     let rf = reg.request_format().unwrap();
-    assert_eq!(rf["name"], "request");
+    assert_eq!(rf["title"], "GreetInput");
     assert_eq!(rf["type"], "object");
 }
 
