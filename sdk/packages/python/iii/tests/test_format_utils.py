@@ -1,14 +1,12 @@
-"""Tests for format_utils: type hint to RegisterFunctionFormat extraction."""
+"""Tests for format_utils: type hint to JSON Schema extraction."""
 
 from __future__ import annotations
 
 from typing import Optional
 
-import pytest
 from pydantic import BaseModel, Field
 
-from iii.format_utils import extract_request_format, extract_response_format, python_type_to_format
-from iii.iii_types import RegisterFunctionFormat
+from iii.format_utils import _JSON_SCHEMA_DRAFT, extract_request_format, extract_response_format, python_type_to_format
 
 # ---------------------------------------------------------------------------
 # python_type_to_format — primitives
@@ -16,35 +14,28 @@ from iii.iii_types import RegisterFunctionFormat
 
 
 def test_string_type() -> None:
-    fmt = python_type_to_format(str, "name")
-    assert fmt is not None
-    assert fmt.type == "string"
-    assert fmt.name == "name"
-    assert fmt.required is True
+    fmt = python_type_to_format(str)
+    assert fmt == {"type": "string", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_int_type() -> None:
-    fmt = python_type_to_format(int, "age")
-    assert fmt is not None
-    assert fmt.type == "number"
+    fmt = python_type_to_format(int)
+    assert fmt == {"type": "number", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_float_type() -> None:
-    fmt = python_type_to_format(float, "score")
-    assert fmt is not None
-    assert fmt.type == "number"
+    fmt = python_type_to_format(float)
+    assert fmt == {"type": "number", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_bool_type() -> None:
-    fmt = python_type_to_format(bool, "active")
-    assert fmt is not None
-    assert fmt.type == "boolean"
+    fmt = python_type_to_format(bool)
+    assert fmt == {"type": "boolean", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_none_type() -> None:
-    fmt = python_type_to_format(type(None), "nothing")
-    assert fmt is not None
-    assert fmt.type == "null"
+    fmt = python_type_to_format(type(None))
+    assert fmt == {"type": "null", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 # ---------------------------------------------------------------------------
@@ -53,25 +44,23 @@ def test_none_type() -> None:
 
 
 def test_list_of_str() -> None:
-    fmt = python_type_to_format(list[str], "tags")
+    fmt = python_type_to_format(list[str])
     assert fmt is not None
-    assert fmt.type == "array"
-    assert fmt.items is not None
-    assert fmt.items.type == "string"
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["type"] == "array"
+    assert fmt["items"] == {"type": "string"}
 
 
 def test_list_of_int() -> None:
-    fmt = python_type_to_format(list[int], "ids")
+    fmt = python_type_to_format(list[int])
     assert fmt is not None
-    assert fmt.type == "array"
-    assert fmt.items is not None
-    assert fmt.items.type == "number"
+    assert fmt["type"] == "array"
+    assert fmt["items"] == {"type": "number"}
 
 
 def test_dict_str_any() -> None:
-    fmt = python_type_to_format(dict[str, str], "meta")
-    assert fmt is not None
-    assert fmt.type == "map"
+    fmt = python_type_to_format(dict[str, str])
+    assert fmt == {"type": "object", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 # ---------------------------------------------------------------------------
@@ -80,21 +69,21 @@ def test_dict_str_any() -> None:
 
 
 def test_optional_str() -> None:
-    fmt = python_type_to_format(Optional[str], "nickname")
+    fmt = python_type_to_format(Optional[str])
     assert fmt is not None
-    assert fmt.type == "string"
-    assert fmt.required is False
+    assert fmt["type"] == "string"
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
 
 
 def test_optional_int_pipe_syntax() -> None:
-    fmt = python_type_to_format(int | None, "count")
+    fmt = python_type_to_format(int | None)
     assert fmt is not None
-    assert fmt.type == "number"
-    assert fmt.required is False
+    assert fmt["type"] == "number"
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
 
 
 # ---------------------------------------------------------------------------
-# python_type_to_format — Pydantic BaseModel
+# python_type_to_format — Pydantic BaseModel (JSON Schema)
 # ---------------------------------------------------------------------------
 
 
@@ -112,40 +101,40 @@ class Person(BaseModel):
 
 
 def test_simple_model() -> None:
-    fmt = python_type_to_format(Address, "address")
+    fmt = python_type_to_format(Address)
     assert fmt is not None
-    assert fmt.type == "object"
-    assert fmt.body is not None
-    assert len(fmt.body) == 3
-    names = {f.name for f in fmt.body}
-    assert names == {"street", "city", "zip_code"}
-    zip_field = next(f for f in fmt.body if f.name == "zip_code")
-    assert zip_field.required is False
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["type"] == "object"
+    assert "street" in fmt["properties"]
+    assert "city" in fmt["properties"]
+    assert "zip_code" in fmt["properties"]
+    assert "street" in fmt["required"]
+    assert "city" in fmt["required"]
+    assert "zip_code" not in fmt.get("required", [])
 
 
 def test_nested_model() -> None:
-    fmt = python_type_to_format(Person, "person")
+    fmt = python_type_to_format(Person)
     assert fmt is not None
-    assert fmt.type == "object"
-    assert fmt.body is not None
-    names = {f.name for f in fmt.body}
-    assert names == {"name", "age", "address", "tags"}
-    age_field = next(f for f in fmt.body if f.name == "age")
-    assert age_field.description == "Age in years"
-    address_field = next(f for f in fmt.body if f.name == "address")
-    assert address_field.type == "object"
-    assert address_field.body is not None
-    assert len(address_field.body) == 3
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["type"] == "object"
+    props = fmt["properties"]
+    assert "name" in props
+    assert "age" in props
+    assert "address" in props
+    assert "tags" in props
+    age_prop = props["age"]
+    assert age_prop.get("description") == "Age in years"
 
 
 def test_list_of_model() -> None:
-    fmt = python_type_to_format(list[Address], "addresses")
+    fmt = python_type_to_format(list[Address])
     assert fmt is not None
-    assert fmt.type == "array"
-    assert fmt.items is not None
-    assert fmt.items.type == "object"
-    assert fmt.items.body is not None
-    assert len(fmt.items.body) == 3
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["type"] == "array"
+    items = fmt["items"]
+    assert items["type"] == "object"
+    assert "street" in items["properties"]
 
 
 # ---------------------------------------------------------------------------
@@ -156,36 +145,13 @@ def test_list_of_model() -> None:
 def test_unsupported_type_returns_none() -> None:
     from typing import Any
 
-    assert python_type_to_format(Any, "x") is None
+    assert python_type_to_format(Any) is None
 
 
 def test_no_annotation_returns_none() -> None:
     import inspect
 
-    assert python_type_to_format(inspect.Parameter.empty, "x") is None
-
-
-# ---------------------------------------------------------------------------
-# python_type_to_format — description and required
-# ---------------------------------------------------------------------------
-
-
-def test_description_passed_through() -> None:
-    fmt = python_type_to_format(str, "name", description="The user's name")
-    assert fmt is not None
-    assert fmt.description == "The user's name"
-
-
-def test_required_default_true() -> None:
-    fmt = python_type_to_format(str, "name")
-    assert fmt is not None
-    assert fmt.required is True
-
-
-def test_required_explicit_false() -> None:
-    fmt = python_type_to_format(str, "name", required=False)
-    assert fmt is not None
-    assert fmt.required is False
+    assert python_type_to_format(inspect.Parameter.empty) is None
 
 
 # ---------------------------------------------------------------------------
@@ -204,11 +170,12 @@ def test_extract_request_from_pydantic_param() -> None:
 
     fmt = extract_request_format(handler)
     assert fmt is not None
-    assert fmt.type == "object"
-    assert fmt.body is not None
-    names = {f.name for f in fmt.body}
-    assert "name" in names
-    assert "greeting" in names
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["type"] == "object"
+    assert "name" in fmt["properties"]
+    assert "greeting" in fmt["properties"]
+    assert "name" in fmt["required"]
+    assert "greeting" not in fmt.get("required", [])
 
 
 def test_extract_request_from_primitive_param() -> None:
@@ -216,8 +183,7 @@ def test_extract_request_from_primitive_param() -> None:
         return data.upper()
 
     fmt = extract_request_format(handler)
-    assert fmt is not None
-    assert fmt.type == "string"
+    assert fmt == {"type": "string", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_extract_request_no_annotation() -> None:
@@ -256,10 +222,11 @@ def test_extract_response_pydantic() -> None:
 
     fmt = extract_response_format(handler)
     assert fmt is not None
-    assert fmt.type == "object"
-    assert fmt.body is not None
-    assert len(fmt.body) == 1
-    assert fmt.body[0].name == "message"
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["type"] == "object"
+    assert "message" in fmt["properties"]
+    assert "message" in fmt["required"]
+    assert fmt["title"] == "GreetOutput"
 
 
 def test_extract_response_primitive() -> None:
@@ -267,8 +234,7 @@ def test_extract_response_primitive() -> None:
         return data
 
     fmt = extract_response_format(handler)
-    assert fmt is not None
-    assert fmt.type == "string"
+    assert fmt == {"type": "string", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_extract_response_none_return() -> None:
@@ -276,8 +242,7 @@ def test_extract_response_none_return() -> None:
         pass
 
     fmt = extract_response_format(handler)
-    assert fmt is not None
-    assert fmt.type == "null"
+    assert fmt == {"type": "null", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_extract_response_no_return_type() -> None:
@@ -305,6 +270,33 @@ def test_extract_from_sync_handler() -> None:
     req = extract_request_format(handler)
     res = extract_response_format(handler)
     assert req is not None
-    assert req.type == "object"
+    assert req["$schema"] == _JSON_SCHEMA_DRAFT
+    assert req["type"] == "object"
+    assert "name" in req["properties"]
     assert res is not None
-    assert res.type == "object"
+    assert res["$schema"] == _JSON_SCHEMA_DRAFT
+    assert res["type"] == "object"
+    assert res["title"] == "GreetOutput"
+
+
+# ---------------------------------------------------------------------------
+# JSON Schema structure validation
+# ---------------------------------------------------------------------------
+
+
+def test_pydantic_model_produces_json_schema_with_title() -> None:
+    fmt = python_type_to_format(GreetInput)
+    assert fmt is not None
+    assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
+    assert fmt["title"] == "GreetInput"
+    assert fmt["type"] == "object"
+    assert "properties" in fmt
+    assert "required" in fmt
+
+
+def test_pydantic_model_required_list() -> None:
+    """required should be a list of field names, not a bool."""
+    fmt = python_type_to_format(Address)
+    assert fmt is not None
+    assert isinstance(fmt["required"], list)
+    assert set(fmt["required"]) == {"street", "city"}

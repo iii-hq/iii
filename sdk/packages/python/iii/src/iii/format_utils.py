@@ -1,4 +1,4 @@
-"""Utilities for extracting RegisterFunctionFormat from Python type hints."""
+"""Utilities for extracting JSON Schema from Python type hints."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import inspect
 import types
 import typing
 from typing import Any, get_args, get_origin, get_type_hints
-
-from .iii_types import RegisterFunctionFormat
 
 _PRIMITIVE_MAP: dict[type, str] = {
     str: "string",
@@ -38,55 +36,73 @@ def _is_pydantic_model(annotation: Any) -> bool:
         return False
 
 
-def python_type_to_format(
-    annotation: Any,
-    name: str,
-    required: bool = True,
+_JSON_SCHEMA_DRAFT = "http://json-schema.org/draft-07/schema#"
+
+
+def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
+    """Convert a Python type annotation to a JSON Schema dict (without $schema header)."""
+    if annotation is inspect.Parameter.empty or annotation is Any:
+        return None
+
+    # Handle Optional[X] — unwrap to inner type
+    is_opt, inner = _is_optional(annotation)
+    if is_opt:
+        return _to_json_schema(inner)
+
+    # Handle NoneType
+    if annotation is type(None):
+        return {"type": "null"}
+
+    # Handle primitives
+    if annotation in _PRIMITIVE_MAP:
+        return {"type": _PRIMITIVE_MAP[annotation]}
+
+    # Handle list[X]
     origin = get_origin(annotation)
     if origin is list:
         args = get_args(annotation)
-        items = python_type_to_format(args[0], "item") if args else None
-        return RegisterFunctionFormat(
-            name=name, type="array", required=required, description=description, items=items
-        )
+        schema: dict[str, Any] = {"type": "array"}
+        if args:
+            items_schema = _to_json_schema(args[0])
+            if items_schema is not None:
+                schema["items"] = items_schema
+        return schema
 
     # Handle dict[str, X]
     if origin is dict:
-        return RegisterFunctionFormat(name=name, type="map", required=required, description=description)
+        return {"type": "object"}
 
-    # Handle Pydantic BaseModel
+    # Handle Pydantic BaseModel — use its built-in JSON Schema generation
     if _is_pydantic_model(annotation):
-        body = _model_fields_to_formats(annotation)
-        return RegisterFunctionFormat(
-            name=name, type="object", required=required, description=description, body=body or None
-        )
+        model_schema: dict[str, Any] = annotation.model_json_schema()
+        return model_schema
 
     return None
 
 
-def _model_fields_to_formats(model_cls: type) -> list[RegisterFunctionFormat]:
-    """Extract RegisterFunctionFormat list from a Pydantic BaseModel's fields."""
-    formats: list[RegisterFunctionFormat] = []
-    for field_name, field_info in model_cls.model_fields.items():
-        fmt = python_type_to_format(
-            field_info.annotation,
-            name=field_name,
-            required=field_info.is_required(),
-            description=field_info.description,
-        )
-        if fmt is not None:
-            formats.append(fmt)
-    return formats
+def python_type_to_format(annotation: Any) -> dict[str, Any] | None:
+    """Convert a Python type annotation to a JSON Schema dict.
+
+    Args:
+        annotation: The Python type annotation.
+
+    Returns:
+        A JSON Schema dict (with ``$schema`` header) or None if the type is not supported.
+    """
+    schema = _to_json_schema(annotation)
+    if schema is not None:
+        schema["$schema"] = _JSON_SCHEMA_DRAFT
+    return schema
 
 
-def extract_request_format(func: Any) -> RegisterFunctionFormat | None:
+def extract_request_format(func: Any) -> dict[str, Any] | None:
     """Extract request format from the first parameter of a callable's type hints.
 
     Args:
         func: A callable (function or method).
 
     Returns:
-        A RegisterFunctionFormat or None if no type hint is available.
+        A JSON Schema dict or None if no type hint is available.
     """
     if not callable(func):
         return None
@@ -106,17 +122,17 @@ def extract_request_format(func: Any) -> RegisterFunctionFormat | None:
     if annotation is inspect.Parameter.empty:
         return None
 
-    return python_type_to_format(annotation, name=first_param.name)
+    return python_type_to_format(annotation)
 
 
-def extract_response_format(func: Any) -> RegisterFunctionFormat | None:
+def extract_response_format(func: Any) -> dict[str, Any] | None:
     """Extract response format from a callable's return type hint.
 
     Args:
         func: A callable (function or method).
 
     Returns:
-        A RegisterFunctionFormat or None if no return type hint is available.
+        A JSON Schema dict or None if no return type hint is available.
     """
     if not callable(func):
         return None
@@ -130,4 +146,4 @@ def extract_response_format(func: Any) -> RegisterFunctionFormat | None:
     if return_type is inspect.Parameter.empty:
         return None
 
-    return python_type_to_format(return_type, name="return")
+    return python_type_to_format(return_type)

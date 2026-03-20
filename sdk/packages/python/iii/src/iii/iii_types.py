@@ -207,8 +207,10 @@ class RegisterFunctionInput(BaseModel):
 
     id: str = Field(description="Unique function identifier.")
     description: str | None = Field(default=None, description="Human-readable description.")
-    request_format: RegisterFunctionFormat | None = Field(default=None, description="Schema describing expected input.")
-    response_format: RegisterFunctionFormat | None = Field(
+    request_format: RegisterFunctionFormat | dict[str, Any] | None = Field(
+        default=None, description="Schema describing expected input."
+    )
+    response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(
         default=None, description="Schema describing expected output."
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
@@ -223,8 +225,8 @@ class RegisterFunctionMessage(BaseModel):
 
     id: str = Field()
     description: str | None = None
-    request_format: RegisterFunctionFormat | None = Field(default=None)
-    response_format: RegisterFunctionFormat | None = Field(default=None)
+    request_format: RegisterFunctionFormat | dict[str, Any] | None = Field(default=None)
+    response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(default=None)
     metadata: dict[str, Any] | None = None
     invocation: HttpInvocationConfig | None = None
     message_type: MessageType = Field(default=MessageType.REGISTER_FUNCTION, alias="type")
@@ -344,10 +346,10 @@ class FunctionInfo(BaseModel):
     request_format: dict[str, Any] | None = Field(
         default=None, description="Schema describing expected input (JSON Schema or custom format)."
     )
-    response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(
+    response_format: dict[str, Any] | None = Field(
         default=None, description="Schema describing expected output (JSON Schema or custom format)."
     )
-    metadata: RegisterFunctionFormat | dict[str, Any] | None = Field(
+    metadata: dict[str, Any] | None = Field(
         default=None, description="Arbitrary metadata attached to the function."
     )
 

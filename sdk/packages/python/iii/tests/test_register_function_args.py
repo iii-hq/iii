@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel, Field
 
 import iii.iii as iii_module
 from iii import InitOptions
@@ -233,8 +234,6 @@ def test_register_function_input_importable_from_top_level() -> None:
 # Simplified string-id API with auto-extraction
 # ---------------------------------------------------------------------------
 
-from pydantic import BaseModel, Field
-
 
 class UserInput(BaseModel):
     name: str
@@ -264,25 +263,29 @@ def test_register_function_str_id_auto_extracts_formats(monkeypatch: pytest.Monk
 
     assert msg.get("description") == "Auto-extract demo"
 
-    # Check request_format was auto-extracted
+    # Check request_format was auto-extracted as JSON Schema
     req_fmt = msg.get("request_format")
     assert req_fmt is not None
+    assert req_fmt["$schema"] == "http://json-schema.org/draft-07/schema#"
     assert req_fmt["type"] == "object"
-    body_names = {f["name"] for f in req_fmt["body"]}
-    assert body_names == {"name", "age", "nickname"}
-    age_field = next(f for f in req_fmt["body"] if f["name"] == "age")
-    assert age_field["description"] == "Age in years"
-    nickname_field = next(f for f in req_fmt["body"] if f["name"] == "nickname")
-    assert nickname_field["required"] is False
+    assert req_fmt["title"] == "UserInput"
+    assert "name" in req_fmt["properties"]
+    assert "age" in req_fmt["properties"]
+    assert "nickname" in req_fmt["properties"]
+    assert req_fmt["properties"]["age"].get("description") == "Age in years"
+    assert "name" in req_fmt["required"]
+    assert "age" in req_fmt["required"]
+    assert "nickname" not in req_fmt.get("required", [])
 
-    # Check response_format was auto-extracted
+    # Check response_format was auto-extracted as JSON Schema
     res_fmt = msg.get("response_format")
     assert res_fmt is not None
+    assert res_fmt["$schema"] == "http://json-schema.org/draft-07/schema#"
     assert res_fmt["type"] == "object"
-    res_body_names = {f["name"] for f in res_fmt["body"]}
-    assert res_body_names == {"message", "tags"}
-    tags_field = next(f for f in res_fmt["body"] if f["name"] == "tags")
-    assert tags_field["type"] == "array"
+    assert res_fmt["title"] == "UserOutput"
+    assert "message" in res_fmt["properties"]
+    assert "tags" in res_fmt["properties"]
+    assert res_fmt["properties"]["tags"]["type"] == "array"
 
     client.shutdown()
 
@@ -292,8 +295,8 @@ def test_register_function_str_id_explicit_formats_override(monkeypatch: pytest.
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 
-    explicit_req = RegisterFunctionFormat(name="custom_input", type="string")
-    explicit_res = RegisterFunctionFormat(name="custom_output", type="number")
+    explicit_req = {"type": "string", "title": "CustomInput"}
+    explicit_res = {"type": "number", "title": "CustomOutput"}
 
     async def handler(data: UserInput) -> UserOutput:
         return UserOutput(message="hi")
@@ -311,10 +314,10 @@ def test_register_function_str_id_explicit_formats_override(monkeypatch: pytest.
     msg = reg_msgs[0]
 
     # Explicit formats should be used, not auto-extracted ones
-    assert msg["request_format"]["name"] == "custom_input"
     assert msg["request_format"]["type"] == "string"
-    assert msg["response_format"]["name"] == "custom_output"
+    assert msg["request_format"]["title"] == "CustomInput"
     assert msg["response_format"]["type"] == "number"
+    assert msg["response_format"]["title"] == "CustomOutput"
 
     client.shutdown()
 
@@ -353,8 +356,10 @@ def test_register_function_str_id_with_metadata(monkeypatch: pytest.MonkeyPatch)
     assert len(reg_msgs) == 1
     assert reg_msgs[0]["metadata"] == {"version": "2.0"}
 
-    # Verify primitive types were auto-extracted
+    # Verify primitive types were auto-extracted as JSON Schema
+    assert reg_msgs[0]["request_format"]["$schema"] == "http://json-schema.org/draft-07/schema#"
     assert reg_msgs[0]["request_format"]["type"] == "string"
+    assert reg_msgs[0]["response_format"]["$schema"] == "http://json-schema.org/draft-07/schema#"
     assert reg_msgs[0]["response_format"]["type"] == "string"
 
     client.shutdown()

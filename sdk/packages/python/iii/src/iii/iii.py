@@ -676,8 +676,8 @@ class III:
         *,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-        request_format: RegisterFunctionFormat | None = None,
-        response_format: RegisterFunctionFormat | None = None,
+        request_format: RegisterFunctionFormat | dict[str, Any] | None = None,
+        response_format: RegisterFunctionFormat | dict[str, Any] | None = None,
     ) -> FunctionRef:
         """Register a function with the engine.
 
