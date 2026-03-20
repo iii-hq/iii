@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use colored::Colorize;
 use function_macros::{function, service};
 use futures::Future;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock as TokioRwLock;
@@ -34,7 +35,7 @@ use crate::{
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct TracesListInput {
     /// Filter by specific trace ID
     trace_id: Option<String>,
@@ -72,10 +73,10 @@ pub struct TracesListInput {
     search_all_spans: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct TracesClearInput {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct TracesTreeInput {
     /// Trace ID to build the tree for
     trace_id: String,
@@ -88,7 +89,7 @@ pub struct SpanTreeNode {
     pub children: Vec<SpanTreeNode>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct MetricsListInput {
     /// Start time in Unix timestamp milliseconds
     pub start_time: Option<u64>,
@@ -100,7 +101,7 @@ pub struct MetricsListInput {
     pub aggregate_interval: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct LogsListInput {
     /// Start time in Unix timestamp milliseconds
     pub start_time: Option<u64>,
@@ -120,19 +121,19 @@ pub struct LogsListInput {
     pub limit: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct LogsClearInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct HealthCheckInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct AlertsListInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct AlertsEvaluateInput {}
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct RollupsListInput {
     /// Start time in Unix timestamp milliseconds
     pub start_time: Option<u64>,
@@ -244,7 +245,7 @@ impl OtelLogTriggers {
 }
 
 /// Input for OTEL log functions (log.info, log.warn, log.error)
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct OtelLogInput {
     /// Optional trace ID for correlation
     trace_id: Option<String>,
@@ -259,14 +260,14 @@ pub struct OtelLogInput {
 }
 
 /// Input for baggage.get function
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct BaggageGetInput {
     /// The baggage key to retrieve
     pub key: String,
 }
 
 /// Input for baggage.set function
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct BaggageSetInput {
     /// The baggage key to set
     pub key: String,
@@ -275,7 +276,7 @@ pub struct BaggageSetInput {
 }
 
 /// Input for baggage.getAll function (empty)
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, JsonSchema)]
 pub struct BaggageGetAllInput {}
 
 /// OpenTelemetry configuration module.

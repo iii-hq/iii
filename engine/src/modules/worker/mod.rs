@@ -9,6 +9,7 @@ use std::{pin::Pin, sync::Arc};
 use dashmap::DashMap;
 use function_macros::{function, service};
 use futures::Future;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,33 +28,33 @@ pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EmptyInput {}
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct CreateChannelInput {
     #[serde(default)]
     pub buffer_size: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct CreateChannelOutput {
     pub writer: StreamChannelRef,
     pub reader: StreamChannelRef,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct FunctionsListInput {
     /// Include internal engine functions (engine.* prefix). Defaults to false.
     #[serde(default)]
     pub include_internal: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct TriggersListInput {
     /// Include internal engine triggers (linked to engine.* functions). Defaults to false.
     #[serde(default)]
     pub include_internal: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct WorkersListInput {
     pub worker_id: Option<String>,
 }
@@ -93,7 +94,7 @@ pub struct WorkerInfo {
     pub pid: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct RegisterWorkerInput {
     #[serde(rename = "_caller_worker_id")]
     pub worker_id: String,

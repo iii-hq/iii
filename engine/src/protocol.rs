@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -188,7 +189,7 @@ impl std::fmt::Display for ErrorBody {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelDirection {
     #[default]
@@ -196,7 +197,7 @@ pub enum ChannelDirection {
     Write,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct StreamChannelRef {
     pub channel_id: String,
     pub access_key: String,

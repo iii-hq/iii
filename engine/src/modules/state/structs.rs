@@ -5,10 +5,11 @@
 // See LICENSE and PATENTS files for details.
 
 use iii_sdk::UpdateOp;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateSetInput {
     pub scope: String,
     pub key: String,
@@ -16,31 +17,31 @@ pub struct StateSetInput {
     pub value: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateGetInput {
     pub scope: String,
     pub key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateDeleteInput {
     pub scope: String,
     pub key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateUpdateInput {
     pub scope: String,
     pub key: String,
     pub ops: Vec<UpdateOp>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateGetGroupInput {
     pub scope: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateListGroupsInput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
