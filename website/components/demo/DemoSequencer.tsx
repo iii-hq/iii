@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DemoSequencerProps, Step } from './types';
-import { SlackMessage } from './SlackMessage';
+import { ChatMessage } from './ChatMessage';
 import { ReplyComposer } from './ReplyComposer';
 import { CodeEditor } from './CodeEditor';
 import { StatusPanel } from './StatusPanel';
@@ -126,7 +126,7 @@ export function DemoSequencer({
     switch (step.type) {
       case 'slack-message':
         return (
-          <SlackMessage
+          <ChatMessage
             key={`${sessionKey}-${step.id}`}
             step={step}
             isActive={isActive}

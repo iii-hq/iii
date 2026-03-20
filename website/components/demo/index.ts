@@ -1,5 +1,5 @@
 export { DemoSequencer } from "./DemoSequencer";
-export { SlackMessage } from "./SlackMessage";
+export { ChatMessage } from "./ChatMessage";
 export { ReplyComposer } from "./ReplyComposer";
 export { CodeEditor } from "./CodeEditor";
 export { StatusPanel } from "./StatusPanel";

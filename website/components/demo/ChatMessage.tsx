@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SlackMessageStep } from "./types";
 
-interface SlackMessageProps {
+interface ChatMessageProps {
   step: SlackMessageStep;
   isActive: boolean;
   onNext: () => void;
@@ -22,7 +22,7 @@ function AvatarInitials({ name }: { name: string }) {
   );
 }
 
-export function SlackMessage({ step, isActive, onNext }: SlackMessageProps) {
+export function ChatMessage({ step, isActive, onNext }: ChatMessageProps) {
   const [clicked, setClicked] = useState(false);
 
   const handleClick = () => {
@@ -42,7 +42,7 @@ export function SlackMessage({ step, isActive, onNext }: SlackMessageProps) {
 
   return (
     <div
-      className={`flex gap-3 items-start ${
+      className={`flex flex-wrap xl:flex-nowrap gap-3 items-start ${
         isActive
           ? "animate-[fadeSlideIn_0.3s_ease-out_forwards] opacity-0"
           : "opacity-80"
@@ -82,12 +82,14 @@ export function SlackMessage({ step, isActive, onNext }: SlackMessageProps) {
       </div>
 
       {isActive && !step.autoAdvance && step.action && !clicked && (
-        <button
-          onClick={handleClick}
-          className="self-end shrink-0 px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 animate-[socketPulseInline_2s_ease-in-out_infinite] cursor-pointer"
-        >
-          {step.action.label}
-        </button>
+        <div className="basis-full pl-11 flex justify-end xl:basis-auto xl:pl-0 xl:self-end xl:shrink-0">
+          <button
+            onClick={handleClick}
+            className="w-full sm:w-auto px-4 py-1.5 text-xs font-bold rounded bg-iii-accent text-iii-black hover:brightness-110 transition-all duration-200 animate-[socketPulseInline_2s_ease-in-out_infinite] cursor-pointer"
+          >
+            {step.action.label}
+          </button>
+        </div>
       )}
     </div>
   );
