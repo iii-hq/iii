@@ -781,8 +781,12 @@ Metadata about a registered function, returned by `ISdk.listFunctions`.
 | `description` | `string` | No | Human-readable description. |
 | `function_id` | `string` | Yes | Unique function identifier. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | Schema describing expected request format. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | Schema describing expected response format. |
+| `request_format` | `Record<string, unknown>` | No | JSON Schema describing expected request format. |
+| `response_format` | `Record<string, unknown>` | No | JSON Schema describing expected response format. |
+
+<Note>
+The engine auto-generates standard [JSON Schema](https://json-schema.org/) for `request_format` and `response_format` from Rust types. When listing functions, these fields contain JSON Schema objects.
+</Note>
 
 ### FunctionsAvailableCallback
 
@@ -791,6 +795,12 @@ type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 ```
 
 ### RegisterFunctionFormat
+
+Custom format definition for function parameters. Can be used when manually specifying schemas during registration.
+
+<Note>
+The engine auto-generates standard [JSON Schema](https://json-schema.org/) for functions registered via the `#[service]` macro. When listing functions, `request_format` and `response_format` will contain JSON Schema objects rather than `RegisterFunctionFormat`.
+</Note>
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |

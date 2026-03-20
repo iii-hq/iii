@@ -695,7 +695,7 @@ Config for HTTP external function invocation.
 
 ### RegisterFunctionFormat
 
-Format definition for function parameters.
+Format definition for function parameters. Can be used when manually specifying schemas during registration.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -705,6 +705,10 @@ Format definition for function parameters.
 | `name` | `str` | Yes | Parameter name. |
 | `required` | `bool` | No | Whether the parameter is required. |
 | `type` | `str` | Yes | Type string (``string``, ``number``, ``boolean``, ``object``, ``array``, ``null``, ``map``). |
+
+<Note>
+The engine auto-generates standard [JSON Schema](https://json-schema.org/) for `request_format` and `response_format` from Rust types. When listing functions, these fields return JSON Schema objects (not `RegisterFunctionFormat`). Use `dict[str, Any]` to handle either format.
+</Note>
 
 ### RegisterFunctionInput
 
@@ -716,8 +720,8 @@ Input for registering a function — matches Node.js RegisterFunctionInput.
 | `id` | `str` | No | Unique function identifier. |
 | `invocation` | [`HttpInvocationConfig`](#httpinvocationconfig) \| None | No | HTTP invocation config for externally hosted functions. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | Schema describing expected input. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | Schema describing expected output. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| `dict[str, Any]` \| None | No | Schema describing expected input. Accepts `RegisterFunctionFormat` or JSON Schema. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| `dict[str, Any]` \| None | No | Schema describing expected output. Accepts `RegisterFunctionFormat` or JSON Schema. |
 
 ### RegisterServiceInput
 
