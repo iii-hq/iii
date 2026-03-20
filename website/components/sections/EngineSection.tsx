@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from "react";
-import { Highlight, themes } from "prism-react-renderer";
+import React, { useState, useRef, useEffect } from 'react';
+import { Highlight, themes } from 'prism-react-renderer';
 import {
   Database,
   Layers,
@@ -10,27 +10,28 @@ import {
   Bot,
   ArrowRight,
   ChevronDown,
-} from "lucide-react";
+} from 'lucide-react';
 import {
   GlobeIcon,
   ClockIcon,
   MessageCircleIcon,
   EyeIcon,
   Cloud1Icon as CloudIcon,
-} from "../icons";
-import { Logo } from "../Logo";
+} from '../icons';
+import { Logo } from '../Logo';
+import { AnimatedConnector } from './AnimatedConnector';
 
 interface EngineSectionProps {
   isDarkMode?: boolean;
 }
 
-type Lang = "typescript" | "python" | "rust";
+type Lang = 'typescript' | 'python' | 'rust';
 
 const LangIcon = ({ lang, active }: { lang: Lang; active: boolean }) => {
   const opacity = active ? 1 : 0.5;
-  const size = "w-4 h-4";
+  const size = 'w-4 h-4';
 
-  if (lang === "typescript") {
+  if (lang === 'typescript') {
     return (
       <svg viewBox="0 0 24 24" className={size} style={{ opacity }}>
         <rect width="24" height="24" rx="2" fill="#3178c6" />
@@ -42,7 +43,7 @@ const LangIcon = ({ lang, active }: { lang: Lang; active: boolean }) => {
     );
   }
 
-  if (lang === "python") {
+  if (lang === 'python') {
     return (
       <svg viewBox="0 0 24 24" className={size} style={{ opacity }}>
         <path
@@ -65,17 +66,17 @@ const LangIcon = ({ lang, active }: { lang: Lang; active: boolean }) => {
 
 const concepts = [
   {
-    id: "function",
+    id: 'function',
     icon: GitBranch,
-    name: "Function",
-    tagline: "Anything that does work.",
+    name: 'Function',
+    tagline: 'Anything that does work.',
     description:
-      "A Function receives input and optionally returns output. It can live anywhere — locally, on cloud, on serverless, or as a third-party HTTP endpoint. All Functions are treated the same within iii.",
+      'A Function receives input and optionally returns output. It can live anywhere — locally, on cloud, on serverless, or as a third-party HTTP endpoint. All Functions are treated the same within iii.',
     highlights: [
-      "Write in TypeScript, Python, or Rust — mix freely",
-      "Addressable by path (users::create, orders::process)",
-      "Hot-swap handlers without restarting consumers",
-      "Auto-cleanup when workers disconnect",
+      'Write in TypeScript, Python, or Rust — mix freely',
+      'Addressable by path (users::create, orders::process)',
+      'Hot-swap handlers without restarting consumers',
+      'Auto-cleanup when workers disconnect',
     ],
     code: {
       typescript: `iii.registerFunction(
@@ -111,37 +112,41 @@ iii.register_function("users::create", create_user)`,
     },
   },
   {
-    id: "trigger",
+    id: 'trigger',
     icon: Zap,
-    name: "Trigger",
-    tagline: "What makes a Function run.",
+    name: 'Trigger',
+    tagline: 'What makes a Function run.',
     description:
-      "A Trigger causes a Function to execute — either explicitly from code via trigger(), or automatically from an event source like an HTTP request, cron schedule, queue message, or state change.",
+      'A Trigger causes a Function to execute — either explicitly from code via trigger(), or automatically from an event source like an HTTP request, cron schedule, queue message, or state change.',
     highlights: [
-      "HTTP, cron, queue, subscribe, state, stream triggers",
-      "One function, many triggers — bind freely",
-      "Custom trigger types plug in at runtime",
-      "Same pattern for every event source",
+      'HTTP, cron, queue, subscribe, state, stream triggers',
+      'One function, many triggers — bind freely',
+      'Custom trigger types plug in at runtime',
+      'Same pattern for every event source',
     ],
     code: {
-      typescript: `await iii.trigger({ function_id: 'users::create', payload: { name: 'Alice' } })
+      typescript: `await iii.trigger({ function_id: 'users::create',
+                    payload: { name: 'Alice' } });
 
 iii.registerTrigger({
   type: 'http',
   function_id: 'users::create',
   config: {
     api_path: 'users',
-    http_method: 'POST'
-  }
-})`,
-      python: `await iii.trigger({"function_id": "users::create", "payload": {"name": "Alice"}})
+    http_method: 'POST',
+  },
+});
+
+`,
+      python: `await iii.trigger({"function_id": "users::create",
+                   "payload": {"name": "Alice"}})
 
 iii.register_trigger(
-    "http",
-    "users::create",
+    "http", "users::create",
     {"api_path": "users", "http_method": "POST"}
 )`,
-      rust: `iii.trigger(TriggerRequest::new("users::create", json!({"name": "Alice"}))).await?;
+      rust: `iii.trigger(TriggerRequest::new("users::create",
+            json!({"name": "Alice"}))).await?;
 
 iii.register_trigger(Trigger {
     trigger_type: "http".into(),
@@ -154,155 +159,144 @@ iii.register_trigger(Trigger {
     },
   },
   {
-    id: "worker",
+    id: 'worker',
     icon: Share2,
-    name: "Worker",
-    tagline: "Any process that registers functions.",
+    name: 'Worker',
+    tagline: 'Any process that registers functions.',
     description:
-      "A Worker is any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect, register, and participate as first-class members of the mesh.",
+      'A Worker is any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect, register, and communicate seamlessly.',
     highlights: [
-      "Workers register functions → immediately available to all",
-      "Workers disconnect → functions removed, no stale refs",
-      "Long-running, ephemeral, or agentic — all first-class",
-      "Scale up, scale down — topology adapts in real time",
+      'Workers register functions → immediately available to all',
+      'Worker discovery → workers are upgradeable in real time',
+      'Long-running, ephemeral, or agentic',
+      'Scale up, scale down — topology adapts in real time',
     ],
     code: {
-      typescript: `const iii = registerWorker('ws://localhost:49134')
+      typescript: `const iii = registerWorker('ws://localhost:49134')`,
+      python: `iii = register_worker("ws://localhost:49134")`,
 
-const fns = await iii.listFunctions()
-const logs = iii.getLogs({ limit: 100 })
-const triggers = await iii.listTriggers()`,
-      python: `iii = register_worker("ws://localhost:49134")
-
-fns = await iii.list_functions()
-logs = iii.get_logs(limit=100)
-triggers = await iii.list_triggers()`,
-      rust: `let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
-
-let fns = iii.list_functions().await?;
-let logs = iii.get_logs(100).await?;
-let triggers = iii.list_triggers().await?;`,
+      rust: `let iii = register_worker("ws://localhost:49134", InitOptions::default())?;`,
     },
   },
 ];
 
 const capabilities = [
   {
-    title: "Unified Invocation",
-    description: "Same interface for local and remote functions.",
+    title: 'Unified Invocation',
+    description: 'Same interface for all functions.',
     icon: ArrowRight,
     details: [
-      "Call any function by string ID — pure address-based routing",
-      "Local and remote functions share the same trigger interface",
-      "Language-agnostic: TypeScript calls Rust calls Python seamlessly",
+      'Call any function by string ID — pure address-based routing',
+      'Every function uses the same trigger interface',
+      'Language-agnostic: TypeScript calls Rust calls Python seamlessly',
     ],
   },
   {
-    title: "Request-Response Correlation",
+    title: 'Request-Response Correlation',
     description:
-      "Sync-style triggers across async boundaries via invocation IDs.",
+      'Sync-style triggers across async boundaries via invocation IDs.',
     icon: Activity,
     details: [
-      "Every invocation gets a unique correlation ID",
-      "Await results across WebSocket boundaries as if calling a local function",
-      "Built-in timeout and retry semantics per invocation",
+      'Every invocation gets a unique correlation ID',
+      'Await results across WebSocket boundaries as if calling a local function',
+      'Built-in timeout and retry semantics per invocation',
     ],
   },
   {
-    title: "Lifecycle Management",
+    title: 'Lifecycle Management',
     description:
-      "Auto-cleanup of functions, triggers, invocations on disconnect.",
+      'Auto-cleanup of functions, triggers, invocations on disconnect.',
     icon: Share2,
     details: [
-      "Workers disconnect → their functions and triggers are removed instantly",
-      "Clean state, fresh routes — always consistent",
-      "Reconnecting workers re-register automatically",
+      'Workers disconnect → their functions and triggers are removed instantly',
+      'Clean state, fresh routes — always consistent',
+      'Reconnecting workers re-register automatically',
     ],
   },
   {
-    title: "Recursive Orchestration",
-    description: "Engines can nest as workers of other engines.",
+    title: 'Recursive Orchestration',
+    description: 'Engines can nest as workers of other engines.',
     icon: Layers,
     details: [
-      "An engine can connect to another engine as a worker",
-      "Compose microservice topologies through worker nesting",
-      "Scale horizontally by spawning engine sub-clusters",
+      'An engine can connect to another engine as a worker',
+      'Compose microservice topologies through worker nesting',
+      'Scale horizontally by spawning engine sub-clusters',
     ],
   },
 ];
 
 const capabilityNodes = [
   {
-    title: "HTTP",
-    titleFull: "HTTP + Webhooks",
-    subtitle: "API triggers",
+    title: 'HTTP',
+    titleFull: 'HTTP + Webhooks',
+    subtitle: 'API triggers',
     icon: GlobeIcon,
-    tone: "accent",
-    side: "left",
-    type: "trigger" as const,
+    tone: 'accent',
+    side: 'left',
+    type: 'trigger' as const,
   },
   {
-    title: "Cron",
-    titleFull: "Cron + Schedules",
-    subtitle: "Timed execution",
+    title: 'Cron',
+    titleFull: 'Cron + Schedules',
+    subtitle: 'Timed execution',
     icon: ClockIcon,
-    tone: "warn",
-    side: "left",
-    type: "trigger" as const,
+    tone: 'warn',
+    side: 'left',
+    type: 'trigger' as const,
   },
   {
-    title: "Queues",
-    titleFull: "Queues + Pub/Sub",
-    subtitle: "Messaging",
+    title: 'Queues',
+    titleFull: 'Queues + Pub/Sub',
+    subtitle: 'Messaging',
     icon: MessageCircleIcon,
-    tone: "info",
-    side: "left",
-    type: "trigger" as const,
+    tone: 'info',
+    side: 'left',
+    type: 'trigger' as const,
   },
   {
-    title: "State",
-    titleFull: "State + Cache",
-    subtitle: "Shared context",
+    title: 'State',
+    titleFull: 'State + Cache',
+    subtitle: 'Shared context',
     icon: Database,
-    tone: "success",
-    side: "left",
-    type: "trigger" as const,
+    tone: 'success',
+    side: 'left',
+    type: 'trigger' as const,
   },
   {
-    title: "Streaming",
-    titleFull: "Streaming",
-    subtitle: "Realtime pipes",
+    title: 'Streaming',
+    titleFull: 'Streaming',
+    subtitle: 'Realtime pipes',
     icon: Activity,
-    tone: "info",
-    side: "right",
-    type: "function" as const,
+    tone: 'info',
+    side: 'right',
+    type: 'function' as const,
   },
   {
-    title: "Traces",
-    titleFull: "Observability",
-    subtitle: "Logs + traces",
+    title: 'Traces',
+    titleFull: 'Observability',
+    subtitle: 'Logs + traces',
     icon: EyeIcon,
-    tone: "accent",
-    side: "right",
-    type: "function" as const,
+    tone: 'accent',
+    side: 'right',
+    type: 'function' as const,
   },
   {
-    title: "Workflows",
-    titleFull: "Workflows",
-    subtitle: "Orchestration",
+    title: 'Workflows',
+    titleFull: 'Workflows',
+    subtitle: 'Orchestration',
     icon: Share2,
-    tone: "warn",
-    side: "right",
-    type: "function" as const,
+    tone: 'warn',
+    side: 'right',
+    type: 'function' as const,
   },
   {
-    title: "AI Agents",
-    titleFull: "AI Agents",
-    subtitle: "Tool discovery",
+    title: 'AI Agents',
+    titleFull: 'AI Agents',
+    subtitle: 'Tool discovery',
     icon: Bot,
-    tone: "alert",
-    side: "right",
-    type: "function" as const,
+    tone: 'alert',
+    side: 'right',
+    type: 'function' as const,
   },
 ];
 
@@ -337,7 +331,7 @@ const AccordionItem: React.FC<{
     }
   }, [isOpen]);
 
-  const accentHex = isDarkMode ? "#f3f724" : "#2f7fff";
+  const accentHex = isDarkMode ? '#f3f724' : '#2f7fff';
 
   return (
     <div className={`border-b ${borderColor} transition-colors duration-300`}>
@@ -345,10 +339,10 @@ const AccordionItem: React.FC<{
         onClick={onToggle}
         className={`w-full flex items-center gap-4 md:gap-5 py-4 md:py-6 text-left group transition-all duration-300 ${
           isOpen
-            ? ""
+            ? ''
             : isDarkMode
-              ? "hover:bg-white/[0.02]"
-              : "hover:bg-black/[0.02]"
+              ? 'hover:bg-white/[0.02]'
+              : 'hover:bg-black/[0.02]'
         }`}
         aria-expanded={isOpen}
       >
@@ -358,8 +352,8 @@ const AccordionItem: React.FC<{
             backgroundColor: isOpen
               ? accentHex
               : isDarkMode
-                ? "rgba(255,255,255,0.06)"
-                : "rgba(0,0,0,0.06)",
+                ? 'rgba(255,255,255,0.06)'
+                : 'rgba(0,0,0,0.06)',
           }}
         />
 
@@ -369,8 +363,8 @@ const AccordionItem: React.FC<{
             backgroundColor: isOpen
               ? `${accentHex}15`
               : isDarkMode
-                ? "rgba(255,255,255,0.04)"
-                : "rgba(0,0,0,0.04)",
+                ? 'rgba(255,255,255,0.04)'
+                : 'rgba(0,0,0,0.04)',
           }}
         >
           <Icon
@@ -389,7 +383,7 @@ const AccordionItem: React.FC<{
                 : `${textSecondary} group-hover:${textPrimary}`
             }`}
             style={{
-              transform: isOpen ? "translateX(2px)" : undefined,
+              transform: isOpen ? 'translateX(2px)' : undefined,
             }}
           >
             {cap.title}
@@ -398,11 +392,11 @@ const AccordionItem: React.FC<{
             className={`text-xs md:text-sm mt-1 transition-colors duration-300 ${
               isOpen
                 ? isDarkMode
-                  ? "text-iii-light/60"
-                  : "text-iii-black/60"
+                  ? 'text-iii-light/60'
+                  : 'text-iii-black/60'
                 : isDarkMode
-                  ? "text-iii-light/40"
-                  : "text-iii-black/40"
+                  ? 'text-iii-light/40'
+                  : 'text-iii-black/40'
             }`}
           >
             {cap.description}
@@ -413,7 +407,7 @@ const AccordionItem: React.FC<{
           className={`w-5 h-5 flex-shrink-0 transition-all duration-300 ${
             isOpen
               ? `rotate-180`
-              : `${isDarkMode ? "text-iii-light/20" : "text-iii-black/20"} group-hover:${textSecondary}`
+              : `${isDarkMode ? 'text-iii-light/20' : 'text-iii-black/20'} group-hover:${textSecondary}`
           }`}
           style={isOpen ? { color: accentHex } : undefined}
         />
@@ -429,7 +423,7 @@ const AccordionItem: React.FC<{
         >
           <div
             className={`rounded-lg p-5 ${
-              isDarkMode ? "bg-[#111]" : "bg-gray-50"
+              isDarkMode ? 'bg-[#111]' : 'bg-gray-50'
             }`}
             style={{
               borderLeft: `2px solid ${accentHex}40`,
@@ -443,7 +437,7 @@ const AccordionItem: React.FC<{
                   style={{
                     animation: isOpen
                       ? `statCount 0.3s ease-out ${i * 0.08}s both`
-                      : "none",
+                      : 'none',
                   }}
                 >
                   <div
@@ -452,7 +446,7 @@ const AccordionItem: React.FC<{
                   />
                   <span
                     className={`text-xs sm:text-sm leading-relaxed ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
+                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
                     }`}
                   >
                     {detail}
@@ -540,23 +534,23 @@ function ConceptsIDE({
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const [activeLang, setActiveLang] = useState<
-    "typescript" | "python" | "rust"
-  >("typescript");
+    'typescript' | 'python' | 'rust'
+  >('typescript');
   const active = concepts[activeTab];
   const Icon = active.icon;
 
-  const accentHex = isDarkMode ? "#f3f724" : "#2f7fff";
+  const accentHex = isDarkMode ? '#f3f724' : '#2f7fff';
 
   const langs = [
-    { key: "typescript" as const, label: "TypeScript", short: "TS" },
-    { key: "python" as const, label: "Python", short: "PY" },
-    { key: "rust" as const, label: "Rust", short: "RS" },
+    { key: 'typescript' as const, label: 'TypeScript', short: 'TS' },
+    { key: 'python' as const, label: 'Python', short: 'PY' },
+    { key: 'rust' as const, label: 'Rust', short: 'RS' },
   ] as const;
 
   const renderLangToggle = (extraClass: string) => (
     <div
       className={`flex items-center gap-0.5 rounded-full p-1 ${
-        isDarkMode ? "bg-white/[0.06]" : "bg-black/[0.05]"
+        isDarkMode ? 'bg-white/[0.06]' : 'bg-black/[0.05]'
       } ${extraClass}`}
     >
       {langs.map((lang) => (
@@ -566,11 +560,11 @@ function ConceptsIDE({
           className={`flex items-center gap-2 px-3 py-1.5 text-[10px] sm:text-[11px] font-mono rounded-full transition-all duration-200 ${
             activeLang === lang.key
               ? isDarkMode
-                ? "bg-white/[0.12] text-white"
-                : "bg-white text-black shadow-sm"
+                ? 'bg-white/[0.12] text-white'
+                : 'bg-white text-black shadow-sm'
               : isDarkMode
-                ? "text-white/40 hover:text-white/60"
-                : "text-black/40 hover:text-black/60"
+                ? 'text-white/40 hover:text-white/60'
+                : 'text-black/40 hover:text-black/60'
           }`}
         >
           <LangIcon lang={lang.key} active={activeLang === lang.key} />
@@ -585,12 +579,12 @@ function ConceptsIDE({
     <div className="mb-16 md:mb-24">
       {/* Single IDE Window */}
       <div
-        className={`rounded-lg border overflow-hidden ${borderColor} ${isDarkMode ? "bg-[#0c0c0c]" : "bg-white"}`}
+        className={`rounded-lg border overflow-hidden ${borderColor} ${isDarkMode ? 'bg-[#0c0c0c]' : 'bg-white'}`}
         style={{ boxShadow: `0 0 40px ${accentHex}08` }}
       >
         {/* Title bar with macOS dots + file tabs */}
         <div
-          className={`flex items-center border-b ${borderColor} ${isDarkMode ? "bg-[#111]" : "bg-gray-50"}`}
+          className={`flex items-center border-b ${borderColor} ${isDarkMode ? 'bg-[#111]' : 'bg-gray-50'}`}
         >
           {/* macOS dots */}
           <div className="flex items-center gap-1.5 px-4 py-3 flex-shrink-0">
@@ -610,15 +604,15 @@ function ConceptsIDE({
                   onClick={() => setActiveTab(i)}
                   className={`flex items-center gap-2 px-4 py-2.5 text-xs font-mono border-b-2 transition-all duration-200 whitespace-nowrap ${
                     isActive
-                      ? `${isDarkMode ? "text-white bg-[#1a1a1a]" : "text-black bg-white"}`
-                      : `${isDarkMode ? "text-white/40 hover:text-white/60 hover:bg-white/[0.02]" : "text-black/40 hover:text-black/60 hover:bg-black/[0.02]"}`
+                      ? `${isDarkMode ? 'text-white bg-[#1a1a1a]' : 'text-black bg-white'}`
+                      : `${isDarkMode ? 'text-white/40 hover:text-white/60 hover:bg-white/[0.02]' : 'text-black/40 hover:text-black/60 hover:bg-black/[0.02]'}`
                   }`}
                   style={{
-                    borderBottomColor: isActive ? accentHex : "transparent",
+                    borderBottomColor: isActive ? accentHex : 'transparent',
                   }}
                 >
                   <TabIcon
-                    className={`w-3.5 h-3.5 ${isActive ? accentColor : ""}`}
+                    className={`w-3.5 h-3.5 ${isActive ? accentColor : ''}`}
                   />
                   {concept.name}
                 </button>
@@ -628,7 +622,7 @@ function ConceptsIDE({
 
           <div className="flex-1" />
 
-          {renderLangToggle("hidden md:flex mr-4")}
+          {renderLangToggle('hidden md:flex mr-4')}
         </div>
 
         {/* Content: Description left + Code right — fixed height to prevent layout shift on tab change */}
@@ -666,7 +660,7 @@ function ConceptsIDE({
                     style={{ backgroundColor: `${accentHex}80` }}
                   />
                   <span
-                    className={`text-xs leading-relaxed ${isDarkMode ? "text-white/65" : "text-black/65"}`}
+                    className={`text-xs leading-relaxed ${isDarkMode ? 'text-white/65' : 'text-black/65'}`}
                   >
                     {h}
                   </span>
@@ -677,26 +671,25 @@ function ConceptsIDE({
 
           {/* Right: Code panel */}
           <div
-            className={`relative flex flex-col overflow-hidden ${isDarkMode ? "bg-[#0a0a0a]" : "bg-[#fafafa]"}`}
+            className={`relative flex flex-col overflow-hidden ${isDarkMode ? 'bg-[#0a0a0a]' : 'bg-[#fafafa]'}`}
           >
             {/* Mobile language toggle — inside code panel */}
             <div
               className={`flex md:hidden justify-center py-3 border-b ${borderColor}`}
             >
-              {renderLangToggle("")}
+              {renderLangToggle('')}
             </div>
             {/* Code Block with Syntax Highlighting */}
             <div className="flex flex-1">
               <Highlight
-                key={isDarkMode ? "dark" : "light"}
                 theme={isDarkMode ? themes.vsDark : themes.vsLight}
                 code={active.code[activeLang]}
                 language={
-                  activeLang === "rust"
-                    ? "rust"
-                    : activeLang === "python"
-                      ? "python"
-                      : "typescript"
+                  activeLang === 'rust'
+                    ? 'rust'
+                    : activeLang === 'python'
+                      ? 'python'
+                      : 'typescript'
                 }
               >
                 {({
@@ -709,8 +702,8 @@ function ConceptsIDE({
                   <>
                     {/* Line numbers */}
                     <div
-                      className={`flex-shrink-0 pt-6 pb-6 pl-4 pr-3 text-right select-none ${isDarkMode ? "text-white/20" : "text-black/20"}`}
-                      style={{ paddingTop: "2.5rem" }}
+                      className={`flex-shrink-0 pt-6 pb-6 pl-4 pr-3 text-right select-none ${isDarkMode ? 'text-white/20' : 'text-black/20'}`}
+                      style={{ paddingTop: '2.5rem' }}
                     >
                       {tokens.map((_, i) => (
                         <div
@@ -726,8 +719,8 @@ function ConceptsIDE({
                       className={`flex-1 p-6 pl-0 overflow-x-auto text-xs sm:text-sm leading-[1.7] font-mono`}
                       style={{
                         ...style,
-                        backgroundColor: "transparent",
-                        paddingTop: "2.5rem",
+                        backgroundColor: 'transparent',
+                        paddingTop: '2.5rem',
                       }}
                     >
                       {tokens.map((line, i) => (
@@ -747,25 +740,6 @@ function ConceptsIDE({
             </div>
 
             {/* Status bar */}
-            <div
-              className={`flex items-center justify-between px-4 py-1.5 border-t text-[10px] font-mono mt-auto ${borderColor} ${isDarkMode ? "text-white/25" : "text-black/25"}`}
-            >
-              <span>
-                {activeLang === "rust"
-                  ? "Rust"
-                  : activeLang === "python"
-                    ? "Python"
-                    : "TypeScript"}
-              </span>
-              <span>
-                {activeLang === "rust"
-                  ? "worker.rs"
-                  : activeLang === "python"
-                    ? "worker.py"
-                    : "worker.ts"}{" "}
-                &middot; {active.code[activeLang].split("\n").length} lines
-              </span>
-            </div>
           </div>
         </div>
       </div>
@@ -775,49 +749,49 @@ function ConceptsIDE({
 
 export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
   const [activeNode, setActiveNode] = useState<string | null>(null);
-  const textPrimary = isDarkMode ? "text-iii-light" : "text-iii-black";
-  const textSecondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
+  const textPrimary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
+  const textSecondary = isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70';
   const borderColor = isDarkMode
-    ? "border-iii-light/10"
-    : "border-iii-black/10";
-  const bgCard = isDarkMode ? "bg-iii-dark/20" : "bg-white/40";
-  const accentColor = isDarkMode ? "text-iii-accent" : "text-iii-accent-light";
+    ? 'border-iii-light/10'
+    : 'border-iii-black/10';
+  const bgCard = isDarkMode ? 'bg-iii-dark/20' : 'bg-white/40';
+  const accentColor = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
   const accentBorder = isDarkMode
-    ? "border-iii-accent"
-    : "border-iii-accent-light";
+    ? 'border-iii-accent'
+    : 'border-iii-accent-light';
 
   const toneClasses = {
     accent: {
-      icon: isDarkMode ? "text-iii-accent" : "text-iii-accent-light",
-      bg: isDarkMode ? "bg-iii-accent/10" : "bg-iii-accent-light/10",
+      icon: isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light',
+      bg: isDarkMode ? 'bg-iii-accent/10' : 'bg-iii-accent-light/10',
       border: isDarkMode
-        ? "border-iii-accent/20"
-        : "border-iii-accent-light/20",
+        ? 'border-iii-accent/20'
+        : 'border-iii-accent-light/20',
     },
     info: {
-      icon: "text-iii-info",
-      bg: "bg-iii-info/10",
-      border: "border-iii-info/20",
+      icon: 'text-iii-info',
+      bg: 'bg-iii-info/10',
+      border: 'border-iii-info/20',
     },
     warn: {
-      icon: "text-iii-warn",
-      bg: "bg-iii-warn/10",
-      border: "border-iii-warn/20",
+      icon: 'text-iii-warn',
+      bg: 'bg-iii-warn/10',
+      border: 'border-iii-warn/20',
     },
     success: {
-      icon: "text-iii-success",
-      bg: "bg-iii-success/10",
-      border: "border-iii-success/20",
+      icon: 'text-iii-success',
+      bg: 'bg-iii-success/10',
+      border: 'border-iii-success/20',
     },
     alert: {
-      icon: "text-iii-alert",
-      bg: "bg-iii-alert/10",
-      border: "border-iii-alert/20",
+      icon: 'text-iii-alert',
+      bg: 'bg-iii-alert/10',
+      border: 'border-iii-alert/20',
     },
   } as const;
 
-  const leftNodes = capabilityNodes.filter((node) => node.side === "left");
-  const rightNodes = capabilityNodes.filter((node) => node.side === "right");
+  const leftNodes = capabilityNodes.filter((node) => node.side === 'left');
+  const rightNodes = capabilityNodes.filter((node) => node.side === 'right');
 
   return (
     <section
@@ -829,7 +803,7 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
           className="absolute top-1/4 -right-1/4 w-1/2 h-1/2 rounded-full opacity-[0.02]"
           style={{
             background:
-              "radial-gradient(circle, var(--color-accent) 0%, transparent 70%)",
+              'radial-gradient(circle, var(--color-accent) 0%, transparent 70%)',
           }}
         />
       </div>
@@ -843,25 +817,25 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
           <p
             className={`text-sm md:text-base lg:text-lg max-w-2xl mx-auto leading-relaxed ${textSecondary}`}
           >
-            iii unifies your entire backend with{" "}
-            <strong className={textPrimary}>Function</strong>,{" "}
-            <strong className={textPrimary}>Trigger</strong>, and{" "}
+            iii unifies your entire backend with{' '}
+            <strong className={textPrimary}>Function</strong>,{' '}
+            <strong className={textPrimary}>Trigger</strong>, and{' '}
             <strong className={textPrimary}>Worker</strong>. One mental model
             for every backend system.
           </p>
           <div className="flex flex-wrap justify-center gap-2 sm:gap-3 pt-2">
             <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? "border-white/10 text-white/60" : "border-black/10 text-black/60"}`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? 'border-white/10 text-white/60' : 'border-black/10 text-black/60'}`}
             >
               <GlobeIcon size={12} /> TypeScript &middot; Python &middot; Rust
             </div>
             <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? "border-white/10 text-white/60" : "border-black/10 text-black/60"}`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? 'border-white/10 text-white/60' : 'border-black/10 text-black/60'}`}
             >
               <CloudIcon size={12} /> Self-host / BYOC
             </div>
             <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? "border-white/10 text-white/60" : "border-black/10 text-black/60"}`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? 'border-white/10 text-white/60' : 'border-black/10 text-black/60'}`}
             >
               <EyeIcon size={12} /> Built-in observability
             </div>
@@ -887,10 +861,10 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
             className="absolute inset-0 opacity-[0.03] pointer-events-none"
             style={{
               backgroundImage: `
-                linear-gradient(${isDarkMode ? "var(--color-light)" : "var(--color-black)"} 1px, transparent 1px),
-                linear-gradient(90deg, ${isDarkMode ? "var(--color-light)" : "var(--color-black)"} 1px, transparent 1px)
+                linear-gradient(${isDarkMode ? 'var(--color-light)' : 'var(--color-black)'} 1px, transparent 1px),
+                linear-gradient(90deg, ${isDarkMode ? 'var(--color-light)' : 'var(--color-black)'} 1px, transparent 1px)
               `,
-              backgroundSize: "40px 40px",
+              backgroundSize: '40px 40px',
             }}
           />
 
@@ -937,16 +911,16 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
                           </div>
                           <span
                             className={`text-[8px] font-mono font-bold px-1 py-0.5 rounded border leading-none ${
-                              node.type === "trigger"
+                              node.type === 'trigger'
                                 ? isDarkMode
-                                  ? "border-iii-accent/40 text-iii-accent/80"
-                                  : "border-iii-accent-light/40 text-iii-accent-light/80"
+                                  ? 'border-iii-accent/40 text-iii-accent/80'
+                                  : 'border-iii-accent-light/40 text-iii-accent-light/80'
                                 : isDarkMode
-                                  ? "border-iii-info/40 text-iii-info/80"
-                                  : "border-iii-info/40 text-iii-info/80"
+                                  ? 'border-iii-info/40 text-iii-info/80'
+                                  : 'border-iii-info/40 text-iii-info/80'
                             }`}
                           >
-                            {node.type === "trigger" ? "T" : "F"}
+                            {node.type === 'trigger' ? 'T' : 'F'}
                           </span>
                         </div>
                         <div
@@ -962,67 +936,50 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
 
               {/* Connector: Inputs → Engine */}
               <div className="flex flex-col items-center py-1">
-                <svg width="2" height="28" className="overflow-visible">
-                  <line
-                    x1="1"
-                    y1="0"
-                    x2="1"
-                    y2="28"
-                    stroke={
-                      isDarkMode ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.1)"
-                    }
-                    strokeWidth="1.5"
-                    strokeDasharray="4 3"
-                  />
-                  <circle
-                    r="2"
-                    fill={isDarkMode ? "#f3f724" : "#2f7fff"}
-                    opacity="0.7"
-                  >
-                    <animateMotion
-                      dur="1.5s"
-                      repeatCount="indefinite"
-                      path="M 1,0 L 1,28"
-                    />
-                  </circle>
-                </svg>
+                <AnimatedConnector
+                  isDarkMode={isDarkMode}
+                  orientation="vertical"
+                  length={28}
+                  duration="1.4s"
+                  className="overflow-visible"
+                />
               </div>
 
               {/* Engine Center */}
               <div className="relative flex items-center justify-center w-full max-w-xs">
                 <div
-                  className={`relative z-10 w-full flex flex-col items-center justify-center px-6 py-6 rounded-lg border-2 ${isDarkMode ? "bg-[#0a0a0a]" : "bg-white"}`}
+                  className={`relative z-10 w-full flex flex-col items-center justify-center px-6 py-6 rounded-lg border-2 ${isDarkMode ? 'bg-[#0a0a0a]' : 'bg-white'}`}
                   style={{
-                    borderColor: isDarkMode ? "#f3f724" : "#2f7fff",
-                    boxShadow: `0 0 25px ${isDarkMode ? "#f3f724" : "#2f7fff"}30`,
+                    borderColor: isDarkMode ? '#f3f724' : '#2f7fff',
+                    boxShadow: `0 0 25px ${isDarkMode ? '#f3f724' : '#2f7fff'}30`,
                   }}
                 >
                   <Logo
-                    className={`h-3 mb-1 ${isDarkMode ? "text-white/50" : "text-black/50"}`}
+                    className={`h-3 mb-1 ${isDarkMode ? 'text-white/50' : 'text-black/50'}`}
                   />
                   <div
                     className="text-xl font-bold font-mono tracking-tight"
-                    style={{ color: isDarkMode ? "#f3f724" : "#2f7fff" }}
+                    style={{ color: isDarkMode ? '#f3f724' : '#2f7fff' }}
                   >
                     Engine
                   </div>
                   <div
                     className={`mt-2 px-3 py-1 rounded-full border text-[10px] font-mono flex items-center gap-1.5 ${
                       isDarkMode
-                        ? "bg-white/5 border-white/10 text-white/70"
-                        : "bg-black/5 border-black/10 text-black/70"
+                        ? 'bg-white/5 border-white/10 text-white/70'
+                        : 'bg-black/5 border-black/10 text-black/70'
                     }`}
                   >
                     <Activity
                       className="w-3 h-3"
-                      style={{ color: isDarkMode ? "#f3f724" : "#2f7fff" }}
+                      style={{ color: isDarkMode ? '#f3f724' : '#2f7fff' }}
                     />
                     <span>
                       12,869 <span className="opacity-50">ops</span>
                     </span>
                   </div>
                   <div
-                    className={`mt-2 text-[9px] font-mono text-center ${isDarkMode ? "text-white/40" : "text-black/40"}`}
+                    className={`mt-2 text-[9px] font-mono text-center ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}
                   >
                     Triggers &bull; Functions &bull; Workers
                   </div>
@@ -1031,30 +988,13 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
 
               {/* Connector: Engine → Outputs */}
               <div className="flex flex-col items-center py-1">
-                <svg width="2" height="28" className="overflow-visible">
-                  <line
-                    x1="1"
-                    y1="0"
-                    x2="1"
-                    y2="28"
-                    stroke={
-                      isDarkMode ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.1)"
-                    }
-                    strokeWidth="1.5"
-                    strokeDasharray="4 3"
-                  />
-                  <circle
-                    r="2"
-                    fill={isDarkMode ? "#f3f724" : "#2f7fff"}
-                    opacity="0.7"
-                  >
-                    <animateMotion
-                      dur="1.5s"
-                      repeatCount="indefinite"
-                      path="M 1,0 L 1,28"
-                    />
-                  </circle>
-                </svg>
+                <AnimatedConnector
+                  isDarkMode={isDarkMode}
+                  orientation="vertical"
+                  length={28}
+                  duration="1.4s"
+                  className="overflow-visible"
+                />
               </div>
 
               {/* Output nodes */}
@@ -1085,16 +1025,16 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
                           </div>
                           <span
                             className={`text-[8px] font-mono font-bold px-1 py-0.5 rounded border leading-none ${
-                              node.type === "trigger"
+                              node.type === 'trigger'
                                 ? isDarkMode
-                                  ? "border-iii-accent/40 text-iii-accent/80"
-                                  : "border-iii-accent-light/40 text-iii-accent-light/80"
+                                  ? 'border-iii-accent/40 text-iii-accent/80'
+                                  : 'border-iii-accent-light/40 text-iii-accent-light/80'
                                 : isDarkMode
-                                  ? "border-iii-info/40 text-iii-info/80"
-                                  : "border-iii-info/40 text-iii-info/80"
+                                  ? 'border-iii-info/40 text-iii-info/80'
+                                  : 'border-iii-info/40 text-iii-info/80'
                             }`}
                           >
-                            {node.type === "trigger" ? "T" : "F"}
+                            {node.type === 'trigger' ? 'T' : 'F'}
                           </span>
                         </div>
                         <div
@@ -1163,13 +1103,13 @@ function ParticleFlowDiagram({
 
   // Manual hover handling
   const handleNodeHover = (
-    side: "left" | "right",
+    side: 'left' | 'right',
     index: number,
     title: string,
   ) => {
     setIsHovered(true);
     setHoveredNode(title);
-    if (side === "left") {
+    if (side === 'left') {
       if (activeInput !== index) {
         setActiveInput(index);
         setCycleKey((prev) => prev + 1); // trigger animation immediately
@@ -1235,15 +1175,15 @@ function ParticleFlowDiagram({
   });
 
   const getThemeColor = (colorName: string) => {
-    return isDarkMode ? "#f3f724" : "#2f7fff";
+    return isDarkMode ? '#f3f724' : '#2f7fff';
   };
 
   const activeColor = getThemeColor(
-    leftNodes[activeInput].tone.split("-")[0] || "purple",
+    leftNodes[activeInput].tone.split('-')[0] || 'purple',
   );
   const baseLineColor = isDarkMode
-    ? "rgba(255,255,255,0.08)"
-    : "rgba(0,0,0,0.06)";
+    ? 'rgba(255,255,255,0.08)'
+    : 'rgba(0,0,0,0.06)';
 
   return (
     <svg
@@ -1282,22 +1222,22 @@ function ParticleFlowDiagram({
         />
       ))}
 
-      {/* AMBIENT PARTICLES (12 forward + 5 reverse, fast, continuous) */}
+      {/* AMBIENT PARTICLES (denser bidirectional stream) */}
       {[0, 1, 2, 3].map((i) =>
         [0, 1, 2].map((j) => (
           <g key={`ambient-fwd-${i}-${j}`} opacity="0.3">
-            <circle r="1.5" fill={isDarkMode ? "#ffffff" : "#000000"}>
+            <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="2.5s"
-                begin={`${i * 0.6 + j * 0.8}s`}
+                dur="2.4s"
+                begin={`${i * 0.45 + j * 0.52}s`}
                 repeatCount="indefinite"
                 path={leftPaths[i]}
               />
             </circle>
-            <circle r="1.5" fill={isDarkMode ? "#ffffff" : "#000000"}>
+            <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="2.5s"
-                begin={`${i * 0.6 + j * 0.8 + 1.2}s`}
+                dur="2.4s"
+                begin={`${i * 0.45 + j * 0.52 + 1.1}s`}
                 repeatCount="indefinite"
                 path={rightPaths[i]}
               />
@@ -1305,22 +1245,21 @@ function ParticleFlowDiagram({
           </g>
         )),
       )}
-      {/* Reverse-direction ambient particles (~40% density) */}
-      {[0, 2].map((i) =>
+      {[0, 1, 2, 3].map((i) =>
         [0, 1].map((j) => (
           <g key={`ambient-rev-${i}-${j}`} opacity="0.2">
-            <circle r="1.5" fill={isDarkMode ? "#ffffff" : "#000000"}>
+            <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="3s"
-                begin={`${i * 0.7 + j * 1.4}s`}
+                dur="2.8s"
+                begin={`${i * 0.4 + j * 1.05}s`}
                 repeatCount="indefinite"
                 path={leftPathsReverse[i]}
               />
             </circle>
-            <circle r="1.5" fill={isDarkMode ? "#ffffff" : "#000000"}>
+            <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
               <animateMotion
-                dur="3s"
-                begin={`${i * 0.7 + j * 1.4 + 0.5}s`}
+                dur="2.8s"
+                begin={`${i * 0.4 + j * 1.05 + 0.45}s`}
                 repeatCount="indefinite"
                 path={rightPathsReverse[i]}
               />
@@ -1330,7 +1269,7 @@ function ParticleFlowDiagram({
       )}
       {[1, 3].map((i) => (
         <g key={`ambient-rev-single-${i}`} opacity="0.2">
-          <circle r="1.5" fill={isDarkMode ? "#ffffff" : "#000000"}>
+          <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
             <animateMotion
               dur="3s"
               begin={`${i * 0.9}s`}
@@ -1338,7 +1277,7 @@ function ParticleFlowDiagram({
               path={leftPathsReverse[i]}
             />
           </circle>
-          <circle r="1.5" fill={isDarkMode ? "#ffffff" : "#000000"}>
+          <circle r="1.5" fill={isDarkMode ? '#ffffff' : '#000000'}>
             <animateMotion
               dur="3s"
               begin={`${i * 0.9 + 1}s`}
@@ -1358,7 +1297,7 @@ function ParticleFlowDiagram({
         strokeWidth="2"
         opacity="0.6"
         filter="url(#glow)"
-        style={{ transition: "stroke 0.3s" }}
+        style={{ transition: 'stroke 0.3s' }}
       />
       {/* Right side: all paths glow when outputting */}
       {rightPaths.map((d, i) => (
@@ -1455,22 +1394,22 @@ function ParticleFlowDiagram({
             y={yPos[i]}
             width={nodeW}
             height={nodeH}
-            onMouseEnter={() => handleNodeHover("left", i, node.title)}
+            onMouseEnter={() => handleNodeHover('left', i, node.title)}
             onMouseLeave={handleNodeLeave}
           >
             <div
               className={`w-full h-full rounded-lg flex items-center gap-3 px-3 transition-all duration-300 ${
                 isActive
-                  ? "border-2 border-dotted shadow-[0_0_15px_rgba(0,0,0,0.2)] scale-[1.02]"
-                  : `border border-solid ${isDarkMode ? "border-white/10 bg-black/40" : "border-black/10 bg-white/40"} ${isMuted ? "opacity-40" : "hover:border-iii-medium/30"}`
+                  ? 'border-2 border-solid shadow-[0_0_15px_rgba(0,0,0,0.2)] scale-[1.02]'
+                  : `border border-solid ${isDarkMode ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'} ${isMuted ? 'opacity-40' : 'hover:border-iii-medium/30'}`
               }`}
               style={
                 isActive
                   ? {
                       borderColor: activeColor,
                       backgroundColor: isDarkMode
-                        ? "rgba(0,0,0,0.6)"
-                        : "rgba(255,255,255,0.8)",
+                        ? 'rgba(0,0,0,0.6)'
+                        : 'rgba(255,255,255,0.8)',
                     }
                   : {}
               }
@@ -1479,7 +1418,7 @@ function ParticleFlowDiagram({
                 className={`flex h-8 w-8 items-center justify-center rounded-lg border overflow-hidden flex-shrink-0 transition-colors ${
                   isActive
                     ? `${tone.border} ${tone.bg}`
-                    : `${isDarkMode ? "border-white/10" : "border-black/10"} ${tone.bg}`
+                    : `${isDarkMode ? 'border-white/10' : 'border-black/10'} ${tone.bg}`
                 }`}
               >
                 <Icon size={16} className={tone.icon} />
@@ -1490,31 +1429,31 @@ function ParticleFlowDiagram({
                     className={`text-xs font-semibold truncate transition-colors ${
                       isActive
                         ? isDarkMode
-                          ? "text-white"
-                          : "text-black"
+                          ? 'text-white'
+                          : 'text-black'
                         : isDarkMode
-                          ? "text-white/70"
-                          : "text-black/70"
+                          ? 'text-white/70'
+                          : 'text-black/70'
                     }`}
                   >
                     {node.titleFull}
                   </div>
                   <span
                     className={`text-[8px] font-mono font-bold px-1 py-0.5 rounded border leading-none flex-shrink-0 ${
-                      node.type === "trigger"
+                      node.type === 'trigger'
                         ? isDarkMode
-                          ? "border-[#f3f724]/40 text-[#f3f724]/80"
-                          : "border-[#2f7fff]/40 text-[#2f7fff]/80"
+                          ? 'border-[#f3f724]/40 text-[#f3f724]/80'
+                          : 'border-[#2f7fff]/40 text-[#2f7fff]/80'
                         : isDarkMode
-                          ? "border-[#38bdf8]/40 text-[#38bdf8]/80"
-                          : "border-[#38bdf8]/40 text-[#38bdf8]/80"
+                          ? 'border-[#38bdf8]/40 text-[#38bdf8]/80'
+                          : 'border-[#38bdf8]/40 text-[#38bdf8]/80'
                     }`}
                   >
-                    {node.type === "trigger" ? "T" : "F"}
+                    {node.type === 'trigger' ? 'T' : 'F'}
                   </span>
                 </div>
                 <div
-                  className={`text-[10px] truncate ${isDarkMode ? "text-white/40" : "text-black/40"}`}
+                  className={`text-[10px] truncate ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}
                 >
                   {node.subtitle}
                 </div>
@@ -1539,7 +1478,7 @@ function ParticleFlowDiagram({
             y={yPos[i]}
             width={nodeW}
             height={nodeH}
-            onMouseEnter={() => handleNodeHover("right", i, node.title)}
+            onMouseEnter={() => handleNodeHover('right', i, node.title)}
             onMouseLeave={handleNodeLeave}
           >
             <div className="relative w-full h-full">
@@ -1563,38 +1502,38 @@ function ParticleFlowDiagram({
               <div
                 className={`relative w-full h-full rounded-lg border flex items-center gap-3 px-3 transition-all duration-300 ${
                   isMuted
-                    ? `${isDarkMode ? "border-white/10 bg-black/40" : "border-black/10 bg-white/40"} opacity-40`
-                    : `${isDarkMode ? "border-white/10 bg-black/40" : "border-black/10 bg-white/40"}`
+                    ? `${isDarkMode ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'} opacity-40`
+                    : `${isDarkMode ? 'border-white/10 bg-black/40' : 'border-black/10 bg-white/40'}`
                 }`}
               >
                 <div
-                  className={`flex h-8 w-8 items-center justify-center rounded-lg border overflow-hidden flex-shrink-0 ${isDarkMode ? "border-white/10" : "border-black/10"} ${tone.bg}`}
+                  className={`flex h-8 w-8 items-center justify-center rounded-lg border overflow-hidden flex-shrink-0 ${isDarkMode ? 'border-white/10' : 'border-black/10'} ${tone.bg}`}
                 >
                   <Icon size={16} className={tone.icon} />
                 </div>
                 <div className="text-left min-w-0">
                   <div className="flex items-center gap-1.5">
                     <div
-                      className={`text-xs font-semibold truncate ${isDarkMode ? "text-white/80" : "text-black/80"}`}
+                      className={`text-xs font-semibold truncate ${isDarkMode ? 'text-white/80' : 'text-black/80'}`}
                     >
                       {node.titleFull}
                     </div>
                     <span
                       className={`text-[8px] font-mono font-bold px-1 py-0.5 rounded border leading-none flex-shrink-0 ${
-                        node.type === "trigger"
+                        node.type === 'trigger'
                           ? isDarkMode
-                            ? "border-[#f3f724]/40 text-[#f3f724]/80"
-                            : "border-[#2f7fff]/40 text-[#2f7fff]/80"
+                            ? 'border-[#f3f724]/40 text-[#f3f724]/80'
+                            : 'border-[#2f7fff]/40 text-[#2f7fff]/80'
                           : isDarkMode
-                            ? "border-[#38bdf8]/40 text-[#38bdf8]/80"
-                            : "border-[#38bdf8]/40 text-[#38bdf8]/80"
+                            ? 'border-[#38bdf8]/40 text-[#38bdf8]/80'
+                            : 'border-[#38bdf8]/40 text-[#38bdf8]/80'
                       }`}
                     >
-                      {node.type === "trigger" ? "T" : "F"}
+                      {node.type === 'trigger' ? 'T' : 'F'}
                     </span>
                   </div>
                   <div
-                    className={`text-[10px] truncate ${isDarkMode ? "text-white/40" : "text-black/40"}`}
+                    className={`text-[10px] truncate ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}
                   >
                     {node.subtitle}
                   </div>
@@ -1658,7 +1597,7 @@ function ParticleFlowDiagram({
         <foreignObject x="-90" y="-80" width="180" height="160">
           <div
             className={`w-full h-full flex flex-col items-center justify-center rounded-lg border-2 transition-colors duration-500 ${
-              isDarkMode ? "bg-[#0a0a0a]" : "bg-white"
+              isDarkMode ? 'bg-[#0a0a0a]' : 'bg-white'
             }`}
             style={{
               borderColor: activeColor,
@@ -1666,7 +1605,7 @@ function ParticleFlowDiagram({
             }}
           >
             <Logo
-              className={`h-3 mb-2 transition-colors duration-500 ${isDarkMode ? "text-white/50" : "text-black/50"}`}
+              className={`h-3 mb-2 transition-colors duration-500 ${isDarkMode ? 'text-white/50' : 'text-black/50'}`}
             />
             <div
               className="text-2xl font-bold font-mono tracking-tight transition-colors duration-500"
@@ -1679,19 +1618,19 @@ function ParticleFlowDiagram({
             <div
               className={`mt-3 px-3 py-1 rounded-full border text-[10px] font-mono flex items-center gap-1.5 transition-colors duration-500 ${
                 isDarkMode
-                  ? "bg-white/5 border-white/10 text-white/70"
-                  : "bg-black/5 border-black/10 text-black/70"
+                  ? 'bg-white/5 border-white/10 text-white/70'
+                  : 'bg-black/5 border-black/10 text-black/70'
               }`}
             >
               <Activity className="w-3 h-3" style={{ color: activeColor }} />
               <span>
-                {eventCount.toLocaleString()}{" "}
+                {eventCount.toLocaleString()}{' '}
                 <span className="opacity-50">ops</span>
               </span>
             </div>
 
             <div
-              className={`mt-2 text-[9px] font-mono text-center px-4 ${isDarkMode ? "text-white/40" : "text-black/40"}`}
+              className={`mt-2 text-[9px] font-mono text-center px-4 ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}
             >
               Triggers &bull; Functions
               <br />

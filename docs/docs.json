@@ -34,6 +34,7 @@
                 "pages": [
                   "how-to/use-functions-and-triggers",
                   "how-to/trigger-actions",
+                  "how-to/trigger-functions-from-cli",
                   "how-to/use-queues",
                   "how-to/dead-letter-queues",
                   "how-to/expose-http-endpoint",
@@ -55,7 +56,8 @@
                   "architecture/workers",
                   "architecture/modules",
                   "architecture/trigger-types",
-                  "architecture/channels"
+                  "architecture/channels",
+                  "architecture/queues"
                 ]
               },
               {

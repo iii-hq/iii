@@ -1,27 +1,28 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Terminal } from "./components/Terminal";
-import { ExampleCodeSection } from "./components/sections/ExampleCodeSection";
-import { HeroSection } from "./components/sections/HeroSection";
-import { HelloWorldSection } from "./components/sections/HelloWorldSection";
-import { EngineSection } from "./components/sections/EngineSection";
-import { AgentReadySection } from "./components/sections/AgentReadySection";
-import { ObservabilitySection } from "./components/sections/ObservabilitySection";
-import { FooterSection } from "./components/sections/FooterSection";
-import { Navbar } from "./components/Navbar";
-import { MachineView } from "./components/MachineView";
-import { SectionsPreview } from "./pages/SectionsPreview";
-import { ManifestoPage } from "./pages/ManifestoPage";
-import { CookieConsent } from "./components/CookieConsent";
-import { useCookieConsent } from "./lib/useCookieConsent";
-import { KeySequence } from "./types";
+import React, { useState, useEffect, useCallback } from 'react';
+import { Terminal } from './components/Terminal';
+import { ExampleCodeSection } from './components/sections/ExampleCodeSection';
+import { HeroSection } from './components/sections/HeroSection';
+import { InteractiveDemoFlowSection } from './components/sections/InteractiveDemoFlowSection';
+import { HelloWorldSection } from './components/sections/HelloWorldSection';
+import { EngineSection } from './components/sections/EngineSection';
+import { AgentReadySection } from './components/sections/AgentReadySection';
+import { ObservabilitySection } from './components/sections/ObservabilitySection';
+import { FooterSection } from './components/sections/FooterSection';
+import { Navbar } from './components/Navbar';
+import { MachineView } from './components/MachineView';
+import { SectionsPreview } from './pages/SectionsPreview';
+import { ManifestoPage } from './pages/ManifestoPage';
+import { CookieConsent } from './components/CookieConsent';
+import { useCookieConsent } from './lib/useCookieConsent';
+import { KeySequence } from './types';
 
 const AppRouter: React.FC = () => {
   const pathname = window.location.pathname;
 
-  if (pathname === "/preview") {
+  if (pathname === '/preview') {
     return <SectionsPreview />;
   }
-  if (pathname === "/manifesto") {
+  if (pathname === '/manifesto') {
     return <ManifestoPage />;
   }
 
@@ -40,12 +41,12 @@ const App: React.FC = () => {
 
   // URL-based mode detection: /ai = machine mode, / = human mode
   const [isHumanMode, setIsHumanMode] = useState(() => {
-    return window.location.pathname !== "/ai";
+    return window.location.pathname !== '/ai';
   });
 
   useEffect(() => {
-    document.body.classList.toggle("dark-mode", isDarkMode);
-    document.body.classList.toggle("light-mode", !isDarkMode);
+    document.body.classList.toggle('dark-mode', isDarkMode);
+    document.body.classList.toggle('light-mode', !isDarkMode);
   }, [isDarkMode]);
 
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
@@ -54,17 +55,17 @@ const App: React.FC = () => {
     const newMode = !isHumanMode;
     setIsHumanMode(newMode);
     // Update URL without reload
-    const newPath = newMode ? "/" : "/ai";
-    window.history.pushState({}, "", newPath);
+    const newPath = newMode ? '/' : '/ai';
+    window.history.pushState({}, '', newPath);
   };
 
   // Handle browser back/forward
   useEffect(() => {
     const handlePopState = () => {
-      setIsHumanMode(window.location.pathname !== "/ai");
+      setIsHumanMode(window.location.pathname !== '/ai');
     };
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   // Hover animation - sequential highlight
@@ -109,10 +110,10 @@ const App: React.FC = () => {
       keyBuffer.push(key);
       if (keyBuffer.length > 30) keyBuffer = keyBuffer.slice(-30);
 
-      const recentKeys = keyBuffer.slice(-3).join("");
+      const recentKeys = keyBuffer.slice(-3).join('');
       if (recentKeys === KeySequence.III) setShowTerminal(true);
 
-      const fullHistory = keyBuffer.join("");
+      const fullHistory = keyBuffer.join('');
       if (fullHistory.includes(KeySequence.KONAMI)) {
         setIsGodMode(true);
         setShowGodModeUnlock(true);
@@ -125,8 +126,8 @@ const App: React.FC = () => {
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   // Machine mode - raw markdown/text dump for AI consumption
@@ -173,9 +174,9 @@ const App: React.FC = () => {
     <div
       className={`min-h-screen font-mono selection:bg-iii-accent selection:text-iii-black relative flex flex-col transition-colors duration-300 ${
         isDarkMode
-          ? "bg-iii-black text-iii-light"
-          : "bg-iii-light text-iii-black"
-      } ${isGodMode ? "selection:bg-red-500" : ""}`}
+          ? 'bg-iii-black text-iii-light'
+          : 'bg-iii-light text-iii-black'
+      } ${isGodMode ? 'selection:bg-red-500' : ''}`}
     >
       <Navbar
         isDarkMode={isDarkMode}
@@ -193,37 +194,59 @@ const App: React.FC = () => {
 
       <main className="flex-1 relative z-10 flex flex-col items-center w-full pt-16 md:pt-20">
         {/* Section 1: Hero - One Engine. Any Language. Anywhere. */}
-        <div className="w-full">
+        <div className="w-full" data-machine-section="hero">
           <HeroSection isDarkMode={isDarkMode} />
         </div>
 
-        {/* Section 2: Hello World - Polyglot proof with IPC */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
-          <HelloWorldSection isDarkMode={isDarkMode} />
+        <div className="w-full">
+          <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
-
         {/* Section 3: Architecture (formerly Engine) - Trigger → Function → Workers */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="architecture"
+        >
           <EngineSection isDarkMode={isDarkMode} />
         </div>
 
-        {/* Section 4: Triggers as Universal Adapters - Code Examples */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
-          <ExampleCodeSection isDarkMode={isDarkMode} />
+        {/* Section 2: Hello World - Polyglot proof with IPC */}
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="hello-world"
+        >
+          <HelloWorldSection isDarkMode={isDarkMode} />
         </div>
 
+        {/* Section 4: Triggers as Universal Adapters - Code Examples */}
+        {/* <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="examples"
+          data-machine-exclude="true"
+        >
+          <ExampleCodeSection isDarkMode={isDarkMode} />
+        </div> */}
+
         {/* Section 5: Observability - Trace-level visibility with OpenTelemetry */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="observability"
+        >
           <ObservabilitySection isDarkMode={isDarkMode} />
         </div>
 
         {/* Section 6: Agent-Ready - AI agents as first-class citizens */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        {/* <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="agent-ready"
+        >
           <AgentReadySection isDarkMode={isDarkMode} />
-        </div>
+        </div> */}
 
         {/* Section 7: Footer + CTA - FAQ, Discord, Links */}
-        <div className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24">
+        <div
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          data-machine-section="footer"
+        >
           <FooterSection isDarkMode={isDarkMode} />
         </div>
       </main>

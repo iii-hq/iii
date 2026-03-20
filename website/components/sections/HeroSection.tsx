@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from "react";
 import {
   ArrowNarrowRightIcon,
-  CopyIcon,
   CheckedIcon,
-  TerminalIcon,
 } from "../icons";
+import { InstallShButton } from "../InstallShButton";
 import { useRotatingText } from "../../lib/useRotatingText";
 // AUTHENTIC SVG LOGOS - Official & Community Verified Paths
 // Sources: Official branding pages, vectorlogo.zone, svgl.app, simpleicons.org
@@ -337,23 +336,30 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
       intervalMs: 4200,
     });
 
-  // Install command state
-  const [copySuccess, setCopySuccess] = useState(false);
-  const [installCmd] = useState(
-    "curl -fsSL https://install.iii.dev/iii/main/install.sh | sh",
-  );
-
   // Email form state
   const [email, setEmail] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(() => {
-    return localStorage.getItem("iii_access_requested") === "true";
+    if (typeof window === "undefined") {
+      return false;
+    }
+    try {
+      return window.localStorage.getItem("iii_access_requested") === "true";
+    } catch {
+      return false;
+    }
   });
 
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(installCmd);
-    setCopySuccess(true);
-    setTimeout(() => setCopySuccess(false), 2000);
+  const persistAccessRequest = (requestedEmail: string) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      window.localStorage.setItem("iii_access_requested", "true");
+      window.localStorage.setItem("iii_access_email", requestedEmail);
+    } catch {
+      // Ignore storage failures (private mode, blocked storage, etc).
+    }
   };
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
@@ -375,13 +381,11 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
         }
       }
       setIsSubmitted(true);
-      localStorage.setItem("iii_access_requested", "true");
-      localStorage.setItem("iii_access_email", email);
+      persistAccessRequest(email);
       setEmail("");
     } catch {
       setIsSubmitted(true);
-      localStorage.setItem("iii_access_requested", "true");
-      localStorage.setItem("iii_access_email", email);
+      persistAccessRequest(email);
       setEmail("");
     } finally {
       setIsSubmitting(false);
@@ -488,62 +492,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
 
             {/* Install Command & Email Form */}
             <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-stretch sm:items-start pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
-              <div className="flex flex-col gap-1.5 w-full sm:w-auto">
-                <div
-                  className={`group relative flex items-center gap-2 px-2.5 py-2 sm:px-3 sm:py-2.5 md:px-4 md:py-3 border rounded transition-colors cursor-pointer w-full sm:min-w-[220px] md:min-w-[280px] ${
-                    isDarkMode
-                      ? "bg-iii-dark/50 border-iii-light hover:border-iii-light"
-                      : "bg-white/50 border-iii-dark hover:border-iii-dark"
-                  }`}
-                  onClick={copyToClipboard}
-                >
-                  {copySuccess ? (
-                    <>
-                      <CheckedIcon
-                        size={16}
-                        className={`flex-shrink-0 ${
-                          isDarkMode
-                            ? "text-iii-accent"
-                            : "text-iii-accent-light"
-                        }`}
-                      />
-                      <code
-                        className={`text-[9px] sm:text-[10px] md:text-sm flex-1 truncate ${
-                          isDarkMode ? "text-iii-light" : "text-iii-black"
-                        }`}
-                      >
-                        copied!
-                      </code>
-                    </>
-                  ) : (
-                    <>
-                      <TerminalIcon
-                        size={16}
-                        className={`transition-colors flex-shrink-0 ${
-                          isDarkMode
-                            ? "text-iii-light/50 group-hover:text-iii-accent"
-                            : "text-iii-dark/50 group-hover:text-iii-accent-light"
-                        }`}
-                      />
-                      <code
-                        className={`text-[9px] sm:text-[10px] md:text-sm flex-1 truncate ${
-                          isDarkMode ? "text-iii-light" : "text-iii-black"
-                        }`}
-                      >
-                        install.sh
-                      </code>
-                      <CopyIcon
-                        size={16}
-                        className={`transition-colors flex-shrink-0 ${
-                          isDarkMode
-                            ? "text-iii-light/50 group-hover:text-white"
-                            : "text-iii-dark/50 group-hover:text-iii-black"
-                        }`}
-                      />
-                    </>
-                  )}
-                </div>
-              </div>
+              <InstallShButton isDarkMode={isDarkMode} />
 
               <form
                 onSubmit={handleEmailSubmit}
