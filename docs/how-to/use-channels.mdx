@@ -246,26 +246,22 @@ iii.registerTrigger({
 ```python
 import os
 from iii import register_worker
+from iii.utils import http
+from iii.types import HttpRequest, HttpResponse
 
 iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
 
 
-def download_file(req):
-    filename = req["path_params"]["filename"]
+@http
+async def download_file(req: HttpRequest, response: HttpResponse):
+    filename = req.path_params.get("filename")
     file_path = f"/data/reports/{filename}"
 
     with open(file_path, "rb") as f:
-        data = f.read()
-
-    return {
-        "status_code": 200,
-        "headers": {
-            "content-type": "application/octet-stream",
-            "content-disposition": f'attachment; filename="{filename}"',
-        },
-        "body": data,
-    }
-
+        await response.status(200)
+        await response.headers({"content-type": "application/pdf"})
+        await response.writer.write(f.read())
+        await response.writer.close_async()
 
 iii.register_function({"id": "files::download"}, download_file)
 
@@ -481,10 +477,15 @@ iii.register_function(RegisterFunctionMessage { id: "pipeline::producer".into(),
         channel.writer.close().await
             .map_err(|e| IIIError::Handler(e.to_string()))?;
 
-        let result = iii.trigger(TriggerRequest::new("pipeline::consumer", json!({
-            "label": "batch-001",
-            "reader": channel.reader_ref,
-        }))).await.map_err(|e| IIIError::Handler(e.to_string()))?;
+        let result = iii.trigger(TriggerRequest {
+            function_id: "pipeline::consumer".to_string(),
+            payload: json!({
+                "label": "batch-001",
+                "reader": channel.reader_ref,
+            }),
+            action: None,
+            timeout_ms: Some(30000),
+        }).await.map_err(|e| IIIError::Handler(e.to_string()))?;
 
         Ok(result)
     }
