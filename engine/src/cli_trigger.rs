@@ -5,8 +5,8 @@
 // See LICENSE and PATENTS files for details.
 
 use clap::Parser;
-use iii_sdk::{register_worker, IIIError, InitOptions, TriggerRequest};
 use iii::modules::config::DEFAULT_PORT;
+use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
 
 #[derive(Parser, Debug, Clone)]
 pub struct TriggerArgs {
@@ -76,7 +76,9 @@ pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
 fn map_trigger_error(e: IIIError) -> anyhow::Error {
     match e {
         IIIError::Timeout => {
-            anyhow::anyhow!("Timed out waiting for the engine (no response within the timeout). Is the engine running at the given address and port?")
+            anyhow::anyhow!(
+                "Timed out waiting for the engine (no response within the timeout). Is the engine running at the given address and port?"
+            )
         }
         IIIError::WebSocket(msg) => {
             anyhow::anyhow!("WebSocket error: {}", msg)
