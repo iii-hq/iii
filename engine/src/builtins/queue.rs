@@ -772,90 +772,63 @@ impl BuiltinQueue {
         count
     }
 
-    pub async fn dlq_redrive_message(&self, queue: &str, message_id: &str) -> bool {
+    /// Find and remove a specific DLQ entry by job ID, returning the parsed Job if found.
+    async fn dlq_find_and_remove(&self, queue: &str, message_id: &str) -> Option<(Job, String)> {
         let dlq_key = self.dlq_key(queue);
-        let mut found = false;
-        let mut remaining = Vec::new();
 
-        // Drain all items from the DLQ
-        while let Some(item) = self.kv_store.rpop(&dlq_key).await {
-            if !found {
-                if let Ok(failed_data) = serde_json::from_str::<Value>(&item)
-                    && let Some(job_value) = failed_data.get("job")
-                    && let Ok(job) = serde_json::from_value::<Job>(job_value.clone())
-                {
-                    if job.id == message_id {
-                        // Found the target message - reset attempts and re-enqueue
-                        let mut redriven_job = job;
-                        redriven_job.attempts_made = 0;
+        self.kv_store
+            .lremove_first_by(&dlq_key, |item| {
+                serde_json::from_str::<Value>(item)
+                    .ok()
+                    .and_then(|data| {
+                        data.get("job")?
+                            .get("id")?
+                            .as_str()
+                            .map(|id| id == message_id)
+                    })
+                    .unwrap_or(false)
+            })
+            .await
+            .and_then(|raw_item| {
+                let data: Value = serde_json::from_str(&raw_item).ok()?;
+                let job: Job = serde_json::from_value(data.get("job")?.clone()).ok()?;
+                Some((job, raw_item))
+            })
+    }
 
-                        let job_key = self.job_key(queue, &redriven_job.id);
-                        let job_json = serde_json::to_value(&redriven_job)
-                            .expect("Job serialization failed - this is a bug");
-                        self.kv_store.set_job(&job_key, job_json).await;
+    pub async fn dlq_redrive_message(&self, queue: &str, message_id: &str) -> bool {
+        if let Some((job, _raw)) = self.dlq_find_and_remove(queue, message_id).await {
+            let mut redriven_job = job;
+            redriven_job.attempts_made = 0;
 
-                        let waiting_key = self.waiting_key(queue);
-                        self.kv_store.lpush(&waiting_key, redriven_job.id).await;
+            let job_key = self.job_key(queue, &redriven_job.id);
+            let job_json = serde_json::to_value(&redriven_job)
+                .expect("Job serialization failed - this is a bug");
+            self.kv_store.set_job(&job_key, job_json).await;
 
-                        found = true;
-                        continue;
-                    }
-                }
-            }
-            // Keep non-matching items to push back
-            remaining.push(item);
-        }
+            let waiting_key = self.waiting_key(queue);
+            self.kv_store.lpush(&waiting_key, redriven_job.id).await;
 
-        // Push remaining items back to the DLQ in original order.
-        // rpop gave us items tail-to-head (oldest first), so rpush
-        // restores them to the same positions.
-        for item in remaining {
-            self.kv_store.rpush(&dlq_key, item).await;
-        }
-
-        if found {
             self.pubsub.send_msg(serde_json::json!({
                 "topic": format!("queue:job:{}", queue),
                 "type": "available",
             }));
             tracing::info!(queue = %queue, message_id = %message_id, "Single DLQ job redriven");
+            true
+        } else {
+            false
         }
-
-        found
     }
 
     pub async fn dlq_discard_message(&self, queue: &str, message_id: &str) -> bool {
-        let dlq_key = self.dlq_key(queue);
-        let mut found = false;
-        let mut remaining = Vec::new();
-
-        while let Some(item) = self.kv_store.rpop(&dlq_key).await {
-            if !found {
-                if let Ok(failed_data) = serde_json::from_str::<Value>(&item)
-                    && let Some(job_value) = failed_data.get("job")
-                    && let Ok(job) = serde_json::from_value::<Job>(job_value.clone())
-                {
-                    if job.id == message_id {
-                        // Discard: delete the job record and don't re-enqueue
-                        let job_key = self.job_key(queue, &job.id);
-                        self.kv_store.delete_job(&job_key).await;
-                        found = true;
-                        continue;
-                    }
-                }
-            }
-            remaining.push(item);
-        }
-
-        for item in remaining {
-            self.kv_store.rpush(&dlq_key, item).await;
-        }
-
-        if found {
+        if let Some((job, _raw)) = self.dlq_find_and_remove(queue, message_id).await {
+            let job_key = self.job_key(queue, &job.id);
+            self.kv_store.delete_job(&job_key).await;
             tracing::info!(queue = %queue, message_id = %message_id, "DLQ message discarded");
+            true
+        } else {
+            false
         }
-
-        found
     }
 }
 
@@ -2609,6 +2582,217 @@ mod tests {
         let found = queue.dlq_discard_message("test_queue", &job_ids[1]).await;
         assert!(found);
         assert_eq!(queue.dlq_count("test_queue").await, 2);
+    }
+
+    // =========================================================================
+    // DLQ single-message operation tests (3-job scenarios)
+    // =========================================================================
+
+    /// Helper: push N jobs to a queue with max_attempts=1, fail each one so it lands in DLQ.
+    /// Returns the job IDs in push order.
+    async fn push_n_jobs_to_dlq(queue: &BuiltinQueue, queue_name: &str, n: usize) -> Vec<String> {
+        let mut ids = Vec::with_capacity(n);
+        for i in 0..n {
+            let data = serde_json::json!({"index": i});
+            let id = queue.push(queue_name, data, None, None).await;
+            let job = queue.pop(queue_name).await.unwrap();
+            queue
+                .nack(queue_name, &job.id, &format!("error {i}"))
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn test_dlq_redrive_single_message_resets_attempts_and_leaves_others() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        let ids = push_n_jobs_to_dlq(&queue, "test_queue", 3).await;
+        assert_eq!(queue.dlq_count("test_queue").await, 3);
+
+        // Redrive the middle job (index 1)
+        let redriven = queue.dlq_redrive_message("test_queue", &ids[1]).await;
+        assert!(redriven, "redrive should return true for a known ID");
+
+        // DLQ now has 2 entries
+        assert_eq!(queue.dlq_count("test_queue").await, 2);
+
+        // The redriven job is back in the waiting queue with attempts reset
+        let job = queue
+            .pop("test_queue")
+            .await
+            .expect("redriven job must be in waiting queue");
+        assert_eq!(job.id, ids[1]);
+        assert_eq!(
+            job.attempts_made, 0,
+            "attempts_made must be reset to 0 on redrive"
+        );
+
+        // The KV record for the redriven job exists again (re-created by redrive)
+        let job_key = queue.job_key("test_queue", &ids[1]);
+        assert!(
+            kv_store.get_job(&job_key).await.is_some(),
+            "KV record must exist for redriven job"
+        );
+
+        // The remaining two DLQ entries are for jobs 0 and 2
+        let remaining = queue.dlq_peek("test_queue", 0, 10).await;
+        let remaining_ids: Vec<&str> = remaining.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            remaining_ids.contains(&ids[0].as_str()),
+            "job 0 must still be in DLQ"
+        );
+        assert!(
+            remaining_ids.contains(&ids[2].as_str()),
+            "job 2 must still be in DLQ"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dlq_discard_single_message_removes_kv_record_and_leaves_others() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store.clone(), pubsub, config);
+
+        let ids = push_n_jobs_to_dlq(&queue, "test_queue", 3).await;
+        assert_eq!(queue.dlq_count("test_queue").await, 3);
+
+        // Discard the middle job (index 1)
+        let discarded = queue.dlq_discard_message("test_queue", &ids[1]).await;
+        assert!(discarded, "discard should return true for a known ID");
+
+        // DLQ now has 2 entries
+        assert_eq!(queue.dlq_count("test_queue").await, 2);
+
+        // The discarded job must NOT be in the waiting queue
+        let nothing = queue.pop("test_queue").await;
+        assert!(
+            nothing.is_none(),
+            "discarded job must not appear in waiting queue"
+        );
+
+        // The KV record must be gone
+        let job_key = queue.job_key("test_queue", &ids[1]);
+        assert!(
+            kv_store.get_job(&job_key).await.is_none(),
+            "KV record must be deleted after discard"
+        );
+
+        // The other two jobs remain in DLQ
+        let remaining = queue.dlq_peek("test_queue", 0, 10).await;
+        let remaining_ids: Vec<&str> = remaining.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            remaining_ids.contains(&ids[0].as_str()),
+            "job 0 must still be in DLQ"
+        );
+        assert!(
+            remaining_ids.contains(&ids[2].as_str()),
+            "job 2 must still be in DLQ"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dlq_redrive_nonexistent_message_returns_false_and_leaves_dlq_unchanged() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        push_n_jobs_to_dlq(&queue, "test_queue", 1).await;
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+
+        let result = queue
+            .dlq_redrive_message("test_queue", "00000000-0000-0000-0000-000000000000")
+            .await;
+        assert!(!result, "redrive must return false for an unknown ID");
+
+        // DLQ unchanged
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+        // Nothing appeared in the waiting queue
+        assert!(queue.pop("test_queue").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dlq_discard_nonexistent_message_returns_false_and_leaves_dlq_unchanged() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        push_n_jobs_to_dlq(&queue, "test_queue", 1).await;
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+
+        let result = queue
+            .dlq_discard_message("test_queue", "00000000-0000-0000-0000-000000000000")
+            .await;
+        assert!(!result, "discard must return false for an unknown ID");
+
+        // DLQ unchanged
+        assert_eq!(queue.dlq_count("test_queue").await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_dlq_peek_pagination_with_five_jobs() {
+        let kv_store = make_queue_kv(None);
+        let pubsub = Arc::new(BuiltInPubSubLite::new(None));
+        let config = QueueConfig {
+            max_attempts: 1,
+            backoff_ms: 100,
+            ..Default::default()
+        };
+        let queue = BuiltinQueue::new(kv_store, pubsub, config);
+
+        push_n_jobs_to_dlq(&queue, "test_queue", 5).await;
+        assert_eq!(queue.dlq_count("test_queue").await, 5);
+
+        // Page 1: offset=0, limit=2 -> 2 items
+        let page1 = queue.dlq_peek("test_queue", 0, 2).await;
+        assert_eq!(page1.len(), 2, "page1 should have 2 items");
+
+        // Page 2: offset=2, limit=2 -> 2 items
+        let page2 = queue.dlq_peek("test_queue", 2, 2).await;
+        assert_eq!(page2.len(), 2, "page2 should have 2 items");
+
+        // Page 3: offset=4, limit=2 -> 1 item (only one left)
+        let page3 = queue.dlq_peek("test_queue", 4, 2).await;
+        assert_eq!(page3.len(), 1, "page3 should have 1 item (last element)");
+
+        // All pages together cover exactly 5 unique IDs
+        let mut all_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in page1.iter().chain(page2.iter()).chain(page3.iter()) {
+            all_ids.insert(m.id.clone());
+        }
+        assert_eq!(
+            all_ids.len(),
+            5,
+            "pages must cover all 5 unique DLQ messages"
+        );
+
+        // Peek beyond the end returns empty
+        let beyond = queue.dlq_peek("test_queue", 5, 2).await;
+        assert!(beyond.is_empty(), "peek beyond end must return empty");
     }
 
     // =========================================================================
