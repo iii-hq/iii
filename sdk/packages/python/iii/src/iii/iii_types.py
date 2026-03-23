@@ -344,10 +344,12 @@ class FunctionInfo(BaseModel):
     request_format: dict[str, Any] | None = Field(
         default=None, description="Schema describing expected input (JSON Schema or custom format)."
     )
-    response_format: dict[str, Any] | None = Field(
+    response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(
         default=None, description="Schema describing expected output (JSON Schema or custom format)."
     )
-    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    metadata: RegisterFunctionFormat | dict[str, Any] | None = Field(
+        default=None, description="Arbitrary metadata attached to the function."
+    )
 
 
 class TriggerInfo(BaseModel):
