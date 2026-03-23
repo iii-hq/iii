@@ -71,6 +71,7 @@ jobs:
 
           if [[ "$TARGET" == "iii" ]]; then
             for f in engine/Cargo.toml \
+                     cli/Cargo.toml \
                      sdk/packages/rust/iii/Cargo.toml \
                      sdk/packages/node/iii/package.json \
                      sdk/packages/python/iii/pyproject.toml \
@@ -216,6 +217,9 @@ jobs:
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" engine/Cargo.toml
           echo "Updated engine/Cargo.toml to $NEW_VERSION"
 
+          sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" cli/Cargo.toml
+          echo "Updated cli/Cargo.toml to $NEW_VERSION"
+
           sed -i "0,/^version = \".*\"/{s/^version = \".*\"/version = \"${NEW_VERSION}\"/}" sdk/packages/rust/iii/Cargo.toml
           echo "Updated sdk/packages/rust/iii/Cargo.toml to $NEW_VERSION"
 
@@ -271,6 +275,7 @@ jobs:
 
           if [[ "$TARGET" == "iii" ]]; then
             check_cargo "engine/Cargo.toml" "$VERSION"
+            check_cargo "cli/Cargo.toml" "$VERSION"
             check_cargo "sdk/packages/rust/iii/Cargo.toml" "$VERSION"
             check_json "sdk/packages/node/iii/package.json" "$VERSION"
             check_cargo "sdk/packages/python/iii/pyproject.toml" "$PY_VERSION"

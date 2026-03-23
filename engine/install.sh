@@ -381,30 +381,32 @@ github_api() {
   curl -fsSL $api_headers "$1"
 }
 
-TAG_PREFIX="v"
-
 if [ -n "$VERSION" ]; then
   echo "installing version: $VERSION"
   _ver="${VERSION#iii/}"
   _ver="${_ver#v}"
-  _tag="${TAG_PREFIX}${_ver}"
+  _tag="iii/v${_ver}"
   api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
-  json=$(github_api "$api_url") || err "download" "release tag not found: $VERSION (tried tag: ${_tag})"
+  json=$(github_api "$api_url" 2>/dev/null) || {
+    _tag="v${_ver}"
+    api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
+    json=$(github_api "$api_url") || err "download" "release tag not found: $VERSION (tried tags: iii/v${_ver}, v${_ver})"
+  }
 else
   echo "installing latest version"
   api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
   json_list=$(github_api "$api_url")
   if command -v jq >/dev/null 2>&1; then
     json=$(printf '%s' "$json_list" \
-      | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("v"))))')
+      | jq -c 'first(.[] | select(.prerelease == false and ((.tag_name | startswith("iii/v")) or (.tag_name | startswith("v")))))')
     if [ "$json" = "null" ] || [ -z "$json" ]; then
       err "download" "no stable iii release found"
     fi
   else
     _tag=$(printf '%s' "$json_list" \
-      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]+"' \
+      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"(iii/v|v)[^"]+"' \
       | head -n 1 \
-      | sed -E 's/.*"(v[^"]+)".*/\1/')
+      | sed -E 's/.*"([^"]+)".*/\1/')
     if [ -z "$_tag" ]; then
       err "download" "could not determine latest release"
     fi
