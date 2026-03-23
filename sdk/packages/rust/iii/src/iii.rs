@@ -751,13 +751,23 @@ impl III {
     /// # use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
     /// # use serde_json::{json, Value};
     /// # let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function((
+    /// iii.register_function_with(
     ///     RegisterFunctionMessage::with_id("echo".to_string()),
     ///     |input: Value| async move { Ok(json!({"echo": input})) },
     /// ));
     /// ```
     pub fn register_function<R: IntoFunctionRegistration>(&self, registration: R) -> FunctionRef {
         let (message, handler) = registration.into_registration();
+        self.register_function_inner(message, handler)
+    }
+
+    /// Register a function with a message and handler directly.
+    pub fn register_function_with<H: IntoFunctionHandler>(
+        &self,
+        mut message: RegisterFunctionMessage,
+        handler: H,
+    ) -> FunctionRef {
+        let handler = handler.into_parts(&mut message);
         self.register_function_inner(message, handler)
     }
 
@@ -1020,7 +1030,7 @@ impl III {
                 .contains_key(&function_id);
             if !function_exists {
                 let iii = self.clone();
-                self.register_function((
+                self.register_function_with(
                     RegisterFunctionMessage {
                         id: function_id.clone(),
                         description: None,
@@ -1047,7 +1057,7 @@ impl III {
                             Ok(Value::Null)
                         }
                     },
-                ));
+    );
             }
 
             match self.register_trigger(RegisterTriggerInput {
@@ -1697,7 +1707,7 @@ mod tests {
             auth: None,
         };
 
-        let func_ref = iii.register_function((
+        let func_ref = iii.register_function_with(
             RegisterFunctionMessage {
                 id: "external::my_lambda".to_string(),
                 description: None,
@@ -1707,7 +1717,7 @@ mod tests {
                 invocation: None,
             },
             config,
-        ));
+    );
 
         assert_eq!(func_ref.id, "external::my_lambda");
         assert_eq!(iii.inner.functions.lock().unwrap().len(), 1);
@@ -1729,7 +1739,7 @@ mod tests {
             auth: None,
         };
 
-        iii.register_function((
+        iii.register_function_with(
             RegisterFunctionMessage {
                 id: "".to_string(),
                 description: None,
@@ -1739,7 +1749,7 @@ mod tests {
                 invocation: None,
             },
             config,
-        ));
+    );
     }
 
     #[tokio::test]
