@@ -59,7 +59,7 @@ pub struct WorkersListInput {
     pub worker_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FunctionInfo {
     pub function_id: String,
     pub description: Option<String>,
@@ -68,7 +68,7 @@ pub struct FunctionInfo {
     pub metadata: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TriggerInfo {
     pub id: String,
     pub trigger_type: String,
@@ -76,7 +76,7 @@ pub struct TriggerInfo {
     pub config: Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct WorkerInfo {
     pub id: String,
     pub name: Option<String>,
@@ -92,6 +92,27 @@ pub struct WorkerInfo {
     pub latest_metrics: Option<WorkerMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FunctionsListResult {
+    pub functions: Vec<FunctionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct WorkersListResult {
+    pub workers: Vec<WorkerInfo>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TriggersListResult {
+    pub triggers: Vec<TriggerInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RegisterWorkerResult {
+    pub success: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -399,14 +420,14 @@ impl WorkerModule {
     pub async fn get_functions(
         &self,
         input: FunctionsListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<FunctionsListResult, ErrorBody> {
         let mut functions = self.list_functions();
 
         if !input.include_internal.unwrap_or(false) {
             functions.retain(|f| !f.function_id.starts_with("engine::"));
         }
 
-        FunctionResult::Success(Some(serde_json::json!({ "functions": functions })))
+        FunctionResult::Success(FunctionsListResult { functions })
     }
 
     #[function(
@@ -416,26 +437,26 @@ impl WorkerModule {
     pub async fn get_workers(
         &self,
         input: WorkersListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<WorkersListResult, ErrorBody> {
         let workers = self.list_worker_infos(input.worker_id.as_deref()).await;
-        FunctionResult::Success(Some(serde_json::json!({
-            "workers": workers,
-            "timestamp": chrono::Utc::now().timestamp_millis(),
-        })))
+        FunctionResult::Success(WorkersListResult {
+            workers,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        })
     }
 
     #[function(id = "engine::triggers::list", description = "List all triggers")]
     pub async fn get_triggers(
         &self,
         input: TriggersListInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<TriggersListResult, ErrorBody> {
         let mut triggers = self.list_trigger_infos().await;
 
         if !input.include_internal.unwrap_or(false) {
             triggers.retain(|t| !t.function_id.starts_with("engine::"));
         }
 
-        FunctionResult::Success(Some(serde_json::json!({ "triggers": triggers })))
+        FunctionResult::Success(TriggersListResult { triggers })
     }
 
     #[function(
@@ -445,7 +466,7 @@ impl WorkerModule {
     pub async fn register_worker(
         &self,
         input: RegisterWorkerInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<RegisterWorkerResult, ErrorBody> {
         let worker_id = input.worker_id.clone();
         self.register_worker_metadata(input).await;
 
@@ -457,7 +478,7 @@ impl WorkerModule {
             .fire_triggers(TRIGGER_WORKERS_AVAILABLE, data)
             .await;
 
-        FunctionResult::Success(Some(serde_json::json!({"success": true})))
+        FunctionResult::Success(RegisterWorkerResult { success: true })
     }
 }
 
@@ -976,10 +997,9 @@ mod tests {
             })
             .await;
         match filtered {
-            FunctionResult::Success(Some(value)) => {
-                let functions = value["functions"].as_array().unwrap();
-                assert_eq!(functions.len(), 1);
-                assert_eq!(functions[0]["function_id"], "user::visible");
+            FunctionResult::Success(result) => {
+                assert_eq!(result.functions.len(), 1);
+                assert_eq!(result.functions[0].function_id, "user::visible");
             }
             _ => panic!("expected get_functions success"),
         }
@@ -990,8 +1010,8 @@ mod tests {
             })
             .await;
         match all {
-            FunctionResult::Success(Some(value)) => {
-                assert_eq!(value["functions"].as_array().unwrap().len(), 2);
+            FunctionResult::Success(result) => {
+                assert_eq!(result.functions.len(), 2);
             }
             _ => panic!("expected get_functions success"),
         }
@@ -1028,10 +1048,9 @@ mod tests {
             })
             .await;
         match filtered {
-            FunctionResult::Success(Some(value)) => {
-                let triggers = value["triggers"].as_array().unwrap();
-                assert_eq!(triggers.len(), 1);
-                assert_eq!(triggers[0]["function_id"], "user::visible");
+            FunctionResult::Success(result) => {
+                assert_eq!(result.triggers.len(), 1);
+                assert_eq!(result.triggers[0].function_id, "user::visible");
             }
             _ => panic!("expected get_triggers success"),
         }
@@ -1042,8 +1061,8 @@ mod tests {
             })
             .await;
         match all {
-            FunctionResult::Success(Some(value)) => {
-                assert_eq!(value["triggers"].as_array().unwrap().len(), 2);
+            FunctionResult::Success(result) => {
+                assert_eq!(result.triggers.len(), 2);
             }
             _ => panic!("expected get_triggers success"),
         }
@@ -1089,11 +1108,10 @@ mod tests {
             .await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
-                let workers = value["workers"].as_array().unwrap();
-                assert_eq!(workers.len(), 1);
-                assert_eq!(workers[0]["id"], worker_id);
-                assert_eq!(workers[0]["function_count"], 1);
+            FunctionResult::Success(result) => {
+                assert_eq!(result.workers.len(), 1);
+                assert_eq!(result.workers[0].id, worker_id);
+                assert_eq!(result.workers[0].function_count, 1);
             }
             _ => panic!("expected get_workers success"),
         }
@@ -1151,7 +1169,7 @@ mod tests {
                 pid: None,
             })
             .await;
-        assert!(matches!(result, FunctionResult::Success(Some(_))));
+        assert!(matches!(result, FunctionResult::Success(RegisterWorkerResult { success: true })));
 
         let payload = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await

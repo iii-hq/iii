@@ -132,7 +132,7 @@ pub enum Message {
 ///
 /// For most use cases this is not a concern, but if you need guaranteed precision
 /// for very large values, consider parsing these as BigInt on the JavaScript side.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerMetrics {
     // Memory metrics (bytes)
     // Note: u64 values above 2^53-1 may lose precision in JavaScript
