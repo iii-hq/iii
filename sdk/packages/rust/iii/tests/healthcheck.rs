@@ -35,7 +35,7 @@ async fn register_healthcheck_function_and_trigger() {
                 },
             }))
         },
-    );
+    ));
 
     let status_before = get_health_status(&common::engine_http_url()).await;
     assert_eq!(

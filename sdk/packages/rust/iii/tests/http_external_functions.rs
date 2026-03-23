@@ -146,7 +146,7 @@ async fn delivers_queue_events_to_external_http_function() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger = iii
@@ -197,7 +197,7 @@ async fn registers_and_unregisters_external_http_function() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let found = {
@@ -238,7 +238,7 @@ async fn delivers_events_with_custom_headers() {
             headers: custom_headers,
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger = iii
@@ -300,7 +300,7 @@ async fn delivers_events_to_multiple_external_functions() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     let http_fn_b = iii.register_function((
         RegisterFunctionMessage::with_id(function_id_b.clone()),
         HttpInvocationConfig {
@@ -310,7 +310,7 @@ async fn delivers_events_to_multiple_external_functions() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger_a = iii
@@ -383,7 +383,7 @@ async fn stops_delivering_events_after_unregister() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let trigger = iii
@@ -454,7 +454,7 @@ async fn delivers_events_using_put_method() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger = iii

@@ -37,7 +37,7 @@ async fn register_and_invoke_function() {
                 Ok(json!({ "echoed": input }))
             }
         },
-    );
+    ));
 
     common::settle().await;
 
@@ -79,7 +79,7 @@ async fn invoke_function_fire_and_forget() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     common::settle().await;
 
@@ -112,11 +112,11 @@ async fn list_registered_functions() {
     let fn1 = iii.register_function((
         RegisterFunctionMessage::with_id("test::bridge::rs::list::func1".to_string()),
         |_: Value| async move { Ok(json!({})) },
-    );
+    ));
     let fn2 = iii.register_function((
         RegisterFunctionMessage::with_id("test::bridge::rs::list::func2".to_string()),
         |_: Value| async move { Ok(json!({})) },
-    );
+    ));
 
     common::settle().await;
 

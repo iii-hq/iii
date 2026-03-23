@@ -38,7 +38,7 @@ async fn get_endpoint() {
                 "body": {"message": "Hello from GET"},
             }))
         },
-    );
+    ));
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "http".to_string(),
@@ -78,7 +78,7 @@ async fn post_endpoint_with_body() {
                 "body": {"received": body, "created": true},
             }))
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -122,7 +122,7 @@ async fn path_parameters() {
                 .to_string();
             Ok(json!({"status_code": 200, "body": {"id": id}}))
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -164,7 +164,7 @@ async fn query_parameters() {
             let limit = qp.get("limit").and_then(|v| v.as_str()).unwrap_or_default();
             Ok(json!({"status_code": 200, "body": {"query": q, "limit": limit}}))
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -203,7 +203,7 @@ async fn custom_status_code() {
         RegisterFunctionMessage::with_id("test::api::notfound::rs".to_string()),
         |_input: Value| async move {
         Ok(json!({"status_code": 404, "body": {"error": "Not found"}}))
-    });
+    }));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -292,7 +292,7 @@ async fn download_pdf_streaming() {
                 Ok(Value::Null)
             }
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -414,7 +414,7 @@ async fn upload_pdf_streaming() {
                 Ok(Value::Null)
             }
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -522,7 +522,7 @@ async fn sse_streaming() {
                 Ok(Value::Null)
             }
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -671,7 +671,7 @@ async fn urlencoded_form_data() {
                 Ok(Value::Null)
             }
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -824,7 +824,7 @@ async fn multipart_form_data() {
                 Ok(Value::Null)
             }
         },
-    );
+    ));
 
     let _trigger = iii
         .register_trigger(RegisterTriggerInput {

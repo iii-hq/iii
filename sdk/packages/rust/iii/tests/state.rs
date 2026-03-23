@@ -275,7 +275,7 @@ async fn reactive_state() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     let key_clone = key.clone();
     let trigger = iii

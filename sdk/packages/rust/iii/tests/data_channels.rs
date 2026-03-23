@@ -58,7 +58,7 @@ async fn stream_data_from_sender_to_processor() {
                 }))
             }
         },
-    );
+    ));
 
     let iii_for_sender = iii.clone();
     iii.register_function((
@@ -101,7 +101,7 @@ async fn stream_data_from_sender_to_processor() {
                 Ok(result)
             }
         },
-    );
+    ));
 
     common::settle().await;
 
@@ -233,7 +233,7 @@ async fn bidirectional_streaming() {
                 Ok(json!({"status": "done"}))
             }
         },
-    );
+    ));
 
     let iii_for_coord = iii.clone();
     iii.register_function((
@@ -328,7 +328,7 @@ async fn bidirectional_streaming() {
                 }))
             }
         },
-    );
+    ));
 
     common::settle().await;
 

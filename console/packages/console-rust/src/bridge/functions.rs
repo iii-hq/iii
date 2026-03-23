@@ -1182,10 +1182,12 @@ pub fn register_functions(bridge: &III) {
     }));
 
     let b = bridge.clone();
-    bridge.register_function((reg_fn_msg("engine::console::streams_list"), move |_input| {
-        let bridge = b.clone();
-        async move { Ok(handle_streams_list(&bridge).await) }
-    }));
+    bridge.register_function(
+        (reg_fn_msg("engine::console::streams_list"), move |_input| {
+            let bridge = b.clone();
+            async move { Ok(handle_streams_list(&bridge).await) }
+        }),
+    );
 
     let b = bridge.clone();
     bridge.register_function((

@@ -28,7 +28,7 @@ async fn enqueue_returns_acknowledgement() {
                 Ok(json!({ "processed": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
@@ -98,7 +98,7 @@ async fn enqueue_fifo_with_valid_group_field() {
                 Ok(json!({ "processed": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
@@ -177,7 +177,7 @@ async fn void_returns_null_immediately() {
                 Ok(json!({ "done": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
@@ -213,7 +213,7 @@ async fn enqueue_multiple_messages_all_processed() {
                 Ok(json!({ "processed": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let message_count = 5;
@@ -267,7 +267,7 @@ async fn chained_enqueue() {
                 Ok(json!({ "step": "b_done" }))
             }
         },
-    );
+    ));
 
     let a_received = Arc::new(Mutex::new(Vec::new()));
     let a_received_clone = a_received.clone();
@@ -295,7 +295,7 @@ async fn chained_enqueue() {
                 Ok(json!({ "step": "a_done" }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii

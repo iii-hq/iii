@@ -45,7 +45,7 @@ async fn subscribe_and_receive_published_messages() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     let trigger = iii
         .register_trigger(RegisterTriggerInput {
@@ -110,7 +110,7 @@ async fn topic_isolation() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     let fn_b = iii.register_function((
         RegisterFunctionMessage::with_id(fn_id_b.clone()),
@@ -121,7 +121,7 @@ async fn topic_isolation() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     let trigger_a = iii
         .register_trigger(RegisterTriggerInput {
