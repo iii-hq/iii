@@ -142,6 +142,7 @@ async fn wait_for_worker_ready(ws_url: &str) {
                 data: serde_json::json!({"probe": true}),
                 traceparent: None,
                 baggage: None,
+                action: None,
             };
             let _ = socket
                 .send(WsMessage::Text(
@@ -222,6 +223,7 @@ async fn run_service_worker(ws_url: String) {
                         data,
                         traceparent,
                         baggage,
+                        ..
                     } => {
                         let invocation_id = invocation_id.unwrap_or_else(Uuid::new_v4);
                         let response = Message::InvocationResult {
@@ -263,6 +265,7 @@ async fn invoke_and_wait(
         data: payload.clone(),
         traceparent: None,
         baggage: None,
+        action: None,
     };
     writer
         .send(WsMessage::Text(

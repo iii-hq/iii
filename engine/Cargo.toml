@@ -91,7 +91,7 @@ rabbitmq = ["lapin"]
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true, features = ["otel"] }
-tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal" ] }
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
 tracing = "0.1"
@@ -144,7 +144,12 @@ toml = "1.0.7"
 tokio-tungstenite = "0.28"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 mockall = "0.13"
 serial_test = "3"
+temp-env = "0.3"
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 tempfile = "3"
+wiremock = "0.6"
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }

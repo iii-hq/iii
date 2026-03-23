@@ -214,6 +214,7 @@ async fn run_worker(ws_url: String, route_count: usize) {
                         data,
                         traceparent,
                         baggage,
+                        ..
                     } => {
                         let invocation_id = invocation_id.unwrap_or_else(Uuid::new_v4);
                         let response = Message::InvocationResult {

@@ -20,6 +20,19 @@ use crate::{
     protocol::ErrorBody,
 };
 
+/// Format a reqwest error including the full cause chain for actionable messages.
+fn format_reqwest_error(err: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut msg = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
+}
+
 pub struct HttpEndpointParams<'a> {
     pub url: &'a str,
     pub method: &'a HttpMethod,
@@ -207,7 +220,7 @@ impl HttpInvoker {
 
         let response = request.send().await.map_err(|err| ErrorBody {
             code: "http_request_failed".into(),
-            message: err.to_string(),
+            message: format_reqwest_error(&err),
             stacktrace: None,
         })?;
 
@@ -218,7 +231,7 @@ impl HttpInvoker {
         let status = response.status();
         let bytes = response.bytes().await.map_err(|err| ErrorBody {
             code: "http_response_failed".into(),
-            message: err.to_string(),
+            message: format_reqwest_error(&err),
             stacktrace: None,
         })?;
 
@@ -256,14 +269,14 @@ impl HttpInvoker {
 
         let response = request.send().await.map_err(|err| ErrorBody {
             code: "http_request_failed".into(),
-            message: err.to_string(),
+            message: format_reqwest_error(&err),
             stacktrace: None,
         })?;
 
         let status = response.status();
         let bytes = response.bytes().await.map_err(|err| ErrorBody {
             code: "http_response_failed".into(),
-            message: err.to_string(),
+            message: format_reqwest_error(&err),
             stacktrace: None,
         })?;
 

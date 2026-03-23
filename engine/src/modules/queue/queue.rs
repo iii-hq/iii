@@ -13,11 +13,12 @@ use std::{
 use async_trait::async_trait;
 use colored::Colorize;
 use function_macros::{function, service};
-use futures::Future;
+use futures::{Future, FutureExt};
 use once_cell::sync::Lazy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::panic::AssertUnwindSafe;
 
 use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
 use tracing::Instrument;
@@ -122,6 +123,16 @@ impl QueueCoreModule {
         self.adapter.dlq_count(&namespaced).await
     }
 
+    /// Returns up to `count` DLQ messages for a function queue as parsed JSON Values.
+    pub async fn function_queue_dlq_messages(
+        &self,
+        queue_name: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<Value>> {
+        let namespaced = format!("__fn_queue::{}", queue_name);
+        self.adapter.dlq_messages(&namespaced, count).await
+    }
+
     #[function(id = "enqueue", description = "Enqueue a message")]
     pub async fn enqueue(&self, input: QueueInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
@@ -222,6 +233,14 @@ impl QueueEnqueuer for QueueCoreModule {
 
     async fn function_queue_dlq_count(&self, queue_name: &str) -> anyhow::Result<u64> {
         self.function_queue_dlq_count(queue_name).await
+    }
+
+    async fn function_queue_dlq_messages(
+        &self,
+        queue_name: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.function_queue_dlq_messages(queue_name, count).await
     }
 }
 
@@ -377,12 +396,14 @@ impl Module for QueueCoreModule {
                         )
                         .with_parent_headers(traceparent.as_deref(), baggage.as_deref());
 
-                        let result = async { engine.call(&function_id, msg.data).await }
-                            .instrument(span)
-                            .await;
+                        let result =
+                            AssertUnwindSafe(async { engine.call(&function_id, msg.data).await })
+                                .catch_unwind()
+                                .instrument(span)
+                                .await;
 
                         match result {
-                            Ok(_) => {
+                            Ok(Ok(_)) => {
                                 tracing::Span::current().record("otel.status_code", "OK");
                                 if let Err(e) =
                                     adapter.ack_function_queue(&queue_name, delivery_id).await
@@ -390,7 +411,7 @@ impl Module for QueueCoreModule {
                                     tracing::error!(error = %e, "Failed to ack message");
                                 }
                             }
-                            Err(ref err) => {
+                            Ok(Err(ref err)) => {
                                 tracing::Span::current().record("otel.status_code", "ERROR");
                                 tracing::warn!(
                                     function_id = %function_id,
@@ -410,6 +431,27 @@ impl Module for QueueCoreModule {
                                     .await
                                 {
                                     tracing::error!(error = %e, "Failed to nack message");
+                                }
+                            }
+                            Err(_panic) => {
+                                tracing::Span::current().record("otel.status_code", "ERROR");
+                                tracing::error!(
+                                    function_id = %function_id,
+                                    queue = %queue_name,
+                                    attempt = %attempt,
+                                    max_retries = %max_retries,
+                                    "Function queue job panicked"
+                                );
+                                if let Err(e) = adapter
+                                    .nack_function_queue(
+                                        &queue_name,
+                                        delivery_id,
+                                        attempt,
+                                        max_retries,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(error = %e, "Failed to nack panicked message");
                                 }
                             }
                         }

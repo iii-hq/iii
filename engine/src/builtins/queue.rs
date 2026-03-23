@@ -105,7 +105,8 @@ impl Job {
     }
 
     pub fn calculate_backoff(&self) -> u64 {
-        self.backoff_delay_ms * 2_u64.pow(self.attempts_made.saturating_sub(1))
+        self.backoff_delay_ms
+            .saturating_mul(2_u64.saturating_pow(self.attempts_made.saturating_sub(1)))
     }
 }
 
@@ -569,11 +570,13 @@ impl BuiltinQueue {
         if !ready_jobs.is_empty() {
             let waiting_key = self.waiting_key(queue);
             for job_id in &ready_jobs {
-                self.kv_store.zrem(&delayed_key, job_id).await;
-                // Use rpush to add to back (oldest position) so retried jobs
-                // are processed before any jobs that were added after them.
-                // This maintains FIFO order: rpop takes from back (oldest first).
-                self.kv_store.rpush(&waiting_key, job_id.clone()).await;
+                let removed = self.kv_store.zrem(&delayed_key, job_id).await;
+                if removed {
+                    // Use rpush to add to back (oldest position) so retried jobs
+                    // are processed before any jobs that were added after them.
+                    // This maintains FIFO order: rpop takes from back (oldest first).
+                    self.kv_store.rpush(&waiting_key, job_id.clone()).await;
+                }
             }
 
             self.pubsub.send_msg(serde_json::json!({
@@ -664,6 +667,15 @@ impl BuiltinQueue {
     pub async fn dlq_count(&self, queue: &str) -> u64 {
         let dlq_key = self.dlq_key(queue);
         self.kv_store.llen(&dlq_key).await as u64
+    }
+
+    pub async fn dlq_messages(&self, queue: &str, count: usize) -> Vec<Value> {
+        let dlq_key = self.dlq_key(queue);
+        let raw_items = self.kv_store.lrange(&dlq_key, count).await;
+        raw_items
+            .into_iter()
+            .filter_map(|item| serde_json::from_str::<Value>(&item).ok())
+            .collect()
     }
 
     pub async fn dlq_redrive(&self, queue: &str) -> u64 {
@@ -1227,6 +1239,47 @@ mod tests {
 
         job.increment_attempts();
         assert_eq!(job.calculate_backoff(), 4000);
+    }
+
+    #[tokio::test]
+    async fn calculate_backoff_normal_cases() {
+        // attempts_made=1 => backoff_delay_ms * 2^0 = 1000
+        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        job.attempts_made = 1;
+        assert_eq!(job.calculate_backoff(), 1000);
+
+        // attempts_made=2 => backoff_delay_ms * 2^1 = 2000
+        job.attempts_made = 2;
+        assert_eq!(job.calculate_backoff(), 2000);
+
+        // attempts_made=3 => backoff_delay_ms * 2^2 = 4000
+        job.attempts_made = 3;
+        assert_eq!(job.calculate_backoff(), 4000);
+    }
+
+    #[tokio::test]
+    async fn calculate_backoff_saturates_at_high_attempts() {
+        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+
+        // attempts_made=56 => 2^55 overflows when multiplied by 1000, saturates to u64::MAX
+        job.attempts_made = 56;
+        assert_eq!(job.calculate_backoff(), u64::MAX);
+
+        // attempts_made=65 => 2^64 overflows u64 in saturating_pow, saturates to u64::MAX
+        job.attempts_made = 65;
+        assert_eq!(job.calculate_backoff(), u64::MAX);
+
+        // attempts_made=u32::MAX => extreme boundary, must not panic
+        job.attempts_made = u32::MAX;
+        assert_eq!(job.calculate_backoff(), u64::MAX);
+    }
+
+    #[tokio::test]
+    async fn calculate_backoff_zero_attempts() {
+        // attempts_made=0 => saturating_sub(1) = 0, so result = backoff_delay_ms * 2^0 = backoff_delay_ms
+        let mut job = Job::new("test_queue", serde_json::json!({}), 100, 1000, None, None);
+        job.attempts_made = 0;
+        assert_eq!(job.calculate_backoff(), 1000);
     }
 
     #[tokio::test]
