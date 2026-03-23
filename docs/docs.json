@@ -23,7 +23,7 @@
             "groups": [
               {
                 "group": "Getting Started",
-                "pages": ["index", "quickstart"]
+                "pages": ["index", "install", "quickstart"]
               },
               {
                 "group": "Primitives & Concepts",
