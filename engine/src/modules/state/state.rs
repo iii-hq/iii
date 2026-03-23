@@ -329,10 +329,7 @@ impl StateCoreModule {
     }
 
     #[function(id = "state::update", description = "Update a value in state")]
-    pub async fn update(
-        &self,
-        input: StateUpdateInput,
-    ) -> FunctionResult<UpdateResult, ErrorBody> {
+    pub async fn update(&self, input: StateUpdateInput) -> FunctionResult<UpdateResult, ErrorBody> {
         crate::modules::telemetry::collector::track_state_update();
         match self
             .adapter
@@ -396,7 +393,9 @@ impl StateCoreModule {
                     .into_iter()
                     .collect();
                 normalized_groups.sort();
-                FunctionResult::Success(StateListGroupsResult { groups: normalized_groups })
+                FunctionResult::Success(StateListGroupsResult {
+                    groups: normalized_groups,
+                })
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to list groups: {}", e),
@@ -1076,10 +1075,7 @@ mod tests {
 
         match result {
             FunctionResult::Success(value) => {
-                assert_eq!(
-                    value.groups,
-                    vec!["alpha", "beta", "gamma"]
-                );
+                assert_eq!(value.groups, vec!["alpha", "beta", "gamma"]);
             }
             _ => panic!("expected list_groups success"),
         }

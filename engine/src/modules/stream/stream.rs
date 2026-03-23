@@ -1427,10 +1427,7 @@ mod tests {
                 assert_eq!(result.stream[0].id, "stream-a");
                 assert_eq!(result.stream[0].groups, vec!["group-a"]);
                 assert_eq!(result.stream[1].id, "stream-b");
-                assert_eq!(
-                    result.stream[1].groups,
-                    vec!["group-b", "group-c"]
-                );
+                assert_eq!(result.stream[1].groups, vec!["group-b", "group-c"]);
             }
             _ => panic!("expected list_all success"),
         }

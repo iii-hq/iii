@@ -1169,7 +1169,10 @@ mod tests {
                 pid: None,
             })
             .await;
-        assert!(matches!(result, FunctionResult::Success(RegisterWorkerResult { success: true })));
+        assert!(matches!(
+            result,
+            FunctionResult::Success(RegisterWorkerResult { success: true })
+        ));
 
         let payload = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
