@@ -266,7 +266,7 @@ def test_register_function_str_id_auto_extracts_formats(monkeypatch: pytest.Monk
     # Check request_format was auto-extracted as JSON Schema
     req_fmt = msg.get("request_format")
     assert req_fmt is not None
-    assert req_fmt["$schema"] == "http://json-schema.org/draft-07/schema#"
+    assert req_fmt["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert req_fmt["type"] == "object"
     assert req_fmt["title"] == "UserInput"
     assert "name" in req_fmt["properties"]
@@ -280,7 +280,7 @@ def test_register_function_str_id_auto_extracts_formats(monkeypatch: pytest.Monk
     # Check response_format was auto-extracted as JSON Schema
     res_fmt = msg.get("response_format")
     assert res_fmt is not None
-    assert res_fmt["$schema"] == "http://json-schema.org/draft-07/schema#"
+    assert res_fmt["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert res_fmt["type"] == "object"
     assert res_fmt["title"] == "UserOutput"
     assert "message" in res_fmt["properties"]
@@ -357,9 +357,9 @@ def test_register_function_str_id_with_metadata(monkeypatch: pytest.MonkeyPatch)
     assert reg_msgs[0]["metadata"] == {"version": "2.0"}
 
     # Verify primitive types were auto-extracted as JSON Schema
-    assert reg_msgs[0]["request_format"]["$schema"] == "http://json-schema.org/draft-07/schema#"
+    assert reg_msgs[0]["request_format"]["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert reg_msgs[0]["request_format"]["type"] == "string"
-    assert reg_msgs[0]["response_format"]["$schema"] == "http://json-schema.org/draft-07/schema#"
+    assert reg_msgs[0]["response_format"]["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert reg_msgs[0]["response_format"]["type"] == "string"
 
     client.shutdown()

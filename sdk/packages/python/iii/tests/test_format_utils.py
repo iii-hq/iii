@@ -20,7 +20,7 @@ def test_string_type() -> None:
 
 def test_int_type() -> None:
     fmt = python_type_to_format(int)
-    assert fmt == {"type": "number", "$schema": _JSON_SCHEMA_DRAFT}
+    assert fmt == {"type": "integer", "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_float_type() -> None:
@@ -55,11 +55,18 @@ def test_list_of_int() -> None:
     fmt = python_type_to_format(list[int])
     assert fmt is not None
     assert fmt["type"] == "array"
-    assert fmt["items"] == {"type": "number"}
+    assert fmt["items"] == {"type": "integer"}
+
+
+def test_dict_str_str() -> None:
+    fmt = python_type_to_format(dict[str, str])
+    assert fmt == {"type": "object", "additionalProperties": {"type": "string"}, "$schema": _JSON_SCHEMA_DRAFT}
 
 
 def test_dict_str_any() -> None:
-    fmt = python_type_to_format(dict[str, str])
+    from typing import Any
+
+    fmt = python_type_to_format(dict[str, Any])
     assert fmt == {"type": "object", "$schema": _JSON_SCHEMA_DRAFT}
 
 
@@ -71,14 +78,14 @@ def test_dict_str_any() -> None:
 def test_optional_str() -> None:
     fmt = python_type_to_format(Optional[str])
     assert fmt is not None
-    assert fmt["type"] == "string"
+    assert fmt["type"] == ["string", "null"]
     assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
 
 
 def test_optional_int_pipe_syntax() -> None:
     fmt = python_type_to_format(int | None)
     assert fmt is not None
-    assert fmt["type"] == "number"
+    assert fmt["type"] == ["integer", "null"]
     assert fmt["$schema"] == _JSON_SCHEMA_DRAFT
 
 
@@ -125,6 +132,10 @@ def test_nested_model() -> None:
     assert "tags" in props
     age_prop = props["age"]
     assert age_prop.get("description") == "Age in years"
+    # Nested model should use $defs and $ref (Pydantic v2 / Draft 2020-12)
+    assert "$defs" in fmt
+    assert "Address" in fmt["$defs"]
+    assert props["address"]["$ref"].startswith("#/$defs/")
 
 
 def test_list_of_model() -> None:

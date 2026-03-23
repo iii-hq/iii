@@ -9,7 +9,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 
 _PRIMITIVE_MAP: dict[type, str] = {
     str: "string",
-    int: "number",
+    int: "integer",
     float: "number",
     bool: "boolean",
 }
@@ -36,7 +36,7 @@ def _is_pydantic_model(annotation: Any) -> bool:
         return False
 
 
-_JSON_SCHEMA_DRAFT = "http://json-schema.org/draft-07/schema#"
+_JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
 
 
 def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
@@ -44,10 +44,14 @@ def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
     if annotation is inspect.Parameter.empty or annotation is Any:
         return None
 
-    # Handle Optional[X] — unwrap to inner type
+    # Handle Optional[X] — produce {"type": ["<inner>", "null"]}
     is_opt, inner = _is_optional(annotation)
     if is_opt:
-        return _to_json_schema(inner)
+        inner_schema = _to_json_schema(inner)
+        if inner_schema is not None and "type" in inner_schema:
+            inner_schema["type"] = [inner_schema["type"], "null"]
+            return inner_schema
+        return inner_schema
 
     # Handle NoneType
     if annotation is type(None):
@@ -70,7 +74,13 @@ def _to_json_schema(annotation: Any) -> dict[str, Any] | None:
 
     # Handle dict[str, X]
     if origin is dict:
-        return {"type": "object"}
+        args = get_args(annotation)
+        schema_dict: dict[str, Any] = {"type": "object"}
+        if args and len(args) >= 2:
+            value_schema = _to_json_schema(args[1])
+            if value_schema is not None:
+                schema_dict["additionalProperties"] = value_schema
+        return schema_dict
 
     # Handle Pydantic BaseModel — use its built-in JSON Schema generation
     if _is_pydantic_model(annotation):
