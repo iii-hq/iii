@@ -14,12 +14,12 @@ def use_api(
     function_id = f"api.{http_method.lower()}.{api_path}"
     logger = Logger(service_name=function_id)
 
-    async def wrapped(data: Any) -> dict[str, Any]:
+    async def wrapped(data: ApiRequest) -> dict[str, Any]:
         req = ApiRequest(**data) if isinstance(data, dict) else data
         result = await handler(req, logger)
         return result.model_dump(by_alias=True)
 
-    iii.register_function({"id": function_id}, wrapped)
+    iii.register_function(function_id, wrapped)
     iii.register_trigger(
         {
             "type": "http",
