@@ -28,11 +28,11 @@ When a trigger fires, the engine first invokes the condition function with the e
 
 ## iii Primitives Used
 
-| Primitive                                                                    | Purpose                                    |
-| ---------------------------------------------------------------------------- | ------------------------------------------ |
-| `registerFunction({ id }, handler)` (condition)                              | Register the condition function (returns boolean) |
-| `registerFunction({ id }, handler)` (handler)                                | Register the handler function              |
-| `registerTrigger({ type, function_id, config: { condition_function_id } })`  | Bind trigger with condition gate           |
+| Primitive                                                                   | Purpose                                           |
+| --------------------------------------------------------------------------- | ------------------------------------------------- |
+| `registerFunction({ id }, handler)` (condition)                             | Register the condition function (returns boolean) |
+| `registerFunction({ id }, handler)` (handler)                               | Register the handler function                     |
+| `registerTrigger({ type, function_id, config: { condition_function_id } })` | Bind trigger with condition gate                  |
 
 ## Reference Implementation
 
@@ -66,3 +66,14 @@ Use the adaptations below when they apply to the task.
 - For state change triggers specifically, prefer `state-reactions`.
 - For invocation modes (sync/void/enqueue), prefer `trigger-actions`.
 - Stay with `trigger-conditions` when the primary problem is gating trigger execution with a condition check.
+
+## When to Use
+
+- Use this skill when the task is primarily about `trigger-conditions` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

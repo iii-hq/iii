@@ -22,7 +22,7 @@ Use the concepts below when they fit the task. Not every effect pipeline needs a
 
 ## Architecture
 
-```
+```text
 HTTP request
   → fx::parse-user-input (validate + normalize)
     → fx::enrich (add metadata, lookup external data)
@@ -33,14 +33,14 @@ HTTP request
 
 ## iii Primitives Used
 
-| Primitive                                                | Purpose                                  |
-| -------------------------------------------------------- | ---------------------------------------- |
-| `registerWorker`                                         | Initialize the worker and connect to iii |
-| `registerFunction`                                       | Define each effect                       |
-| `trigger({ function_id, payload })`                      | Compose effects synchronously            |
-| `trigger({ ..., action: TriggerAction.Void() })`         | Fire-and-forget side effects             |
-| `trigger({ function_id: 'state::set/get', payload })`    | Persist data between effects             |
-| `registerTrigger({ type: 'http' })`                      | Entry point                              |
+| Primitive                                             | Purpose                                  |
+| ----------------------------------------------------- | ---------------------------------------- |
+| `registerWorker`                                      | Initialize the worker and connect to iii |
+| `registerFunction`                                    | Define each effect                       |
+| `trigger({ function_id, payload })`                   | Compose effects synchronously            |
+| `trigger({ ..., action: TriggerAction.Void() })`      | Fire-and-forget side effects             |
+| `trigger({ function_id: 'state::set/get', payload })` | Persist data between effects             |
+| `registerTrigger({ type: 'http' })`                   | Entry point                              |
 
 ## Reference Implementation
 
@@ -73,3 +73,14 @@ Use the adaptations below when they apply to the task.
 - If a request is about durable multi-step workflows with retries and DLQ handling, prefer `workflow-orchestration`.
 - If the task involves multiple independent agents handing off work, prefer `agentic-backend`.
 - Stay with `effect-system` when the primary concern is composable, traceable function pipelines with synchronous chaining.
+
+## When to Use
+
+- Use this skill when the task is primarily about `effect-system` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

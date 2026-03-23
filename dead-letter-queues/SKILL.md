@@ -27,12 +27,12 @@ A queue consumer fails processing a job. The engine retries with exponential bac
 
 ## iii Primitives Used
 
-| Primitive                                                                    | Purpose                                      |
-| ---------------------------------------------------------------------------- | -------------------------------------------- |
-| `trigger({ function_id: 'iii::queue::redrive', payload: { queue } })`        | Redrive all DLQ jobs for a named queue       |
-| `trigger({ function_id: 'iii::queue::status', payload: { queue } })`         | Check queue and DLQ status                   |
-| `iii trigger --function-id='iii::queue::redrive' --payload='{"queue":"name"}'`| CLI redrive command                          |
-| `queue_configs` in iii-config.yaml                                           | Configure `max_retries` and `backoff_ms`     |
+| Primitive                                                                      | Purpose                                  |
+| ------------------------------------------------------------------------------ | ---------------------------------------- |
+| `trigger({ function_id: 'iii::queue::redrive', payload: { queue } })`          | Redrive all DLQ jobs for a named queue   |
+| `trigger({ function_id: 'iii::queue::status', payload: { queue } })`           | Check queue and DLQ status               |
+| `iii trigger --function-id='iii::queue::redrive' --payload='{"queue":"name"}'` | CLI redrive command                      |
+| `queue_configs` in iii-config.yaml                                             | Configure `max_retries` and `backoff_ms` |
 
 ## Reference Implementation
 
@@ -61,8 +61,6 @@ Use the adaptations below when they apply to the task.
 - In production with RabbitMQ, use the management UI for detailed message inspection
 - Consider building an alerting function that triggers on DLQ depth thresholds
 
-## Pattern Boundaries
-
 ## Engine Configuration
 
 Queue `max_retries` and `backoff_ms` are set per queue in iii-config.yaml under `queue_configs`. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
@@ -73,3 +71,14 @@ Queue `max_retries` and `backoff_ms` are set per queue in iii-config.yaml under 
 - For queue configuration (retries, backoff, adapters), prefer `engine-config`.
 - For function registration and triggers, prefer `functions-and-triggers`.
 - Stay with `dead-letter-queues` when the primary problem is inspecting or redriving failed jobs.
+
+## When to Use
+
+- Use this skill when the task is primarily about `dead-letter-queues` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

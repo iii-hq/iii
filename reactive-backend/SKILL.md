@@ -22,7 +22,7 @@ Use the concepts below when they fit the task. Not every reactive backend needs 
 
 ## Architecture
 
-```
+```text
 HTTP CRUD endpoints
   → state::set/update/delete (writes to 'todos' scope)
     ↓ (automatic state triggers)
@@ -73,3 +73,14 @@ Use the adaptations below when they apply to the task.
 
 - If the request focuses on registering external/legacy HTTP endpoints via `registerFunction` (especially with endpoint lists like `{ path, id }` plus iteration), prefer `http-invoked-functions`.
 - Stay with `reactive-backend` when state scopes, state triggers, and live stream updates are the core requirement.
+
+## When to Use
+
+- Use this skill when the task is primarily about `reactive-backend` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

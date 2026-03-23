@@ -23,7 +23,7 @@ Use the concepts below when they fit the task. Not every automation needs all of
 
 ## Architecture
 
-```
+```text
 Automation 1: Form → Enrich → Store → Notify
   HTTP webhook → auto::enrich-lead → auto::store-lead → auto::notify-slack
 
@@ -36,15 +36,15 @@ Automation 3: Payment webhook → Validate → Update → Notify
 
 ## iii Primitives Used
 
-| Primitive                                                    | Purpose                                   |
-| ------------------------------------------------------------ | ----------------------------------------- |
-| `registerWorker`                                             | Initialize the worker and connect to iii  |
-| `registerFunction`                                           | Define each automation node               |
-| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Chain nodes via named queues              |
-| `trigger({ function_id: 'state::set', payload })`            | Persist data between nodes                |
-| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget notifications             |
-| `registerTrigger({ type: 'http' })`                          | Webhook entry points                      |
-| `registerTrigger({ type: 'cron' })`                          | Scheduled automations                     |
+| Primitive                                                    | Purpose                                  |
+| ------------------------------------------------------------ | ---------------------------------------- |
+| `registerWorker`                                             | Initialize the worker and connect to iii |
+| `registerFunction`                                           | Define each automation node              |
+| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Chain nodes via named queues             |
+| `trigger({ function_id: 'state::set', payload })`            | Persist data between nodes               |
+| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget notifications            |
+| `registerTrigger({ type: 'http' })`                          | Webhook entry points                     |
+| `registerTrigger({ type: 'cron' })`                          | Scheduled automations                    |
 
 ## Reference Implementation
 
@@ -77,3 +77,14 @@ Use the adaptations below when they apply to the task.
 - If the task requires durable multi-step workflows with saga compensation and step tracking, prefer `workflow-orchestration`.
 - If the task involves multiple AI agents handing off work, prefer `agentic-backend`.
 - Stay with `low-code-automation` when the primary concern is simple trigger-transform-action chains with minimal orchestration overhead.
+
+## When to Use
+
+- Use this skill when the task is primarily about `low-code-automation` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

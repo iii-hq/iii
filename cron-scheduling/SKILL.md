@@ -31,11 +31,11 @@ Use the concepts below when they fit the task. Not every scheduled job needs all
 
 ## iii Primitives Used
 
-| Primitive                                        | Purpose                                      |
-| ------------------------------------------------ | -------------------------------------------- |
-| `registerFunction`                               | Define the handler for the scheduled job     |
-| `registerTrigger({ type: 'cron' })`              | Bind a cron expression to a function         |
-| `config: { expression: '0 0 9 * * * *' }`        | Cron schedule in 7-field format              |
+| Primitive                                 | Purpose                                  |
+| ----------------------------------------- | ---------------------------------------- |
+| `registerFunction`                        | Define the handler for the scheduled job |
+| `registerTrigger({ type: 'cron' })`       | Bind a cron expression to a function     |
+| `config: { expression: '0 0 9 * * * *' }` | Cron schedule in 7-field format          |
 
 ## Reference Implementation
 
@@ -69,3 +69,14 @@ CronModule must be enabled in iii-config.yaml. See [../references/iii-config.yam
 - If the task is about one-off async work rather than recurring schedules, prefer `queue-processing`.
 - If the trigger should fire on state changes rather than time, prefer `state-reactions`.
 - Stay with `cron-scheduling` when the primary need is time-based periodic execution.
+
+## When to Use
+
+- Use this skill when the task is primarily about `cron-scheduling` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

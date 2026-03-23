@@ -19,11 +19,7 @@ npx skills add iii-hq/skills
 npx skillkit install iii-hq/skills
 
 # Install a single skill
-npx skillkit install http-endpoints
-
-# Translate to another agent format
-npx skillkit translate http-endpoints --agent cursor
-npx skillkit translate http-endpoints --agent gemini-cli
+npx skillkit install iii-hq/skills --skills=http-endpoints
 
 # Sync skills across all your agents
 npx skillkit sync
@@ -36,13 +32,10 @@ npx skillkit sync
 git clone https://github.com/iii-hq/skills.git ~/.claude/skills/iii
 
 # Cursor
-git clone https://github.com/iii-hq/skills.git .cursor/skills/iii
+git clone https://github.com/iii-hq/skills.git ~/.cursor/skills/iii
 
 # Gemini CLI
-git clone https://github.com/iii-hq/skills.git .gemini/skills/iii
-
-# Or symlink individual skills
-ln -s /path/to/skills/http-endpoints ~/.claude/skills/http-endpoints
+git clone https://github.com/iii-hq/skills.git ~/.gemini/skills/iii
 ```
 
 ### Multi-agent sync
@@ -52,10 +45,12 @@ If you use multiple agents, SkillKit keeps skills in sync across all of them:
 ```bash
 # Install once, sync to Claude Code + Cursor + Gemini CLI
 npx skillkit install iii-hq/skills
-npx skillkit sync --agents claude-code,cursor,gemini-cli
+npx skillkit sync --agent claude-code
+npx skillkit sync --agent cursor
+npx skillkit sync --agent gemini-cli
 
 # Or translate all skills to a specific agent
-npx skillkit translate iii-hq/skills --agent cursor
+npx skillkit translate --all --to cursor
 ```
 
 Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, Amp, Goose, Roo Code, GitHub Copilot, and more.
@@ -66,55 +61,55 @@ Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, 
 
 Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or capability.
 
-| Skill | What it does |
-|-------|-------------|
+| Skill                                              | What it does                                                             |
+| -------------------------------------------------- | ------------------------------------------------------------------------ |
 | [functions-and-triggers](./functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
-| [http-endpoints](./http-endpoints) | Expose functions as REST API endpoints |
-| [cron-scheduling](./cron-scheduling) | Schedule recurring tasks with cron expressions |
-| [queue-processing](./queue-processing) | Async job processing with retries, concurrency, and ordering |
-| [state-management](./state-management) | Distributed key-value state across functions |
-| [state-reactions](./state-reactions) | Auto-trigger functions on state changes |
-| [realtime-streams](./realtime-streams) | Push live updates to WebSocket clients |
-| [custom-triggers](./custom-triggers) | Build custom trigger types for external events |
-| [trigger-actions](./trigger-actions) | Synchronous, fire-and-forget, and enqueue invocation modes |
-| [trigger-conditions](./trigger-conditions) | Gate trigger execution with condition functions |
-| [dead-letter-queues](./dead-letter-queues) | Inspect and redrive failed queue jobs |
-| [engine-config](./engine-config) | Configure the iii engine via iii-config.yaml |
-| [observability](./observability) | OpenTelemetry tracing, metrics, and logging |
+| [http-endpoints](./http-endpoints)                 | Expose functions as REST API endpoints                                   |
+| [cron-scheduling](./cron-scheduling)               | Schedule recurring tasks with cron expressions                           |
+| [queue-processing](./queue-processing)             | Async job processing with retries, concurrency, and ordering             |
+| [state-management](./state-management)             | Distributed key-value state across functions                             |
+| [state-reactions](./state-reactions)               | Auto-trigger functions on state changes                                  |
+| [realtime-streams](./realtime-streams)             | Push live updates to WebSocket clients                                   |
+| [custom-triggers](./custom-triggers)               | Build custom trigger types for external events                           |
+| [trigger-actions](./trigger-actions)               | Synchronous, fire-and-forget, and enqueue invocation modes               |
+| [trigger-conditions](./trigger-conditions)         | Gate trigger execution with condition functions                          |
+| [dead-letter-queues](./dead-letter-queues)         | Inspect and redrive failed queue jobs                                    |
+| [engine-config](./engine-config)                   | Configure the iii engine via iii-config.yaml                             |
+| [observability](./observability)                   | OpenTelemetry tracing, metrics, and logging                              |
 
 ### Architecture Pattern Skills
 
 Compose multiple iii primitives into common backend architectures. Each includes a full working reference implementation.
 
-| Skill | What it does |
-|-------|-------------|
-| [agentic-backend](./agentic-backend) | Multi-agent pipelines with queue handoffs and shared state |
-| [reactive-backend](./reactive-backend) | Real-time backends with state triggers and stream updates |
-| [workflow-orchestration](./workflow-orchestration) | Durable multi-step pipelines with retries and DLQ |
-| [http-invoked-functions](./http-invoked-functions) | Register external HTTP endpoints as iii functions |
-| [effect-system](./effect-system) | Composable, traceable function pipelines |
-| [event-driven-cqrs](./event-driven-cqrs) | CQRS with event sourcing and independent projections |
-| [low-code-automation](./low-code-automation) | Trigger-transform-action automation chains |
+| Skill                                              | What it does                                               |
+| -------------------------------------------------- | ---------------------------------------------------------- |
+| [agentic-backend](./agentic-backend)               | Multi-agent pipelines with queue handoffs and shared state |
+| [reactive-backend](./reactive-backend)             | Real-time backends with state triggers and stream updates  |
+| [workflow-orchestration](./workflow-orchestration) | Durable multi-step pipelines with retries and DLQ          |
+| [http-invoked-functions](./http-invoked-functions) | Register external HTTP endpoints as iii functions          |
+| [effect-system](./effect-system)                   | Composable, traceable function pipelines                   |
+| [event-driven-cqrs](./event-driven-cqrs)           | CQRS with event sourcing and independent projections       |
+| [low-code-automation](./low-code-automation)       | Trigger-transform-action automation chains                 |
 
 ### SDK Reference Skills
 
-| Skill | What it does |
-|-------|-------------|
-| [node-sdk](./node-sdk) | Node.js/TypeScript SDK reference |
-| [python-sdk](./python-sdk) | Python SDK reference |
-| [rust-sdk](./rust-sdk) | Rust SDK reference |
+| Skill                      | What it does                     |
+| -------------------------- | -------------------------------- |
+| [node-sdk](./node-sdk)     | Node.js/TypeScript SDK reference |
+| [python-sdk](./python-sdk) | Python SDK reference             |
+| [rust-sdk](./rust-sdk)     | Rust SDK reference               |
 
 ### Shared References
 
-| File | What it contains |
-|------|-----------------|
+| File                                                       | What it contains                                                      |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- |
 | [references/iii-config.yaml](./references/iii-config.yaml) | Full annotated engine configuration reference (auto-synced from docs) |
 
 ## Format
 
 Each skill follows the [Agent Skills specification](https://agentskills.io/specification):
 
-```
+```text
 http-endpoints/
 └── SKILL.md    # YAML frontmatter (name + description) + markdown instructions
 

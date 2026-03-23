@@ -31,14 +31,14 @@ Use the concepts below when they fit the task. Not every stream setup needs all 
 
 ## iii Primitives Used
 
-| Primitive                                                                | Purpose                                     |
-| ------------------------------------------------------------------------ | ------------------------------------------- |
-| `trigger({ function_id: 'stream::set', payload })`                       | Create or update a stream item              |
-| `trigger({ function_id: 'stream::get', payload })`                       | Read a stream item                          |
-| `trigger({ function_id: 'stream::list', payload })`                      | List items in a stream group                |
-| `trigger({ function_id: 'stream::delete', payload })`                    | Remove a stream item                        |
-| `trigger({ function_id: 'stream::send', payload })`                      | Push an event to connected clients          |
-| `createStream`                                                           | Register a custom stream adapter            |
+| Primitive                                             | Purpose                            |
+| ----------------------------------------------------- | ---------------------------------- |
+| `trigger({ function_id: 'stream::set', payload })`    | Create or update a stream item     |
+| `trigger({ function_id: 'stream::get', payload })`    | Read a stream item                 |
+| `trigger({ function_id: 'stream::list', payload })`   | List items in a stream group       |
+| `trigger({ function_id: 'stream::delete', payload })` | Remove a stream item               |
+| `trigger({ function_id: 'stream::send', payload })`   | Push an event to connected clients |
+| `createStream`                                        | Register a custom stream adapter   |
 
 ## Reference Implementation
 
@@ -74,3 +74,14 @@ StreamModule must be enabled in iii-config.yaml with a port and adapter (KvStore
 - If the task is about persistent key-value data without real-time push, prefer `state-management`.
 - If the task needs reactive triggers on state changes (server-side), prefer `state-reactions`.
 - Stay with `realtime-streams` when the primary need is pushing live updates to connected clients.
+
+## When to Use
+
+- Use this skill when the task is primarily about `realtime-streams` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

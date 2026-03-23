@@ -28,16 +28,16 @@ The worker SDK generates spans, metrics, and logs during function execution. The
 
 ## iii Primitives Used
 
-| Primitive                            | Purpose                                      |
-| ------------------------------------ | -------------------------------------------- |
-| `init(url, { otel })` | Connect worker with telemetry config         |
-| `withSpan(name, opts, fn)`           | Create a custom trace span                   |
-| `getTracer()`                        | Access OpenTelemetry Tracer directly         |
-| `getMeter()`                         | Access OpenTelemetry Meter for custom metrics|
-| `currentTraceId()`                   | Get active trace ID for correlation          |
-| `injectTraceparent()`                | Inject W3C trace context into outbound calls |
-| `onLog(callback, { level })`         | Subscribe to log events                      |
-| `shutdown_otel()`                    | Graceful shutdown of telemetry pipeline      |
+| Primitive                    | Purpose                                       |
+| ---------------------------- | --------------------------------------------- |
+| `init(url, { otel })`        | Connect worker with telemetry config          |
+| `withSpan(name, opts, fn)`   | Create a custom trace span                    |
+| `getTracer()`                | Access OpenTelemetry Tracer directly          |
+| `getMeter()`                 | Access OpenTelemetry Meter for custom metrics |
+| `currentTraceId()`           | Get active trace ID for correlation           |
+| `injectTraceparent()`        | Inject W3C trace context into outbound calls  |
+| `onLog(callback, { level })` | Subscribe to log events                       |
+| `shutdown_otel()`            | Graceful shutdown of telemetry pipeline       |
 
 ## Reference Implementation
 
@@ -77,3 +77,14 @@ OtelModule must be enabled in iii-config.yaml for engine-side traces, metrics, a
 - For engine-side OtelModule YAML configuration, prefer `engine-config`.
 - For SDK init options and function registration, prefer `functions-and-triggers`.
 - Stay with `observability` when the primary problem is SDK-level telemetry: spans, metrics, logs, and trace propagation.
+
+## When to Use
+
+- Use this skill when the task is primarily about `observability` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

@@ -23,7 +23,7 @@ Use the concepts below when they fit the task. Not every CQRS system needs all o
 
 ## Architecture
 
-```
+```text
 HTTP POST /inventory (command)
   → cmd::add-inventory-item → validate → append event to state
     → publish('inventory.item-added')
@@ -38,15 +38,15 @@ HTTP GET /inventory (query)
 
 ## iii Primitives Used
 
-| Primitive                                                           | Purpose                                     |
-| ------------------------------------------------------------------- | ------------------------------------------- |
-| `registerWorker`                                                    | Initialize the worker and connect to iii    |
-| `registerFunction`                                                  | Define commands, projections, and queries    |
-| `trigger({ function_id: 'state::set/get/list', payload })`          | Event log and projection state              |
-| `trigger({ function_id: 'publish', payload })`                      | Publish domain events                       |
-| `registerTrigger({ type: 'subscribe', config: { topic } })`         | Subscribe projections to events             |
-| `registerTrigger({ type: 'http' })`                                 | Command and query endpoints                 |
-| `trigger({ ..., action: TriggerAction.Void() })`                    | Fire-and-forget notifications               |
+| Primitive                                                   | Purpose                                   |
+| ----------------------------------------------------------- | ----------------------------------------- |
+| `registerWorker`                                            | Initialize the worker and connect to iii  |
+| `registerFunction`                                          | Define commands, projections, and queries |
+| `trigger({ function_id: 'state::set/get/list', payload })`  | Event log and projection state            |
+| `trigger({ function_id: 'publish', payload })`              | Publish domain events                     |
+| `registerTrigger({ type: 'subscribe', config: { topic } })` | Subscribe projections to events           |
+| `registerTrigger({ type: 'http' })`                         | Command and query endpoints               |
+| `trigger({ ..., action: TriggerAction.Void() })`            | Fire-and-forget notifications             |
 
 ## Reference Implementation
 
@@ -80,3 +80,14 @@ Use the adaptations below when they apply to the task.
 - If the task is about simple CRUD with reactive side effects, prefer `reactive-backend`.
 - If the task needs durable multi-step pipelines with retries, prefer `workflow-orchestration`.
 - Stay with `event-driven-cqrs` when command/query separation, event sourcing, and independent projections are the primary concerns.
+
+## When to Use
+
+- Use this skill when the task is primarily about `event-driven-cqrs` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

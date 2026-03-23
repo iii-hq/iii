@@ -43,3 +43,14 @@ Use this pattern when iii should call external HTTP endpoints as functions.
 ## Reference
 
 See [../references/http-invoked-functions.js](../references/http-invoked-functions.js).
+
+## When to Use
+
+- Use this skill when the task is primarily about `http-invoked-functions` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

@@ -26,14 +26,14 @@ SDK init connects the worker to the engine, `registerFunction` defines handlers,
 
 ## iii Primitives Used
 
-| Primitive                                                    | Purpose                                      |
-| ------------------------------------------------------------ | -------------------------------------------- |
-| `init(url)`                                                  | Connect worker to engine                     |
-| `registerFunction({ id }, handler)`                          | Define a function handler                    |
-| `registerTrigger({ type, function_id, config })`             | Bind an event source to a function           |
-| `trigger({ function_id, payload })`                          | Invoke a function synchronously              |
-| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation                   |
-| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async invocation via queue           |
+| Primitive                                                    | Purpose                            |
+| ------------------------------------------------------------ | ---------------------------------- |
+| `init(url)`                                                  | Connect worker to engine           |
+| `registerFunction({ id }, handler)`                          | Define a function handler          |
+| `registerTrigger({ type, function_id, config })`             | Bind an event source to a function |
+| `trigger({ function_id, payload })`                          | Invoke a function synchronously    |
+| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation         |
+| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async invocation via queue |
 
 ## Reference Implementation
 
@@ -72,3 +72,14 @@ Use the adaptations below when they apply to the task.
 - For cron scheduling details (expressions, timezones), prefer `cron-scheduling`.
 - For invocation modes (sync vs void vs enqueue), prefer `trigger-actions`.
 - Stay with `functions-and-triggers` when the primary problem is registering functions, binding triggers, or cross-language invocation.
+
+## When to Use
+
+- Use this skill when the task is primarily about `functions-and-triggers` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

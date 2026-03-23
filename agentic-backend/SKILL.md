@@ -23,7 +23,7 @@ Use the concepts below when they fit the task. Not every agentic workflow needs 
 
 ## Architecture
 
-```
+```text
 HTTP request
   → Enqueue(agent-tasks) → Agent 1 (researcher) → writes state
     → Enqueue(agent-tasks) → Agent 2 (critic) → reads/updates state
@@ -80,3 +80,14 @@ Named queues for agent handoffs are declared in iii-config.yaml under `queue_con
 
 - If a request is about adapting existing HTTP endpoints into `registerFunction` (including prompts asking for `{ path, id }` endpoint maps + loops), prefer `http-invoked-functions`.
 - Stay with `agentic-backend` when the primary problem is multi-agent orchestration, queue handoffs, approval gates, and shared context.
+
+## When to Use
+
+- Use this skill when the task is primarily about `agentic-backend` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

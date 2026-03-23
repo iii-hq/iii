@@ -22,7 +22,7 @@ Use the concepts below when they fit the task. Not every workflow needs every du
 
 ## Architecture
 
-```
+```text
 HTTP (create order)
   → Enqueue(order-validate) → validate
     → Enqueue(order-payment) → charge-payment
@@ -87,3 +87,14 @@ Named queues for pipeline steps are declared in iii-config.yaml under `queue_con
 
 - If the task is "model HTTP endpoints as HTTP-invoked `registerFunction` functions" (including `{ path, id }` arrays iterated into registration), prefer `http-invoked-functions`.
 - Stay with `workflow-orchestration` when durable step sequencing, queue retries/backoff, and workflow progress tracking are the primary concerns.
+
+## When to Use
+
+- Use this skill when the task is primarily about `workflow-orchestration` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

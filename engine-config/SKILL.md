@@ -27,19 +27,19 @@ The iii-config.yaml file is loaded by the iii engine binary at startup. Modules 
 
 ## iii Primitives Used
 
-| Primitive                                    | Purpose                                          |
-| -------------------------------------------- | ------------------------------------------------ |
-| `modules::api::RestApiModule`                | HTTP API server (port 3111)                      |
-| `modules::stream::StreamModule`              | WebSocket streams (port 3112)                    |
-| `modules::state::StateModule`                | Persistent key-value state storage               |
-| `modules::queue::QueueModule`                | Background job processing with retries           |
-| `modules::pubsub::PubSubModule`              | In-process event fanout                          |
-| `modules::cron::CronModule`                  | Time-based scheduling                            |
-| `modules::observability::OtelModule`         | OpenTelemetry traces, metrics, logs              |
-| `modules::http_functions::HttpFunctionsModule`| Outbound HTTP call security                     |
-| `modules::shell::ExecModule`                 | Spawn external processes                         |
-| `modules::bridge_client::BridgeClientModule` | Distributed cross-engine invocation              |
-| `modules::telemetry::TelemetryModule`        | Anonymous product analytics                      |
+| Primitive                                      | Purpose                                |
+| ---------------------------------------------- | -------------------------------------- |
+| `modules::api::RestApiModule`                  | HTTP API server (port 3111)            |
+| `modules::stream::StreamModule`                | WebSocket streams (port 3112)          |
+| `modules::state::StateModule`                  | Persistent key-value state storage     |
+| `modules::queue::QueueModule`                  | Background job processing with retries |
+| `modules::pubsub::PubSubModule`                | In-process event fanout                |
+| `modules::cron::CronModule`                    | Time-based scheduling                  |
+| `modules::observability::OtelModule`           | OpenTelemetry traces, metrics, logs    |
+| `modules::http_functions::HttpFunctionsModule` | Outbound HTTP call security            |
+| `modules::shell::ExecModule`                   | Spawn external processes               |
+| `modules::bridge_client::BridgeClientModule`   | Distributed cross-engine invocation    |
+| `modules::telemetry::TelemetryModule`          | Anonymous product analytics            |
 
 ## Reference Implementation
 
@@ -79,3 +79,14 @@ Use the adaptations below when they apply to the task.
 - For OpenTelemetry SDK integration (spans, metrics, traces), prefer `observability`.
 - For real-time stream patterns, prefer `realtime-streams`.
 - Stay with `engine-config` when the primary problem is configuring or deploying the engine itself.
+
+## When to Use
+
+- Use this skill when the task is primarily about `engine-config` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

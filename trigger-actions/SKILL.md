@@ -26,11 +26,11 @@ The caller invokes `trigger()` with an optional action parameter. Synchronous mo
 
 ## iii Primitives Used
 
-| Primitive                                                    | Purpose                                          |
-| ------------------------------------------------------------ | ------------------------------------------------ |
-| `trigger({ function_id, payload })`                          | Synchronous invocation, blocks for result        |
-| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget, returns immediately with null   |
-| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async via named queue, returns receipt   |
+| Primitive                                                    | Purpose                                        |
+| ------------------------------------------------------------ | ---------------------------------------------- |
+| `trigger({ function_id, payload })`                          | Synchronous invocation, blocks for result      |
+| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget, returns immediately with null |
+| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async via named queue, returns receipt |
 
 ## Reference Implementation
 
@@ -64,3 +64,14 @@ Use the adaptations below when they apply to the task.
 - For DLQ handling when enqueued jobs exhaust retries, prefer `dead-letter-queues`.
 - For function registration and trigger binding, prefer `functions-and-triggers`.
 - Stay with `trigger-actions` when the primary problem is choosing the right invocation mode.
+
+## When to Use
+
+- Use this skill when the task is primarily about `trigger-actions` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

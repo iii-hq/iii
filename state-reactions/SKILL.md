@@ -32,12 +32,12 @@ Use the concepts below when they fit the task. Not every state reaction needs al
 
 ## iii Primitives Used
 
-| Primitive                                                                            | Purpose                                       |
-| ------------------------------------------------------------------------------------ | --------------------------------------------- |
-| `registerFunction`                                                                   | Define the reaction handler                   |
-| `registerTrigger({ type: 'state' })`                                                 | Watch a scope for changes                     |
-| `config: { scope, key, condition_function_id }`                                       | Scope filter and optional condition gate      |
-| Event payload: `{ new_value, old_value, key, event_type }`                            | Change details passed to the handler          |
+| Primitive                                                  | Purpose                                  |
+| ---------------------------------------------------------- | ---------------------------------------- |
+| `registerFunction`                                         | Define the reaction handler              |
+| `registerTrigger({ type: 'state' })`                       | Watch a scope for changes                |
+| `config: { scope, key, condition_function_id }`            | Scope filter and optional condition gate |
+| Event payload: `{ new_value, old_value, key, event_type }` | Change details passed to the handler     |
 
 ## Reference Implementation
 
@@ -73,3 +73,14 @@ StateModule must be enabled in iii-config.yaml for state triggers to fire. See [
 - If the task is about directly reading or writing state without reactions, prefer `state-management`.
 - If the task needs conditional trigger logic shared across trigger types, prefer `trigger-conditions`.
 - Stay with `state-reactions` when the primary need is automatic side effects on state changes.
+
+## When to Use
+
+- Use this skill when the task is primarily about `state-reactions` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

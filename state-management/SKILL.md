@@ -35,13 +35,13 @@ Use the concepts below when they fit the task. Not every state operation needs a
 
 ## iii Primitives Used
 
-| Primitive                                                          | Purpose                              |
-| ------------------------------------------------------------------ | ------------------------------------ |
-| `trigger({ function_id: 'state::set', payload })`                  | Write a value to state               |
-| `trigger({ function_id: 'state::get', payload })`                  | Read a value from state              |
-| `trigger({ function_id: 'state::list', payload })`                 | List all keys in a scope             |
-| `trigger({ function_id: 'state::delete', payload })`               | Remove a key from state              |
-| `trigger({ function_id: 'state::update', payload: { ops } })`      | Partial merge with operations array  |
+| Primitive                                                     | Purpose                             |
+| ------------------------------------------------------------- | ----------------------------------- |
+| `trigger({ function_id: 'state::set', payload })`             | Write a value to state              |
+| `trigger({ function_id: 'state::get', payload })`             | Read a value from state             |
+| `trigger({ function_id: 'state::list', payload })`            | List all keys in a scope            |
+| `trigger({ function_id: 'state::delete', payload })`          | Remove a key from state             |
+| `trigger({ function_id: 'state::update', payload: { ops } })` | Partial merge with operations array |
 
 ## Reference Implementation
 
@@ -77,3 +77,14 @@ StateModule must be enabled in iii-config.yaml with a KvStore adapter (file-base
 - If the task needs reactive side effects when state changes, prefer `state-reactions`.
 - If the task needs real-time client push when data updates, prefer `realtime-streams`.
 - Stay with `state-management` when the primary need is reading and writing persistent key-value data.
+
+## When to Use
+
+- Use this skill when the task is primarily about `state-management` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

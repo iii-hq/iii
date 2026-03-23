@@ -11,7 +11,7 @@ The native async Rust SDK for connecting workers to the iii engine via tokio.
 
 ## Documentation
 
-Full API reference: https://iii.dev/docs/api-reference/sdk-rust
+Full API reference: <https://iii.dev/docs/api-reference/sdk-rust>
 
 ## Install
 
@@ -21,18 +21,18 @@ Add to `Cargo.toml`:
 
 ## Key Types and Functions
 
-| Export | Purpose |
-|--------|---------|
-| `init(url, InitOptions)` | Connect to the engine, returns `III` client |
-| `III::register_function(id, closure)` | Register a function (closure returns `Future<Result<Value, IIIError>>`) |
-| `III::register_trigger(type, function_id, config)` | Bind a trigger to a function |
-| `III::trigger(TriggerRequest)` | Invoke a function |
-| `TriggerAction::Void` | Fire-and-forget invocation |
-| `TriggerAction::Enqueue { queue }` | Durable async invocation |
-| `IIIError` | Error type for handler failures |
-| `Streams` | Helper for atomic stream CRUD |
-| `with_span`, `get_tracer`, `get_meter` | OpenTelemetry (requires `otel` feature) |
-| `execute_traced_request` | HTTP client with trace context propagation |
+| Export                                             | Purpose                                                                 |
+| -------------------------------------------------- | ----------------------------------------------------------------------- |
+| `init(url, InitOptions)`                           | Connect to the engine, returns `III` client                             |
+| `III::register_function(id, closure)`              | Register a function (closure returns `Future<Result<Value, IIIError>>`) |
+| `III::register_trigger(type, function_id, config)` | Bind a trigger to a function                                            |
+| `III::trigger(TriggerRequest)`                     | Invoke a function                                                       |
+| `TriggerAction::Void`                              | Fire-and-forget invocation                                              |
+| `TriggerAction::Enqueue { queue }`                 | Durable async invocation                                                |
+| `IIIError`                                         | Error type for handler failures                                         |
+| `Streams`                                          | Helper for atomic stream CRUD                                           |
+| `with_span`, `get_tracer`, `get_meter`             | OpenTelemetry (requires `otel` feature)                                 |
+| `execute_traced_request`                           | HTTP client with trace context propagation                              |
 
 ## Key Notes
 
@@ -46,3 +46,14 @@ Add to `Cargo.toml`:
 - For usage patterns and working examples, see `functions-and-triggers`
 - For Node.js SDK, see `node-sdk`
 - For Python SDK, see `python-sdk`
+
+## When to Use
+
+- Use this skill when the task is primarily about `rust-sdk` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

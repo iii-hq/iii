@@ -29,12 +29,12 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 
 ## iii Primitives Used
 
-| Primitive                                               | Purpose                                          |
-| ------------------------------------------------------- | ------------------------------------------------ |
-| `registerTriggerType(id, handler)`                      | Define a new trigger type with lifecycle hooks    |
-| `unregisterTriggerType(id)`                             | Clean up a custom trigger type                   |
-| `TriggerConfig: { id, function_id, config }`            | Configuration passed to the trigger handler      |
-| `iii.trigger(function_id, event)`                        | Fire the registered function when the event occurs |
+| Primitive                                    | Purpose                                            |
+| -------------------------------------------- | -------------------------------------------------- |
+| `registerTriggerType(id, handler)`           | Define a new trigger type with lifecycle hooks     |
+| `unregisterTriggerType(id)`                  | Clean up a custom trigger type                     |
+| `TriggerConfig: { id, function_id, config }` | Configuration passed to the trigger handler        |
+| `iii.trigger(function_id, event)`            | Fire the registered function when the event occurs |
 
 ## Reference Implementation
 
@@ -68,3 +68,14 @@ Use the adaptations below when they apply to the task.
 - If the task uses built-in cron schedules, prefer `cron-scheduling`.
 - If the task uses built-in queue triggers, prefer `queue-processing`.
 - Stay with `custom-triggers` when iii has no built-in trigger type for the event source.
+
+## When to Use
+
+- Use this skill when the task is primarily about `custom-triggers` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.

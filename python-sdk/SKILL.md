@@ -11,7 +11,7 @@ The async Python SDK for connecting workers to the iii engine.
 
 ## Documentation
 
-Full API reference: https://iii.dev/docs/api-reference/sdk-python
+Full API reference: <https://iii.dev/docs/api-reference/sdk-python>
 
 ## Install
 
@@ -19,19 +19,19 @@ Full API reference: https://iii.dev/docs/api-reference/sdk-python
 
 ## Key Exports
 
-| Export | Purpose |
-|--------|---------|
-| `init(address, options?)` | Connect to the engine inside an async context |
-| `InitOptions(worker_name, otel?)` | Connection configuration |
-| `register_function(id, handler)` | Register an async function handler |
-| `register_trigger(type, function_id, config)` | Bind a trigger to a function |
-| `trigger(function_id, payload)` | Invoke a function (async) |
-| `trigger_void(function_id, payload)` | Fire-and-forget invocation |
-| `get_context()` | Access logger and trace context inside handlers |
-| `ApiRequest` / `ApiResponse` | HTTP request/response types (pydantic) |
-| `IStream` | Interface for custom stream implementations |
-| `on_functions_available(callback)` | Listen for function discovery |
-| `on_connection_state_change(callback)` | Monitor connection state |
+| Export                                        | Purpose                                         |
+| --------------------------------------------- | ----------------------------------------------- |
+| `init(address, options?)`                     | Connect to the engine inside an async context   |
+| `InitOptions(worker_name, otel?)`             | Connection configuration                        |
+| `register_function(id, handler)`              | Register an async function handler              |
+| `register_trigger(type, function_id, config)` | Bind a trigger to a function                    |
+| `trigger(function_id, payload)`               | Invoke a function (async)                       |
+| `trigger_void(function_id, payload)`          | Fire-and-forget invocation                      |
+| `get_context()`                               | Access logger and trace context inside handlers |
+| `ApiRequest` / `ApiResponse`                  | HTTP request/response types (pydantic)          |
+| `IStream`                                     | Interface for custom stream implementations     |
+| `on_functions_available(callback)`            | Listen for function discovery                   |
+| `on_connection_state_change(callback)`        | Monitor connection state                        |
 
 ## Key Notes
 
@@ -45,3 +45,14 @@ Full API reference: https://iii.dev/docs/api-reference/sdk-python
 - For usage patterns and working examples, see `functions-and-triggers`
 - For Node.js SDK, see `node-sdk`
 - For Rust SDK, see `rust-sdk`
+
+## When to Use
+
+- Use this skill when the task is primarily about `python-sdk` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.
