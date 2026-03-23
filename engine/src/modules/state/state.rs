@@ -14,6 +14,8 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 use tracing::Instrument;
 
+use iii_sdk::types::{SetResult, UpdateResult};
+
 use crate::{
     condition::check_condition,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -25,7 +27,8 @@ use crate::{
             config::StateModuleConfig,
             structs::{
                 StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput,
-                StateGetInput, StateListGroupsInput, StateSetInput, StateUpdateInput,
+                StateGetInput, StateListGroupsInput, StateListGroupsResult, StateSetInput,
+                StateUpdateInput,
             },
             trigger::{StateTrigger, StateTriggers, TRIGGER_TYPE},
         },
@@ -234,7 +237,7 @@ impl StateCoreModule {
 #[service(name = "state")]
 impl StateCoreModule {
     #[function(id = "state::set", description = "Set a value in state")]
-    pub async fn set(&self, input: StateSetInput) -> FunctionResult<Option<Value>, ErrorBody> {
+    pub async fn set(&self, input: StateSetInput) -> FunctionResult<SetResult, ErrorBody> {
         crate::modules::telemetry::collector::track_state_set();
         match self
             .adapter
@@ -261,14 +264,7 @@ impl StateCoreModule {
 
                 self.invoke_triggers(event_data).await;
 
-                match serde_json::to_value(value) {
-                    Ok(value) => FunctionResult::Success(Some(value)),
-                    Err(e) => FunctionResult::Failure(ErrorBody {
-                        message: format!("Failed to convert value to JSON: {}", e),
-                        code: "JSON_ERROR".to_string(),
-                        stacktrace: None,
-                    }),
-                }
+                FunctionResult::Success(value)
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to set value: {}", e),
@@ -336,7 +332,7 @@ impl StateCoreModule {
     pub async fn update(
         &self,
         input: StateUpdateInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<UpdateResult, ErrorBody> {
         crate::modules::telemetry::collector::track_state_update();
         match self
             .adapter
@@ -362,14 +358,7 @@ impl StateCoreModule {
 
                 self.invoke_triggers(event_data).await;
 
-                match serde_json::to_value(value) {
-                    Ok(value) => FunctionResult::Success(Some(value)),
-                    Err(e) => FunctionResult::Failure(ErrorBody {
-                        message: format!("Failed to convert value to JSON: {}", e),
-                        code: "JSON_ERROR".to_string(),
-                        stacktrace: None,
-                    }),
-                }
+                FunctionResult::Success(value)
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to update value: {}", e),
@@ -398,21 +387,16 @@ impl StateCoreModule {
     pub async fn list_groups(
         &self,
         _input: StateListGroupsInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<StateListGroupsResult, ErrorBody> {
         match self.adapter.list_groups().await {
             Ok(groups) => {
-                // Normalize: deduplicate and sort
                 let mut normalized_groups: Vec<String> = groups
                     .into_iter()
                     .collect::<std::collections::HashSet<_>>()
                     .into_iter()
                     .collect();
                 normalized_groups.sort();
-
-                let result = serde_json::json!({
-                    "groups": normalized_groups
-                });
-                FunctionResult::Success(Some(result))
+                FunctionResult::Success(StateListGroupsResult { groups: normalized_groups })
             }
             Err(e) => FunctionResult::Failure(ErrorBody {
                 message: format!("Failed to list groups: {}", e),
@@ -436,7 +420,6 @@ mod tests {
         observability::metrics::ensure_default_meter,
         state::adapters::kv_store::BuiltinKvStoreAdapter,
     };
-    use iii_sdk::{UpdateResult, types::SetResult};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     struct FakeStateAdapter {
@@ -635,11 +618,11 @@ mod tests {
         let result = module.set(set_input).await;
 
         // Verify the old value is in the set result
-        if let FunctionResult::Success(Some(val)) = &result {
-            assert_eq!(val["old_value"], serde_json::json!(1));
-            assert_eq!(val["new_value"], serde_json::json!(2));
+        if let FunctionResult::Success(val) = &result {
+            assert_eq!(val.old_value, Some(serde_json::json!(1)));
+            assert_eq!(val.new_value, serde_json::json!(2));
         } else {
-            panic!("Expected Success with Some value");
+            panic!("Expected Success with SetResult");
         }
 
         // Verify get returns updated value
@@ -761,14 +744,12 @@ mod tests {
 
         let result = module.list_groups(StateListGroupsInput {}).await;
         match result {
-            FunctionResult::Success(Some(value)) => {
-                let groups = value["groups"].as_array().expect("groups should be array");
-                let group_names: Vec<&str> = groups.iter().filter_map(|v| v.as_str()).collect();
-                assert_eq!(group_names.len(), 3);
+            FunctionResult::Success(value) => {
+                assert_eq!(value.groups.len(), 3);
                 // They should be sorted
-                assert_eq!(group_names, vec!["alpha", "beta", "gamma"]);
+                assert_eq!(value.groups, vec!["alpha", "beta", "gamma"]);
             }
-            _ => panic!("Expected Success with Some value"),
+            _ => panic!("Expected Success with StateListGroupsResult"),
         }
     }
 
@@ -1094,15 +1075,10 @@ mod tests {
         let result = module.list_groups(StateListGroupsInput {}).await;
 
         match result {
-            FunctionResult::Success(Some(value)) => {
-                let groups = value["groups"].as_array().unwrap();
+            FunctionResult::Success(value) => {
                 assert_eq!(
-                    groups,
-                    &vec![
-                        serde_json::json!("alpha"),
-                        serde_json::json!("beta"),
-                        serde_json::json!("gamma"),
-                    ]
+                    value.groups,
+                    vec!["alpha", "beta", "gamma"]
                 );
             }
             _ => panic!("expected list_groups success"),

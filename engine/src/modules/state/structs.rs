@@ -44,6 +44,11 @@ pub struct StateGetGroupInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StateListGroupsInput {}
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StateListGroupsResult {
+    pub groups: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StateEventType {
     #[serde(rename = "state:created")]
