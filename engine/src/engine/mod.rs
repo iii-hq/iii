@@ -51,6 +51,14 @@ pub trait QueueEnqueuer: Send + Sync {
     async fn function_queue_dlq_count(&self, _queue_name: &str) -> anyhow::Result<u64> {
         Ok(0)
     }
+
+    async fn function_queue_dlq_messages(
+        &self,
+        _queue_name: &str,
+        _count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(vec![])
+    }
 }
 
 /// Magic prefix for OTLP binary frames (used by SDKs for trace spans)

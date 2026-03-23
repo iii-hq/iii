@@ -252,6 +252,14 @@ impl QueueAdapter for BuiltinQueueAdapter {
         Ok(self.queue.dlq_count(topic).await)
     }
 
+    async fn dlq_messages(
+        &self,
+        topic: &str,
+        count: usize,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(self.queue.dlq_messages(topic, count).await)
+    }
+
     async fn setup_function_queue(
         &self,
         queue_name: &str,

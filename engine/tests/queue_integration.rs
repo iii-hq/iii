@@ -1,7 +1,7 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+mod common;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -13,184 +13,10 @@ use iii::{
     modules::{module::Module, queue::QueueCoreModule},
 };
 
-/// JSON configuration for the QueueCoreModule that defines two named queues:
-///   - "default": a standard (concurrent) queue
-///   - "payment": a FIFO queue keyed on "transaction_id"
-fn queue_config_json() -> Value {
-    json!({
-        "queue_configs": {
-            "default": {
-                "type": "standard",
-                "concurrency": 3,
-                "max_retries": 2,
-                "backoff_ms": 100,
-                "poll_interval_ms": 50
-            },
-            "payment": {
-                "type": "fifo",
-                "message_group_field": "transaction_id",
-                "concurrency": 1,
-                "max_retries": 2,
-                "backoff_ms": 100,
-                "poll_interval_ms": 50
-            }
-        }
-    })
-}
-
-/// Creates an Engine, builds and initializes a QueueCoreModule (which starts
-/// consumer loops and registers the module on the engine), then returns the
-/// engine so callers can interact with the queue through
-/// `engine.queue_module`.
-async fn create_initialized_engine() -> Arc<Engine> {
-    iii::modules::observability::metrics::ensure_default_meter();
-
-    let engine = Arc::new(Engine::new());
-
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
-        .await
-        .expect("QueueCoreModule::create should succeed");
-
-    module
-        .initialize()
-        .await
-        .expect("Module initialization should succeed");
-
-    engine
-}
-
-/// Convenience helper to call `enqueue_to_function_queue` through the
-/// engine's queue_module field.
-async fn enqueue(
-    engine: &Engine,
-    queue_name: &str,
-    function_id: &str,
-    data: Value,
-) -> anyhow::Result<()> {
-    let guard = engine.queue_module.read().await;
-    let qm = guard
-        .as_ref()
-        .expect("queue_module should be set after initialize");
-    let message_id = uuid::Uuid::new_v4().to_string();
-    qm.enqueue_to_function_queue(queue_name, function_id, data, message_id, None, None)
-        .await
-}
-
-/// Returns the number of messages in the DLQ for a function queue.
-async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
-    let guard = engine.queue_module.read().await;
-    let qm = guard
-        .as_ref()
-        .expect("queue_module should be set after initialize");
-    qm.function_queue_dlq_count(queue_name)
-        .await
-        .expect("dlq_count should not fail")
-}
-
-/// Registers a test function whose handler increments a shared counter on
-/// every invocation.
-fn register_counting_function(engine: &Arc<Engine>, function_id: &str, counter: Arc<AtomicU64>) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
-            let count = counter.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                FunctionResult::Success(Some(json!({ "ok": true })))
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("counting test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
-
-/// Registers a test function that records the value of a named field from
-/// each invocation payload into a shared ordered list.
-fn register_order_recording_function(
-    engine: &Arc<Engine>,
-    function_id: &str,
-    field_name: &'static str,
-    record: Arc<Mutex<Vec<Value>>>,
-) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
-            let rec = record.clone();
-            Box::pin(async move {
-                let value = input.get(field_name).cloned().unwrap_or(Value::Null);
-                rec.lock().await.push(value);
-                FunctionResult::Success(Some(json!({ "ok": true })))
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("order recording test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
-
-/// Registers a test function that sleeps for `delay` before succeeding.
-/// Records invocation timestamps (start time) in `timestamps`.
-fn register_slow_function(
-    engine: &Arc<Engine>,
-    function_id: &str,
-    delay: Duration,
-    timestamps: Arc<Mutex<Vec<std::time::Instant>>>,
-) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
-            let ts = timestamps.clone();
-            let d = delay;
-            Box::pin(async move {
-                ts.lock().await.push(std::time::Instant::now());
-                tokio::time::sleep(d).await;
-                FunctionResult::Success(Some(json!({ "ok": true })))
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("slow test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
-
-/// Registers a test function that always fails (returns FunctionResult::Failure).
-/// Records the number of invocations in `call_count`.
-fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count: Arc<AtomicU64>) {
-    let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
-            let count = call_count.clone();
-            Box::pin(async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                FunctionResult::Failure(iii::protocol::ErrorBody {
-                    code: "FAIL".to_string(),
-                    message: "intentional failure".to_string(),
-                    stacktrace: None,
-                })
-            })
-        }),
-        _function_id: function_id.to_string(),
-        _description: Some("always-failing test handler".to_string()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-    };
-    engine
-        .functions
-        .register_function(function_id.to_string(), function);
-}
+use common::queue_helpers::{
+    builtin_queue_config, create_engine_with_queue, dlq_count, enqueue, register_counting_function,
+    register_failing_function, register_order_recording_function, register_slow_function,
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -198,7 +24,7 @@ fn register_failing_function(engine: &Arc<Engine>, function_id: &str, call_count
 
 #[tokio::test]
 async fn enqueue_to_standard_queue_succeeds() {
-    let engine = create_initialized_engine().await;
+    let engine = create_engine_with_queue(builtin_queue_config()).await;
 
     let result = enqueue(&engine, "default", "test::handler", json!({"key": "value"})).await;
 
@@ -207,7 +33,7 @@ async fn enqueue_to_standard_queue_succeeds() {
 
 #[tokio::test]
 async fn enqueue_to_unknown_queue_fails() {
-    let engine = create_initialized_engine().await;
+    let engine = create_engine_with_queue(builtin_queue_config()).await;
 
     let result = enqueue(
         &engine,
@@ -227,7 +53,7 @@ async fn enqueue_to_unknown_queue_fails() {
 
 #[tokio::test]
 async fn enqueue_to_fifo_missing_group_field_fails() {
-    let engine = create_initialized_engine().await;
+    let engine = create_engine_with_queue(builtin_queue_config()).await;
 
     // The "payment" queue is FIFO with message_group_field = "transaction_id".
     // Sending a payload without that field should be rejected.
@@ -246,7 +72,7 @@ async fn enqueue_to_fifo_missing_group_field_fails() {
 
 #[tokio::test]
 async fn enqueue_to_fifo_null_group_field_fails() {
-    let engine = create_initialized_engine().await;
+    let engine = create_engine_with_queue(builtin_queue_config()).await;
 
     let result = enqueue(
         &engine,
@@ -277,7 +103,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::handler", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -322,7 +148,7 @@ async fn full_roundtrip_fifo_preserves_order() {
         invocation_order.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -379,7 +205,7 @@ async fn retry_exhaustion_stops_redelivery() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::always_fails", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -430,7 +256,7 @@ async fn exhausted_message_lands_in_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::dlq_target", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -479,7 +305,7 @@ async fn standard_queue_processes_concurrently() {
         timestamps.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -533,7 +359,7 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
     register_counting_function(&engine, "test::real_handler", call_count.clone());
     // Note: "test::ghost" is NOT registered
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -582,7 +408,7 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::default_handler", default_count.clone());
     register_counting_function(&engine, "test::payment_handler", payment_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(queue_config_json()))
+    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
 
@@ -624,5 +450,22 @@ async fn multiple_queues_operate_independently() {
     assert_eq!(
         pc, 3,
         "Payment queue should have processed 3 messages, got {pc}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn start_paused_smoke_test() {
+    // Verify that tokio's test-util feature is working: time auto-advances
+    // past sleeps when there is no other work to do.
+    let before = tokio::time::Instant::now();
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let elapsed = before.elapsed();
+
+    // With start_paused, the 60-second sleep should resolve near-instantly
+    // in wall-clock time, but tokio's internal clock should show 60s elapsed.
+    assert!(
+        elapsed >= Duration::from_secs(60),
+        "tokio time should have auto-advanced by 60s, but elapsed was {:?}",
+        elapsed
     );
 }

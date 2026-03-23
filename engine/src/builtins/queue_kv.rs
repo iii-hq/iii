@@ -369,6 +369,16 @@ impl QueueKvStore {
         lists.get(key).map_or(0, |list| list.len())
     }
 
+    /// Returns up to `count` elements from the front of the list without removing them.
+    /// If count is 0 or the list doesn't exist, returns an empty Vec.
+    pub async fn lrange(&self, key: &str, count: usize) -> Vec<String> {
+        let lists = self.lists.read().await;
+        lists
+            .get(key)
+            .map(|list| list.iter().take(count).cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub async fn zadd(&self, key: &str, score: i64, member: String) {
         let mut sorted_sets = self.sorted_sets.write().await;
         let set = sorted_sets
