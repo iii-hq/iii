@@ -295,18 +295,26 @@ automatically wrapped with ``run_in_executor`` so they do not
 block the event loop.  Each handler receives a single ``data``
 argument containing the trigger payload.
 
+When ``func_or_id`` is a ``str``, the simplified API is used:
+``request_format`` and ``response_format`` are auto-extracted
+from the handler's type hints when not explicitly provided.
+
 **Signature**
 
 ```python
-register_function(func: RegisterFunctionInput | dict[str, Any], handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig)
+register_function(func_or_id: RegisterFunctionInput | dict[str, Any] | str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None)
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `func` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] | Yes | A ``RegisterFunctionInput`` or dict with ``id`` and optional ``description``, ``metadata``, ``request_format``, ``response_format``. |
+| `func_or_id` | [`RegisterFunctionInput`](#registerfunctioninput) \| dict[str, Any] \| str | Yes | A ``RegisterFunctionInput``, dict with ``id``, or a plain string function ID.  When a string is passed, use keyword arguments for ``description``, ``metadata``, ``request_format``, and ``response_format``. |
 | `handler_or_invocation` | RemoteFunctionHandler \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A callable handler or ``HttpInvocationConfig``.  Callable handlers receive one positional argument (``data`` -- the trigger payload) and may return a value. |
+| `description` | `str \| None` | No | Human-readable description (only with string ID). |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata (only with string ID). |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input (only with string ID).  Auto-extracted from handler type hints when omitted. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output (only with string ID).  Auto-extracted from handler type hints when omitted. |
 
 #### Example
 
@@ -315,6 +323,14 @@ def greet(data):
     return {'message': f"Hello, {data['name']}!"}
 fn = iii.register_function({"id": "greet", "description": "Greets a user"}, greet)
 fn.unregister()
+from pydantic import BaseModel
+class GreetInput(BaseModel):
+    name: str
+class GreetOutput(BaseModel):
+    message: str
+async def greet(data: GreetInput) -> GreetOutput:
+    return GreetOutput(message=f"Hello, {data.name}!")
+fn = iii.register_function("greet", greet, description="Greets a user")
 ```
 
 ### register_service
@@ -716,8 +732,8 @@ Input for registering a function — matches Node.js RegisterFunctionInput.
 | `id` | `str` | No | Unique function identifier. |
 | `invocation` | [`HttpInvocationConfig`](#httpinvocationconfig) \| None | No | HTTP invocation config for externally hosted functions. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | Schema describing expected input. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| None | No | Schema describing expected output. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected input. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) \| dict[str, Any] \| None | No | Schema describing expected output. |
 
 ### RegisterServiceInput
 
