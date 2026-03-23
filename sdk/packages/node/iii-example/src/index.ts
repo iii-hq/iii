@@ -101,40 +101,34 @@ useApi(
   },
 )
 
-useApi(
-  { api_path: 'state', http_method: 'POST', description: 'Set application state' },
-  async (req, logger) => {
-    logger.info('Creating new todo', { body: req.body })
+useApi({ api_path: 'state', http_method: 'POST', description: 'Set application state' }, async (req, logger) => {
+  logger.info('Creating new todo', { body: req.body })
 
-    const { description, dueDate } = req.body
-    const todoId = `todo-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+  const { description, dueDate } = req.body
+  const todoId = `todo-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
 
-    if (!description) {
-      return { status_code: 400, body: { error: 'Description is required' } }
-    }
+  if (!description) {
+    return { status_code: 400, body: { error: 'Description is required' } }
+  }
 
-    const newTodo: Todo = {
-      id: todoId,
-      description,
-      groupId: 'inbox',
-      createdAt: new Date().toISOString(),
-      dueDate: dueDate,
-      completedAt: null,
-    }
-    const todo = await state.set<Todo>({ scope: 'todo', key: todoId, data: newTodo })
+  const newTodo: Todo = {
+    id: todoId,
+    description,
+    groupId: 'inbox',
+    createdAt: new Date().toISOString(),
+    dueDate: dueDate,
+    completedAt: null,
+  }
+  const todo = await state.set<Todo>({ scope: 'todo', key: todoId, value: newTodo })
 
-    return { status_code: 201, body: todo, headers: { 'Content-Type': 'application/json' } }
-  },
-)
+  return { status_code: 201, body: todo, headers: { 'Content-Type': 'application/json' } }
+})
 
-useApi(
-  { api_path: 'state/:id', http_method: 'GET', description: 'Get state by ID' },
-  async (req, logger) => {
-    logger.info('Getting todo', { ...req.path_params })
+useApi({ api_path: 'state/:id', http_method: 'GET', description: 'Get state by ID' }, async (req, logger) => {
+  logger.info('Getting todo', { ...req.path_params })
 
-    const todoId = req.path_params.id
-    const todo = await state.get<Todo | null>({ scope: 'todo', key: todoId })
+  const todoId = req.path_params.id
+  const todo = await state.get<Todo | null>({ scope: 'todo', key: todoId })
 
-    return { status_code: 200, body: todo, headers: { 'Content-Type': 'application/json' } }
-  },
-)
+  return { status_code: 200, body: todo, headers: { 'Content-Type': 'application/json' } }
+})
