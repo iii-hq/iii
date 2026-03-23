@@ -27,104 +27,7 @@ One config file. One process. Everything discoverable. Think of it the way React
 
 ## Quick Start
 
-```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii-cli start --use-default-config
-```
-
-Your engine is running at `ws://localhost:49134` with HTTP API at `http://localhost:3111`.
-
-For a project-backed setup, create `config.yaml` in your working directory or pass `iii-cli start --config /path/to/config.yaml`.
-
-### Connect a worker
-
-```bash
-npm install iii-sdk
-```
-
-```javascript
-import { registerWorker, Logger } from 'iii-sdk';
-
-const iii = registerWorker('ws://localhost:49134');
-const logger = new Logger();
-
-iii.registerFunction({ id: 'math.add' }, async (input) => {
-  return { sum: input.a + input.b };
-});
-
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'math.add',
-  config: { api_path: 'add', http_method: 'POST' },
-});
-
-const result = await iii.trigger({ function_id: 'math.add', payload: { a: 1, b: 2 } });
-logger.info('result', result); // { sum: 3 }
-```
-
-Your function is now live at `http://localhost:3111/add`.
-
-<details>
-<summary>Python</summary>
-
-```bash
-pip install iii-sdk
-```
-
-```python
-from iii import register_worker, Logger
-
-iii = register_worker("ws://localhost:49134")
-logger = Logger()
-
-def add(data):
-    return {"sum": data["a"] + data["b"]}
-
-iii.register_function({"id": "math.add"}, add)
-
-iii.register_trigger({
-    "type": "http",
-    "function_id": "math.add",
-    "config": {"api_path": "add", "http_method": "POST"}
-})
-
-result = iii.trigger({"function_id": "math.add", "payload": {"a": 1, "b": 2}})
-logger.info("result", result)  # {"sum": 3}
-```
-
-</details>
-
-<details>
-<summary>Rust</summary>
-
-```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput, Logger};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
-    let logger = Logger::new();
-
-    iii.register_function(RegisterFunctionMessage::with_id("math.add".into()), |input| async move {
-        let a = input.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
-        let b = input.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-        Ok(json!({ "sum": a + b }))
-    });
-
-    iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "math.add".into(), config: json!({
-        "api_path": "add",
-        "http_method": "POST"
-    }) })?;
-
-    let result = iii.trigger(TriggerRequest::new("math.add", json!({ "a": 1, "b": 2 }))).await?;
-    logger.info("result", &result); // {"sum":3}
-
-    Ok(())
-}
-```
-
-</details>
+Get started with iii by following the [Quickstart guide](https://iii.dev/docs/quickstart).
 
 ## SDKs
 
@@ -136,13 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Console
 
-The [iii-console](console/) is a developer and operations dashboard for inspecting functions, triggers, traces, and real-time state.
-
-```bash
-iii-cli console
-```
-
-![iii console dashboard](https://raw.githubusercontent.com/iii-hq/docs/main/public/docs/console/dashboard-dark.png)
+The [iii-console](console/) is a developer and operations dashboard for inspecting functions, triggers, traces, and real-time state. See the [Console docs](https://iii.dev/docs/console) for setup and usage.
 
 ## Repository Structure
 
@@ -161,16 +58,6 @@ See [STRUCTURE.md](STRUCTURE.md) for the full monorepo layout, dependency chain,
 ## Examples
 
 See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tutorials.
-
-## Docs Development
-
-The iii documentation lives in [`docs/`](docs/), which is a Mintlify docs site driven by [`docs/docs.json`](docs/docs.json).
-
-```bash
-pnpm dev:docs
-```
-
-This runs `npx mint dev` inside `docs/` and serves the docs locally, typically at `http://localhost:3000`.
 
 ## Resources
 
