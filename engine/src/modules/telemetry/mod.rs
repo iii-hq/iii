@@ -171,12 +171,11 @@ fn check_and_mark_first_run() -> bool {
         .unwrap_or_else(std::env::temp_dir)
         .join(".iii")
         .join("state.ini");
-    if let Ok(contents) = std::fs::read_to_string(&legacy_path) {
-        if contents.contains("first_run_sent=true") {
+    if let Ok(contents) = std::fs::read_to_string(&legacy_path)
+        && contents.contains("first_run_sent=true") {
             environment::set_config_key("state", "first_run_sent", "true");
             return false;
         }
-    }
 
     environment::set_config_key("state", "first_run_sent", "true");
     true

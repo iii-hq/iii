@@ -1,6 +1,5 @@
 use iii_sdk::{
-    ApiRequest, ApiResponse, III, IIIError, Logger, RegisterFunctionMessage, RegisterTriggerInput,
-    execute_traced_request,
+    ApiRequest, ApiResponse, III, IIIError, Logger, RegisterTriggerInput, execute_traced_request,
 };
 use serde_json::json;
 
@@ -9,14 +8,7 @@ pub fn setup(iii: &III) {
 
     let get_client = client.clone();
     iii.register_function((
-        RegisterFunctionMessage {
-            id: "api::get::http::rust::fetch".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        iii_sdk::RegisterFunctionMessage::with_id("api::get::http::rust::fetch".to_string()),
         move |_input| {
             let client = get_client.clone();
             let logger = Logger::new();
@@ -69,14 +61,7 @@ pub fn setup(iii: &III) {
 
     let post_client = client.clone();
     iii.register_function((
-        RegisterFunctionMessage {
-            id: "api::post::http::rust::fetch".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        iii_sdk::RegisterFunctionMessage::with_id("api::post::http::rust::fetch".to_string()),
         move |input| {
             let client = post_client.clone();
             async move {

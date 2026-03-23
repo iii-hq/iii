@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use iii_sdk::{
-    IIIError, InitOptions, OtelConfig, RegisterFunction, RegisterFunctionMessage,
-    RegisterTriggerInput, Streams, TriggerRequest, UpdateBuilder, UpdateOp, register_worker,
+    InitOptions, OtelConfig, RegisterFunction, Streams, TriggerRequest, UpdateBuilder, UpdateOp,
+    register_worker,
 };
 use serde_json::json;
 
@@ -51,32 +51,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
-
-    iii.register_function((
-        RegisterFunctionMessage {
-            id: "api::get::error-test".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        |_input| async move {
-            Err(IIIError::Handler(
-                "Intentional error for OTEL stacktrace testing".into(),
-            ))
-        },
-    ));
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "api::get::error-test".to_string(),
-        config: json!({
-            "api_path": "error-test",
-            "http_method": "GET",
-            "description": "Returns an error to test OTEL stack traces",
-        }),
-    })
-    .expect("failed to register error-test trigger");
 
     // Create a Streams instance for atomic updates
     let streams = Streams::new(iii.clone());
