@@ -1,6 +1,4 @@
-use iii_sdk::{
-    IntoFunctionHandler, RegisterFunction, RegisterFunctionMessage, iii_async_fn, iii_fn,
-};
+use iii_sdk::{IntoFunctionHandler, RegisterFunction, RegisterFunctionMessage, iii_fn};
 use serde::Deserialize;
 use serde_json::json;
 
