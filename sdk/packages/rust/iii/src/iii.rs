@@ -732,31 +732,11 @@ impl III {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
-    /// use serde_json::{json, Value};
-    /// let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    /// iii.register_function(
-    ///     RegisterFunctionMessage {
-    ///         id: "greet".to_string(),
-    ///         description: None,
-    ///         request_format: None,
-    ///         response_format: None,
-    ///         metadata: None,
-    ///         invocation: None,
-    ///     },
-    ///     |input: Value| async move {
-    ///         Ok(json!({"message": format!("Hello, {}!", input["name"])}))
-    ///     },
-    /// );
-    /// ```
-    /// Register a function using the [`RegisterFunction`] builder (recommended).
-    ///
-    /// # Examples
-    /// ```rust,no_run
     /// use iii_sdk::{register_worker, InitOptions, RegisterFunction};
     /// use serde::Deserialize;
+    /// use schemars::JsonSchema;
     ///
-    /// #[derive(Deserialize)]
+    /// #[derive(Deserialize, JsonSchema)]
     /// struct Input { name: String }
     /// fn greet(input: Input) -> Result<String, String> {
     ///     Ok(format!("Hello, {}!", input.name))
@@ -766,7 +746,7 @@ impl III {
     /// iii.register_function(RegisterFunction::new("greet", greet));
     /// ```
     ///
-    /// Also accepts the legacy two-argument form for backward compatibility:
+    /// Also accepts a legacy `(RegisterFunctionMessage, handler)` tuple:
     /// ```rust,no_run
     /// # use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
     /// # use serde_json::{json, Value};
