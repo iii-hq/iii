@@ -1,0 +1,210 @@
+# iii Engine Configuration Reference
+#
+# This file is auto-synced from https://iii.dev/docs/how-to/configure-engine
+# via the .github/workflows/sync-config.yml GitHub Action.
+#
+# Source: https://iii.dev/docs/how-to/configure-engine
+# Last synced: 2026-03-23
+#
+# Environment variables use ${VAR_NAME:default} syntax.
+# Modules are optional — include only what you need.
+# Dev: file_based / in_memory adapters. Prod: Redis / RabbitMQ adapters.
+
+# Engine WebSocket port for SDK/worker connections
+port: ${III_PORT:49134}
+
+modules:
+  # ---------------------------------------------------------------------------
+  # REST API Module — HTTP endpoints for triggers and core API
+  # ---------------------------------------------------------------------------
+  - class: modules::api::RestApiModule
+    config:
+      port: ${API_PORT:3111}
+      host: 0.0.0.0
+      default_timeout: 30000
+      concurrency_request_limit: 1024
+      cors:
+        allowed_origins:
+          - ${CORS_ORIGIN:*}
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - PATCH
+          - OPTIONS
+          - HEAD
+
+  # ---------------------------------------------------------------------------
+  # Stream Module — Real-time WebSocket pub/sub for live data
+  # ---------------------------------------------------------------------------
+  - class: modules::stream::StreamModule
+    config:
+      port: ${STREAMS_PORT:3112}
+      host: 0.0.0.0
+      auth_function: null
+      adapter:
+        # Dev: KvStore adapter (file-based)
+        class: modules::stream::adapters::KvStore
+        config:
+          store_method: file_based
+          file_path: ./data/stream_store
+          save_interval_ms: 5000
+        # Prod: Redis adapter
+        # class: modules::stream::adapters::RedisAdapter
+        # config:
+        #   redis_url: ${REDIS_URL}
+
+  # ---------------------------------------------------------------------------
+  # State Module — Persistent key-value storage
+  # ---------------------------------------------------------------------------
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        # Dev: KvStore adapter (file-based)
+        class: modules::state::adapters::KvStore
+        config:
+          store_method: file_based
+          file_path: ./data/state_store
+          save_interval_ms: 5000
+        # Prod: Redis adapter
+        # class: modules::state::adapters::RedisAdapter
+        # config:
+        #   redis_url: ${REDIS_URL}
+
+  # ---------------------------------------------------------------------------
+  # Queue Module — Background job processing with retries and DLQ
+  # ---------------------------------------------------------------------------
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 5
+          type: standard
+          backoff_ms: 1000
+        # Example FIFO queue:
+        # payment:
+        #   max_retries: 10
+        #   concurrency: 2
+        #   type: fifo
+        #   message_group_field: transaction_id
+        #   backoff_ms: 2000
+      adapter:
+        # Dev: Built-in queue adapter (file-based)
+        class: modules::queue::BuiltinQueueAdapter
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
+          save_interval_ms: 5000
+        # Prod: RabbitMQ adapter
+        # class: modules::queue::RabbitMQAdapter
+        # config:
+        #   amqp_url: ${AMQP_URL}
+        #   max_attempts: 3
+        #   prefetch_count: 10
+        #   queue_mode: standard
+
+  # ---------------------------------------------------------------------------
+  # PubSub Module — In-process event fanout
+  # ---------------------------------------------------------------------------
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        # Single-instance: LocalAdapter
+        class: modules::pubsub::LocalAdapter
+        # Multi-instance: RedisAdapter
+        # class: modules::pubsub::RedisAdapter
+        # config:
+        #   redis_url: ${REDIS_URL}
+
+  # ---------------------------------------------------------------------------
+  # Cron Module — Time-based job scheduling (7-field expressions)
+  # ---------------------------------------------------------------------------
+  - class: modules::cron::CronModule
+    config:
+      adapter:
+        class: modules::cron::KvCronAdapter
+        config:
+          lock_ttl_ms: 30000
+          store_method: file_based
+          file_path: ./data/cron_locks
+          save_interval_ms: 5000
+        # Prod: Redis cron adapter
+        # class: modules::cron::RedisCronAdapter
+        # config:
+        #   redis_url: ${REDIS_URL}
+
+  # ---------------------------------------------------------------------------
+  # Observability Module — OpenTelemetry tracing, metrics, logs, and alerts
+  # ---------------------------------------------------------------------------
+  - class: modules::observability::OtelModule
+    config:
+      enabled: ${OTEL_ENABLED:true}
+      service_name: ${OTEL_SERVICE_NAME:iii-engine}
+      service_version: ${SERVICE_VERSION:1.0.0}
+      service_namespace: ${SERVICE_NAMESPACE:production}
+      exporter: ${OTEL_EXPORTER_TYPE:both}          # otlp | memory | both
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+      sampling_ratio: ${OTEL_SAMPLING_RATIO:1.0}
+      memory_max_spans: 10000
+      metrics_enabled: true
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:both}
+      prometheus_port: ${PROMETHEUS_PORT:9464}
+      metrics_retention_seconds: 3600
+      metrics_max_count: 10000
+      logs_enabled: ${OTEL_LOGS_ENABLED:true}
+      logs_exporter: ${OTEL_LOGS_EXPORTER:both}
+      logs_max_count: 1000
+      logs_retention_seconds: 3600
+      worker_metrics:
+        enabled: true
+        collection_interval_seconds: 5
+        history_size: 60
+
+  # ---------------------------------------------------------------------------
+  # HTTP Functions Module — Outbound HTTP call security policies
+  # ---------------------------------------------------------------------------
+  - class: modules::http_functions::HttpFunctionsModule
+    config:
+      security:
+        url_allowlist:
+          - "https://api.example.com/*"
+        block_private_ips: true
+        require_https: true
+
+  # ---------------------------------------------------------------------------
+  # Exec Module — Spawn external SDK worker processes and file watchers
+  # ---------------------------------------------------------------------------
+  - class: modules::shell::ExecModule
+    config:
+      watch:
+        - ./steps
+      exec: []
+
+  # ---------------------------------------------------------------------------
+  # Bridge Client Module — Connect to remote iii engine instances
+  # ---------------------------------------------------------------------------
+  - class: modules::bridge_client::BridgeClientModule
+    config:
+      url: ws://remote-engine:49134
+      service_id: local-client-1
+      service_name: Local Worker
+      expose: []
+      forward: []
+
+  # ---------------------------------------------------------------------------
+  # Telemetry Module — Anonymous product usage analytics
+  # ---------------------------------------------------------------------------
+  - class: modules::telemetry::TelemetryModule
+    config:
+      enabled: true
+
+  # ---------------------------------------------------------------------------
+  # KV Server — Shared key-value store backing multiple modules
+  # ---------------------------------------------------------------------------
+  - class: modules::kv_server::KvServer
+    config:
+      store_method: file_based
+      file_path: ./data/kv_store
+      save_interval_ms: 5000

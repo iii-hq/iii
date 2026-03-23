@@ -1,0 +1,92 @@
+name: Sync iii-config.yaml from docs
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1' # Weekly on Monday at 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch config reference from docs
+        run: |
+          curl -fsSL "https://iii.dev/docs/how-to/configure-engine" \
+            -o /tmp/docs-page.html
+
+          # Extract YAML content from the docs page
+          # This is a best-effort extraction; the exact method may need
+          # adjustment based on the docs page structure.
+          python3 -c "
+          import re, sys
+
+          with open('/tmp/docs-page.html', 'r') as f:
+              content = f.read()
+
+          # Find YAML blocks in the page
+          yaml_blocks = re.findall(r'<code[^>]*class=\"[^\"]*yaml[^\"]*\"[^>]*>(.*?)</code>', content, re.DOTALL)
+
+          if not yaml_blocks:
+              print('No YAML blocks found in docs page', file=sys.stderr)
+              sys.exit(0)
+
+          # Write the largest YAML block (likely the full config)
+          largest = max(yaml_blocks, key=len)
+          # Unescape HTML entities
+          import html
+          largest = html.unescape(largest)
+          with open('/tmp/extracted-config.yaml', 'w') as f:
+              f.write(largest)
+          " || echo "Extraction failed — will skip update"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if [ -f /tmp/extracted-config.yaml ]; then
+            if ! diff -q /tmp/extracted-config.yaml references/iii-config.yaml > /dev/null 2>&1; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update config reference
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          # Prepend the auto-sync header
+          cat > references/iii-config.yaml << 'HEADER'
+          # iii Engine Configuration Reference
+          #
+          # This file is auto-synced from https://iii.dev/docs/how-to/configure-engine
+          # via the .github/workflows/sync-config.yml GitHub Action.
+          #
+          # Source: https://iii.dev/docs/how-to/configure-engine
+          # Last synced: $(date -u +%Y-%m-%d)
+          #
+          HEADER
+          cat /tmp/extracted-config.yaml >> references/iii-config.yaml
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: 'chore: sync iii-config.yaml from docs'
+          title: 'chore: sync iii-config.yaml reference from docs'
+          body: |
+            Auto-synced `references/iii-config.yaml` from the iii docs
+            configure-engine HOWTO page.
+
+            Please review the changes to ensure the config reference
+            is accurate.
+          branch: chore/sync-config-reference
+          delete-branch: true
