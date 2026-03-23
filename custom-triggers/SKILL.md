@@ -1,49 +1,70 @@
 ---
 name: custom-triggers
 description: >-
-  Build custom trigger types for events iii does not handle natively. Use when
-  integrating webhooks, file watchers, IoT devices, database CDC, polling
-  services, or any external event source not covered by built-in trigger types.
+  Builds custom trigger types for events iii does not handle natively. Use when
+  integrating webhooks, file watchers, IoT devices, database CDC, or any
+  external event source.
 ---
 
 # Custom Triggers
 
-Extend the iii engine with new trigger types for any event source.
+Comparable to: Custom event adapters, webhook receivers
 
 ## Key Concepts
 
-- A **Custom Trigger Type** is a handler you register with the engine to listen for events it does not natively support
-- The handler implements two callbacks: `registerTrigger` (start listening) and `unregisterTrigger` (stop and clean up)
-- Both callbacks receive a `TriggerConfig` with `id`, `function_id`, and `config`
-- Once registered, functions bind to your trigger type the same way they bind to built-in types
-- Built-in trigger types: `http`, `cron`, `queue`, `state`, `stream`, `subscribe`
+Use the concepts below when they fit the task. Not every custom trigger needs all of them.
+
+- **registerTriggerType(id, handler)** defines a new trigger type with `registerTrigger` and `unregisterTrigger` callbacks
+- The handler receives a **TriggerConfig** containing `id`, `function_id`, and `config`
+- When the external event fires, call `iii.trigger(function_id, event)` to invoke the registered function
+- **unregisterTriggerType** cleans up when the trigger type is no longer needed
+- Do not reuse built-in trigger type names: `http`, `cron`, `queue`, `state`, `stream`, `subscribe`
+
+## Architecture
+
+    External event source (webhook, file watcher, IoT, CDC, etc.)
+      → Custom trigger handler (registerTriggerType)
+        → iii.trigger(function_id, event)
+          → Registered function processes the event
 
 ## iii Primitives Used
 
-| Primitive | Purpose |
-|-----------|---------|
-| `registerTriggerType({ id, description }, handler)` | Register a custom trigger type with the engine |
-| `unregisterTriggerType({ id, description })` | Remove a custom trigger type |
-| `registerTrigger({ type, function_id, config })` | Bind a function to a trigger type (built-in or custom) |
-| `trigger({ function_id, payload })` | Invoke the bound function when your event fires |
+| Primitive                                               | Purpose                                          |
+| ------------------------------------------------------- | ------------------------------------------------ |
+| `registerTriggerType(id, handler)`                      | Define a new trigger type with lifecycle hooks    |
+| `unregisterTriggerType(id)`                             | Clean up a custom trigger type                   |
+| `TriggerConfig: { id, function_id, config }`            | Configuration passed to the trigger handler      |
+| `iii.trigger(function_id, event)`                        | Fire the registered function when the event occurs |
+
+## Reference Implementation
+
+See [references/reference.js](references/reference.js) for the full working example — a custom trigger type that listens for external events and routes them to registered functions.
 
 ## Common Patterns
 
-- `registerTriggerType({ id: 'webhook', description: '...' }, handler)` -- register a new trigger type
-- Handler `registerTrigger(config)` -- called when a function binds; set up listeners, subscriptions, or pollers
-- Handler `unregisterTrigger(config)` -- called when binding is removed; tear down resources
-- `config.function_id` -- the target function to invoke when the event fires
-- `config.config` -- caller-supplied configuration (e.g., path, interval, topic)
-- `trigger({ function_id: config.function_id, payload })` -- dispatch the event to the bound function
-- `unregisterTriggerType({ id: 'webhook', description: '...' })` -- remove the trigger type entirely
+Code using this pattern commonly includes, when relevant:
 
-## Reference
+- `registerWorker(url, { workerName })` — worker initialization
+- `registerTriggerType(id, { registerTrigger, unregisterTrigger })` — define the custom trigger
+- `registerTrigger(config)` — called by iii when a function subscribes to this trigger type
+- `unregisterTrigger(config)` — called by iii when a function unsubscribes
+- `iii.trigger(config.function_id, eventPayload)` — fire the target function
+- Cleanup logic in `unregisterTrigger` (close connections, remove listeners, clear intervals)
+- `const logger = new Logger()` — structured logging
 
-See [references/REFERENCE.md](references/REFERENCE.md) for the full API reference with TypeScript, Python, and Rust examples.
+## Adapting This Pattern
+
+Use the adaptations below when they apply to the task.
+
+- Choose a unique trigger type name that describes your event source (e.g. `file-watcher`, `mqtt`, `db-cdc`)
+- In `registerTrigger`, start the listener (open socket, poll endpoint, subscribe to topic)
+- In `unregisterTrigger`, tear down the listener to avoid resource leaks
+- Store active listeners in a map keyed by `config.id` for clean unregistration
+- Pass relevant event data in the payload when calling `iii.trigger(function_id, event)`
 
 ## Pattern Boundaries
 
-- For binding functions to built-in trigger types, see `functions-and-triggers`
-- For HTTP endpoint triggers specifically, see `http-endpoints`
-- For queue-based triggers, see `queue-processing`
-- For cron scheduling triggers, see `cron-scheduling`
+- If the task uses built-in HTTP routes, prefer `http-endpoints`.
+- If the task uses built-in cron schedules, prefer `cron-scheduling`.
+- If the task uses built-in queue triggers, prefer `queue-processing`.
+- Stay with `custom-triggers` when iii has no built-in trigger type for the event source.

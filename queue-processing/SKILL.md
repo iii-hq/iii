@@ -1,9 +1,8 @@
 ---
 name: queue-processing
 description: >-
-  Processes async jobs with retries, concurrency control, and ordering guarantees
-  using TriggerAction.Enqueue and queue_configs. Use when building durable async
-  workflows, background job processing, or any task requiring retry and ordering.
+  Processes async jobs with retries, concurrency, and ordering via named queues.
+  Use when offloading work, building pipelines, or needing guaranteed delivery.
 ---
 
 # Queue Processing
@@ -12,39 +11,60 @@ Comparable to: BullMQ, Celery, SQS
 
 ## Key Concepts
 
-- **Enqueue** sends work to a named queue via `TriggerAction.Enqueue({ queue: 'name' })`
-- **Standard queues** process up to `concurrency` jobs in parallel, no ordering guarantees
-- **FIFO queues** process sequentially within message groups, requires `message_group_field`
-- Failed jobs retry with exponential backoff: `backoff_ms * 2^(attempt-1)`
-- After `max_retries` exhausted, messages go to a dead-letter queue (DLQ)
-- Target functions receive the enqueued payload directly -- no queue-specific handler changes
-- Returns a `messageReceiptId` for tracking
+Use the concepts below when they fit the task. Not every queue setup needs all of them.
+
+- **Named queues** are declared in `iii-config.yaml` under `queue_configs`
+- **Standard queues** process jobs concurrently; **FIFO queues** preserve ordering
+- `TriggerAction.Enqueue({ queue })` dispatches a job to a named queue
+- Failed jobs **auto-retry** with exponential backoff up to `max_retries`
+- Jobs that exhaust retries land in a **dead letter queue** for inspection
+- Each consumer function receives the job payload and a `messageReceiptId`
+
+## Architecture
+
+    Producer function
+      → TriggerAction.Enqueue({ queue: 'task-queue' })
+        → Named Queue (standard or FIFO)
+          → Consumer registerFunction handler
+            → success / retry with backoff
+              → Dead Letter Queue (after max_retries)
 
 ## iii Primitives Used
 
-| Primitive | Purpose |
-|-----------|---------|
-| `init(url)` | Connect worker to engine |
-| `registerFunction({ id }, handler)` | Define the job processor |
-| `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` | Enqueue a job |
-| `trigger({ function_id, payload })` | Synchronous invocation (for comparison) |
-| `trigger({ ..., action: TriggerAction.Void() })` | Fire-and-forget (no durability) |
+| Primitive                                                       | Purpose                                       |
+| --------------------------------------------------------------- | --------------------------------------------- |
+| `registerFunction`                                              | Define the consumer that processes jobs        |
+| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })`    | Dispatch a job to a named queue                |
+| `messageReceiptId`                                              | Acknowledge or track individual job processing |
+| `queue_configs` in `iii-config.yaml`                             | Declare queues with concurrency and retries    |
+
+## Reference Implementation
+
+See [references/reference.js](references/reference.js) for the full working example — a producer that enqueues jobs and a consumer that processes them with retry logic.
 
 ## Common Patterns
 
-- `TriggerAction.Enqueue({ queue: 'emails' })` -- durable async with retries
-- Standard queue for high-throughput parallel work (images, emails, notifications)
-- FIFO queue for ordered processing (payments, ledgers, state mutations)
-- Queue configs in `iii-config.yaml` under `queue_configs` with `max_retries`, `concurrency`, `type`, `backoff_ms`
-- Error handling: catch `enqueue_error` for missing queue or FIFO validation failures
+Code using this pattern commonly includes, when relevant:
 
-## Reference
+- `registerWorker(url, { workerName })` — worker initialization
+- `registerFunction(id, handler)` — define the consumer
+- `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` — enqueue a job
+- `payload.messageReceiptId` — track or acknowledge the job
+- `trigger({ function_id: 'state::set', payload })` — persist results after processing
+- `const logger = new Logger()` — structured logging per job
 
-See [references/REFERENCE.md](references/REFERENCE.md) for the full API reference with config options, queue types, TS/Python/Rust examples, and adapter details.
+## Adapting This Pattern
+
+Use the adaptations below when they apply to the task.
+
+- Choose FIFO queues when job ordering matters (e.g. sequential pipeline steps)
+- Set `max_retries` and `concurrency` in queue config to match your workload
+- Chain multiple queues for multi-stage pipelines (queue A consumer enqueues to queue B)
+- For idempotency, check state before processing to avoid duplicate work on retries
 
 ## Pattern Boundaries
 
-- If the task needs synchronous request-response, use plain `trigger()` without an action.
-- If fire-and-forget without durability is fine, use `TriggerAction.Void()`.
-- If the task is about scheduled recurring work, use `cron-scheduling`.
-- Stay with `queue-processing` when durability, retries, concurrency control, or ordering matter.
+- If the task only needs fire-and-forget without retries or ordering, prefer `trigger-actions` with `TriggerAction.Void()`.
+- If failed jobs need special handling or alerting, prefer `dead-letter-queues` for the DLQ consumer.
+- If the task is step-by-step orchestration with branching, prefer `workflow-orchestration`.
+- Stay with `queue-processing` when the primary need is reliable async job execution with retries.

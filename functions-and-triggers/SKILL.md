@@ -3,32 +3,46 @@ name: functions-and-triggers
 description: >-
   Registers functions and triggers on the iii engine across TypeScript, Python,
   and Rust. Use when creating workers, registering function handlers, binding
-  triggers (HTTP, queue, cron, state, stream, subscribe), or invoking functions
-  across languages.
+  triggers, or invoking functions across languages.
 ---
 
 # Functions & Triggers
 
-The core primitives of any iii system.
+Comparable to: Serverless function runtimes, Lambda, Cloud Functions
 
 ## Key Concepts
 
+Use the concepts below when they fit the task. Not every worker needs all of them.
+
 - A **Function** is an async handler registered with a unique ID
-- A **Trigger** binds an event source to a function (HTTP, queue, cron, state, stream, subscribe)
-- Functions can invoke other functions via `trigger()` regardless of language or worker location
+- A **Trigger** binds an event source to a function — types include http, queue, cron, state, stream, and subscribe
+- Functions invoke other functions via `trigger()` regardless of language or worker location
 - The engine handles serialization, routing, and delivery automatically
+- HTTP-invoked functions wrap external endpoints as callable function IDs
+
+## Architecture
+
+SDK init connects the worker to the engine, `registerFunction` defines handlers, `registerTrigger` binds event sources to those handlers, and the engine routes incoming events to the correct function. Functions can invoke other functions across workers and languages via `trigger()`.
 
 ## iii Primitives Used
 
-| Primitive | Purpose |
-|-----------|---------|
-| `registerFunction({ id }, handler)` | Define a function handler |
-| `registerTrigger({ type, function_id, config })` | Bind an event source to a function |
-| `trigger({ function_id, payload })` | Invoke a function synchronously |
-| `trigger({ ..., action: TriggerAction.Void() })` | Fire-and-forget invocation |
-| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async invocation via queue |
+| Primitive                                                    | Purpose                                      |
+| ------------------------------------------------------------ | -------------------------------------------- |
+| `init(url)`                                                  | Connect worker to engine                     |
+| `registerFunction({ id }, handler)`                          | Define a function handler                    |
+| `registerTrigger({ type, function_id, config })`             | Bind an event source to a function           |
+| `trigger({ function_id, payload })`                          | Invoke a function synchronously              |
+| `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget invocation                   |
+| `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async invocation via queue           |
+
+## Reference Implementation
+
+See [references/reference.js](references/reference.js) for the full working example — a multi-language worker setup
+showing function registration, trigger binding, and cross-function invocation patterns in TypeScript, Python, and Rust.
 
 ## Common Patterns
+
+Code using this pattern commonly includes, when relevant:
 
 - `init('ws://localhost:49134')` — connect to the engine
 - `registerFunction({ id: 'namespace::name' }, async (input) => { ... })` — register a handler
@@ -36,16 +50,25 @@ The core primitives of any iii system.
 - `registerTrigger({ type: 'queue', function_id, config: { topic } })` — queue trigger
 - `registerTrigger({ type: 'cron', function_id, config: { expression } })` — cron trigger
 - `registerTrigger({ type: 'state', function_id, config: { scope, key } })` — state change trigger
+- `registerTrigger({ type: 'stream', function_id, config: { stream } })` — stream trigger
 - `registerTrigger({ type: 'subscribe', function_id, config: { topic } })` — pubsub subscriber
 - Cross-language invocation: a TypeScript function can trigger a Python or Rust function by ID
 
-## Reference
+## Adapting This Pattern
 
-See [references/REFERENCE.md](references/REFERENCE.md) for the full API reference with TypeScript, Python, and Rust examples.
+Use the adaptations below when they apply to the task.
+
+- Replace placeholder handler logic with real business logic (API calls, DB queries, LLM calls)
+- Use `namespace::name` convention for function IDs to group related functions
+- For HTTP endpoints, configure `api_path` and `http_method` in the trigger config
+- For durable async work, use `TriggerAction.Enqueue({ queue })` instead of synchronous trigger
+- For fire-and-forget side effects, use `TriggerAction.Void()`
+- Multiple workers in different languages can register functions that invoke each other by ID
 
 ## Pattern Boundaries
 
-- For HTTP endpoint specifics, see `http-endpoints`
-- For queue processing details, see `queue-processing`
-- For cron scheduling details, see `cron-scheduling`
-- For trigger invocation modes (sync/void/enqueue), see `trigger-actions`
+- For HTTP endpoint specifics (request/response format, path params), prefer `http-endpoints`.
+- For queue processing details (retries, concurrency, FIFO), prefer `queue-processing`.
+- For cron scheduling details (expressions, timezones), prefer `cron-scheduling`.
+- For invocation modes (sync vs void vs enqueue), prefer `trigger-actions`.
+- Stay with `functions-and-triggers` when the primary problem is registering functions, binding triggers, or cross-language invocation.

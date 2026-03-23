@@ -1,48 +1,68 @@
 ---
 name: state-reactions
 description: >-
-  Auto-triggers functions when state changes using registerTrigger type:'state'.
-  Use when building reactive systems that respond to data mutations, event
-  sourcing patterns, or change-driven workflows.
+  Automatically triggers functions when state values change. Use when building
+  reactive side effects, audit logs, or notifications on data changes.
 ---
 
 # State Reactions
 
-Comparable to: DynamoDB Streams, Firebase Realtime Database triggers, Redis Keyspace Notifications
+Comparable to: Firebase onSnapshot, Convex mutations
 
 ## Key Concepts
 
-- A **State Trigger** watches a `scope` (and optionally a `key`) for changes
-- When state is written via `state::set` or `state::update`, matching triggers fire automatically
-- The handler receives `{ key, new_value, old_value, scope, event_type }`
-- Optional `condition_function_id` filters which changes invoke the handler
-- Requires the `StateModule` with `KvStore` adapter in iii-config.yaml
+Use the concepts below when they fit the task. Not every state reaction needs all of them.
+
+- A **state trigger** fires whenever a value changes within a watched scope
+- The handler receives `{ new_value, old_value, key, event_type }` describing the change
+- **condition_function_id** gates execution — the reaction only fires if the condition returns truthy
+- Multiple reactions can **independently watch** the same scope
+- Reactions fire on `state::set`, `state::update`, and `state::delete` operations
+
+## Architecture
+
+    state::set / state::update / state::delete
+      → StateModule emits change event
+        → registerTrigger type:'state' (scope match)
+          → condition_function_id check (if configured)
+            → registerFunction handler ({ new_value, old_value, key, event_type })
 
 ## iii Primitives Used
 
-| Primitive | Purpose |
-|-----------|---------|
-| `init(url)` | Connect worker to engine |
-| `registerFunction({ id }, handler)` | Define the reaction handler |
-| `registerTrigger({ type: 'state', function_id, config })` | Watch state for changes |
-| `config: { scope, key? }` | Scope to watch, optional key filter |
-| `trigger({ function_id: 'state::set', payload })` | Write state (triggers reactions) |
+| Primitive                                                                            | Purpose                                       |
+| ------------------------------------------------------------------------------------ | --------------------------------------------- |
+| `registerFunction`                                                                   | Define the reaction handler                   |
+| `registerTrigger({ type: 'state' })`                                                 | Watch a scope for changes                     |
+| `config: { scope, key, condition_function_id }`                                       | Scope filter and optional condition gate      |
+| Event payload: `{ new_value, old_value, key, event_type }`                            | Change details passed to the handler          |
+
+## Reference Implementation
+
+See [references/reference.js](references/reference.js) for the full working example — a reaction that watches a state scope and fires side effects when values change, with an optional condition gate.
 
 ## Common Patterns
 
-- `registerTrigger({ type: 'state', function_id, config: { scope: 'orders' } })` -- watch all keys in scope
-- `registerTrigger({ type: 'state', function_id, config: { scope: 'orders', key: 'status' } })` -- watch specific key
-- Handler receives `event.new_value`, `event.old_value`, `event.key`, `event.scope`, `event.event_type`
-- Combine with `condition_function_id` for conditional reactions
-- Chain reactions: a state change handler can write state that triggers another handler
+Code using this pattern commonly includes, when relevant:
 
-## Reference
+- `registerWorker(url, { workerName })` — worker initialization
+- `registerFunction(id, handler)` — define the reaction handler
+- `registerTrigger({ type: 'state', config: { scope, key, condition_function_id } })` — watch for changes
+- `payload.new_value` / `payload.old_value` — compare before and after
+- `payload.event_type` — distinguish between set, update, and delete events
+- `trigger({ function_id: 'state::set', payload })` — write derived state from the reaction
+- `const logger = new Logger()` — structured logging per reaction
 
-See [references/REFERENCE.md](references/REFERENCE.md) for the full API reference with TypeScript, Python, Rust examples and condition functions.
+## Adapting This Pattern
+
+Use the adaptations below when they apply to the task.
+
+- Set `scope` to watch a specific domain (e.g. `orders`, `user-profiles`)
+- Use `key` to narrow reactions to a single key within a scope
+- Add a `condition_function_id` to filter — only react when the condition function returns truthy
+- Chain reactions by writing state in one handler that triggers another reaction on a different scope
 
 ## Pattern Boundaries
 
-- If the task needs to read/write state without reacting to changes, use `state-management`.
-- If the task needs time-based triggers, use `cron-scheduling`.
-- If the task needs manual/explicit invocation chains, use plain `trigger()` calls.
-- Stay with `state-reactions` when the goal is automatic, event-driven responses to data changes.
+- If the task is about directly reading or writing state without reactions, prefer `state-management`.
+- If the task needs conditional trigger logic shared across trigger types, prefer `trigger-conditions`.
+- Stay with `state-reactions` when the primary need is automatic side effects on state changes.
