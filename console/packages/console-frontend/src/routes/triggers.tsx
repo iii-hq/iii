@@ -756,8 +756,12 @@ function TriggersPage() {
             searchQuery || filterType ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Zap className="w-12 h-12 text-muted/30 mb-4" />
-                <div className="font-sans font-semibold text-base text-foreground mb-1">No triggers found</div>
-                <div className="font-sans text-[13px] text-secondary">Try a different search term</div>
+                <div className="font-sans font-semibold text-base text-foreground mb-1">
+                  No triggers found
+                </div>
+                <div className="font-sans text-[13px] text-secondary">
+                  Try a different search term
+                </div>
               </div>
             ) : (
               <EmptyState

@@ -24,8 +24,8 @@ import { deleteStateItem, setStateItem, stateGroupsQuery, stateItemsQuery } from
 import { Badge, Button, Input } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Pagination } from '@/components/ui/pagination'
+import { Skeleton } from '@/components/ui/skeleton'
 
 // --- addModal reducer ---
 interface AddModalState {
@@ -395,7 +395,9 @@ function StatesPage() {
                 <div className="w-12 h-12 mb-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle flex items-center justify-center">
                   <Folder className="w-6 h-6 text-muted" />
                 </div>
-                <div className="font-sans font-semibold text-base text-foreground mb-1">No groups found</div>
+                <div className="font-sans font-semibold text-base text-foreground mb-1">
+                  No groups found
+                </div>
                 <div className="font-sans text-[13px] text-secondary text-center">
                   {searchQuery ? 'Try a different search' : 'Create groups by setting state values'}
                 </div>
@@ -591,9 +593,7 @@ function StatesPage() {
                             key={item.key}
                             onClick={() => setSelectedItem(item)}
                             className={`cursor-pointer transition-colors ${
-                              selectedItem?.key === item.key
-                                ? 'bg-blue-500/10'
-                                : 'hover:bg-hover'
+                              selectedItem?.key === item.key ? 'bg-blue-500/10' : 'hover:bg-hover'
                             }`}
                           >
                             <td className="px-4 py-3">
@@ -694,7 +694,9 @@ function StatesPage() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <div className="flex items-center gap-2 min-w-0">
                 <Key className="w-4 h-4 text-blue-400 shrink-0" />
-                <span className="font-mono text-[13px] font-medium truncate">{selectedItem.key}</span>
+                <span className="font-mono text-[13px] font-medium truncate">
+                  {selectedItem.key}
+                </span>
               </div>
               <button
                 type="button"
@@ -708,20 +710,26 @@ function StatesPage() {
             <div className="flex-1 overflow-auto p-4">
               <div className="space-y-4">
                 <div>
-                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">Key</div>
+                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
+                    Key
+                  </div>
                   <div className="font-mono text-[13px] bg-elevated p-2 rounded-[var(--radius-md)]">
                     {selectedItem.key}
                   </div>
                 </div>
 
                 <div>
-                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">Type</div>
+                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
+                    Type
+                  </div>
                   <Badge variant="outline">{selectedItem.type}</Badge>
                 </div>
 
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">Value</span>
+                    <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
+                      Value
+                    </span>
                     <div className="flex items-center gap-1">
                       {editingItem === selectedItem.key ? (
                         <>

@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
+  AlertTriangle,
   Database,
   GitBranch,
   Layers,
@@ -9,10 +10,17 @@ import {
   Settings,
   Terminal,
   Zap,
-  AlertTriangle,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command'
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from '@/components/ui/command'
 
 const PAGES = [
   { name: 'Functions', href: '/functions', icon: Server, shortcut: '⌘1' },
@@ -20,7 +28,13 @@ const PAGES = [
   { name: 'States', href: '/states', icon: Database, shortcut: '⌘3' },
   { name: 'Streams', href: '/streams', icon: Layers, shortcut: '⌘4' },
   { name: 'Queues', href: '/queues', icon: ListOrdered, shortcut: '⌘5' },
-  { name: 'Dead Letters', href: '/queues', icon: AlertTriangle, shortcut: '⌘6', search: { tab: 'dead-letters' as const } },
+  {
+    name: 'Dead Letters',
+    href: '/queues',
+    icon: AlertTriangle,
+    shortcut: '⌘6',
+    search: { tab: 'dead-letters' as const },
+  },
   { name: 'Traces', href: '/traces', icon: GitBranch, shortcut: '⌘7' },
   { name: 'Logs', href: '/logs', icon: Terminal, shortcut: '⌘8' },
   { name: 'Config', href: '/config', icon: Settings, shortcut: '⌘9' },
@@ -35,30 +49,41 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [functions, setFunctions] = useState<Array<{ function_id: string }>>([])
-  const [triggers, setTriggers] = useState<Array<{ id: string; trigger_type: string; function_id: string }>>([])
+  const [triggers, setTriggers] = useState<
+    Array<{ id: string; trigger_type: string; function_id: string }>
+  >([])
   const [streams, setStreams] = useState<Array<{ id: string }>>([])
 
   // Pre-fetch from React Query caches when palette opens
   useEffect(() => {
     if (!open) return
-    const fnData = queryClient.getQueryData<{ functions: Array<{ function_id: string; internal?: boolean }> }>(['functions'])
+    const fnData = queryClient.getQueryData<{
+      functions: Array<{ function_id: string; internal?: boolean }>
+    }>(['functions'])
     if (fnData?.functions) {
-      setFunctions(fnData.functions.filter(f => !f.internal))
+      setFunctions(fnData.functions.filter((f) => !f.internal))
     }
-    const trigData = queryClient.getQueryData<{ triggers: Array<{ id: string; trigger_type: string; function_id: string; internal?: boolean }> }>(['triggers'])
+    const trigData = queryClient.getQueryData<{
+      triggers: Array<{ id: string; trigger_type: string; function_id: string; internal?: boolean }>
+    }>(['triggers'])
     if (trigData?.triggers) {
-      setTriggers(trigData.triggers.filter(t => !t.internal))
+      setTriggers(trigData.triggers.filter((t) => !t.internal))
     }
-    const streamData = queryClient.getQueryData<{ streams: Array<{ id: string; internal?: boolean }> }>(['streams'])
+    const streamData = queryClient.getQueryData<{
+      streams: Array<{ id: string; internal?: boolean }>
+    }>(['streams'])
     if (streamData?.streams) {
-      setStreams(streamData.streams.filter(s => !s.internal))
+      setStreams(streamData.streams.filter((s) => !s.internal))
     }
   }, [open, queryClient])
 
-  const runCommand = useCallback((command: () => void) => {
-    onOpenChange(false)
-    command()
-  }, [onOpenChange])
+  const runCommand = useCallback(
+    (command: () => void) => {
+      onOpenChange(false)
+      command()
+    },
+    [onOpenChange],
+  )
 
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange}>
@@ -71,12 +96,17 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             return (
               <CommandItem
                 key={`${page.href}-${page.name}`}
-                onSelect={() => runCommand(() => {
-                  const opts: Record<string, unknown> = { to: page.href }
-                  if ('search' in page) opts.search = page.search
-                  else if (page.href === '/queues') opts.search = {}
-                  navigate(opts as any)
-                })}
+                onSelect={() =>
+                  runCommand(() => {
+                    if ('search' in page) {
+                      navigate({ to: '/queues', search: page.search })
+                    } else if (page.href === '/queues') {
+                      navigate({ to: '/queues', search: {} })
+                    } else {
+                      navigate({ to: page.href })
+                    }
+                  })
+                }
               >
                 <Icon className="mr-2 h-4 w-4" />
                 <span>{page.name}</span>
@@ -92,7 +122,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
               {functions.slice(0, 10).map((fn) => (
                 <CommandItem
                   key={fn.function_id}
-                  onSelect={() => runCommand(() => navigate({ to: '/functions', search: { q: fn.function_id } as any }))}
+                  onSelect={() =>
+                    runCommand(() => navigate({ to: '/functions', search: { q: fn.function_id } }))
+                  }
                 >
                   <Server className="mr-2 h-4 w-4" />
                   <span className="font-mono text-xs">{fn.function_id}</span>
@@ -111,7 +143,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                   onSelect={() => runCommand(() => navigate({ to: '/triggers' }))}
                 >
                   <Zap className="mr-2 h-4 w-4" />
-                  <span className="font-mono text-xs">{t.trigger_type}: {t.function_id}</span>
+                  <span className="font-mono text-xs">
+                    {t.trigger_type}: {t.function_id}
+                  </span>
                 </CommandItem>
               ))}
             </CommandGroup>

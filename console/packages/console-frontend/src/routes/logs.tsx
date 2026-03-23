@@ -438,8 +438,19 @@ function LogsPage() {
 
       {isLoading && (
         <div className="flex-1 p-4 space-y-2">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <Skeleton key={i} className="h-9 w-full" />
+          {(
+            [
+              'log-sk-0',
+              'log-sk-1',
+              'log-sk-2',
+              'log-sk-3',
+              'log-sk-4',
+              'log-sk-5',
+              'log-sk-6',
+              'log-sk-7',
+            ] as const
+          ).map((sk) => (
+            <Skeleton key={sk} className="h-9 w-full" />
           ))}
         </div>
       )}
@@ -768,11 +779,15 @@ function LogsPage() {
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div className="bg-elevated rounded-[var(--radius-md)] px-2 py-1.5">
-                        <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">ISO</div>
+                        <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                          ISO
+                        </div>
                         <code className="font-mono text-[13px]">{selectedLog.timestamp}</code>
                       </div>
                       <div className="bg-elevated rounded-[var(--radius-md)] px-2 py-1.5">
-                        <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">Unix</div>
+                        <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                          Unix
+                        </div>
                         <code className="font-mono text-[13px]">{selectedLog.time}</code>
                       </div>
                     </div>
@@ -925,7 +940,9 @@ function LogsPage() {
                       <Zap className="w-3.5 h-3.5" />
                       Source Function
                     </div>
-                    <code className="font-mono text-[13px] text-cyan-400">{fullscreenLog.source}</code>
+                    <code className="font-mono text-[13px] text-cyan-400">
+                      {fullscreenLog.source}
+                    </code>
                   </div>
 
                   {/* Trace ID */}
@@ -936,7 +953,9 @@ function LogsPage() {
                         Trace ID
                       </div>
                       <div className="flex items-center gap-2">
-                        <code className="font-mono text-[13px] break-all">{fullscreenLog.traceId}</code>
+                        <code className="font-mono text-[13px] break-all">
+                          {fullscreenLog.traceId}
+                        </code>
                         <button
                           type="button"
                           onClick={() => {
@@ -961,15 +980,21 @@ function LogsPage() {
                   </div>
                   <div className="grid grid-cols-3 gap-4">
                     <div>
-                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">ISO 8601</div>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                        ISO 8601
+                      </div>
                       <code className="font-mono text-[13px]">{fullscreenLog.timestamp}</code>
                     </div>
                     <div>
-                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">Unix (ms)</div>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                        Unix (ms)
+                      </div>
                       <code className="font-mono text-[13px]">{fullscreenLog.time}</code>
                     </div>
                     <div>
-                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">Local</div>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                        Local
+                      </div>
                       <code className="font-mono text-[13px]">
                         {new Date(fullscreenLog.time).toLocaleString()}
                       </code>

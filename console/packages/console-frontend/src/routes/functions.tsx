@@ -16,7 +16,8 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { useReducer } from 'react'
+import { useEffect, useReducer } from 'react'
+import { z } from 'zod'
 import type { FunctionInfo } from '@/api'
 import { functionsQuery, invokeFunction as invokeFunctionApi, workersQuery } from '@/api'
 import { Badge, Button } from '@/components/ui/card'
@@ -108,7 +109,12 @@ function functionsUiReducer(state: FunctionsUiState, action: FunctionsUiAction):
   }
 }
 
+const functionsSearchSchema = z.object({
+  q: z.string().optional(),
+})
+
 export const Route = createFileRoute('/functions')({
+  validateSearch: functionsSearchSchema,
   component: FunctionsPage,
   loader: ({ context: { queryClient } }) => {
     Promise.allSettled([
@@ -119,6 +125,8 @@ export const Route = createFileRoute('/functions')({
 })
 
 function FunctionsPage() {
+  const { q: qFromSearch } = Route.useSearch()
+
   const [uiState, dispatchUi] = useReducer(functionsUiReducer, {
     searchQuery: '',
     showSystem: false,
@@ -127,6 +135,12 @@ function FunctionsPage() {
     collapsedGroups: new Set<string>(),
   })
   const { searchQuery, showSystem, selectedFunction, copied, collapsedGroups } = uiState
+
+  useEffect(() => {
+    if (qFromSearch !== undefined) {
+      dispatchUi({ type: 'SET_SEARCH_QUERY', payload: qFromSearch })
+    }
+  }, [qFromSearch])
 
   const [invocationState, dispatchInvocation] = useReducer(invocationReducer, invocationInitial)
   const { invoking, invocationResult, requestBody } = invocationState
@@ -324,8 +338,12 @@ function FunctionsPage() {
             searchQuery ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Code2 className="w-12 h-12 text-muted/30 mb-4" />
-                <div className="font-sans font-semibold text-base text-foreground mb-1">No functions found</div>
-                <div className="font-sans text-[13px] text-secondary">Try a different search term</div>
+                <div className="font-sans font-semibold text-base text-foreground mb-1">
+                  No functions found
+                </div>
+                <div className="font-sans text-[13px] text-secondary">
+                  Try a different search term
+                </div>
               </div>
             ) : (
               <EmptyState

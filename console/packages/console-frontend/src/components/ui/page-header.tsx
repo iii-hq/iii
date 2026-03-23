@@ -19,11 +19,7 @@ export function PageHeader({ icon: Icon, title, children, actions }: PageHeaderP
         {children}
       </div>
 
-      {actions && (
-        <div className="flex items-center gap-1.5 md:gap-2">
-          {actions}
-        </div>
-      )}
+      {actions && <div className="flex items-center gap-1.5 md:gap-2">{actions}</div>}
     </div>
   )
 }

@@ -309,8 +309,8 @@ function TracesPage() {
           >
             {isQueryLoading && traceGroups.length === 0 ? (
               <div className="flex flex-col gap-0">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} className="p-3 border-b border-border">
+                {(['tr-sk-0', 'tr-sk-1', 'tr-sk-2', 'tr-sk-3', 'tr-sk-4'] as const).map((sk) => (
+                  <div key={sk} className="p-3 border-b border-border">
                     <div className="flex items-center gap-2 mb-2">
                       <Skeleton className="w-3.5 h-3.5 rounded-full" />
                       <Skeleton className="h-4 w-48" />
@@ -375,7 +375,9 @@ function TracesPage() {
                       <span className="font-sans font-medium text-sm truncate flex-1">
                         {group.topic ? (
                           <>
-                            <span className="font-sans text-muted text-xs font-normal mr-1">enqueue:</span>
+                            <span className="font-sans text-muted text-xs font-normal mr-1">
+                              enqueue:
+                            </span>
                             {group.topic}
                           </>
                         ) : (
@@ -446,11 +448,13 @@ function TracesPage() {
                     <Skeleton className="h-4 w-32" />
                     <Skeleton className="h-4 w-20 ml-auto" />
                   </div>
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <Skeleton className="h-6 w-full" />
-                    </div>
-                  ))}
+                  {(['tr-p-sk-0', 'tr-p-sk-1', 'tr-p-sk-2', 'tr-p-sk-3', 'tr-p-sk-4'] as const).map(
+                    (sk) => (
+                      <div key={sk} className="flex items-center gap-2">
+                        <Skeleton className="h-6 w-full" />
+                      </div>
+                    ),
+                  )}
                 </div>
               )}
 

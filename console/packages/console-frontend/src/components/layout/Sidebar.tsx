@@ -285,7 +285,9 @@ export function Sidebar() {
       <div className="lg:hidden fixed top-0 left-0 right-0 z-40 h-14 bg-background border-b border-border flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
           <img src="/iii-white1.1.svg" alt="iii logo" className="w-5 h-5" />
-          <span className="text-xs tracking-[0.15em] text-secondary uppercase font-sans">iii Console</span>
+          <span className="text-xs tracking-[0.15em] text-secondary uppercase font-sans">
+            iii Console
+          </span>
         </div>
         <div className="flex items-center gap-3">
           {/* Theme toggle in mobile header */}

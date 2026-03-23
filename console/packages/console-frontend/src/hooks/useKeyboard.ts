@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { useEffect } from 'react'
 
 // Must skip shortcuts when activeElement is <input>, <textarea>, or contentEditable
 const isInputFocused = () => {
@@ -48,8 +48,18 @@ export function useKeyboard({ onToggleCommandPalette, onToggleShortcutHelp }: Us
       // Cmd+1-9 page navigation
       if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
-        const pages = ['/functions', '/triggers', '/states', '/streams', '/queues', '/dead-letter', '/traces', '/logs', '/config'] as const
-        const index = parseInt(e.key) - 1
+        const pages = [
+          '/functions',
+          '/triggers',
+          '/states',
+          '/streams',
+          '/queues',
+          '/dead-letter',
+          '/traces',
+          '/logs',
+          '/config',
+        ] as const
+        const index = parseInt(e.key, 10) - 1
         if (index < pages.length) {
           const page = pages[index]
           // Cmd+6 (Dead Letter phantom) goes to queues DLQ tab

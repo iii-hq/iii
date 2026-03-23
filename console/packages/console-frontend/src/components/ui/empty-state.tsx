@@ -14,7 +14,14 @@ interface EmptyStateProps {
   className?: string
 }
 
-function EmptyState({ icon: Icon, title, description, variant = 'default', action, className }: EmptyStateProps) {
+function EmptyState({
+  icon: Icon,
+  title,
+  description,
+  variant = 'default',
+  action,
+  className,
+}: EmptyStateProps) {
   return (
     <div
       className={cn(
@@ -24,7 +31,9 @@ function EmptyState({ icon: Icon, title, description, variant = 'default', actio
     >
       {Icon && (
         <div className="mb-4">
-          <Icon className={cn('h-10 w-10', variant === 'success' ? 'text-success' : 'text-muted')} />
+          <Icon
+            className={cn('h-10 w-10', variant === 'success' ? 'text-success' : 'text-muted')}
+          />
         </div>
       )}
       <h3 className="font-sans font-semibold text-base text-foreground">{title}</h3>

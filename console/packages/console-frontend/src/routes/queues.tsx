@@ -1,15 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import {
-  Activity,
-  AlertTriangle,
-  Box,
-  Inbox,
-  ListOrdered,
-  RefreshCw,
-  Users,
-  X,
-} from 'lucide-react'
+import { Activity, AlertTriangle, Box, Inbox, ListOrdered, RefreshCw, Users, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { z } from 'zod'
 import { dlqTopicsQuery, queueDetailQuery, queuesQuery } from '@/api/queries'
@@ -147,7 +138,13 @@ function QueuesPage() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const el = document.activeElement
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable)) return
+      if (
+        el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          (el as HTMLElement).isContentEditable)
+      )
+        return
       if (e.metaKey || e.ctrlKey || e.altKey) return
 
       switch (e.key) {
@@ -249,8 +246,8 @@ function QueuesPage() {
         <div className="flex-1 overflow-y-auto min-w-[280px]">
           {isLoading ? (
             <div className="p-4 space-y-3">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-4 px-4 py-3">
+              {(['qsk-0', 'qsk-1', 'qsk-2', 'qsk-3', 'qsk-4'] as const).map((sk) => (
+                <div key={sk} className="flex items-center gap-4 px-4 py-3">
                   <Skeleton className="h-4 w-4 rounded" />
                   <Skeleton className="h-4 flex-1" />
                   <Skeleton className="h-4 w-20" />
@@ -276,10 +273,18 @@ function QueuesPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="text-left py-3 px-4 md:px-6 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">Topic</th>
-                  <th className="text-left py-3 px-4 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">Broker</th>
-                  <th className="text-right py-3 px-4 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">DLQ</th>
-                  <th className="text-right py-3 px-4 md:px-6 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">Subscribers</th>
+                  <th className="text-left py-3 px-4 md:px-6 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                    Topic
+                  </th>
+                  <th className="text-left py-3 px-4 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                    Broker
+                  </th>
+                  <th className="text-right py-3 px-4 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                    DLQ
+                  </th>
+                  <th className="text-right py-3 px-4 md:px-6 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                    Subscribers
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -302,7 +307,9 @@ function QueuesPage() {
                     >
                       <td className="px-4 md:px-6 py-3">
                         <div className="flex items-center gap-2.5">
-                          <Box className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-yellow' : 'text-muted'}`} />
+                          <Box
+                            className={`w-3.5 h-3.5 shrink-0 ${isSelected ? 'text-yellow' : 'text-muted'}`}
+                          />
                           <span className="font-mono text-[13px] text-foreground">{q.name}</span>
                         </div>
                       </td>
@@ -336,11 +343,11 @@ function QueuesPage() {
         {/* Resize Handle + Detail Panel */}
         {selectedTopic && (
           <>
-            {/* Resize Handle */}
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              className="w-[3px] bg-transparent hover:bg-border cursor-col-resize shrink-0 hidden lg:block transition-colors"
+            {/* Resize handle: button avoids non-focusable separator ARIA requirements */}
+            <button
+              type="button"
+              aria-label="Resize queue detail panel"
+              className="w-[3px] p-0 m-0 border-0 bg-transparent hover:bg-border cursor-col-resize shrink-0 hidden lg:block transition-colors min-h-0 self-stretch rounded-none"
               style={isResizing ? { backgroundColor: 'var(--accent)', opacity: 0.5 } : undefined}
               onMouseDown={startResize}
             />
@@ -369,37 +376,37 @@ function QueuesPage() {
                   </Button>
                 </div>
                 <div className="flex px-1" role="tablist">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'overview'}
-                  onClick={() => setActiveTab('overview')}
-                  className={`px-4 py-2.5 font-sans text-xs uppercase tracking-[0.04em] transition-colors ${
-                    activeTab === 'overview'
-                      ? 'font-semibold text-foreground border-b-2 border-accent'
-                      : 'text-secondary hover:text-foreground'
-                  }`}
-                >
-                  Overview
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'dead-letters'}
-                  onClick={() => setActiveTab('dead-letters')}
-                  className={`px-4 py-2.5 font-sans text-xs uppercase tracking-[0.04em] transition-colors flex items-center gap-2 ${
-                    activeTab === 'dead-letters'
-                      ? 'font-semibold text-foreground border-b-2 border-accent'
-                      : 'text-secondary hover:text-foreground'
-                  }`}
-                >
-                  Dead Letters
-                  {getDlqCount(selectedTopic) > 0 && (
-                    <Badge variant="error" className="text-[9px] px-1.5 py-0">
-                      {getDlqCount(selectedTopic)}
-                    </Badge>
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'overview'}
+                    onClick={() => setActiveTab('overview')}
+                    className={`px-4 py-2.5 font-sans text-xs uppercase tracking-[0.04em] transition-colors ${
+                      activeTab === 'overview'
+                        ? 'font-semibold text-foreground border-b-2 border-accent'
+                        : 'text-secondary hover:text-foreground'
+                    }`}
+                  >
+                    Overview
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'dead-letters'}
+                    onClick={() => setActiveTab('dead-letters')}
+                    className={`px-4 py-2.5 font-sans text-xs uppercase tracking-[0.04em] transition-colors flex items-center gap-2 ${
+                      activeTab === 'dead-letters'
+                        ? 'font-semibold text-foreground border-b-2 border-accent'
+                        : 'text-secondary hover:text-foreground'
+                    }`}
+                  >
+                    Dead Letters
+                    {getDlqCount(selectedTopic) > 0 && (
+                      <Badge variant="error" className="text-[9px] px-1.5 py-0">
+                        {getDlqCount(selectedTopic)}
+                      </Badge>
+                    )}
+                  </button>
                 </div>
               </div>
 

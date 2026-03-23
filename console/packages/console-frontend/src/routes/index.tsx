@@ -163,7 +163,9 @@ function MetricsChart({ title, value, data, color, icon: Icon, trend, href }: Me
           <div className="p-1.5 rounded-md" style={{ backgroundColor: `${color}20` }}>
             <Icon className="w-4 h-4" style={{ color }} />
           </div>
-          <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">{title}</span>
+          <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
+            {title}
+          </span>
         </div>
         {trend !== undefined && trend !== 0 && (
           <div
@@ -625,17 +627,23 @@ function DashboardPage() {
             {/* System info row */}
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-2.5 text-center">
-                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">Uptime</div>
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
+                  Uptime
+                </div>
                 <div className="font-mono text-[13px] font-medium truncate">
                   {status?.uptime_formatted || '—'}
                 </div>
               </div>
               <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-2.5 text-center">
-                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">API</div>
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
+                  API
+                </div>
                 <div className="font-mono text-[13px] font-medium">:{config.enginePort}</div>
               </div>
               <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-2.5 text-center">
-                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">WS</div>
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
+                  WS
+                </div>
                 <div className="font-mono text-[13px] font-medium">:{config.wsPort}</div>
               </div>
             </div>

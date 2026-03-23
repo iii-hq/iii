@@ -7,7 +7,10 @@ export const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDi
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn('rounded-[var(--radius-lg)] border border-border-subtle bg-elevated text-foreground', className)}
+      className={cn(
+        'rounded-[var(--radius-lg)] border border-border-subtle bg-elevated text-foreground',
+        className,
+      )}
       {...props}
     />
   ),
@@ -27,7 +30,10 @@ export const CardTitle = React.forwardRef<
 >(({ className, children, ...props }, ref) => (
   <h3
     ref={ref}
-    className={cn('font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted', className)}
+    className={cn(
+      'font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted',
+      className,
+    )}
     {...props}
   >
     {children}
@@ -66,7 +72,9 @@ export function StatCard({
       <CardContent>
         <div className="text-2xl font-semibold tracking-tight">{value}</div>
         {subtitle && (
-          <p className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mt-1">{subtitle}</p>
+          <p className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mt-1">
+            {subtitle}
+          </p>
         )}
       </CardContent>
     </Card>
@@ -98,7 +106,10 @@ export function TableRow({
 }) {
   return (
     <tr
-      className={cn('border-b border-border-subtle transition-colors hover:bg-white/[0.02]', className)}
+      className={cn(
+        'border-b border-border-subtle transition-colors hover:bg-white/[0.02]',
+        className,
+      )}
     >
       {children}
     </tr>

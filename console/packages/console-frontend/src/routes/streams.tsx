@@ -701,7 +701,9 @@ function StreamsPage() {
             {filteredMessages.length === 0 ? (
               <EmptyState
                 icon={Layers}
-                title={messages.length === 0 ? 'No active streams' : 'No messages match your filters'}
+                title={
+                  messages.length === 0 ? 'No active streams' : 'No messages match your filters'
+                }
                 description={
                   messages.length === 0
                     ? 'Streams appear when your functions publish messages'
@@ -813,7 +815,9 @@ function StreamsPage() {
             <div className="flex-1 overflow-auto p-4 space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-dark-gray/30 rounded p-2">
-                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">Event Type</div>
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                    Event Type
+                  </div>
                   <div
                     className={`text-xs font-medium ${EVENT_TYPE_INFO[selectedMessage.eventType]?.color || ''}`}
                   >
@@ -826,14 +830,18 @@ function StreamsPage() {
                   )}
                 </div>
                 <div className="bg-dark-gray/30 rounded p-2">
-                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">Size</div>
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                    Size
+                  </div>
                   <div className="text-xs font-mono">{formatBytes(selectedMessage.size)}</div>
                 </div>
               </div>
 
               {selectedMessage.streamName && (
                 <div>
-                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">Stream</div>
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                    Stream
+                  </div>
                   <code className="font-mono text-[13px] bg-dark-gray px-2 py-1.5 rounded block">
                     {selectedMessage.streamName}
                   </code>
@@ -959,7 +967,9 @@ function StreamsPage() {
 
               {streams.length > 0 && (
                 <div>
-                  <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted block mb-2">Available Streams</span>
+                  <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted block mb-2">
+                    Available Streams
+                  </span>
                   <div className="flex flex-wrap gap-2 max-h-32 overflow-auto">
                     {streams
                       .filter((s) => !subscribedStreams.some((sub) => sub.streamName === s.id))

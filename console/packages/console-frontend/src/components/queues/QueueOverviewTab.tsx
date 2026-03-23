@@ -1,10 +1,4 @@
-import {
-  AlertTriangle,
-  Inbox,
-  Send,
-  Settings,
-  Users,
-} from 'lucide-react'
+import { AlertTriangle, Inbox, Send, Settings, Users } from 'lucide-react'
 import { useState } from 'react'
 import type { QueueStats } from '@/api/queues/queues'
 import { Button } from '@/components/ui/card'
@@ -35,14 +29,18 @@ export function QueueOverviewTab({
         <div className="rounded-[var(--radius-lg)] bg-elevated border border-border-subtle p-3">
           <div className="flex items-center gap-1.5 mb-1.5">
             <Inbox className="w-3 h-3 text-muted" />
-            <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">Depth</span>
+            <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+              Depth
+            </span>
           </div>
           <div className="text-lg font-mono text-foreground">{stats?.depth ?? 0}</div>
         </div>
         <div className="rounded-[var(--radius-lg)] bg-elevated border border-border-subtle p-3">
           <div className="flex items-center gap-1.5 mb-1.5">
             <Users className="w-3 h-3 text-muted" />
-            <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">Consumers</span>
+            <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+              Consumers
+            </span>
           </div>
           <div className="text-lg font-mono text-foreground">{stats?.consumer_count ?? 0}</div>
         </div>
@@ -51,7 +49,9 @@ export function QueueOverviewTab({
             <AlertTriangle
               className={`w-3 h-3 ${(stats?.dlq_depth ?? 0) > 0 ? 'text-error' : 'text-muted'}`}
             />
-            <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">DLQ</span>
+            <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+              DLQ
+            </span>
           </div>
           <div
             className={`text-lg font-mono ${(stats?.dlq_depth ?? 0) > 0 ? 'text-error' : 'text-foreground'}`}
@@ -95,7 +95,8 @@ export function QueueOverviewTab({
                 Payload
               </div>
               <div className="text-[10px] text-secondary mb-1">
-                Type the JSON your subscriber will receive. The console wraps it in <code className="text-muted">{"{ data: ... }"}</code> automatically.
+                Type the JSON your subscriber will receive. The console wraps it in{' '}
+                <code className="text-muted">{'{ data: ... }'}</code> automatically.
               </div>
               <textarea
                 value={publishJson}

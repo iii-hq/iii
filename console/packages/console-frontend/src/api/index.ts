@@ -87,11 +87,11 @@ export * from './queries'
 // Queues & DLQ
 export type { DlqMessage, DlqTopic, QueueDetail, QueueStats, QueueTopic } from './queues'
 export {
+  discardMessage,
   fetchDlqMessages,
   fetchDlqTopics,
   fetchQueueDetail,
   fetchQueues,
-  discardMessage,
   publishToQueue,
   redriveDlq,
   redriveMessage,
