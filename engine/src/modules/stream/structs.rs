@@ -159,10 +159,16 @@ pub struct StreamSendInput {
 }
 
 /// Metadata for a stream (used by stream.listAll)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamMetadata {
     pub id: String,
     pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StreamListAllResult {
+    pub stream: Vec<StreamMetadata>,
+    pub count: usize,
 }
 
 #[cfg(test)]

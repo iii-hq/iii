@@ -41,8 +41,8 @@ use crate::{
             config::StreamModuleConfig,
             structs::{
                 EventData, StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
-                StreamListAllInput, StreamListGroupsInput, StreamListInput, StreamSendInput,
-                StreamSetInput, StreamUpdateInput,
+                StreamListAllInput, StreamListAllResult, StreamListGroupsInput, StreamListInput,
+                StreamSendInput, StreamSetInput, StreamUpdateInput,
             },
             trigger::{
                 JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
@@ -681,25 +681,13 @@ impl StreamCoreModule {
     pub async fn list_all(
         &self,
         _input: StreamListAllInput,
-    ) -> FunctionResult<Option<Value>, ErrorBody> {
+    ) -> FunctionResult<StreamListAllResult, ErrorBody> {
         let adapter = self.adapter.clone();
 
         match adapter.list_all_stream().await {
             Ok(stream) => {
-                let stream_json: Vec<Value> = stream
-                    .iter()
-                    .map(|s| {
-                        serde_json::json!({
-                            "id": s.id,
-                            "groups": s.groups,
-                        })
-                    })
-                    .collect();
-
-                FunctionResult::Success(Some(serde_json::json!({
-                    "stream": stream_json,
-                    "count": stream_json.len()
-                })))
+                let count = stream.len();
+                FunctionResult::Success(StreamListAllResult { stream, count })
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to list all stream");
@@ -1433,12 +1421,15 @@ mod tests {
         }
 
         match module.list_all(StreamListAllInput {}).await {
-            FunctionResult::Success(Some(value)) => {
-                assert_eq!(value["count"], 2);
-                assert_eq!(value["stream"][0]["id"], "stream-a");
+            FunctionResult::Success(result) => {
+                assert_eq!(result.count, 2);
+                assert_eq!(result.stream.len(), 2);
+                assert_eq!(result.stream[0].id, "stream-a");
+                assert_eq!(result.stream[0].groups, vec!["group-a"]);
+                assert_eq!(result.stream[1].id, "stream-b");
                 assert_eq!(
-                    value["stream"][1]["groups"],
-                    serde_json::json!(["group-b", "group-c"])
+                    result.stream[1].groups,
+                    vec!["group-b", "group-c"]
                 );
             }
             _ => panic!("expected list_all success"),
