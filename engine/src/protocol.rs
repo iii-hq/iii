@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -131,7 +132,7 @@ pub enum Message {
 ///
 /// For most use cases this is not a concern, but if you need guaranteed precision
 /// for very large values, consider parsing these as BigInt on the JavaScript side.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerMetrics {
     // Memory metrics (bytes)
     // Note: u64 values above 2^53-1 may lose precision in JavaScript
@@ -188,7 +189,7 @@ impl std::fmt::Display for ErrorBody {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelDirection {
     #[default]
@@ -196,7 +197,7 @@ pub enum ChannelDirection {
     Write,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct StreamChannelRef {
     pub channel_id: String,
     pub access_key: String,

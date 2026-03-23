@@ -309,6 +309,10 @@ When registering a function, you must provide a `RegisterFunctionRequest`.
 | `request_format`  | `Option<Value>`  | JSON Schema defining the expected input        |
 | `response_format` | `Option<Value>`  | JSON Schema defining the expected output       |
 
+<Note>
+When using the `#[service]` macro with `#[function]` attributes, `request_format` and `response_format` are **auto-generated** as standard JSON Schema from your Rust types (via [`schemars`](https://docs.rs/schemars)). Your input/output types must derive `JsonSchema`. Manual schema specification is only needed for custom module registration.
+</Note>
+
 ### Example Registration
 
 ```rust

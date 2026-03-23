@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::future::BoxFuture;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,7 +20,7 @@ pub type RemoteFunctionHandler =
 // ============================================================================
 
 /// Represents a path to a field in a JSON object
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct FieldPath(pub String);
 
 impl FieldPath {
@@ -45,7 +46,7 @@ impl From<String> for FieldPath {
 }
 
 /// Operations that can be performed atomically on a stream value
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum UpdateOp {
     /// Set a value at path (overwrite)
@@ -118,7 +119,7 @@ impl UpdateOp {
 }
 
 /// Result of an atomic update operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct UpdateResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
@@ -126,7 +127,7 @@ pub struct UpdateResult {
     pub new_value: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,
@@ -134,7 +135,7 @@ pub struct SetResult {
     pub new_value: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteResult {
     /// The value before the update (None if key didn't exist)
     pub old_value: Option<Value>,

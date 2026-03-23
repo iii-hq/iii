@@ -139,6 +139,34 @@ async fn handle_channel_socket(
                         }
                         WsMessage::Close(_) => {
                             tracing::info!(channel_id = %channel_id, "Write: received WS close frame");
+                            // Defensive: drain any remaining buffered frames.
+                            // Protects against clients that send close before all data is flushed.
+                            let deadline =
+                                tokio::time::Instant::now() + std::time::Duration::from_millis(10);
+                            while let Ok(Some(Ok(msg))) =
+                                tokio::time::timeout_at(deadline, socket.recv()).await
+                            {
+                                match msg {
+                                    WsMessage::Binary(data) => {
+                                        let len = data.len();
+                                        total_bytes += len as u64;
+                                        msg_count += 1;
+                                        tracing::debug!(channel_id = %channel_id, msg = msg_count, bytes = len, "Write: drained binary after close");
+                                        if tx.send(ChannelItem::Binary(data)).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    WsMessage::Text(s) => {
+                                        msg_count += 1;
+                                        tracing::debug!(channel_id = %channel_id, msg = msg_count, "Write: drained text after close");
+                                        if tx.send(ChannelItem::Text(s.to_string())).await.is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    _ => break,
+                                }
+                            }
                             break;
                         }
                         _ => continue,

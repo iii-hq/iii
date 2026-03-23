@@ -9,6 +9,7 @@ target/
 .env.test.local
 .env.production.local
 .vscode/
+.claude/
 
 .coverage
 coverage/
@@ -37,3 +38,4 @@ sdk/packages/node/iii/api-docs.json
 sdk/packages/python/iii/api-docs.json
 
 .planning/
+iii_workers/

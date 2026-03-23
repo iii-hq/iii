@@ -1,192 +1,283 @@
 ---
-title: 'Manage Failed Triggers: Dead Letter Queues'
-description: 'How to configure retries and let the engine route permanently failed jobs to a dead letter queue.'
+title: 'Use Dead Letter Queues'
+description: 'How to inspect and redrive jobs that exhausted all retries using Dead Letter Queues.'
 ---
 
 ## Goal
 
-Set up a queue consumer that retries on transient failures (e.g. an external endpoint being down) and automatically routes jobs to a dead letter queue (DLQ) when all retries are exhausted.
+Understand where failed jobs end up after all retries are exhausted, inspect them, and redrive them back to the main queue once the underlying issue is fixed.
 
-## Steps
-
-### 1. Register the external endpoint as an HTTP-invoked function
-
-Register the payment API as an HTTP-invoked function. The engine makes the HTTP call — when the
-endpoint is down or returns a non-2xx status, the engine marks the invocation as failed. When this
-function is invoked via a named queue, the queue worker retries it based on the queue's config.
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript title="payment-processor.ts"
-import { registerWorker } from 'iii-sdk'
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
-
-iii.registerFunction(
-  { id: 'payments::charge' },
-  {
-    url: 'https://api.payments.example.com/charge',
-    method: 'POST',
-    timeout_ms: 5000,
-  },
-)
-```
-</Tab>
-<Tab title="Python">
-```python title="payment_processor.py"
-import os
-
-from iii import HttpInvocationConfig, register_worker
-
-iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
-
-
-iii.register_function(
-    {"id": "payments::charge"},
-    HttpInvocationConfig(
-        url="https://api.payments.example.com/charge",
-        method="POST",
-        timeout_ms=5000,
-    ),
-)
-```
-</Tab>
-<Tab title="Rust">
-```rust title="payment_processor.rs"
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunctionMessage,
-    HttpInvocationConfig, HttpMethod,
-};
-use std::collections::HashMap;
-
-let iii = register_worker(
-    &std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()),
-    InitOptions::default(),
-);
-
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "payments::charge".into(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
-    HttpInvocationConfig {
-        url: "https://api.payments.example.com/charge".to_string(),
-        method: HttpMethod::Post,
-        timeout_ms: Some(5000),
-        headers: HashMap::new(),
-        auth: None,
-    },
-);
-```
-</Tab>
-</Tabs>
-
-### 2. Define a named queue with retry configuration
-
-Declare the queue in `iii-config.yaml` with the retry and backoff settings. When the payment
-endpoint fails, the engine retries with exponential backoff until `max_retries` is exhausted — then
-the job moves to the DLQ. Enqueue work to this function by calling `trigger()` with
-`TriggerAction.Enqueue` from wherever the order is created.
-
-```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
-    config:
-      queue_configs:
-        payment_dlq:
-          max_retries: 5
-          backoff_ms: 2000
-          concurrency: 2
-          type: standard
-      adapter:
-        class: modules::queue::BuiltinQueueAdapter
-```
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript title="order-handler.ts"
-import { TriggerAction } from 'iii-sdk'
-
-await iii.trigger({
-  function_id: 'payments::charge',
-  payload: { orderId: order.id, amount: order.total },
-  action: TriggerAction.Enqueue({ queue: 'payment_dlq' }),
-})
-```
-</Tab>
-<Tab title="Python">
-```python title="order_handler.py"
-from iii import TriggerAction
-
-iii.trigger({
-    "function_id": "payments::charge",
-    "payload": {"orderId": order["id"], "amount": order["total"]},
-    "action": TriggerAction.Enqueue(queue="payment_dlq"),
-})
-```
-</Tab>
-<Tab title="Rust">
-```rust title="order_handler.rs"
-use iii_sdk::{TriggerAction, TriggerRequest};
-use serde_json::json;
-
-iii.trigger(TriggerRequest {
-    function_id: "payments::charge".into(),
-    payload: json!({
-        "orderId": order["id"],
-        "amount": order["total"],
-    }),
-    action: Some(TriggerAction::Enqueue {
-        queue: "payment_dlq".into(),
-    }),
-    timeout_ms: None,
-})
-.await?;
-```
-</Tab>
-</Tabs>
-
-With this configuration, a failing job follows this timeline:
-
-| Attempt | Delay before retry |
-|---------|--------------------|
-| 1       | 2 s                |
-| 2       | 4 s                |
-| 3       | 8 s                |
-| 4       | 16 s               |
-| 5       | — moved to DLQ     |
-
-### 3. What happens when a job lands in the DLQ
-
-When the payment endpoint is down and all 5 retries exhaust, the engine:
-
-1. Removes the job from the active queue
-2. Stores it in the DLQ with the original payload, the last error, and a `failed_at` timestamp
-3. Logs a warning:
-
-```
-WARN queue="payment_dlq" job_id="..." attempts=5 "Job exhausted, moved to DLQ"
-```
-
-The job stays in the DLQ until the engine redrives it. No other jobs in the queue are blocked — processing continues normally for new messages.
-
-### 4. Queue configuration reference
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_retries` | `u32` | `3` | Maximum delivery attempts before moving to DLQ |
-| `backoff_ms` | `u64` | `1000` | Base delay in ms between retries (exponential: `backoff_ms × 2^(attempt − 1)`) |
-| `concurrency` | `u32` | `10` | Max concurrent jobs for this queue |
-| `type` | `string` | `"standard"` | Queue mode: `"standard"` (concurrent) or `"fifo"` (ordered) |
-
-## Result
-
-Failed jobs retry automatically with exponential backoff. After all retries exhaust, the job moves to the DLQ where it is preserved with its full payload and error context. The engine continues processing new messages in the queue without interruption.
-
-<Info title="DLQ adapter support">
-  DLQ is fully supported by the **Builtin** and **RabbitMQ** queue adapters. The Redis adapter does not support DLQ operations.
+<Info title="Queues primer">
+  DLQs are part of the named-queue system. If you haven't configured queues yet, read [Use Queues](./use-queues) first.
 </Info>
+
+## What is a Dead Letter Queue?
+
+When a job fails and exhausts all `max_retries` attempts, the engine moves it to a **Dead Letter Queue (DLQ)** — a separate holding area where failed jobs are preserved for inspection. iii creates a DLQ automatically for every named queue you define in `iii-config.yaml`. No extra configuration is needed.
+
+Each DLQ entry contains:
+
+- The **original payload** sent to the function
+- The **error** from the last failed attempt
+- A **timestamp** of when the job was moved to the DLQ
+- The **job metadata** (function ID, queue name, attempt count)
+
+Jobs in the DLQ are not retried automatically. They sit there until you inspect them, fix the root cause, and explicitly redrive them back to the main queue.
+
+<Info title="Queue architecture">
+  DLQs are one of three lifecycle stages every named queue uses internally. For the full design rationale — including why retry and DLQ each need separate exchanges and queues — see [Queue Architecture](/architecture/queues).
+</Info>
+
+## How Jobs Reach the DLQ
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant E as Engine
+    participant F as Target Function
+    participant DLQ as Dead Letter Queue
+
+    Q->>E: Job available (attempt 1)
+    E->>F: Invoke with payload
+    F-->>E: Error
+
+    Note over E: Wait backoff_ms x 2^0
+
+    Q->>E: Job available (attempt 2)
+    E->>F: Invoke with payload
+    F-->>E: Error
+
+    Note over E: Wait backoff_ms x 2^1
+
+    Q->>E: Job available (attempt N / max_retries)
+    E->>F: Invoke with payload
+    F-->>E: Error
+
+    E->>DLQ: All retries exhausted — route to DLQ
+    Note over DLQ: Job preserved with payload, error, and metadata
+```
+
+## DLQ Naming Convention
+
+iii creates DLQ resources automatically when it sets up queue topology. The naming depends on the adapter you are using.
+
+### RabbitMQ adapter
+
+For each named queue, the engine creates a full topology of exchanges and queues in RabbitMQ. Here is the complete resource map for a queue named `payment`:
+
+| Resource | Name |
+|----------|------|
+| Main exchange | `iii.__fn_queue::payment` |
+| Main queue | `iii.__fn_queue::payment.queue` |
+| Retry exchange | `iii.__fn_queue::payment::retry` |
+| Retry queue | `iii.__fn_queue::payment::retry.queue` |
+| **DLQ exchange** | **`iii.__fn_queue::payment::dlq`** |
+| **DLQ queue** | **`iii.__fn_queue::payment::dlq.queue`** |
+
+The general pattern:
+
+| Resource | Format |
+|----------|--------|
+| DLQ exchange | `iii.__fn_queue::<queue_name>::dlq` |
+| DLQ queue | `iii.__fn_queue::<queue_name>::dlq.queue` |
+
+The main queue is configured with `x-dead-letter-exchange` pointing to the DLQ exchange. When the engine `nack`s a message with `requeue=false` after all retries are exhausted, RabbitMQ routes it to the DLQ automatically.
+
+### Builtin adapter
+
+The builtin adapter stores DLQ entries in its internal KV store under the key:
+
+```
+queue:__fn_queue::<queue_name>:dlq
+```
+
+This key is not accessible via external tooling. Use engine logs to monitor DLQ activity — the engine emits a warning with the message `"Job exhausted, moved to DLQ"` every time a job is dead-lettered.
+
+## Inspect DLQ Messages
+
+<Tabs>
+<Tab title="RabbitMQ Management UI">
+  The RabbitMQ Management UI provides the easiest way to inspect DLQ messages.
+
+  <Steps>
+    <Step title="Open the Management UI">
+      Navigate to `http://localhost:15672` (or your RabbitMQ host) and log in.
+    </Step>
+    <Step title="Find the DLQ queue">
+      Go to the **Queues and Streams** tab. Search for the DLQ queue name — for example, `iii.__fn_queue::payment::dlq.queue`. The **Messages** column shows how many failed jobs are waiting.
+    </Step>
+    <Step title="Inspect messages">
+      Click on the DLQ queue, expand the **Get messages** section, set **Ack mode** to `Nack message requeue true` (so messages stay in the queue), and click **Get Message(s)** to view the payload and headers.
+    </Step>
+  </Steps>
+</Tab>
+<Tab title="rabbitmqadmin CLI">
+  The `rabbitmqadmin` CLI tool lets you inspect DLQ messages from the terminal.
+
+  **List all queues and their message counts:**
+
+  ```bash
+  rabbitmqadmin list queues name messages
+  ```
+
+  Filter for DLQ queues specifically:
+
+  ```bash
+  rabbitmqadmin list queues name messages | grep dlq
+  ```
+
+  **Peek at messages in a DLQ (without consuming them):**
+
+  ```bash
+  rabbitmqadmin get queue="iii.__fn_queue::payment::dlq.queue" count=10 ackmode=ack_requeue_true
+  ```
+
+  This retrieves up to 10 messages and requeues them so they remain in the DLQ.
+
+  **Get the message count for a specific DLQ:**
+
+  ```bash
+  rabbitmqadmin show overview | grep -A5 "payment"
+  # or use the API directly:
+  curl -s -u guest:guest http://localhost:15672/api/queues/%2f/iii.__fn_queue%3A%3Apayment%3A%3Adlq.queue | jq '.messages'
+  ```
+
+  <Info title="Installing rabbitmqadmin">
+    `rabbitmqadmin` ships with the RabbitMQ Management plugin. Download it from `http://localhost:15672/cli/rabbitmqadmin` after enabling the plugin.
+  </Info>
+</Tab>
+<Tab title="Builtin adapter">
+  The builtin adapter stores DLQ data in its internal KV store. There is no external tool to inspect it directly.
+
+  **Monitor engine logs** for DLQ entries:
+
+  ```
+  WARN queue="__fn_queue::payment" job_id="msg_abc123" attempts=10 "Job exhausted, moved to DLQ"
+  ```
+
+  Each log entry includes the queue name, job ID, and the number of attempts made before the job was dead-lettered.
+
+  <Warning title="No external DLQ inspection for builtin adapter">
+    The builtin adapter is designed for local development and single-instance deployments. For production systems where DLQ inspection and redrive are important, use the [RabbitMQ adapter](/modules/module-queue#modulesqueuerabbitmqadapter).
+  </Warning>
+</Tab>
+</Tabs>
+
+## Redrive Messages
+
+Once you have identified and fixed the root cause of the failures, you can redrive DLQ messages back to the main queue for reprocessing. The redrive resets the attempt counter so the job gets a fresh set of retries.
+
+```mermaid
+sequenceDiagram
+    participant DLQ as DLQ Queue
+    participant Op as Operator
+    participant Main as Main Exchange
+    participant Q as Main Queue
+    participant F as Target Function
+
+    Op->>DLQ: Inspect failed messages
+    Note over Op: Fix the root cause
+    Op->>DLQ: Move messages to main exchange
+
+    DLQ-->>Main: Republish messages
+    Main->>Q: Route to main queue
+    Q->>F: Reprocess with fresh retries
+    F-->>Q: Success
+```
+
+### Using the CLI
+
+The [`iii trigger`](/how-to/trigger-functions-from-cli) command invokes the builtin `iii::queue::redrive` function, which moves all messages from a queue's DLQ back to the main queue. Each message gets its attempt counter reset to zero, giving it a fresh set of retries.
+
+```bash
+iii trigger \
+  --function-id='iii::queue::redrive' \
+  --payload='{"queue": "payment"}'
+```
+
+The command connects to a running engine over WebSocket, sends the invocation, and prints the result:
+
+```json
+{
+  "queue": "payment",
+  "redriven": 12
+}
+```
+
+By default, `iii trigger` connects to `localhost:49134`. Use `--address` and `--port` to target a different engine instance:
+
+```bash
+iii trigger \
+  --function-id='iii::queue::redrive' \
+  --payload='{"queue": "payment"}' \
+  --address='localhost' \
+  --port=49134
+```
+
+### Using the SDK
+
+Because `iii::queue::redrive` is a registered function, you can also invoke it programmatically from any SDK:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+const result = await iii.trigger({
+  function_id: 'iii::queue::redrive',
+  payload: { queue: 'payment' },
+})
+
+console.log(result) // { queue: "payment", redriven: 12 }
+```
+</Tab>
+<Tab title="Python">
+```python
+result = iii.trigger({
+    "function_id": "iii::queue::redrive",
+    "payload": {"queue": "payment"},
+})
+
+print(result)  # {"queue": "payment", "redriven": 12}
+```
+</Tab>
+<Tab title="Rust">
+```rust
+let result = iii.trigger(TriggerRequest {
+    function_id: "iii::queue::redrive".into(),
+    payload: json!({ "queue": "payment" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+
+println!("{}", result); // {"queue": "payment", "redriven": 12}
+```
+</Tab>
+</Tabs>
+
+<Info title="Architecture deep dive">
+  For the full design rationale behind the three-stage queue topology (main, retry, DLQ) and how redrive fits into it, see [Queue Architecture](/architecture/queues#redriving-dlq-messages).
+</Info>
+
+## Best Practices
+
+- **Monitor DLQ depth.** A growing DLQ signals a systemic issue. Set up alerts on DLQ queue message counts in your monitoring system.
+- **Investigate before redriving.** Always inspect the failed messages and understand the error before redriving. Blind redrives waste compute and can mask recurring bugs.
+- **Fix first, redrive second.** Deploy the fix for the root cause, verify it works on new messages, then redrive the DLQ.
+- **Check message validity.** Some failed messages may be stale or no longer relevant (e.g. an expired promotion, a cancelled order). Discard those instead of redriving.
+- **Redrive in small batches.** If the DLQ has a large number of messages, redrive in batches to avoid overwhelming downstream systems.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Use Queues" href="/how-to/use-queues" icon="list-check">
+    Configure named queues with retries, concurrency, and FIFO ordering
+  </Card>
+  <Card title="Queue Module Reference" href="/modules/module-queue" icon="gear">
+    Full configuration reference for queues and adapters
+  </Card>
+  <Card title="Adapters" href="/advanced/adapters" icon="plug">
+    Understand the adapter pattern and choose the right backend
+  </Card>
+  <Card title="Trigger Actions" href="/how-to/trigger-actions" icon="bolt">
+    Compare synchronous, Void, and Enqueue invocation modes
+  </Card>
+</CardGroup>

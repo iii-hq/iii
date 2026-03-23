@@ -14,11 +14,12 @@ use opentelemetry::KeyValue;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{engine::Outbound, modules::observability::metrics::get_engine_metrics};
 
-#[derive(Clone, Deserialize, Serialize, Default)]
+#[derive(Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct WorkerTelemetryMeta {
     pub language: Option<String>,
     pub project_name: Option<String>,

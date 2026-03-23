@@ -15,6 +15,7 @@ use colored::Colorize;
 use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,7 +35,7 @@ pub struct PubSubCoreModule {
     _config: PubSubModuleConfig,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 pub struct PubSubInput {
     pub topic: String,
     pub data: Value,

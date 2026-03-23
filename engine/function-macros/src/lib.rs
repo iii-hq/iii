@@ -104,6 +104,62 @@ fn needs_serialization(return_type: &syn::Type) -> bool {
     !is_value // If it's Option<Value>, no serialization needed; otherwise, needs serialization
 }
 
+/// Extracts the success type `T` from `FunctionResult<T, E>`.
+///
+/// Returns `None` if:
+/// - The return type is not `FunctionResult<T, E>`
+/// - `T` is `Option<Value>` or `Option<serde_json::Value>` (raw JSON, no schema)
+/// - `T` is `()`
+///
+/// Returns `Some(token_stream)` with the success type otherwise.
+fn extract_success_type(return_type: &syn::Type) -> Option<TokenStream2> {
+    let type_path = match return_type {
+        syn::Type::Path(type_path) => type_path,
+        _ => return None,
+    };
+
+    let segment = type_path.path.segments.last()?;
+
+    if segment.ident != "FunctionResult" {
+        return None;
+    }
+
+    let args = match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => args,
+        _ => return None,
+    };
+
+    let success_ty = match args.args.first() {
+        Some(syn::GenericArgument::Type(ty)) => ty,
+        _ => return None,
+    };
+
+    // Check for unit type ()
+    if let syn::Type::Tuple(tuple) = success_ty
+        && tuple.elems.is_empty()
+    {
+        return None;
+    }
+
+    // Check if it's Option<Value> or Option<serde_json::Value>
+    if let syn::Type::Path(opt_path) = success_ty
+        && let Some(opt_seg) = opt_path.path.segments.last()
+        && opt_seg.ident == "Option"
+        && let syn::PathArguments::AngleBracketed(opt_args) = &opt_seg.arguments
+        && let Some(syn::GenericArgument::Type(syn::Type::Path(val_path))) = opt_args.args.first()
+        && val_path
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident == "Value")
+            .unwrap_or(false)
+    {
+        return None; // Option<Value> -> no schema
+    }
+
+    Some(quote! { #success_ty })
+}
+
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -145,8 +201,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .sig
                         .inputs
                         .iter()
-                        .skip_while(|arg| matches!(arg, syn::FnArg::Receiver(_)))
-                        .next()
+                        .find(|arg| !matches!(arg, syn::FnArg::Receiver(_)))
                     {
                         Some(syn::FnArg::Typed(pat_type)) => {
                             let ty = &*pat_type.ty;
@@ -201,6 +256,34 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                         }
                     };
 
+                    // Generate request_format schema
+                    let input_type_str = input_type.to_string();
+                    let request_format_expr = if input_type_str == "()" {
+                        quote! { None }
+                    } else {
+                        quote! {
+                            Some(
+                                serde_json::to_value(
+                                    schemars::schema_for!(#input_type)
+                                ).unwrap()
+                            )
+                        }
+                    };
+
+                    // Generate response_format schema
+                    let response_format_expr = match extract_success_type(return_type) {
+                        Some(success_ty) => {
+                            quote! {
+                                Some(
+                                    serde_json::to_value(
+                                        schemars::schema_for!(#success_ty)
+                                    ).unwrap()
+                                )
+                            }
+                        }
+                        None => quote! { None },
+                    };
+
                     generated.push(quote! {
                         {
                             let this = self.clone();
@@ -233,8 +316,8 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 RegisterFunctionRequest {
                                     function_id: #id.into(),
                                     description: #description,
-                                    request_format: None,
-                                    response_format: None,
+                                    request_format: #request_format_expr,
+                                    response_format: #response_format_expr,
                                     metadata: None,
                                 },
                                 #handler_ident,

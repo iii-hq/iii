@@ -15,7 +15,8 @@ use colored::Colorize;
 use function_macros::{function, service};
 use futures::{Future, FutureExt};
 use once_cell::sync::Lazy;
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::panic::AssertUnwindSafe;
 
@@ -39,10 +40,21 @@ pub struct QueueCoreModule {
     _config: QueueModuleConfig,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct QueueInput {
     topic: String,
     data: Value,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RedriveInput {
+    queue: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RedriveResult {
+    pub queue: String,
+    pub redriven: u64,
 }
 
 #[service(name = "queue")]
@@ -152,6 +164,48 @@ impl QueueCoreModule {
         crate::modules::telemetry::collector::track_queue_emit();
 
         FunctionResult::Success(None)
+    }
+
+    #[function(
+        id = "iii::queue::redrive",
+        description = "Redrive all DLQ messages back to the main queue"
+    )]
+    pub async fn redrive(&self, input: RedriveInput) -> FunctionResult<RedriveResult, ErrorBody> {
+        if input.queue.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "queue_not_set".into(),
+                message: "Queue name is required".into(),
+                stacktrace: None,
+            });
+        }
+
+        let namespaced = format!("__fn_queue::{}", input.queue);
+
+        match self.adapter.redrive_dlq(&namespaced).await {
+            Ok(count) => {
+                tracing::info!(
+                    queue = %input.queue,
+                    redriven = %count,
+                    "Redrove DLQ messages back to main queue"
+                );
+                FunctionResult::Success(RedriveResult {
+                    queue: input.queue,
+                    redriven: count,
+                })
+            }
+            Err(e) => {
+                tracing::error!(
+                    queue = %input.queue,
+                    error = %e,
+                    "Failed to redrive DLQ"
+                );
+                FunctionResult::Failure(ErrorBody {
+                    code: "redrive_failed".into(),
+                    message: format!("Failed to redrive DLQ for queue '{}': {}", input.queue, e),
+                    stacktrace: None,
+                })
+            }
+        }
     }
 }
 
@@ -622,7 +676,7 @@ mod tests {
     // Mock adapter for integration tests
     // =========================================================================
 
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tokio::sync::Mutex;
 
     struct MockQueueAdapter {
@@ -634,6 +688,8 @@ mod tests {
         last_data: Mutex<Option<Value>>,
         last_traceparent: Mutex<Option<String>>,
         last_baggage: Mutex<Option<String>>,
+        redrive_dlq_result: AtomicU64,
+        redrive_dlq_should_fail: AtomicBool,
     }
 
     impl MockQueueAdapter {
@@ -647,6 +703,8 @@ mod tests {
                 last_data: Mutex::new(None),
                 last_traceparent: Mutex::new(None),
                 last_baggage: Mutex::new(None),
+                redrive_dlq_result: AtomicU64::new(0),
+                redrive_dlq_should_fail: AtomicBool::new(false),
             }
         }
     }
@@ -697,7 +755,10 @@ mod tests {
         }
 
         async fn redrive_dlq(&self, _topic: &str) -> anyhow::Result<u64> {
-            Ok(0)
+            if self.redrive_dlq_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock redrive error"));
+            }
+            Ok(self.redrive_dlq_result.load(Ordering::SeqCst))
         }
 
         async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
@@ -794,6 +855,62 @@ mod tests {
             assert!(matches!(result, FunctionResult::Success(None)));
         }
         assert_eq!(adapter.enqueue_count.load(Ordering::SeqCst), 5);
+    }
+
+    // =========================================================================
+    // redrive service function tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn redrive_with_empty_queue_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let input = RedriveInput {
+            queue: "".to_string(),
+        };
+        let result = module.redrive(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "queue_not_set");
+                assert_eq!(e.message, "Queue name is required");
+            }
+            _ => panic!("Expected Failure for empty queue name"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redrive_success_returns_result() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter.redrive_dlq_result.store(5, Ordering::SeqCst);
+        let input = RedriveInput {
+            queue: "payment".to_string(),
+        };
+        let result = module.redrive(input).await;
+        match result {
+            FunctionResult::Success(r) => {
+                assert_eq!(r.queue, "payment");
+                assert_eq!(r.redriven, 5);
+            }
+            _ => panic!("Expected Success with RedriveResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redrive_adapter_error_returns_failure() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter
+            .redrive_dlq_should_fail
+            .store(true, Ordering::SeqCst);
+        let input = RedriveInput {
+            queue: "payment".to_string(),
+        };
+        let result = module.redrive(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "redrive_failed");
+                assert!(e.message.contains("mock redrive error"));
+            }
+            _ => panic!("Expected Failure when adapter returns error"),
+        }
     }
 
     // =========================================================================

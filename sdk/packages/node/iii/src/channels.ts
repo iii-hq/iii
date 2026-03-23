@@ -44,12 +44,20 @@ export class ChannelWriter {
           callback()
           return
         }
-        if (this.wsReady) {
-          this.ws.close(1000, 'stream_complete')
-        } else {
-          this.ws.on('open', () => this.ws?.close(1000, 'stream_complete'))
+        // Delay the close frame slightly to allow the TCP stack to flush
+        // all buffered send() data. Without this, the close frame can arrive
+        // at the engine before all data frames, causing data truncation.
+        const doClose = () => {
+          if (this.ws) {
+            this.ws.close(1000, 'stream_complete')
+          }
+          callback()
         }
-        callback()
+        if (this.wsReady) {
+          setTimeout(doClose, 10)
+        } else {
+          this.ws.on('open', () => setTimeout(doClose, 10))
+        }
       },
       destroy: (err, callback) => {
         if (this.ws) this.ws.terminate()
@@ -92,10 +100,15 @@ export class ChannelWriter {
   /** Close the channel writer. */
   close(): void {
     if (!this.ws) return
+    const doClose = () => {
+      if (this.ws) {
+        this.ws.close(1000, 'channel_close')
+      }
+    }
     if (this.wsReady) {
-      this.ws.close(1000, 'channel_close')
+      doClose()
     } else {
-      this.ws.on('open', () => this.ws?.close(1000, 'channel_close'))
+      this.ws.on('open', () => doClose())
     }
   }
 

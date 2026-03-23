@@ -12,6 +12,7 @@ services:
       - ./config.yaml:/app/config.yaml:ro
     environment:
       - RUST_LOG=info
+      - III_HOST_USER_ID=${III_HOST_USER_ID:-}
     depends_on:
       redis:
         condition: service_healthy

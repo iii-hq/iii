@@ -50,6 +50,8 @@ pub struct EngineConfig {
     pub port: u16,
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
+    #[serde(default)]
+    pub workers: Vec<ModuleEntry>,
 }
 
 impl EngineConfig {
@@ -59,6 +61,7 @@ impl EngineConfig {
         Self {
             port: DEFAULT_PORT,
             modules,
+            workers: Vec::new(),
         }
     }
 
@@ -116,6 +119,7 @@ impl EngineConfig {
         Self {
             port: DEFAULT_PORT,
             modules: default_module_entries(),
+            workers: Vec::new(),
         }
     }
 
@@ -145,6 +149,7 @@ impl EngineConfig {
                 Ok(Self {
                     port: DEFAULT_PORT,
                     modules: default_module_entries(),
+                    workers: Vec::new(),
                 })
             }
         }
@@ -257,23 +262,40 @@ impl ModuleRegistry {
             .insert(class.to_string(), info);
     }
 
-    /// Creates a module instance
+    /// Creates a module instance.
+    ///
+    /// First checks the built-in registry. If the class is not found, falls back
+    /// to external module resolution: checks `iii.toml` for installed modules and
+    /// spawns the corresponding binary from `iii_modules/`.
     pub async fn create_module(
         self: &Arc<Self>,
         class: &str,
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Module>> {
+        // Try built-in registry first
         let factory = {
             let factories = self.module_factories.read().expect("RwLock poisoned");
-            factories
-                .get(class)
-                .ok_or_else(|| anyhow::anyhow!("Unknown module class: {}", class))?
-                .factory
-                .clone()
+            factories.get(class).map(|info| info.factory.clone())
         };
 
-        factory(engine, config).await
+        if let Some(factory) = factory {
+            return factory(engine, config).await;
+        }
+
+        // Fallback: try external module from iii_modules/
+        if let Some(info) = super::external::resolve_external_module(class) {
+            tracing::info!(
+                "Resolved '{}' as external module '{}' ({})",
+                class,
+                info.name,
+                info.binary_path.display()
+            );
+            let module = super::external::ExternalModule::new(info, config);
+            return Ok(Box::new(module));
+        }
+
+        Err(anyhow::anyhow!("Unknown module class: {}", class))
     }
 
     // =========================================================================
@@ -406,6 +428,7 @@ impl EngineBuilder {
         if self.config.is_none() {
             self.config = Some(EngineConfig {
                 modules: Vec::new(),
+                workers: Vec::new(),
                 port: DEFAULT_PORT,
             });
         }
@@ -427,9 +450,11 @@ impl EngineBuilder {
         // This prevents panics in workers/invocation code that unconditionally calls get_engine_metrics().
         crate::modules::observability::metrics::ensure_default_meter();
 
-        tracing::info!("Building engine with {} modules", config.modules.len());
-
+        // Merge workers into the modules processing pipeline
         let mut modules = config.modules;
+        modules.extend(config.workers);
+
+        tracing::info!("Building engine with {} modules", modules.len());
         let module_classes = modules
             .iter()
             .map(|entry| entry.class.clone())
@@ -1104,6 +1129,7 @@ modules:
         let config = EngineConfig {
             port: 9999,
             modules: vec![],
+            workers: vec![],
         };
         let with_defaults = config.default_modules();
         assert_eq!(with_defaults.port, DEFAULT_PORT);

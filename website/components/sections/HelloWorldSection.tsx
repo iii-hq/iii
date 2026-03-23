@@ -1,4 +1,4 @@
-import { Highlight, themes } from "prism-react-renderer";
+import { Highlight, themes } from 'prism-react-renderer';
 
 interface HelloWorldSectionProps {
   isDarkMode?: boolean;
@@ -41,7 +41,10 @@ iii.register_function(
     "ml::predict", predict
 )`;
 
-const rustCode = `use iii_sdk::{register_worker, Value, IIIError, TriggerRequest};
+const rustCode = `use iii_sdk::{
+    register_worker, IIIError, TriggerRequest,
+    Value,
+};
 use serde_json::json;
 
 async fn transform(
@@ -49,16 +52,21 @@ async fn transform(
 ) -> Result<Value, IIIError> {
     let nums: Vec<f64> =
         serde_json::from_value(input)?;
-    let result: Vec<f64> = nums
-        .iter().map(|x| x * 2.0)
-        .collect();
+    let result: Vec<f64> =
+        nums.iter().map(|x| x * 2.0).collect();
     Ok(json!(result))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), IIIError> {
-    let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
-    iii.register_function("data::transform", transform);
+    let iii = register_worker(
+        "ws://localhost:49134",
+        InitOptions::default(),
+    )?;
+    iii.register_function(
+        "data::transform",
+        transform,
+    );
     Ok(())
 }`;
 
@@ -81,39 +89,39 @@ const pred = await iii.trigger({
 export function HelloWorldSection({
   isDarkMode = true,
 }: HelloWorldSectionProps) {
-  const textPrimary = isDarkMode ? "text-iii-light" : "text-iii-black";
-  const textSecondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
+  const textPrimary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
+  const textSecondary = isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70';
   const borderColor = isDarkMode
-    ? "border-iii-light/10"
-    : "border-iii-black/10";
-  const bgCard = isDarkMode ? "bg-iii-dark/30" : "bg-white/50";
-  const accentColor = isDarkMode ? "text-iii-accent" : "text-iii-accent-light";
-  const accentBg = isDarkMode ? "bg-iii-accent" : "bg-iii-accent-light";
+    ? 'border-iii-light/10'
+    : 'border-iii-black/10';
+  const bgCard = isDarkMode ? 'bg-iii-dark/30' : 'bg-white/50';
+  const accentColor = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
+  const accentBg = isDarkMode ? 'bg-iii-accent' : 'bg-iii-accent-light';
 
   const codeBlocks = [
     {
-      title: "Python Worker",
-      subtitle: "ML Inference",
+      title: 'Python Worker',
+      subtitle: 'ML Inference',
       icon: PythonIcon,
       code: pythonCode,
-      color: "text-iii-info",
-      language: "python",
+      color: 'text-iii-info',
+      language: 'python',
     },
     {
-      title: "Rust Worker",
-      subtitle: "Data Transform",
+      title: 'Rust Worker',
+      subtitle: 'Data Transform',
       icon: RustIcon,
       code: rustCode,
-      color: "text-iii-warn",
-      language: "rust",
+      color: 'text-iii-warn',
+      language: 'rust',
     },
     {
-      title: "Node.js Orchestrator",
-      subtitle: "Orchestrator",
+      title: 'Node.js Worker',
+      subtitle: 'Orchestrator',
       icon: NodeIcon,
       code: nodeCode,
-      color: "text-iii-success",
-      language: "typescript",
+      color: 'text-iii-success',
+      language: 'typescript',
     },
   ];
 
@@ -127,14 +135,14 @@ export function HelloWorldSection({
           className="absolute -top-1/4 -right-1/4 w-1/2 h-1/2 rounded-full opacity-[0.03]"
           style={{
             background:
-              "radial-gradient(circle, var(--color-accent) 0%, transparent 70%)",
+              'radial-gradient(circle, var(--color-accent) 0%, transparent 70%)',
           }}
         />
         <div
           className="absolute -bottom-1/4 -left-1/4 w-1/3 h-1/3 rounded-full opacity-[0.02]"
           style={{
             background:
-              "radial-gradient(circle, var(--color-info) 0%, transparent 70%)",
+              'radial-gradient(circle, var(--color-info) 0%, transparent 70%)',
           }}
         />
       </div>
@@ -142,7 +150,7 @@ export function HelloWorldSection({
         {/* Header */}
         <div className="text-center mb-10 md:mb-16 space-y-4">
           <h2 className="text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1]">
-            <span className="block sm:inline">One protocol.</span>{" "}
+            <span className="block sm:inline">One protocol.</span>{' '}
             <span className={`${accentColor} relative inline-block`}>
               Any language.
               <svg
@@ -179,18 +187,18 @@ export function HelloWorldSection({
                 relative rounded-lg border-2 ${borderColor} ${bgCard}
                 overflow-hidden transition-all duration-300 h-full flex flex-col
                 hover:border-opacity-30 hover:shadow-lg
-                ${isDarkMode ? "hover:border-iii-light/20" : "hover:border-iii-black/20"}
+                ${isDarkMode ? 'hover:border-iii-light/20' : 'hover:border-iii-black/20'}
               `}
               >
                 {/* Header */}
                 <div
                   className={`
                   flex items-center gap-3 px-5 py-4 border-b ${borderColor}
-                  ${isDarkMode ? "bg-iii-dark/50" : "bg-white/80"}
+                  ${isDarkMode ? 'bg-iii-dark/50' : 'bg-white/80'}
                 `}
                 >
                   <div
-                    className={`p-2 rounded-lg ${isDarkMode ? "bg-white/5" : "bg-black/5"} ${block.color}`}
+                    className={`p-2 rounded-lg ${isDarkMode ? 'bg-white/5' : 'bg-black/5'} ${block.color}`}
                   >
                     <block.icon />
                   </div>
@@ -206,19 +214,19 @@ export function HelloWorldSection({
                   <div
                     className={`
                     ml-auto w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold
-                    ${isDarkMode ? "bg-white/10 text-iii-light" : "bg-black/5 text-iii-black"}
+                    ${isDarkMode ? 'bg-white/10 text-iii-light' : 'bg-black/5 text-iii-black'}
                   `}
                   >
-                    {String(index + 1).padStart(2, "0")}
+                    {String(index + 1).padStart(2, '0')}
                   </div>
                 </div>
 
                 {/* Code */}
                 <div
-                  className={`flex-1 p-0 overflow-hidden text-left ${isDarkMode ? "bg-iii-black" : "bg-iii-light"}`}
+                  className={`flex-1 p-0 overflow-hidden text-left ${isDarkMode ? 'bg-iii-black' : 'bg-iii-light'}`}
                 >
                   <Highlight
-                    key={isDarkMode ? "dark" : "light"}
+                    key={isDarkMode ? 'dark' : 'light'}
                     theme={isDarkMode ? themes.nightOwl : themes.github}
                     code={block.code}
                     language={block.language as any}
@@ -234,7 +242,7 @@ export function HelloWorldSection({
                         className={`text-[11px] md:text-xs leading-relaxed overflow-x-hidden whitespace-pre p-5 h-full ${className}`}
                         style={{
                           ...style,
-                          background: "transparent",
+                          background: 'transparent',
                           margin: 0,
                         }}
                       >
@@ -255,7 +263,7 @@ export function HelloWorldSection({
         </div>
 
         {/* Caption */}
-        <div className="mt-8 md:mt-12 text-center">
+        {/* <div className="mt-8 md:mt-12 text-center">
           <div
             className={`
             inline-flex items-center gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 sm:py-3 rounded-lg
@@ -271,12 +279,14 @@ export function HelloWorldSection({
             >
               <span className={accentColor}>IPC</span>{" "}
               <span className="hidden sm:inline">
-                <span className={accentColor}>Inter-process communication</span>{" "}
+                <span className={accentColor}>
+                  Inter-process communication
+                </span>{" "}
               </span>
               across languages, domains, and systems
             </span>
           </div>
-        </div>
+        </div> */}
       </div>
     </section>
   );
