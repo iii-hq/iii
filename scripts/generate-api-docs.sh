@@ -35,9 +35,7 @@ fi
 
 # Step 4: Generate MDX
 echo "[4/4] Generating MDX files..."
-cd docs
-pnpm tsx scripts/generate-api-docs.mts
-cd "$REPO_ROOT"
+pnpm tsx docs/scripts/generate-api-docs.mts
 
 echo ""
 echo "=== Done ==="
