@@ -15,6 +15,7 @@ use colored::Colorize;
 use function_macros::{function, service};
 use futures::Future;
 use once_cell::sync::Lazy;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -38,18 +39,18 @@ pub struct QueueCoreModule {
     _config: QueueModuleConfig,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct QueueInput {
     topic: String,
     data: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct RedriveInput {
     queue: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct RedriveResult {
     pub queue: String,
     pub redriven: u64,

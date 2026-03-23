@@ -701,15 +701,15 @@ WebSocket-backed writer for streaming binary data and text messages.
 
 ### FunctionInfo
 
-Function information returned by `engine::functions::list`
+Function information returned by `engine::functions::list`. The engine auto-generates standard [JSON Schema](https://json-schema.org/) for `request_format` and `response_format` from Rust types using [`schemars`](https://docs.rs/schemars).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `function_id` | `String` | Yes | - |
-| `description` | `Option<String>` | No | - |
-| `request_format` | `Option<Value>` | No | - |
-| `response_format` | `Option<Value>` | No | - |
-| `metadata` | `Option<Value>` | No | - |
+| `function_id` | `String` | Yes | Unique function identifier. |
+| `description` | `Option<String>` | No | Human-readable description. |
+| `request_format` | `Option<Value>` | No | JSON Schema describing expected input. Auto-generated for functions registered via the `#[service]` macro. |
+| `response_format` | `Option<Value>` | No | JSON Schema describing expected output. Auto-generated for functions registered via the `#[service]` macro. |
+| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the function. |
 
 ### FunctionRef
 
@@ -773,13 +773,13 @@ Call [`unregister`](Trigger::unregister) to remove the trigger from the engine.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `id` | `String` | Yes | - |
-| `description` | `Option<String>` | No | - |
-| `request_format` | `Option<Value>` | No | - |
-| `response_format` | `Option<Value>` | No | - |
-| `metadata` | `Option<Value>` | No | - |
-| `invocation` | Option&lt;[`HttpInvocationConfig`](#httpinvocationconfig)&gt; | No | - |
-| `to_message` | `fn() -> Message` | Yes | - |
+| `id` | `String` | Yes | Unique function identifier. |
+| `description` | `Option<String>` | No | Human-readable description. |
+| `request_format` | `Option<Value>` | No | JSON Schema describing expected input. |
+| `response_format` | `Option<Value>` | No | JSON Schema describing expected output. |
+| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the function. |
+| `invocation` | Option&lt;[`HttpInvocationConfig`](#httpinvocationconfig)&gt; | No | HTTP invocation config for externally hosted functions. |
+| `to_message` | `fn() -> Message` | Yes | Convert to protocol message. |
 
 ### RegisterServiceMessage
 

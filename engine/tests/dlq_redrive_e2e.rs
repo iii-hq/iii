@@ -609,6 +609,8 @@ fn cli_trigger_connection_refused_fails_gracefully() {
             r#"{"queue":"orders"}"#,
             "--port",
             "19877",
+            "--timeout-ms",
+            "2000",
         ])
         .output()
         .expect("failed to execute");
@@ -620,8 +622,11 @@ fn cli_trigger_connection_refused_fails_gracefully() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Failed to connect") || stderr.contains("connect"),
-        "Should mention connection failure, got: {}",
+        stderr.contains("Failed to connect")
+            || stderr.contains("connect")
+            || stderr.contains("Timed out")
+            || stderr.contains("timeout"),
+        "Should mention connection failure or timeout, got: {}",
         stderr
     );
 }

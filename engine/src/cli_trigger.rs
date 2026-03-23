@@ -6,6 +6,7 @@
 
 use clap::Parser;
 use iii::modules::config::DEFAULT_PORT;
+use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
 
 #[derive(Parser, Debug, Clone)]
 pub struct TriggerArgs {
@@ -14,7 +15,7 @@ pub struct TriggerArgs {
     pub function_id: String,
 
     /// JSON payload to send to the function
-    #[arg(long)]
+    #[arg(long, default_value = "{}")]
     pub payload: String,
 
     /// Engine host address
@@ -24,92 +25,71 @@ pub struct TriggerArgs {
     /// Engine WebSocket port
     #[arg(long, default_value_t = DEFAULT_PORT)]
     pub port: u16,
-}
 
-pub fn build_invoke_message(function_id: &str, data: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "type": "invokefunction",
-        "invocation_id": null,
-        "function_id": function_id,
-        "data": data,
-        "traceparent": null,
-        "baggage": null,
-        "action": null,
-    })
+    /// Max time to wait for the invocation result (milliseconds)
+    #[arg(long, default_value_t = 30_000)]
+    pub timeout_ms: u64,
 }
 
 pub async fn run_trigger(args: &TriggerArgs) -> anyhow::Result<()> {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message as WsMessage;
-
     let data: serde_json::Value = serde_json::from_str(&args.payload)
         .map_err(|e| anyhow::anyhow!("Invalid JSON payload: {}", e))?;
 
-    let url = format!("ws://{}:{}/", args.address, args.port);
+    let url = format!("ws://{}:{}", args.address, args.port);
+    let iii = register_worker(&url, InitOptions::default());
 
-    let (mut socket, _): (
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-        >,
-        _,
-    ) = tokio_tungstenite::connect_async(&url)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to engine at {}: {}", url, e))?;
+    let trigger_result = iii
+        .trigger(TriggerRequest {
+            function_id: args.function_id.clone(),
+            payload: data,
+            action: None,
+            timeout_ms: Some(args.timeout_ms),
+        })
+        .await;
 
-    while let Some(msg) = socket.next().await {
-        let msg = msg.map_err(|e| anyhow::anyhow!("WebSocket error: {}", e))?;
-        if let WsMessage::Text(text) = msg {
-            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-            if parsed.get("type").and_then(|t| t.as_str()) == Some("workerregistered") {
-                break;
+    iii.shutdown_async().await;
+
+    match trigger_result {
+        Ok(value) => {
+            if !value.is_null() {
+                println!("{}", serde_json::to_string_pretty(&value)?);
             }
+            Ok(())
         }
-    }
-
-    let invoke_msg = build_invoke_message(&args.function_id, data);
-    let msg_text = serde_json::to_string(&invoke_msg)?;
-    socket
-        .send(WsMessage::Text(msg_text.into()))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to send message: {}", e))?;
-
-    while let Some(msg) = socket.next().await {
-        let msg = msg.map_err(|e| anyhow::anyhow!("WebSocket error: {}", e))?;
-        if let WsMessage::Text(text) = msg {
-            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-            if parsed.get("type").and_then(|t| t.as_str()) == Some("invocationresult") {
-                if let Some(error) = parsed.get("error").filter(|e| !e.is_null()) {
-                    eprintln!("Error: {}", serde_json::to_string_pretty(error)?);
-                    std::process::exit(1);
-                }
-                if let Some(result) = parsed.get("result") {
-                    println!("{}", serde_json::to_string_pretty(result)?);
-                }
-                return Ok(());
-            }
+        Err(IIIError::Remote {
+            code,
+            message,
+            stacktrace,
+        }) => {
+            let err_obj = serde_json::json!({
+                "code": code,
+                "message": message,
+                "stacktrace": stacktrace,
+            });
+            eprintln!("Error: {}", serde_json::to_string_pretty(&err_obj)?);
+            std::process::exit(1);
         }
+        Err(e) => Err(map_trigger_error(e)),
     }
+}
 
-    Err(anyhow::anyhow!(
-        "Connection closed without receiving a result"
-    ))
+fn map_trigger_error(e: IIIError) -> anyhow::Error {
+    match e {
+        IIIError::Timeout => {
+            anyhow::anyhow!(
+                "Timed out waiting for the engine (no response within the timeout). Is the engine running at the given address and port?"
+            )
+        }
+        IIIError::WebSocket(msg) => {
+            anyhow::anyhow!("WebSocket error: {}", msg)
+        }
+        other => anyhow::Error::new(other),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn build_invoke_message_structure() {
-        let data = serde_json::json!({"queue": "payment"});
-        let msg = build_invoke_message("iii::queue::redrive", data.clone());
-
-        assert_eq!(msg["type"], "invokefunction");
-        assert_eq!(msg["function_id"], "iii::queue::redrive");
-        assert_eq!(msg["data"], data);
-        assert!(msg["invocation_id"].is_null());
-        assert!(msg["action"].is_null());
-    }
 
     #[tokio::test]
     async fn run_trigger_rejects_invalid_json_payload() {
@@ -118,6 +98,7 @@ mod tests {
             payload: "not-json".to_string(),
             address: "localhost".to_string(),
             port: DEFAULT_PORT,
+            timeout_ms: 30_000,
         };
         let result = run_trigger(&args).await;
         assert!(result.is_err());
@@ -130,19 +111,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_trigger_connection_refused() {
+    async fn run_trigger_unreachable_engine_times_out() {
         let args = TriggerArgs {
             function_id: "test::fn".to_string(),
             payload: "{}".to_string(),
             address: "localhost".to_string(),
             port: 19999,
+            timeout_ms: 800,
         };
         let result = run_trigger(&args).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("Failed to connect"),
-            "expected connection error, got: {}",
+            err.contains("Timed out") || err.contains("timeout"),
+            "expected timeout when engine is unreachable, got: {}",
             err,
         );
     }

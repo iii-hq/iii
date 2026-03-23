@@ -1908,6 +1908,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rkyv",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",

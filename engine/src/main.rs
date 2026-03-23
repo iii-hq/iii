@@ -119,6 +119,7 @@ mod tests {
                 assert_eq!(args.payload, r#"{"queue":"payment"}"#);
                 assert_eq!(args.address, "10.0.0.1");
                 assert_eq!(args.port, 9999);
+                assert_eq!(args.timeout_ms, 30_000);
             }
             _ => panic!("expected Trigger subcommand"),
         }
@@ -140,6 +141,7 @@ mod tests {
             Some(Commands::Trigger(args)) => {
                 assert_eq!(args.address, "localhost");
                 assert_eq!(args.port, DEFAULT_PORT);
+                assert_eq!(args.timeout_ms, 30_000);
             }
             _ => panic!("expected Trigger subcommand"),
         }
@@ -149,12 +151,6 @@ mod tests {
     fn trigger_requires_function_id() {
         let result = Cli::try_parse_from(["iii", "trigger", "--payload", "{}"]);
         assert!(result.is_err(), "should fail without --function-id");
-    }
-
-    #[test]
-    fn trigger_requires_payload() {
-        let result = Cli::try_parse_from(["iii", "trigger", "--function-id", "test::fn"]);
-        assert!(result.is_err(), "should fail without --payload");
     }
 
     #[test]
