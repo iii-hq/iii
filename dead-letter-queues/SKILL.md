@@ -63,6 +63,12 @@ Use the adaptations below when they apply to the task.
 
 ## Pattern Boundaries
 
+## Engine Configuration
+
+Queue `max_retries` and `backoff_ms` are set per queue in iii-config.yaml under `queue_configs`. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+
+## Pattern Boundaries
+
 - For queue processing patterns (enqueue, concurrency, FIFO), prefer `queue-processing`.
 - For queue configuration (retries, backoff, adapters), prefer `engine-config`.
 - For function registration and triggers, prefer `functions-and-triggers`.

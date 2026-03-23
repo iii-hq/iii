@@ -1,9 +1,11 @@
 ---
 name: state-management
 description: >-
-  Reads and writes distributed key-value state across functions. Use when
-  persisting data between invocations, managing sessions, or building a data
-  layer.
+  Creates scoped key-value stores, reads and writes state entries, lists keys,
+  and performs partial updates across functions. Use when persisting data between
+  invocations, managing user sessions, caching computed values, storing feature
+  flags, sharing state between workers, or building a KV data layer as an
+  alternative to Redis or DynamoDB.
 ---
 
 # State Management
@@ -65,6 +67,10 @@ Use the adaptations below when they apply to the task.
 - Use `state::get` with a `null` check to handle missing keys gracefully
 - Use `state::update` with `ops` for partial updates instead of read-modify-write cycles
 - Combine with `queue-processing` to persist results after async job completion
+
+## Engine Configuration
+
+StateModule must be enabled in iii-config.yaml with a KvStore adapter (file-based or Redis). See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

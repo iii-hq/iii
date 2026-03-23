@@ -65,6 +65,10 @@ Use the adaptations below when they apply to the task.
 - Combine with `state-reactions` to push a stream event whenever state changes
 - Use `createStream` when the default adapter does not fit (e.g. custom persistence or fan-out logic)
 
+## Engine Configuration
+
+StreamModule must be enabled in iii-config.yaml with a port and adapter (KvStore or Redis). See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+
 ## Pattern Boundaries
 
 - If the task is about persistent key-value data without real-time push, prefer `state-management`.

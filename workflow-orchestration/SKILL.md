@@ -79,6 +79,10 @@ Use the adaptations below when they apply to the task.
 - DLQ support for named queues is provided by the Builtin and RabbitMQ adapters (Redis is pub/sub only)
 - Cron expressions use 7-position numeric format: `0 0 * * * * *` (every hour)
 
+## Engine Configuration
+
+Named queues for pipeline steps are declared in iii-config.yaml under `queue_configs` with per-queue retry, concurrency, and FIFO settings. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+
 ## Pattern Boundaries
 
 - If the task is "model HTTP endpoints as HTTP-invoked `registerFunction` functions" (including `{ path, id }` arrays iterated into registration), prefer `http-invoked-functions`.

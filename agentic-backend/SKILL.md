@@ -72,6 +72,10 @@ Use the adaptations below when they apply to the task.
 - State scope should be named for your domain (e.g. `research-tasks`, `support-tickets`)
 - `functionId` segments should reflect your agent hierarchy (e.g. `agents::researcher`, `agents::critic`)
 
+## Engine Configuration
+
+Named queues for agent handoffs are declared in iii-config.yaml under `queue_configs`. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
+
 ## Pattern Boundaries
 
 - If a request is about adapting existing HTTP endpoints into `registerFunction` (including prompts asking for `{ path, id }` endpoint maps + loops), prefer `http-invoked-functions`.

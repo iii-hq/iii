@@ -1,9 +1,11 @@
 ---
 name: trigger-conditions
 description: >-
-  Runs a condition function before trigger handlers execute. Use when gating
-  event processing on business rules, filtering events, or conditionally
-  skipping handlers.
+  Registers a boolean condition function and attaches it to triggers via
+  condition_function_id so handlers only fire when the condition passes. Use
+  when gating triggers on business rules, checking user permissions, validating
+  data before processing, filtering high-value orders, rate-limiting events, or
+  conditionally skipping handlers based on payload content.
 ---
 
 # Trigger Conditions

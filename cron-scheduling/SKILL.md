@@ -1,8 +1,11 @@
 ---
 name: cron-scheduling
 description: >-
-  Schedules recurring tasks with cron expressions. Use when running periodic
-  cleanup, reports, health checks, or batch jobs.
+  Registers cron triggers with 7-field expressions to run functions on
+  recurring schedules. Use when scheduling periodic jobs, timed automation,
+  crontab replacements, cleanup routines, report generation, health checks,
+  batch processing, or any task that should run every N seconds, minutes, hours,
+  or on a weekly/monthly calendar.
 ---
 
 # Cron Scheduling
@@ -56,6 +59,10 @@ Use the adaptations below when they apply to the task.
 - Keep the cron handler lightweight — use it to validate and enqueue, not to do the heavy lifting
 - For jobs that need state (e.g. last-run timestamp), combine with `state-management`
 - Multiple cron triggers can feed the same queue for fan-in processing
+
+## Engine Configuration
+
+CronModule must be enabled in iii-config.yaml. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

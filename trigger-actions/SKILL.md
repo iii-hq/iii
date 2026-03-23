@@ -1,9 +1,10 @@
 ---
 name: trigger-actions
 description: >-
-  Controls how functions are invoked — synchronous, fire-and-forget, or durable
-  async via queues. Use when choosing between blocking calls, background work,
-  or reliable delivery.
+  Selects how functions are invoked — synchronous calls that return results,
+  fire-and-forget void dispatches, or durable enqueue through named queues with
+  retries. Use when deciding between blocking RPC calls, background job
+  dispatch, async workers, or reliable message delivery with acknowledgement.
 ---
 
 # Trigger Actions

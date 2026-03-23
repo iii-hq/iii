@@ -1,8 +1,10 @@
 ---
 name: queue-processing
 description: >-
-  Processes async jobs with retries, concurrency, and ordering via named queues.
-  Use when offloading work, building pipelines, or needing guaranteed delivery.
+  Enqueues jobs, configures retry policies, sets concurrency limits, and orders
+  messages via named standard or FIFO queues. Use when building background job
+  workers, task queues, message queues, async pipelines, or any pattern needing
+  guaranteed delivery with exponential backoff and dead-letter handling.
 ---
 
 # Queue Processing
@@ -61,6 +63,12 @@ Use the adaptations below when they apply to the task.
 - Set `max_retries` and `concurrency` in queue config to match your workload
 - Chain multiple queues for multi-stage pipelines (queue A consumer enqueues to queue B)
 - For idempotency, check state before processing to avoid duplicate work on retries
+
+## Pattern Boundaries
+
+## Engine Configuration
+
+Named queues are declared in iii-config.yaml under `queue_configs` with per-queue `max_retries`, `concurrency`, `type`, and `backoff_ms`. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 

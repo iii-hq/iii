@@ -1,8 +1,11 @@
 ---
 name: state-reactions
 description: >-
-  Automatically triggers functions when state values change. Use when building
-  reactive side effects, audit logs, or notifications on data changes.
+  Registers state-type triggers that automatically fire functions when key-value
+  state is created, updated, or deleted within a scope. Use when building
+  reactive side effects, change watchers, audit logs, cache invalidation,
+  notification dispatchers, or any observer pattern where data changes should
+  trigger downstream processing.
 ---
 
 # State Reactions
@@ -60,6 +63,10 @@ Use the adaptations below when they apply to the task.
 - Use `key` to narrow reactions to a single key within a scope
 - Add a `condition_function_id` to filter — only react when the condition function returns truthy
 - Chain reactions by writing state in one handler that triggers another reaction on a different scope
+
+## Engine Configuration
+
+StateModule must be enabled in iii-config.yaml for state triggers to fire. See [../references/iii-config.yaml](../references/iii-config.yaml) for the full annotated config reference.
 
 ## Pattern Boundaries
 
