@@ -43,7 +43,7 @@ Use the concepts below when they fit the task. Not every state operation needs a
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — functions that read, write, update, and delete state entries across a shared scope.
+See [../references/state-management.js](../references/state-management.js) for the full working example — functions that read, write, update, and delete state entries across a shared scope.
 
 ## Common Patterns
 

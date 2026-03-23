@@ -42,4 +42,4 @@ Use this pattern when iii should call external HTTP endpoints as functions.
 
 ## Reference
 
-See [references/reference.js](references/reference.js).
+See [../references/http-invoked-functions.js](../references/http-invoked-functions.js).

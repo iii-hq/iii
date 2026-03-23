@@ -37,7 +37,7 @@ SDK init connects the worker to the engine, `registerFunction` defines handlers,
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a multi-language worker setup
+See [../references/functions-and-triggers.js](../references/functions-and-triggers.js) for the full working example — a multi-language worker setup
 showing function registration, trigger binding, and cross-function invocation patterns in TypeScript, Python, and Rust.
 
 ## Common Patterns

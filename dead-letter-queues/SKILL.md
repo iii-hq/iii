@@ -36,7 +36,7 @@ A queue consumer fails processing a job. The engine retries with exponential bac
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — inspecting DLQ status,
+See [../references/dead-letter-queues.js](../references/dead-letter-queues.js) for the full working example — inspecting DLQ status,
 redriving failed jobs via SDK and CLI, and configuring retry behavior.
 
 ## Common Patterns

@@ -50,7 +50,7 @@ HTTP GET /inventory (query)
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — an inventory management system
+See [../references/event-driven-cqrs.js](../references/event-driven-cqrs.js) for the full working example — an inventory management system
 with commands that publish domain events and multiple projections building query-optimized views.
 
 ## Common Patterns

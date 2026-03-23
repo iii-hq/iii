@@ -46,7 +46,7 @@ HTTP request
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a multi-agent research pipeline
+See [../references/agentic-backend.js](../references/agentic-backend.js) for the full working example — a multi-agent research pipeline
 where a researcher gathers findings, a critic reviews them, and a synthesizer produces a final report.
 
 ## Common Patterns

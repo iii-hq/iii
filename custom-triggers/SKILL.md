@@ -38,7 +38,7 @@ Use the concepts below when they fit the task. Not every custom trigger needs al
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a custom trigger type that listens for external events and routes them to registered functions.
+See [../references/custom-triggers.js](../references/custom-triggers.js) for the full working example — a custom trigger type that listens for external events and routes them to registered functions.
 
 ## Common Patterns
 

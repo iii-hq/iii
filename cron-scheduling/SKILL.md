@@ -36,7 +36,7 @@ Use the concepts below when they fit the task. Not every scheduled job needs all
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a recurring scheduled task that fires on a cron expression and optionally enqueues heavy work.
+See [../references/cron-scheduling.js](../references/cron-scheduling.js) for the full working example — a recurring scheduled task that fires on a cron expression and optionally enqueues heavy work.
 
 ## Common Patterns
 

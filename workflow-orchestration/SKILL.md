@@ -51,7 +51,7 @@ Queue configs (iii-config.yaml):
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — an order fulfillment pipeline
+See [../references/workflow-orchestration.js](../references/workflow-orchestration.js) for the full working example — an order fulfillment pipeline
 with validate → charge → ship steps, retry configuration, stream-based progress tracking,
 and hourly stale-order cleanup.
 

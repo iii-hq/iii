@@ -37,7 +37,7 @@ Use the concepts below when they fit the task. Not every HTTP endpoint needs all
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a REST API with parameterized routes handling GET and POST requests.
+See [../references/http-endpoints.js](../references/http-endpoints.js) for the full working example — a REST API with parameterized routes handling GET and POST requests.
 
 ## Common Patterns
 

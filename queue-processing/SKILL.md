@@ -40,7 +40,7 @@ Use the concepts below when they fit the task. Not every queue setup needs all o
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a producer that enqueues jobs and a consumer that processes them with retry logic.
+See [../references/queue-processing.js](../references/queue-processing.js) for the full working example — a producer that enqueues jobs and a consumer that processes them with retry logic.
 
 ## Common Patterns
 

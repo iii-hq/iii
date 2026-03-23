@@ -38,7 +38,7 @@ Use the concepts below when they fit the task. Not every state reaction needs al
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a reaction that watches a state scope and fires side effects when values change, with an optional condition gate.
+See [../references/state-reactions.js](../references/state-reactions.js) for the full working example — a reaction that watches a state scope and fires side effects when values change, with an optional condition gate.
 
 ## Common Patterns
 

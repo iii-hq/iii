@@ -48,7 +48,7 @@ Automation 3: Payment webhook → Validate → Update → Notify
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — three automation chains:
+See [../references/low-code-automation.js](../references/low-code-automation.js) for the full working example — three automation chains:
 form-to-Slack notification, RSS feed aggregation, and payment webhook processing.
 
 ## Common Patterns

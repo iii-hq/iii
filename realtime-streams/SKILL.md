@@ -42,7 +42,7 @@ Use the concepts below when they fit the task. Not every stream setup needs all 
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a stream that pushes live updates to WebSocket clients and manages stream items with CRUD operations.
+See [../references/realtime-streams.js](../references/realtime-streams.js) for the full working example — a stream that pushes live updates to WebSocket clients and manages stream items with CRUD operations.
 
 ## Common Patterns
 

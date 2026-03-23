@@ -46,7 +46,7 @@ WebSocket clients ← stream 'todos-live'
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a real-time todo app with
+See [../references/reactive-backend.js](../references/reactive-backend.js) for the full working example — a real-time todo app with
 CRUD endpoints, automatic change broadcasting via streams, and reactive aggregate metrics.
 
 ## Common Patterns

@@ -41,7 +41,7 @@ The worker SDK generates spans, metrics, and logs during function execution. The
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a worker with custom spans,
+See [../references/observability.js](../references/observability.js) for the full working example — a worker with custom spans,
 metrics counters, trace propagation, and log subscriptions connected to an OTel collector.
 
 ## Common Patterns

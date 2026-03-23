@@ -44,7 +44,7 @@ HTTP request
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a user signup pipeline
+See [../references/effect-system.js](../references/effect-system.js) for the full working example — a user signup pipeline
 where input is parsed, enriched with external data, persisted to state, and a welcome notification is fired.
 
 ## Common Patterns

@@ -34,7 +34,7 @@ When a trigger fires, the engine first invokes the condition function with the e
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a condition-gated trigger
+See [../references/trigger-conditions.js](../references/trigger-conditions.js) for the full working example — a condition-gated trigger
 where a business rule function filters events before the handler processes them.
 
 ## Common Patterns

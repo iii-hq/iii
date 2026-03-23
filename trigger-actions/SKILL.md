@@ -33,7 +33,7 @@ The caller invokes `trigger()` with an optional action parameter. Synchronous mo
 
 ## Reference Implementation
 
-See [references/reference.js](references/reference.js) for the full working example — a comparison of all three
+See [../references/trigger-actions.js](../references/trigger-actions.js) for the full working example — a comparison of all three
 invocation modes showing when and how to use sync, void, and enqueue patterns.
 
 ## Common Patterns
