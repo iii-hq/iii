@@ -1057,7 +1057,7 @@ impl III {
                             Ok(Value::Null)
                         }
                     },
-    );
+                );
             }
 
             match self.register_trigger(RegisterTriggerInput {
@@ -1717,7 +1717,7 @@ mod tests {
                 invocation: None,
             },
             config,
-    );
+        );
 
         assert_eq!(func_ref.id, "external::my_lambda");
         assert_eq!(iii.inner.functions.lock().unwrap().len(), 1);
@@ -1749,7 +1749,7 @@ mod tests {
                 invocation: None,
             },
             config,
-    );
+        );
     }
 
     #[tokio::test]
