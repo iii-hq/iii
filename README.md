@@ -19,11 +19,11 @@ npx skills add iii-hq/skills
 npx skillkit install iii-hq/skills
 
 # Install a single skill
-npx skillkit install iii-rest-api
+npx skillkit install http-endpoints
 
 # Translate to another agent format
-npx skillkit translate iii-rest-api --agent cursor
-npx skillkit translate iii-rest-api --agent gemini-cli
+npx skillkit translate http-endpoints --agent cursor
+npx skillkit translate http-endpoints --agent gemini-cli
 
 # Sync skills across all your agents
 npx skillkit sync
@@ -42,7 +42,7 @@ git clone https://github.com/iii-hq/skills.git .cursor/skills/iii
 git clone https://github.com/iii-hq/skills.git .gemini/skills/iii
 
 # Or symlink individual skills
-ln -s /path/to/skills/iii-rest-api ~/.claude/skills/iii-rest-api
+ln -s /path/to/skills/http-endpoints ~/.claude/skills/http-endpoints
 ```
 
 ### Multi-agent sync
@@ -62,52 +62,70 @@ Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, 
 
 ## Skills
 
-### SDK Reference
+### HOWTO Skills
+
+Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or capability.
 
 | Skill | What it does |
 |-------|-------------|
-| [iii-python-sdk](./iii-python-sdk) | Register async functions, triggers, state, and streams in Python |
-| [iii-rust-sdk](./iii-rust-sdk) | Native async Rust — closures, Streams helper, UpdateBuilder, TriggerHandler |
+| [functions-and-triggers](./functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
+| [http-endpoints](./http-endpoints) | Expose functions as REST API endpoints |
+| [cron-scheduling](./cron-scheduling) | Schedule recurring tasks with cron expressions |
+| [queue-processing](./queue-processing) | Async job processing with retries, concurrency, and ordering |
+| [state-management](./state-management) | Distributed key-value state across functions |
+| [state-reactions](./state-reactions) | Auto-trigger functions on state changes |
+| [realtime-streams](./realtime-streams) | Push live updates to WebSocket clients |
+| [custom-triggers](./custom-triggers) | Build custom trigger types for external events |
+| [trigger-actions](./trigger-actions) | Synchronous, fire-and-forget, and enqueue invocation modes |
+| [trigger-conditions](./trigger-conditions) | Gate trigger execution with condition functions |
+| [dead-letter-queues](./dead-letter-queues) | Inspect and redrive failed queue jobs |
+| [engine-config](./engine-config) | Configure the iii engine via iii-config.yaml |
+| [observability](./observability) | OpenTelemetry tracing, metrics, and logging |
 
-### Core Patterns
+### Architecture Pattern Skills
 
-| Skill | What it does |
-|-------|-------------|
-| [iii-rest-api](./iii-rest-api) | HTTP endpoints, route handlers, CORS, path params, error responses |
-| [iii-background-jobs](./iii-background-jobs) | Queue triggers, job chaining, retry patterns, dead-letter handling |
-| [iii-cron-tasks](./iii-cron-tasks) | Cron expressions, scheduled tasks, timezone handling |
-| [iii-workflows](./iii-workflows) | Multi-step pipelines, fan-out/fan-in, saga compensation |
-| [iii-state-management](./iii-state-management) | Key-value state, streams, custom adapters, atomic updates |
-| [iii-realtime-streaming](./iii-realtime-streaming) | WebSocket/SSE streaming, browser clients, React hooks |
-| [iii-pubsub](./iii-pubsub) | Topic broadcasting, fan-out, state triggers, cross-service events |
-| [iii-channels](./iii-channels) | Binary data streaming between workers, 64KB frame protocol |
-
-### Advanced
-
-| Skill | What it does |
-|-------|-------------|
-| [iii-multi-trigger](./iii-multi-trigger) | Multiple triggers on one function, ctx.match() routing |
-| [iii-custom-triggers](./iii-custom-triggers) | TriggerHandler interface, webhooks, file watchers, polling |
-| [iii-ai-agents](./iii-ai-agents) | ReAct loops, RAG pipelines, multi-agent orchestration |
-| [iii-testing](./iii-testing) | Mock init(), vitest setup, step testing |
-
-### Operations
+Compose multiple iii primitives into common backend architectures. Each includes a full working reference implementation.
 
 | Skill | What it does |
 |-------|-------------|
-| [iii-deployment](./iii-deployment) | Docker, config.yaml, production checklist |
-| [iii-observability](./iii-observability) | OpenTelemetry, Prometheus, custom spans/metrics |
+| [agentic-backend](./agentic-backend) | Multi-agent pipelines with queue handoffs and shared state |
+| [reactive-backend](./reactive-backend) | Real-time backends with state triggers and stream updates |
+| [workflow-orchestration](./workflow-orchestration) | Durable multi-step pipelines with retries and DLQ |
+| [http-invoked-functions](./http-invoked-functions) | Register external HTTP endpoints as iii functions |
+| [effect-system](./effect-system) | Composable, traceable function pipelines |
+| [event-driven-cqrs](./event-driven-cqrs) | CQRS with event sourcing and independent projections |
+| [low-code-automation](./low-code-automation) | Trigger-transform-action automation chains |
+
+### SDK Reference Skills
+
+| Skill | What it does |
+|-------|-------------|
+| [node-sdk](./node-sdk) | Node.js/TypeScript SDK reference |
+| [python-sdk](./python-sdk) | Python SDK reference |
+| [rust-sdk](./rust-sdk) | Rust SDK reference |
+
+### Shared References
+
+| File | What it contains |
+|------|-----------------|
+| [references/iii-config.yaml](./references/iii-config.yaml) | Full annotated engine configuration reference (auto-synced from docs) |
 
 ## Format
 
 Each skill follows the [Agent Skills specification](https://agentskills.io/specification):
 
 ```
-iii-rest-api/
+http-endpoints/
 └── SKILL.md    # YAML frontmatter (name + description) + markdown instructions
+
+references/
+├── http-endpoints.js    # Full working code examples for each skill
+├── agentic-backend.js
+├── iii-config.yaml      # Shared engine config reference
+└── ...
 ```
 
-Skills are activated automatically when the agent detects a matching task based on the description field.
+Skills are activated automatically when the agent detects a matching task based on the description field. Code references live in the root `references/` directory, named after their skill.
 
 ## Contributing
 
