@@ -451,38 +451,32 @@ mod tests {
 
     // ── run_version_check tests ─────────────────────────────────────
 
+    #[cfg(unix)]
     #[test]
     fn run_version_check_parses_bare_version() {
-        // Create a script that outputs just a version number
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-binary");
         {
             let mut f = std::fs::File::create(&script).unwrap();
             writeln!(f, "#!/bin/sh\necho '1.2.3'").unwrap();
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let v = run_version_check(&script).unwrap();
         assert_eq!(v, Version::new(1, 2, 3));
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_version_check_parses_prefixed_version() {
-        // "iii 0.9.0" → should extract "0.9.0"
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-binary");
         {
             let mut f = std::fs::File::create(&script).unwrap();
             writeln!(f, "#!/bin/sh\necho 'iii 0.9.0'").unwrap();
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let v = run_version_check(&script).unwrap();
         assert_eq!(v, Version::new(0, 9, 0));
     }
@@ -493,6 +487,7 @@ mod tests {
         assert!(run_version_check(path).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_version_check_returns_none_for_invalid_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -501,14 +496,12 @@ mod tests {
             let mut f = std::fs::File::create(&script).unwrap();
             writeln!(f, "#!/bin/sh\necho 'not-a-version'").unwrap();
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(run_version_check(&script).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_version_check_handles_trailing_whitespace() {
         let dir = tempfile::tempdir().unwrap();
@@ -517,11 +510,8 @@ mod tests {
             let mut f = std::fs::File::create(&script).unwrap();
             writeln!(f, "#!/bin/sh\nprintf '2.0.0\\n  '").unwrap();
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let v = run_version_check(&script).unwrap();
         assert_eq!(v, Version::new(2, 0, 0));
     }
