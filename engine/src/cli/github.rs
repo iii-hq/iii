@@ -29,7 +29,7 @@ pub fn build_client() -> Result<reqwest::Client, reqwest::Error> {
 
     // Support optional GitHub token for higher rate limits
     if let Some(token) = github_token() {
-        use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+        use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
         let mut headers = HeaderMap::new();
         if let Ok(val) = HeaderValue::from_str(&format!("token {}", token)) {
             headers.insert(AUTHORIZATION, val);

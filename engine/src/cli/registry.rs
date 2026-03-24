@@ -224,25 +224,37 @@ mod tests {
 
     #[test]
     fn test_self_spec_supported_targets() {
-        assert!(SELF_SPEC
-            .supported_targets
-            .contains(&"aarch64-apple-darwin"));
+        assert!(
+            SELF_SPEC
+                .supported_targets
+                .contains(&"aarch64-apple-darwin")
+        );
         assert!(SELF_SPEC.supported_targets.contains(&"x86_64-apple-darwin"));
-        assert!(SELF_SPEC
-            .supported_targets
-            .contains(&"x86_64-unknown-linux-gnu"));
-        assert!(SELF_SPEC
-            .supported_targets
-            .contains(&"x86_64-unknown-linux-musl"));
-        assert!(SELF_SPEC
-            .supported_targets
-            .contains(&"aarch64-unknown-linux-gnu"));
-        assert!(SELF_SPEC
-            .supported_targets
-            .contains(&"x86_64-pc-windows-msvc"));
-        assert!(SELF_SPEC
-            .supported_targets
-            .contains(&"aarch64-pc-windows-msvc"));
+        assert!(
+            SELF_SPEC
+                .supported_targets
+                .contains(&"x86_64-unknown-linux-gnu")
+        );
+        assert!(
+            SELF_SPEC
+                .supported_targets
+                .contains(&"x86_64-unknown-linux-musl")
+        );
+        assert!(
+            SELF_SPEC
+                .supported_targets
+                .contains(&"aarch64-unknown-linux-gnu")
+        );
+        assert!(
+            SELF_SPEC
+                .supported_targets
+                .contains(&"x86_64-pc-windows-msvc")
+        );
+        assert!(
+            SELF_SPEC
+                .supported_targets
+                .contains(&"aarch64-pc-windows-msvc")
+        );
         assert_eq!(SELF_SPEC.supported_targets.len(), 7);
     }
 

@@ -250,11 +250,15 @@ mod tests {
     fn test_registry_url_env_override() {
         // Verify that III_REGISTRY_URL env var is read (unit test for URL resolution logic)
         let custom_url = "https://example.com/custom-registry.json";
-        unsafe { std::env::set_var("III_REGISTRY_URL", custom_url); }
+        unsafe {
+            std::env::set_var("III_REGISTRY_URL", custom_url);
+        }
         let url =
             std::env::var("III_REGISTRY_URL").unwrap_or_else(|_| DEFAULT_REGISTRY_URL.to_string());
         assert_eq!(url, custom_url);
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         // Verify fallback to default
         let url =
@@ -336,14 +340,18 @@ mod tests {
         let registry_path = dir.path().join("index.json");
         std::fs::write(&registry_path, sample_json()).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
         let result = rt.block_on(fetch_registry(&client));
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let manifest = result.unwrap();
         assert_eq!(manifest.version, 1);
@@ -432,11 +440,15 @@ mod tests {
     #[serial]
     fn test_fetch_registry_file_protocol_nonexistent_path() {
         let nonexistent = "file:///tmp/does_not_exist_registry_motia_test/index.json";
-        unsafe { std::env::set_var("III_REGISTRY_URL", nonexistent); }
+        unsafe {
+            std::env::set_var("III_REGISTRY_URL", nonexistent);
+        }
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
         let result = rt.block_on(fetch_registry(&client));
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         assert!(result.is_err());
         match result.unwrap_err() {

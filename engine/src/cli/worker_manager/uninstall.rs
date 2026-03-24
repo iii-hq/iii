@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crate::cli::error::WorkerError;
 use super::{config, manifest, registry, storage};
+use crate::cli::error::WorkerError;
 
 #[derive(Debug)]
 pub struct UninstallOutcome {

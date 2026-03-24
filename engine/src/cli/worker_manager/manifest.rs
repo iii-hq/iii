@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::Deserialize;
-use toml_edit::{value, DocumentMut};
+use toml_edit::{DocumentMut, value};
 
 use crate::cli::error::WorkerError;
 

@@ -44,14 +44,22 @@ enum Commands {
     Trigger(TriggerArgs),
 
     /// Launch the iii web console
-    #[command(trailing_var_arg = true, allow_hyphen_values = true, disable_help_flag = true)]
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
     Console {
         #[arg(num_args = 0..)]
         args: Vec<String>,
     },
 
     /// Create a new iii project from a template
-    #[command(trailing_var_arg = true, allow_hyphen_values = true, disable_help_flag = true)]
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
     Create {
         #[arg(num_args = 0..)]
         args: Vec<String>,
@@ -78,7 +86,11 @@ enum Commands {
 #[derive(Subcommand, Debug)]
 enum SdkCommands {
     /// Motia SDK tools
-    #[command(trailing_var_arg = true, allow_hyphen_values = true, disable_help_flag = true)]
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
     Motia {
         #[arg(num_args = 0..)]
         args: Vec<String>,
@@ -166,18 +178,15 @@ async fn main() -> anyhow::Result<()> {
     match &cli_args.command {
         Some(Commands::Trigger(args)) => cli_trigger::run_trigger(args).await,
         Some(Commands::Console { args }) => {
-            let exit_code =
-                cli::handle_dispatch("console", args, cli_args.no_update_check).await;
+            let exit_code = cli::handle_dispatch("console", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Create { args }) => {
-            let exit_code =
-                cli::handle_dispatch("create", args, cli_args.no_update_check).await;
+            let exit_code = cli::handle_dispatch("create", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Sdk(SdkCommands::Motia { args })) => {
-            let exit_code =
-                cli::handle_dispatch("motia", args, cli_args.no_update_check).await;
+            let exit_code = cli::handle_dispatch("motia", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Worker(worker_cmd)) => {
@@ -312,8 +321,7 @@ mod tests {
 
     #[test]
     fn create_parses_with_no_args() {
-        let cli =
-            Cli::try_parse_from(["iii", "create"]).expect("should parse create with no args");
+        let cli = Cli::try_parse_from(["iii", "create"]).expect("should parse create with no args");
         match cli.command {
             Some(Commands::Create { args }) => {
                 assert!(args.is_empty());
@@ -399,8 +407,7 @@ mod tests {
 
     #[test]
     fn worker_list_parses() {
-        let cli =
-            Cli::try_parse_from(["iii", "worker", "list"]).expect("should parse worker list");
+        let cli = Cli::try_parse_from(["iii", "worker", "list"]).expect("should parse worker list");
         match cli.command {
             Some(Commands::Worker(WorkerCommands::List)) => {}
             _ => panic!("expected Worker List subcommand"),

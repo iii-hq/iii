@@ -3,8 +3,8 @@ use std::path::Path;
 use colored::Colorize;
 use semver::Version;
 
-use crate::cli::error::WorkerError;
 use super::{config, manifest, registry, storage};
+use crate::cli::error::WorkerError;
 use crate::cli::{download, github, platform};
 
 #[derive(Debug)]
@@ -326,10 +326,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -341,7 +343,9 @@ mod tests {
             false,
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
@@ -356,8 +360,7 @@ mod tests {
             _ => panic!("Expected Installed outcome"),
         }
 
-        let installed =
-            super::storage::worker_binary_path(project_dir.path(), "image-resize");
+        let installed = super::storage::worker_binary_path(project_dir.path(), "image-resize");
         assert!(
             installed.exists(),
             "Binary should be copied to iii_workers/"
@@ -433,10 +436,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -448,7 +453,9 @@ mod tests {
             false,
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let err = result.unwrap_err();
         match err {
@@ -492,10 +499,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -507,7 +516,9 @@ mod tests {
             false,
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let err = result.unwrap_err();
         match err {
@@ -555,10 +566,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json_v1).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -613,7 +626,9 @@ mod tests {
             false,
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome2 = result2.unwrap();
         match outcome2 {
@@ -664,10 +679,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -679,7 +696,9 @@ mod tests {
             false,
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
@@ -747,10 +766,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -762,7 +783,9 @@ mod tests {
             false, // force=false
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
@@ -829,10 +852,12 @@ mod tests {
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        unsafe { std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        ); }
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -844,7 +869,9 @@ mod tests {
             true, // force=true
         ));
 
-        unsafe { std::env::remove_var("III_REGISTRY_URL"); }
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {

@@ -30,10 +30,7 @@ fn version_flag_prints_version() {
 
 #[test]
 fn short_version_flag_prints_version() {
-    let output = iii_bin()
-        .arg("-v")
-        .output()
-        .expect("failed to execute");
+    let output = iii_bin().arg("-v").output().expect("failed to execute");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -44,10 +41,7 @@ fn short_version_flag_prints_version() {
 
 #[test]
 fn help_flag_shows_all_subcommands() {
-    let output = iii_bin()
-        .arg("--help")
-        .output()
-        .expect("failed to execute");
+    let output = iii_bin().arg("--help").output().expect("failed to execute");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     // All subcommands should appear in help
@@ -61,10 +55,7 @@ fn help_flag_shows_all_subcommands() {
 
 #[test]
 fn help_does_not_show_start_command() {
-    let output = iii_bin()
-        .arg("--help")
-        .output()
-        .expect("failed to execute");
+    let output = iii_bin().arg("--help").output().expect("failed to execute");
     let stdout = String::from_utf8_lossy(&output.stdout);
     // "start" was removed — should not appear as a subcommand
     // (it may appear in description text, so check for the subcommand pattern)
@@ -93,10 +84,7 @@ fn invalid_subcommand_exits_with_error() {
 
 #[test]
 fn start_subcommand_is_rejected() {
-    let output = iii_bin()
-        .arg("start")
-        .output()
-        .expect("failed to execute");
+    let output = iii_bin().arg("start").output().expect("failed to execute");
     assert!(
         !output.status.success(),
         "\"iii start\" should not be a valid subcommand"
@@ -121,10 +109,7 @@ fn worker_help_shows_subcommands() {
 
 #[test]
 fn worker_without_subcommand_shows_help() {
-    let output = iii_bin()
-        .arg("worker")
-        .output()
-        .expect("failed to execute");
+    let output = iii_bin().arg("worker").output().expect("failed to execute");
     // clap shows help/error when subcommand is missing
     let combined = format!(
         "{}{}",
@@ -150,9 +135,7 @@ fn worker_list_runs_in_empty_dir() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{}{}", stderr, stdout);
     assert!(
-        combined.contains("No workers")
-            || combined.contains("iii.toml")
-            || output.status.success(),
+        combined.contains("No workers") || combined.contains("iii.toml") || output.status.success(),
         "worker list should handle empty directory gracefully, got: {}",
         combined
     );
@@ -242,8 +225,14 @@ fn trigger_help_shows_options() {
         .expect("failed to execute");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("function-id"), "trigger help should show --function-id");
-    assert!(stdout.contains("payload"), "trigger help should show --payload");
+    assert!(
+        stdout.contains("function-id"),
+        "trigger help should show --function-id"
+    );
+    assert!(
+        stdout.contains("payload"),
+        "trigger help should show --payload"
+    );
 }
 
 // ── Update subcommand ───────────────────────────────────────────────
@@ -292,9 +281,9 @@ fn error_messages_never_reference_iii_cli() {
     let dir = tempfile::tempdir().unwrap();
 
     let commands: Vec<Vec<&str>> = vec![
-        vec!["start"],                            // invalid subcommand
-        vec!["worker", "remove", "nonexistent"],  // worker not found
-        vec!["worker", "info"],                    // missing arg
+        vec!["start"],                           // invalid subcommand
+        vec!["worker", "remove", "nonexistent"], // worker not found
+        vec!["worker", "info"],                  // missing arg
     ];
 
     for args in &commands {
@@ -344,10 +333,7 @@ fn old_uninstall_command_is_not_valid() {
 
 #[test]
 fn old_list_command_is_not_valid() {
-    let output = iii_bin()
-        .arg("list")
-        .output()
-        .expect("failed to execute");
+    let output = iii_bin().arg("list").output().expect("failed to execute");
     assert!(
         !output.status.success(),
         "\"iii list\" should not be valid (use \"iii worker list\")"

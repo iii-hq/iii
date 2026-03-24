@@ -222,8 +222,14 @@ async fn handle_install_single(worker_name: &str, version: Option<&str>, force: 
         version_display
     );
 
-    match worker_manager::install::install_worker(worker_name, version, &project_dir, &client, force)
-        .await
+    match worker_manager::install::install_worker(
+        worker_name,
+        version,
+        &project_dir,
+        &client,
+        force,
+    )
+    .await
     {
         Ok(worker_manager::install::InstallOutcome::Installed {
             name,

@@ -142,7 +142,11 @@ fn run_version_check(path: &std::path::Path) -> Option<Version> {
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Version could be just "0.8.0" or "iii 0.8.0" — take the last word
-    let version_str = stdout.trim().rsplit_once(' ').map(|(_, v)| v).unwrap_or(stdout.trim());
+    let version_str = stdout
+        .trim()
+        .rsplit_once(' ')
+        .map(|(_, v)| v)
+        .unwrap_or(stdout.trim());
     Version::parse(version_str).ok()
 }
 
