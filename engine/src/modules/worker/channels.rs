@@ -14,8 +14,6 @@ use uuid::Uuid;
 
 use crate::protocol::{ChannelDirection, StreamChannelRef};
 
-pub mod ws_handler;
-
 #[derive(Debug)]
 pub enum ChannelItem {
     Text(String),

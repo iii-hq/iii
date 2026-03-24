@@ -16,7 +16,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::{ChannelItem, ChannelManager};
+use super::channels::{ChannelItem, ChannelManager};
 use crate::modules::config::AppState;
 use crate::protocol::ChannelDirection;
 

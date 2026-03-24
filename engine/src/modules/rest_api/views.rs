@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 use tracing::Instrument;
 
 use crate::{
-    channels::ChannelItem,
     condition::check_condition,
+    modules::worker::channels::ChannelItem,
     modules::rest_api::types::{HttpRequest, HttpResponse},
 };
 
@@ -1261,7 +1261,7 @@ mod tests {
 
     // ── dynamic_handler integration tests ──────────────────────────────────
 
-    use crate::channels::ChannelItem;
+    use crate::modules::worker::channels::ChannelItem;
     use crate::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
     use crate::function::FunctionResult;
     use crate::modules::observability::metrics::ensure_default_meter;

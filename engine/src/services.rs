@@ -80,11 +80,11 @@ impl ServicesRegistry {
     }
 
     fn get_function_name_from_function_id(function_id: &str) -> Option<String> {
-        let parts: Vec<&str> = function_id.split(".").collect();
+        let parts: Vec<&str> = function_id.split("::").collect();
         if parts.len() < 2 {
             return None;
         }
-        Some(parts[1..].join("."))
+        Some(parts[1..].join("::"))
     }
 
     pub fn register_service_from_function_id(&self, function_id: &str) {
