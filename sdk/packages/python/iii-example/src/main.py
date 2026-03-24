@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import random
@@ -202,7 +201,7 @@ async def _post_example(req: ApiRequest, logger) -> ApiResponse:
     return ApiResponse(statusCode=200, body=data, headers={"Content-Type": "application/json"})
 
 
-async def _async_main() -> None:
+def main() -> None:
     engine_ws_url = os.environ.get("III_URL", "ws://localhost:49134")
     iii = register_worker(
         address=engine_ws_url,
@@ -212,13 +211,6 @@ async def _async_main() -> None:
         ),
     )
     _setup(iii)
-
-    while True:
-        await asyncio.sleep(60)
-
-
-def main() -> None:
-    asyncio.run(_async_main())
 
 
 if __name__ == "__main__":
