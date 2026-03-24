@@ -158,8 +158,9 @@ iii.register_trigger({
 ```rust
 use iii_sdk::{Logger, TriggerAction, TriggerRequest, types::ApiRequest, RegisterFunctionMessage, RegisterTriggerInput};
 
-iii.register_function(RegisterFunctionMessage { id: "hello::api".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
-    let logger = Logger();
+iii.register_function((RegisterFunctionMessage::with_id("hello::api".into()), |input| async move {
+    let logger = Logger());
+
     let app_name = "III App";
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -284,8 +285,9 @@ iii.register_trigger({
   <Tab title="Rust">
 
 ```rust
-iii.register_function(RegisterFunctionMessage { id: "greet::process".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, |input| async move {
-    let logger = Logger();
+iii.register_function((RegisterFunctionMessage::with_id("greet::process".into()), |input| async move {
+    let logger = Logger());
+
     let request_id = input["requestId"].as_str().unwrap_or("unknown");
     let app_name = input["appName"].as_str().unwrap_or("III App");
     let prefix = input["greetingPrefix"].as_str().unwrap_or("Hello");

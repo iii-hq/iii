@@ -113,14 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let iii_clone = iii.clone();
     iii.register_function(
-        RegisterFunctionMessage {
-            id: "chat::send".into(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        RegisterFunctionMessage::with_id("chat::send".into()),
         move |input: Value| {
             let iii = iii_clone.clone();
             async move {
@@ -220,14 +213,7 @@ print("Messages:", messages)
 ```rust title="stream_reader.rs"
 let iii_clone = iii.clone();
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "chat::list".into(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("chat::list".into()),
     move |input: Value| {
         let iii = iii_clone.clone();
         async move {

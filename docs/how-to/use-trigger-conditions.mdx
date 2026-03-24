@@ -76,14 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // condition
     iii.register_function(
-        RegisterFunctionMessage {
-            id: "conditions::is-high-value".into(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        RegisterFunctionMessage::with_id("conditions::is-high-value".into()),
         |input| async move {
             let amount = input["new_value"]["amount"].as_f64().unwrap_or(0.0);
             Ok(json!(amount >= 1000.0))
@@ -92,14 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // handler
     iii.register_function(
-        RegisterFunctionMessage {
-            id: "orders::process-high-value".into(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        RegisterFunctionMessage::with_id("orders::process-high-value".into()),
         |input| async move {
             let amount = input["new_value"]["amount"].as_f64().unwrap_or(0.0);
             Ok(json!({

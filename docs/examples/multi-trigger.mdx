@@ -229,14 +229,7 @@ let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders.handle".into(),
-        description: Some("Handles orders from API, queue, or cron".into()),
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+    RegisterFunctionMessage::with_id("orders.handle".into()).with_description("Handles orders from API, queue, or cron".into()),
     move |input: Value| {
         let iii = iii_clone.clone();
         async move {

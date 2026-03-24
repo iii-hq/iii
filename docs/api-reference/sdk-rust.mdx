@@ -54,12 +54,73 @@ exported before returning.
 async shutdown_async()
 ```
 
+### register
+
+Register a function using the [`RegisterFunction`](#registerfunction) builder.
+
+This is the recommended API — combines ID, handler, and auto-generated
+`request_format`/`response_format` schemas in one step.
+
+**Signature**
+
+```rust
+register(reg: RegisterFunction) -> FunctionRef
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reg` | [`RegisterFunction`](#registerfunction) | Yes | Function registration built with `RegisterFunction::new` or `RegisterFunction::new_async`. |
+
+#### Example
+
+```rust
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use serde::Deserialize;
+use serde_json::json;
+
+#[derive(Deserialize)]
+struct GreetInput { name: String }
+
+fn greet(input: GreetInput) -> Result<String, String> {
+    Ok(format!("Hello, {}!", input.name))
+}
+
+// Multi-arg (positional JSON array)
+fn add(a: i32, b: i32) -> Result<i32, String> { Ok(a + b) }
+
+// Async function
+async fn fetch_data(url: String) -> Result<String, String> {
+    Ok(format!("fetched {}", url))
+}
+
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+// Sync with struct arg — JSON: {"name": "World"}
+iii.register(
+    RegisterFunction::new("greet", greet)
+        .description("Greet someone by name")
+);
+
+// Sync with positional args — JSON: [3, 4]
+iii.register(RegisterFunction::new("add", add));
+
+// Async
+iii.register(
+    RegisterFunction::new_async("fetch", fetch_data)
+        .description("Fetch data from URL")
+);
+```
+
 ### register_function
 
-Register a function with the engine.
+Register a function with the engine (low-level API).
 
 Pass a closure/async fn for local execution, or an [`HttpInvocationConfig`]
 for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+
+For a simpler API with auto-generated schemas, use [`register`](#register) instead.
 
 **Signature**
 
@@ -72,27 +133,37 @@ register_function(message: RegisterFunctionMessage, handler: H) -> FunctionRef
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `message` | [`RegisterFunctionMessage`](#registerfunctionmessage) | Yes | Function registration message with id and optional metadata. |
-| `handler` | `H` | Yes | Async handler or HTTP invocation config. |
+| `handler` | `H` | Yes | Async handler, [`iii_fn`](#iii_fn)/[`iii_async_fn`](#iii_async_fn) wrapper, or HTTP invocation config. |
 
 #### Example
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
+use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage, iii_fn};
+use serde::Deserialize;
 use serde_json::{json, Value};
+
+#[derive(Deserialize)]
+struct Input { name: String }
+
+fn greet(input: Input) -> Result<String, String> {
+    Ok(format!("Hello, {}!", input.name))
+}
+
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "greet".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
+
+// Using iii_fn wrapper (auto-fills request_format/response_format)
+iii.register_function((
+    RegisterFunctionMessage::with_id("greet".to_string()),
+    iii_fn(greet),
+));
+
+// Using raw closure (still supported via tuple)
+iii.register_function((
+    RegisterFunctionMessage::with_id("echo".to_string()),
     |input: Value| async move {
-        Ok(json!({"message": format!("Hello, {}!", input["name"])}))
+        Ok(json!({"echo": input}))
     },
-);
+));
 ```
 
 ### register_service
@@ -412,7 +483,77 @@ logger.debug("Cache lookup", Some(json!({ "key": "user:42", "hit": false })));
 
 ## Types
 
-[`InitOptions`](#initoptions) · [`IIIError`](#iiierror) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerRequest`](#triggerrequest) · [`TriggerAction`](#triggeraction) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpMethod`](#httpmethod) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ChannelDirection`](#channeldirection) · [`StreamChannelRef`](#streamchannelref) · [`FunctionInfo`](#functioninfo) · [`FunctionRef`](#functionref) · [`TriggerInfo`](#triggerinfo) · [`WorkerInfo`](#workerinfo) · [`WorkerMetadata`](#workermetadata) · [`Trigger`](#trigger) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceMessage`](#registerservicemessage) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
+[`RegisterFunction`](#registerfunction) · [`iii_fn`](#iii_fn) · [`iii_async_fn`](#iii_async_fn) · [`InitOptions`](#initoptions) · [`IIIError`](#iiierror) · [`IIIConnectionState`](#iiiconnectionstate) · [`TriggerRequest`](#triggerrequest) · [`TriggerAction`](#triggeraction) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpMethod`](#httpmethod) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ChannelDirection`](#channeldirection) · [`StreamChannelRef`](#streamchannelref) · [`FunctionInfo`](#functioninfo) · [`FunctionRef`](#functionref) · [`TriggerInfo`](#triggerinfo) · [`WorkerInfo`](#workerinfo) · [`WorkerMetadata`](#workermetadata) · [`Trigger`](#trigger) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceMessage`](#registerservicemessage) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig)
+
+### RegisterFunction
+
+One-step function registration combining ID, handler, and auto-generated schemas.
+
+Use `RegisterFunction::new` for sync functions or `RegisterFunction::new_async`
+for async functions, then pass to [`III::register`](#register).
+
+**Constructors**
+
+| Name | Description |
+| --- | --- |
+| `new(id, f)` | Wrap a **sync** function. Each param must impl `DeserializeOwned`, return must be `Result<R: Serialize, E: Display>`. |
+| `new_async(id, f)` | Wrap an **async** function. Same constraints as `new`. |
+
+**Builder methods**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `description(desc)` | `impl Into<String>` | Set the function description. |
+| `metadata(meta)` | `Value` | Set function metadata. |
+
+**Arity rules**
+
+| Args | JSON input format | Deserialization |
+| --- | --- | --- |
+| 0 | ignored | none |
+| 1 | `{"field": "value"}` | Entire JSON deserialized as the arg type (use `#[derive(Deserialize, JsonSchema)]` structs) |
+
+**Auto-generated schemas:** `request_format` and `response_format` are automatically
+populated as [JSON Schema (draft-07)](http://json-schema.org/draft-07/schema#) using
+[`schemars`](https://docs.rs/schemars). Input and output types must derive
+`schemars::JsonSchema` alongside `serde::Deserialize`/`serde::Serialize`.
+
+### iii_fn
+
+`pub fn iii_fn<F, M>(f: F) -> IIIFn<F>`
+
+Wraps a **sync** function into an III-compatible handler.
+The input type must implement `DeserializeOwned + JsonSchema` and the return
+type must implement `Serialize + JsonSchema`.
+
+```rust
+use iii_sdk::{iii_fn, RegisterFunction};
+use serde::Deserialize;
+use schemars::JsonSchema;
+
+#[derive(Deserialize, JsonSchema)]
+struct AddInput { a: i32, b: i32 }
+
+fn add(input: AddInput) -> Result<i32, String> { Ok(input.a + input.b) }
+
+iii.register_function(RegisterFunction::new("add", add));
+```
+
+### iii_async_fn
+
+`pub fn iii_async_fn<F, M>(f: F) -> IIIAsyncFn<F>`
+
+Wraps an **async** function into an III-compatible handler. Same semantics as [`iii_fn`](#iii_fn).
+
+```rust
+use iii_sdk::{iii_async_fn, RegisterFunction};
+
+async fn fetch(url: String) -> Result<String, String> {
+    Ok(format!("fetched {}", url))
+}
+
+iii.register_function(RegisterFunction::new_async("fetch", fetch));
+```
 
 ### InitOptions
 

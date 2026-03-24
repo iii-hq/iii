@@ -99,15 +99,7 @@ const concepts = [
 
 iii.register_function("users::create", create_user)`,
       rust: `iii.register_function(
-    "users::create",
-    |input| async move {
-        let email = input["email"].as_str()
-            .unwrap_or("");
-        Ok(json!({
-            "id": "123",
-            "email": email
-        }))
-    }
+    RegisterFunction::new("users::create", create_user)
 )`,
     },
   },

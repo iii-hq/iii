@@ -179,7 +179,7 @@ impl QueueAdapter for BridgeAdapter {
         let function_id_owned = function_id.to_string();
         let condition_function_id_owned = condition_function_id.clone();
         let topic_owned = topic.to_string();
-        self.bridge.register_function(
+        self.bridge.register_function((
             RegisterFunctionMessage {
                 id: handler_path.clone(),
                 description: None,
@@ -263,7 +263,7 @@ impl QueueAdapter for BridgeAdapter {
                     .await
                 }
             },
-        );
+        ));
 
         let trigger = match self.bridge.register_trigger(RegisterTriggerInput {
             trigger_type: "queue".to_string(),

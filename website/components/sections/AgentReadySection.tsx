@@ -88,7 +88,7 @@ async def research_handler(input):
     return response
 
 iii.register_function("agent::research", research_handler)`,
-      rust: `use iii_sdk::{register_worker, InitOptions, Logger, TriggerRequest};
+      rust: `use iii_sdk::{register_worker, RegisterFunction, InitOptions, Logger, TriggerRequest};
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
 let logger = Logger::new();
@@ -153,7 +153,7 @@ async def writer(input):
 iii.register_function("agents::researcher", researcher)
 iii.register_function("agents::analyzer", analyzer)
 iii.register_function("agents::writer", writer)`,
-      rust: `use iii_sdk::{TriggerRequest, TriggerAction};
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest, TriggerAction};
 
 iii.register_function(
     reg("agents::researcher"), |input| async move {
@@ -231,7 +231,7 @@ iii.register_function(
     return {"status": "completed"}
 
 iii.register_function("orders::process", process_order)`,
-      rust: `use iii_sdk::TriggerRequest;
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
 
 iii.register_function(
     reg("orders::process"), |input| async move {
@@ -299,7 +299,7 @@ async def recommend_handler(input):
 
 iii.register_function("ml::onboarding", predict_handler)
 iii.register_function("ml::recommend", recommend_handler)`,
-      rust: `use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+      rust: `use iii_sdk::{register_worker, RegisterFunction, InitOptions, TriggerRequest};
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default())?;
 
@@ -374,7 +374,7 @@ iii.register_function("chat::send", send_message)
 iii.on_functions_available(
     lambda fns: Logger().info("Topology changed", count=len(fns))
 )`,
-      rust: `use iii_sdk::TriggerRequest;
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
 
 iii.register_function(
     reg("chat::send"), |input| async move {
@@ -458,7 +458,7 @@ iii.on_functions_available(|fns| {
     return report
 
 iii.register_function("research::deep", deep_research)`,
-      rust: `use iii_sdk::TriggerRequest;
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
 
 iii.register_function(
     reg("research::deep"), |input| async move {
@@ -552,7 +552,7 @@ async def on_user_created(input):
 iii.register_function("pipeline::onUserCreated", on_user_created)
 
 iii.register_trigger("subscribe", "pipeline::onUserCreated", {"topic": "user.created"})`,
-      rust: `use iii_sdk::{TriggerRequest, TriggerAction};
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest, TriggerAction};
 
 iii.register_function(
     reg("pipeline::onUserCreated"), |input| async move {
@@ -646,7 +646,7 @@ iii.registerTrigger({
 iii.register_function("monitor::anomalies", detect_anomalies)
 
 iii.register_trigger("cron", "monitor::anomalies", {"pattern": "*/15 * * * *"})`,
-      rust: `use iii_sdk::TriggerRequest;
+      rust: `use iii_sdk::{RegisterFunction, TriggerRequest};
 
 iii.register_function(
     reg("monitor::anomalies"), |_| async move {

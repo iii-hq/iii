@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 iii-sdk = { path = "../iii", features = ["otel"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+schemars = "0.8"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

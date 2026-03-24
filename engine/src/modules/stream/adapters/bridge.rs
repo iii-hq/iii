@@ -251,7 +251,7 @@ impl StreamAdapter for BridgeAdapter {
     async fn watch_events(&self) -> anyhow::Result<()> {
         let handler_function_id = self.handler_function_id.clone();
         let pub_sub = self.pub_sub.clone();
-        self.bridge.register_function(
+        self.bridge.register_function((
             RegisterFunctionMessage {
                 id: handler_function_id.clone(),
                 description: None,
@@ -281,7 +281,7 @@ impl StreamAdapter for BridgeAdapter {
                     }
                 }
             },
-        );
+        ));
 
         let _ = self.bridge.register_trigger(RegisterTriggerInput {
             trigger_type: "subscribe".to_string(),

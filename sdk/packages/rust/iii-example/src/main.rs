@@ -1,10 +1,40 @@
 use std::time::Duration;
 
 use iii_sdk::{
-    IIIError, InitOptions, OtelConfig, RegisterFunctionMessage, RegisterTriggerInput, Streams,
-    TriggerRequest, UpdateBuilder, UpdateOp, register_worker,
+    InitOptions, OtelConfig, RegisterFunction, Streams, TriggerRequest, UpdateBuilder, UpdateOp,
+    register_worker,
 };
 use serde_json::json;
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EchoInput {
+    message: String,
+    repeat: u32,
+    uppercase: bool,
+    prefix: String,
+}
+
+fn echo_message(input: EchoInput) -> Result<serde_json::Value, String> {
+    let mut result = input.message.repeat(input.repeat as usize);
+    if input.uppercase {
+        result = result.to_uppercase();
+    }
+    Ok(json!({ "echo": format!("{}{}", input.prefix, result) }))
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DelayEchoInput {
+    message: String,
+    delay_ms: u64,
+    suffix: String,
+}
+
+async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, String> {
+    tokio::time::sleep(Duration::from_millis(input.delay_ms)).await;
+    Ok(
+        json!({ "echo": format!("{}{}", input.message, input.suffix), "delayed_ms": input.delay_ms }),
+    )
+}
 
 mod http_example;
 
@@ -22,51 +52,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
 
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "api::get::error-test".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        |_input| async move {
-            Err(IIIError::Handler(
-                "Intentional error for OTEL stacktrace testing".into(),
-            ))
-        },
-    );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: "api::get::error-test".to_string(),
-        config: json!({
-            "api_path": "error-test",
-            "http_method": "GET",
-            "description": "Returns an error to test OTEL stack traces",
-        }),
-    })
-    .expect("failed to register error-test trigger");
-
     // Create a Streams instance for atomic updates
     let streams = Streams::new(iii.clone());
 
     iii.register_function(
-        RegisterFunctionMessage {
-            id: "example.echo".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
-        |input| async move { Ok(json!({ "echo": input })) },
+        RegisterFunction::new("example::echo", echo_message)
+            .description("Echo a message with repeat and formatting options"),
+    );
+
+    iii.register_function(
+        RegisterFunction::new_async("example::delay_echo", delay_echo)
+            .description("Echo with configurable delay"),
     );
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "example.echo".to_string(),
-            payload: json!({ "message": "hello" }),
+            function_id: "example::echo".to_string(),
+            payload: json!({"message": "hello", "repeat": 2, "uppercase": false, "prefix": "> "}),
             action: None,
             timeout_ms: None,
         })

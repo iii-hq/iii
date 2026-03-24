@@ -28,15 +28,8 @@ async fn register_and_invoke_function() {
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
 
-    let fn_ref = iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.bridge.rs.echo".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let fn_ref = iii.register_function((
+        RegisterFunctionMessage::with_id("test::bridge::rs::echo".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
             async move {
@@ -44,13 +37,13 @@ async fn register_and_invoke_function() {
                 Ok(json!({ "echoed": input }))
             }
         },
-    );
+    ));
 
     common::settle().await;
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.bridge.rs.echo".to_string(),
+            function_id: "test::bridge::rs::echo".to_string(),
             payload: json!({"message": "hello"}),
             action: None,
             timeout_ms: None,
@@ -73,15 +66,8 @@ async fn invoke_function_fire_and_forget() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tx = Arc::new(Mutex::new(Some(tx)));
 
-    let fn_ref = iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.bridge.rs.receiver".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let fn_ref = iii.register_function((
+        RegisterFunctionMessage::with_id("test::bridge::rs::receiver".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
             let tx = tx.clone();
@@ -93,13 +79,13 @@ async fn invoke_function_fire_and_forget() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     common::settle().await;
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.bridge.rs.receiver".to_string(),
+            function_id: "test::bridge::rs::receiver".to_string(),
             payload: json!({"value": 42}),
             action: Some(TriggerAction::Void),
             timeout_ms: None,
@@ -123,36 +109,22 @@ async fn invoke_function_fire_and_forget() {
 async fn list_registered_functions() {
     let iii = common::shared_iii();
 
-    let fn1 = iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.bridge.rs.list.func1".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let fn1 = iii.register_function((
+        RegisterFunctionMessage::with_id("test::bridge::rs::list::func1".to_string()),
         |_: Value| async move { Ok(json!({})) },
-    );
-    let fn2 = iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.bridge.rs.list.func2".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    ));
+    let fn2 = iii.register_function((
+        RegisterFunctionMessage::with_id("test::bridge::rs::list::func2".to_string()),
         |_: Value| async move { Ok(json!({})) },
-    );
+    ));
 
     common::settle().await;
 
     let functions: Vec<FunctionInfo> = iii.list_functions().await.expect("list_functions");
     let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
 
-    assert!(ids.contains(&"test.bridge.rs.list.func1"));
-    assert!(ids.contains(&"test.bridge.rs.list.func2"));
+    assert!(ids.contains(&"test::bridge::rs::list::func1"));
+    assert!(ids.contains(&"test::bridge::rs::list::func2"));
 
     fn1.unregister();
     fn2.unregister();
@@ -164,7 +136,7 @@ async fn reject_non_existent_function() {
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "nonexistent.function.rs".to_string(),
+            function_id: "nonexistent::function::rs".to_string(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(2000),

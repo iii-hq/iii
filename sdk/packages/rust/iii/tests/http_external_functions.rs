@@ -134,18 +134,11 @@ async fn delivers_queue_events_to_external_http_function() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::target::rs");
-    let topic = unique_topic("test.http_external.topic.rs");
+    let topic = unique_topic("test::http_external::topic::rs");
     let payload = json!({"hello": "world", "count": 1});
 
-    let http_fn = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -153,7 +146,7 @@ async fn delivers_queue_events_to_external_http_function() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger = iii
@@ -195,15 +188,8 @@ async fn registers_and_unregisters_external_http_function() {
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::reg_unreg::rs");
 
-    let http_fn = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -211,7 +197,7 @@ async fn registers_and_unregisters_external_http_function() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let found = {
@@ -236,22 +222,15 @@ async fn delivers_events_with_custom_headers() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::headers::rs");
-    let topic = unique_topic("test.http_external.headers.rs");
+    let topic = unique_topic("test::http_external::headers::rs");
     let payload = json!({"msg": "with-headers"});
 
     let mut custom_headers = HashMap::new();
     custom_headers.insert("x-custom-header".to_string(), "test-value".to_string());
     custom_headers.insert("x-another".to_string(), "123".to_string());
 
-    let http_fn = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -259,7 +238,7 @@ async fn delivers_events_with_custom_headers() {
             headers: custom_headers,
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger = iii
@@ -307,20 +286,13 @@ async fn delivers_events_to_multiple_external_functions() {
     let probe_b = WebhookProbe::start().await;
     let function_id_a = unique_function_id("test::http_external::multi_a::rs");
     let function_id_b = unique_function_id("test::http_external::multi_b::rs");
-    let topic_a = unique_topic("test.http_external.multi_a.rs");
-    let topic_b = unique_topic("test.http_external.multi_b.rs");
+    let topic_a = unique_topic("test::http_external::multi_a::rs");
+    let topic_b = unique_topic("test::http_external::multi_b::rs");
     let payload_a = json!({"source": "topic-a", "value": 1});
     let payload_b = json!({"source": "topic-b", "value": 2});
 
-    let http_fn_a = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id_a.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let http_fn_a = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id_a.clone()),
         HttpInvocationConfig {
             url: probe_a.url(),
             method: HttpMethod::Post,
@@ -328,16 +300,9 @@ async fn delivers_events_to_multiple_external_functions() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
-    let http_fn_b = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id_b.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    ));
+    let http_fn_b = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id_b.clone()),
         HttpInvocationConfig {
             url: probe_b.url(),
             method: HttpMethod::Post,
@@ -345,7 +310,7 @@ async fn delivers_events_to_multiple_external_functions() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger_a = iii
@@ -405,19 +370,12 @@ async fn stops_delivering_events_after_unregister() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::stop::rs");
-    let topic = unique_topic("test.http_external.stop.rs");
+    let topic = unique_topic("test::http_external::stop::rs");
     let payload_before = json!({"phase": "before-unregister"});
     let payload_after = json!({"phase": "after-unregister"});
 
-    let http_fn = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Post,
@@ -425,7 +383,7 @@ async fn stops_delivering_events_after_unregister() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let trigger = iii
@@ -484,18 +442,11 @@ async fn delivers_events_using_put_method() {
 
     let probe = WebhookProbe::start().await;
     let function_id = unique_function_id("test::http_external::put_method::rs");
-    let topic = unique_topic("test.http_external.put.rs");
+    let topic = unique_topic("test::http_external::put::rs");
     let payload = json!({"method_test": "put", "value": 42});
 
-    let http_fn = iii.register_function(
-        RegisterFunctionMessage {
-            id: function_id.clone(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let http_fn = iii.register_function((
+        RegisterFunctionMessage::with_id(function_id.clone()),
         HttpInvocationConfig {
             url: probe.url(),
             method: HttpMethod::Put,
@@ -503,7 +454,7 @@ async fn delivers_events_using_put_method() {
             headers: HashMap::new(),
             auth: None,
         },
-    );
+    ));
     common::settle().await;
 
     let _trigger = iii

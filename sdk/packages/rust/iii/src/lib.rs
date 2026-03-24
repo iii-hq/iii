@@ -15,8 +15,9 @@ pub use channels::{
 };
 pub use error::IIIError;
 pub use iii::{
-    FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIConnectionState,
-    IntoFunctionHandler, TriggerInfo, WorkerInfo, WorkerMetadata,
+    FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIAsyncFn, IIIConnectionState, IIIFn,
+    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, TriggerInfo, WorkerInfo,
+    WorkerMetadata, iii_async_fn, iii_fn,
 };
 pub use logger::Logger;
 pub use protocol::{

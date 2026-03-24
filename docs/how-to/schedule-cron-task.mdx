@@ -67,14 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker(&url, InitOptions::default());
 
     iii.register_function(
-        RegisterFunctionMessage {
-            id: "cleanup::expired-sessions".into(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+        RegisterFunctionMessage::with_id("cleanup::expired-sessions".into()),
         |_| async move {
             let logger = Logger::new();
             // ...cleanup logic here...

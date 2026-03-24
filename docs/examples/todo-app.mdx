@@ -257,12 +257,7 @@ use iii_sdk::{
 use serde_json::json;
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "api.post.todo".into(),
-        description: Some("Create a new todo".into()),
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
+    RegisterFunctionMessage::with_id("api.post.todo".into()).with_description("Create a new todo".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;
@@ -395,12 +390,7 @@ iii.register_trigger({
 
 ```rust
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "api.put.todo".into(),
-        description: Some("Update a todo".into()),
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
+    RegisterFunctionMessage::with_id("api.put.todo".into()).with_description("Update a todo".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;
@@ -514,12 +504,7 @@ iii.register_trigger({
 use iii_sdk::{TriggerRequest, TriggerAction};
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "api.delete.todo".into(),
-        description: Some("Delete a todo".into()),
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
+    RegisterFunctionMessage::with_id("api.delete.todo".into()).with_description("Delete a todo".into()),
     |input| async move {
         let logger = Logger::new();
         let req: ApiRequest = serde_json::from_value(input)?;

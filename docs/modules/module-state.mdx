@@ -309,10 +309,7 @@ iii.register_trigger({'type': 'state', 'function_id': 'state::onUserUpdated', 'c
 use iii_sdk::RegisterFunctionMessage;
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "state::onUserUpdated".into(),
-        description: None, request_format: None, response_format: None, metadata: None, invocation: None
-    },
+    RegisterFunctionMessage::with_id("state::onUserUpdated".into()),
     |event| async move {
         println!("State changed: {} {}", event["event_type"], event["key"]);
         println!("Previous: {:?}", event.get("old_value"));
@@ -526,10 +523,7 @@ use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput};
 use serde_json::json;
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "conditions::emailChanged".into(),
-        description: None, request_format: None, response_format: None, metadata: None, invocation: None
-    },
+    RegisterFunctionMessage::with_id("conditions::emailChanged".into()),
     |event| async move {
         let is_update = event["event_type"].as_str() == Some("state:updated");
         let old_email = event.get("old_value").and_then(|v| v.get("email"));
@@ -539,10 +533,7 @@ iii.register_function(
 );
 
 iii.register_function(
-    RegisterFunctionMessage {
-        id: "state::onEmailChange".into(),
-        description: None, request_format: None, response_format: None, metadata: None, invocation: None
-    },
+    RegisterFunctionMessage::with_id("state::onEmailChange".into()),
     |event| async move {
         let email = event["new_value"]["email"].as_str().unwrap_or("");
         send_verification_email(email).await?;

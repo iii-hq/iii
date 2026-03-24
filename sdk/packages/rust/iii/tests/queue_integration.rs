@@ -19,15 +19,8 @@ async fn enqueue_returns_acknowledgement() {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.queue.echo.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::queue::echo::rs".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
             async move {
@@ -35,12 +28,12 @@ async fn enqueue_returns_acknowledgement() {
                 Ok(json!({ "processed": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.queue.echo.rs".to_string(),
+            function_id: "test::queue::echo::rs".to_string(),
             payload: json!({"msg": "hello"}),
             action: Some(TriggerAction::Enqueue {
                 queue: "default".to_string(),
@@ -68,7 +61,7 @@ async fn enqueue_to_unknown_queue_returns_error() {
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.queue.unknown.rs".to_string(),
+            function_id: "test::queue::unknown::rs".to_string(),
             payload: json!({"msg": "hello"}),
             action: Some(TriggerAction::Enqueue {
                 queue: "nonexistent_queue".to_string(),
@@ -96,15 +89,8 @@ async fn enqueue_fifo_with_valid_group_field() {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.queue.fifo.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::queue::fifo::rs".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
             async move {
@@ -112,12 +98,12 @@ async fn enqueue_fifo_with_valid_group_field() {
                 Ok(json!({ "processed": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.queue.fifo.rs".to_string(),
+            function_id: "test::queue::fifo::rs".to_string(),
             payload: json!({
                 "transaction_id": "txn-001",
                 "amount": 99.99
@@ -149,7 +135,7 @@ async fn enqueue_fifo_missing_group_field_returns_error() {
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.queue.fifo.nofield.rs".to_string(),
+            function_id: "test::queue::fifo::nofield::rs".to_string(),
             payload: json!({
                 "amount": 50.00
             }),
@@ -182,15 +168,8 @@ async fn void_returns_null_immediately() {
 
     let call_count = Arc::new(Mutex::new(0u32));
     let count_clone = call_count.clone();
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.queue.void.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::queue::void::rs".to_string()),
         move |_input: Value| {
             let count = count_clone.clone();
             async move {
@@ -198,12 +177,12 @@ async fn void_returns_null_immediately() {
                 Ok(json!({ "done": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.queue.void.rs".to_string(),
+            function_id: "test::queue::void::rs".to_string(),
             payload: json!({"fire": "forget"}),
             action: Some(TriggerAction::Void),
             timeout_ms: None,
@@ -225,15 +204,8 @@ async fn enqueue_multiple_messages_all_processed() {
 
     let received = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.queue.multi.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::queue::multi::rs".to_string()),
         move |input: Value| {
             let received = received_clone.clone();
             async move {
@@ -241,14 +213,14 @@ async fn enqueue_multiple_messages_all_processed() {
                 Ok(json!({ "processed": true }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let message_count = 5;
     for i in 0..message_count {
         let result = iii
             .trigger(TriggerRequest {
-                function_id: "test.queue.multi.rs".to_string(),
+                function_id: "test::queue::multi::rs".to_string(),
                 payload: json!({ "index": i }),
                 action: Some(TriggerAction::Enqueue {
                     queue: "default".to_string(),
@@ -286,15 +258,8 @@ async fn chained_enqueue() {
 
     let b_received = Arc::new(Mutex::new(Vec::new()));
     let b_received_clone = b_received.clone();
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.queue.chain.b.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::queue::chain::b::rs".to_string()),
         move |input: Value| {
             let b_received = b_received_clone.clone();
             async move {
@@ -302,20 +267,13 @@ async fn chained_enqueue() {
                 Ok(json!({ "step": "b_done" }))
             }
         },
-    );
+    ));
 
     let a_received = Arc::new(Mutex::new(Vec::new()));
     let a_received_clone = a_received.clone();
     let iii_for_a = iii.clone();
-    iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.queue.chain.a.rs".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    iii.register_function((
+        RegisterFunctionMessage::with_id("test::queue::chain::a::rs".to_string()),
         move |input: Value| {
             let a_received = a_received_clone.clone();
             let iii = iii_for_a.clone();
@@ -324,7 +282,7 @@ async fn chained_enqueue() {
 
                 let label = input["label"].as_str().unwrap_or("unknown").to_string();
                 iii.trigger(TriggerRequest {
-                    function_id: "test.queue.chain.b.rs".to_string(),
+                    function_id: "test::queue::chain::b::rs".to_string(),
                     payload: json!({ "from_a": true, "label": label }),
                     action: Some(TriggerAction::Enqueue {
                         queue: "default".to_string(),
@@ -337,12 +295,12 @@ async fn chained_enqueue() {
                 Ok(json!({ "step": "a_done" }))
             }
         },
-    );
+    ));
     common::settle().await;
 
     let result = iii
         .trigger(TriggerRequest {
-            function_id: "test.queue.chain.a.rs".to_string(),
+            function_id: "test::queue::chain::a::rs".to_string(),
             payload: json!({ "label": "chained-work" }),
             action: Some(TriggerAction::Enqueue {
                 queue: "default".to_string(),

@@ -262,15 +262,8 @@ async fn reactive_state() {
     let reactive_data: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let reactive_data_clone = reactive_data.clone();
 
-    let fn_ref = iii.register_function(
-        RegisterFunctionMessage {
-            id: "test.state.rs.updated".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-        },
+    let fn_ref = iii.register_function((
+        RegisterFunctionMessage::with_id("test::state::rs::updated".to_string()),
         move |event: Value| {
             let reactive_data = reactive_data_clone.clone();
             async move {
@@ -282,7 +275,7 @@ async fn reactive_state() {
                 Ok(json!({}))
             }
         },
-    );
+    ));
 
     let key_clone = key.clone();
     let trigger = iii

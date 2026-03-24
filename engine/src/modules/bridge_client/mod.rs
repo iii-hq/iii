@@ -264,7 +264,7 @@ impl Module for BridgeClientModule {
                 .clone()
                 .unwrap_or_else(|| local_function.clone());
 
-            bridge.register_function(
+            bridge.register_function((
                 RegisterFunctionMessage {
                     id: remote_function,
                     description: None,
@@ -287,7 +287,7 @@ impl Module for BridgeClientModule {
                         }
                     }
                 },
-            );
+            ));
         }
 
         Ok(())
