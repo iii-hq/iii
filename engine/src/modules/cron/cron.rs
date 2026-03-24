@@ -50,12 +50,12 @@ impl Module for CronCoreModule {
 
         use crate::trigger::TriggerType;
 
-        let trigger_type = TriggerType {
-            id: "cron".to_string(),
-            _description: "Cron-based scheduled triggers".to_string(),
-            registrator: Box::new(self.clone()),
-            worker_id: None,
-        };
+        let trigger_type = TriggerType::new(
+            "cron",
+            "Cron-based scheduled triggers",
+            Box::new(self.clone()),
+            None,
+        );
 
         self.engine.register_trigger_type(trigger_type).await;
 

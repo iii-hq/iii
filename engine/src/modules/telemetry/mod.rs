@@ -2092,12 +2092,12 @@ mod tests {
 
         engine
             .trigger_registry
-            .register_trigger_type(TriggerType {
-                id: "queue".to_string(),
-                _description: "Queue".to_string(),
-                registrator: Box::new(NoopRegistrator),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                "queue",
+                "Queue",
+                Box::new(NoopRegistrator),
+                None,
+            ))
             .await
             .expect("register trigger type");
         engine

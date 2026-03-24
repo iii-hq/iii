@@ -68,12 +68,12 @@ impl Module for StateCoreModule {
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: TRIGGER_TYPE.to_string(),
-                _description: "State trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                TRIGGER_TYPE,
+                "State trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         Ok(())

@@ -109,12 +109,12 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
                     TriggerRegistry::new,
                     |registry| async move {
                         registry
-                            .register_trigger_type(TriggerType {
-                                id: "bench.trigger".to_string(),
-                                _description: "control plane benchmark".to_string(),
-                                registrator: Box::new(NoopRegistrator),
-                                worker_id: None,
-                            })
+                            .register_trigger_type(TriggerType::new(
+                                "bench.trigger",
+                                "control plane benchmark",
+                                Box::new(NoopRegistrator),
+                                None,
+                            ))
                             .await
                             .expect("register trigger type");
 

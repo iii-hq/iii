@@ -165,32 +165,32 @@ impl Module for StreamCoreModule {
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: JOIN_TRIGGER_TYPE.to_string(),
-                _description: "Stream join trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                JOIN_TRIGGER_TYPE,
+                "Stream join trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: LEAVE_TRIGGER_TYPE.to_string(),
-                _description: "Stream leave trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                LEAVE_TRIGGER_TYPE,
+                "Stream leave trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         let _ = self
             .engine
-            .register_trigger_type(TriggerType {
-                id: STREAM_TRIGGER_TYPE.to_string(),
-                _description: "Stream trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                STREAM_TRIGGER_TYPE,
+                "Stream trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         tokio::spawn(async move {
