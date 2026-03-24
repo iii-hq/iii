@@ -1,7 +1,8 @@
 /* ChivoMono Brand Font - Variable Weight */
 @font-face {
   font-family: 'Chivo Mono';
-  src: url('/fonts/ChivoMono-VariableFont_wght.ttf') format('truetype-variations');
+  src: url('/fonts/ChivoMono-VariableFont_wght.ttf')
+    format('truetype-variations');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -9,7 +10,8 @@
 
 @font-face {
   font-family: 'Chivo Mono';
-  src: url('/fonts/ChivoMono-Italic-VariableFont_wght.ttf') format('truetype-variations');
+  src: url('/fonts/ChivoMono-Italic-VariableFont_wght.ttf')
+    format('truetype-variations');
   font-weight: 100 900;
   font-style: italic;
   font-display: swap;
@@ -30,6 +32,10 @@
   font-weight: 700;
   font-style: normal;
   font-display: swap;
+}
+
+html {
+  zoom: 120%;
 }
 
 /* Prevent horizontal scroll on mobile */
@@ -149,14 +155,15 @@ body.light-mode {
 
 /* CRT Effect for Terminal */
 .crt::before {
-  content: " ";
+  content: ' ';
   display: block;
   position: absolute;
   top: 0;
   left: 0;
   bottom: 0;
   right: 0;
-  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
+  background:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
     linear-gradient(
       90deg,
       rgba(255, 0, 0, 0.06),
@@ -164,7 +171,9 @@ body.light-mode {
       rgba(0, 0, 255, 0.06)
     );
   z-index: 2;
-  background-size: 100% 2px, 3px 100%;
+  background-size:
+    100% 2px,
+    3px 100%;
   pointer-events: none;
 }
 
@@ -419,21 +428,40 @@ body.light-mode {
 
 /* Category switch animation for code examples */
 @keyframes fadeSlideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.animate-fade-slide-in { animation: fadeSlideIn 200ms ease-out; }
+.animate-fade-slide-in {
+  animation: fadeSlideIn 200ms ease-out;
+}
 
 /* Three Primitives - sequential card highlight */
 @keyframes primitiveHighlight {
-  0%, 100% { border-color: rgba(243, 247, 36, 0.1); }
-  50% { border-color: rgba(243, 247, 36, 0.5); }
+  0%,
+  100% {
+    border-color: rgba(243, 247, 36, 0.1);
+  }
+  50% {
+    border-color: rgba(243, 247, 36, 0.5);
+  }
 }
 
 /* Stat counter entrance */
 @keyframes statCount {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Legend item pulse animation */
