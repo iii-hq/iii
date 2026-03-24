@@ -191,8 +191,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_result.new_value["counter"]
     );
 
-    println!("\n--- All examples completed! Waiting... ---");
-    loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
+    println!("\n--- All examples completed! Holding process... ---");
+    iii.hold_async().await;
+
+    Ok(())
 }
