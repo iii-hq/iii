@@ -640,3 +640,58 @@ pub async fn handle_info(worker_name: &str) -> i32 {
     eprintln!();
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_worker_arg tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_worker_arg_name_only() {
+        let (name, version) = parse_worker_arg("pdfkit").unwrap();
+        assert_eq!(name, "pdfkit");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn parse_worker_arg_name_with_version() {
+        let (name, version) = parse_worker_arg("pdfkit@1.2.3").unwrap();
+        assert_eq!(name, "pdfkit");
+        assert_eq!(version, Some("1.2.3"));
+    }
+
+    #[test]
+    fn parse_worker_arg_name_with_prerelease_version() {
+        let (name, version) = parse_worker_arg("myworker@0.1.0-beta.1").unwrap();
+        assert_eq!(name, "myworker");
+        assert_eq!(version, Some("0.1.0-beta.1"));
+    }
+
+    #[test]
+    fn parse_worker_arg_empty_name_rejected() {
+        let result = parse_worker_arg("@1.0.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_worker_arg_empty_version_rejected() {
+        let result = parse_worker_arg("pdfkit@");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_worker_arg_multiple_at_signs() {
+        // "scope@org@1.0.0" splits on the LAST @
+        let (name, version) = parse_worker_arg("scope@org@1.0.0").unwrap();
+        assert_eq!(name, "scope@org");
+        assert_eq!(version, Some("1.0.0"));
+    }
+
+    #[test]
+    fn parse_worker_arg_hyphenated_name() {
+        let (name, version) = parse_worker_arg("my-cool-worker").unwrap();
+        assert_eq!(name, "my-cool-worker");
+        assert!(version.is_none());
+    }
+}

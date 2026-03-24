@@ -433,3 +433,173 @@ pub fn print_update_result(result: &Result<UpdateResult, UpdateError>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // ── run_version_check tests ─────────────────────────────────────
+
+    #[test]
+    fn run_version_check_parses_bare_version() {
+        // Create a script that outputs just a version number
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-binary");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            writeln!(f, "#!/bin/sh\necho '1.2.3'").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let v = run_version_check(&script).unwrap();
+        assert_eq!(v, Version::new(1, 2, 3));
+    }
+
+    #[test]
+    fn run_version_check_parses_prefixed_version() {
+        // "iii 0.9.0" → should extract "0.9.0"
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-binary");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            writeln!(f, "#!/bin/sh\necho 'iii 0.9.0'").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let v = run_version_check(&script).unwrap();
+        assert_eq!(v, Version::new(0, 9, 0));
+    }
+
+    #[test]
+    fn run_version_check_returns_none_for_nonexistent_binary() {
+        let path = std::path::Path::new("/tmp/nonexistent-binary-xyz");
+        assert!(run_version_check(path).is_none());
+    }
+
+    #[test]
+    fn run_version_check_returns_none_for_invalid_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-binary");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            writeln!(f, "#!/bin/sh\necho 'not-a-version'").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(run_version_check(&script).is_none());
+    }
+
+    #[test]
+    fn run_version_check_handles_trailing_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-binary");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            writeln!(f, "#!/bin/sh\nprintf '2.0.0\\n  '").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let v = run_version_check(&script).unwrap();
+        assert_eq!(v, Version::new(2, 0, 0));
+    }
+
+    // ── detect_binary_version tests ─────────────────────────────────
+
+    #[test]
+    fn detect_binary_version_returns_none_for_unknown_binary() {
+        // A binary name that doesn't exist anywhere
+        assert!(detect_binary_version("nonexistent-binary-zzz-12345").is_none());
+    }
+
+    // ── cli_command_for_binary tests ────────────────────────────────
+
+    #[test]
+    fn cli_command_for_binary_resolves_console() {
+        assert_eq!(cli_command_for_binary("iii-console"), Some("console"));
+    }
+
+    #[test]
+    fn cli_command_for_binary_resolves_tools() {
+        assert_eq!(cli_command_for_binary("iii-tools"), Some("create"));
+    }
+
+    #[test]
+    fn cli_command_for_binary_returns_none_for_unknown() {
+        assert!(cli_command_for_binary("unknown-binary").is_none());
+    }
+
+    // ── print_update_notifications tests ────────────────────────────
+
+    #[test]
+    fn print_update_notifications_empty_does_not_panic() {
+        print_update_notifications(&[]);
+    }
+
+    #[test]
+    fn print_update_notifications_with_updates_does_not_panic() {
+        let updates = vec![UpdateInfo {
+            binary_name: "iii-console".to_string(),
+            current_version: Version::new(0, 8, 0),
+            latest_version: Version::new(0, 9, 0),
+        }];
+        print_update_notifications(&updates);
+    }
+
+    // ── print_update_result tests ───────────────────────────────────
+
+    #[test]
+    fn print_update_result_updated_with_from() {
+        let result = Ok(UpdateResult::Updated {
+            binary: "iii".to_string(),
+            from: Some(Version::new(0, 8, 0)),
+            to: Version::new(0, 9, 0),
+        });
+        print_update_result(&result); // should not panic
+    }
+
+    #[test]
+    fn print_update_result_updated_without_from() {
+        let result = Ok(UpdateResult::Updated {
+            binary: "iii".to_string(),
+            from: None,
+            to: Version::new(0, 9, 0),
+        });
+        print_update_result(&result);
+    }
+
+    #[test]
+    fn print_update_result_already_up_to_date() {
+        let result = Ok(UpdateResult::AlreadyUpToDate {
+            binary: "iii".to_string(),
+            version: Version::new(0, 9, 0),
+        });
+        print_update_result(&result);
+    }
+
+    #[test]
+    fn print_update_result_error() {
+        let result: Result<UpdateResult, UpdateError> =
+            Err(UpdateError::VersionParse("bad version".to_string()));
+        print_update_result(&result);
+    }
+
+    // ── is_binary_installed tests ───────────────────────────────────
+
+    #[test]
+    fn is_binary_installed_false_for_nonexistent() {
+        assert!(!is_binary_installed("nonexistent-binary-zzz-12345"));
+    }
+}
