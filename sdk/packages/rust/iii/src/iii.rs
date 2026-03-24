@@ -524,7 +524,7 @@ struct IIIInner {
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
-    shutdown_notify: Arc<tokio::sync::Notify>,
+    shutdown_notify: tokio::sync::Notify,
     functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
     functions_available_callback_counter: AtomicUsize,
     functions_available_function_id: Mutex<Option<String>>,
@@ -587,7 +587,7 @@ impl III {
             services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
-            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            shutdown_notify: tokio::sync::Notify::new(),
             functions_available_callbacks: Mutex::new(HashMap::new()),
             functions_available_callback_counter: AtomicUsize::new(0),
             functions_available_function_id: Mutex::new(None),
@@ -704,11 +704,17 @@ impl III {
     /// }
     /// ```
     pub async fn hold_async(&self) {
-        // If already shut down, return immediately.
-        if !self.inner.running.load(std::sync::atomic::Ordering::SeqCst) {
+        // Register the notification future before checking the flag to avoid
+        // a TOCTOU race where shutdown() fires between the check and the await.
+        let notified = self.inner.shutdown_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        if !self.inner.running.load(Ordering::SeqCst) {
             return;
         }
-        self.inner.shutdown_notify.notified().await;
+
+        notified.await;
     }
 
     fn register_function_inner(
