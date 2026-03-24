@@ -524,6 +524,7 @@ struct IIIInner {
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
+    shutdown_notify: Arc<tokio::sync::Notify>,
     functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
     functions_available_callback_counter: AtomicUsize,
     functions_available_function_id: Mutex<Option<String>>,
@@ -586,6 +587,7 @@ impl III {
             services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
+            shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             functions_available_callbacks: Mutex::new(HashMap::new()),
             functions_available_callback_counter: AtomicUsize::new(0),
             functions_available_function_id: Mutex::new(None),
@@ -654,6 +656,7 @@ impl III {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
+        self.inner.shutdown_notify.notify_waiters();
 
         #[cfg(feature = "otel")]
         {
@@ -676,9 +679,36 @@ impl III {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
+        self.inner.shutdown_notify.notify_waiters();
 
         #[cfg(feature = "otel")]
         telemetry::shutdown_otel().await;
+    }
+
+    /// Block the current task until [`shutdown`](Self::shutdown) or
+    /// [`shutdown_async`](Self::shutdown_async) is called.
+    ///
+    /// This keeps the process alive while the SDK is connected to the engine,
+    /// matching the behaviour of the Node.js SDK where the open WebSocket
+    /// prevents the event loop from exiting.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// use iii_sdk::{register_worker, InitOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
+    ///     // register functions...
+    ///     iii.hold_async().await; // blocks until shutdown() is called
+    /// }
+    /// ```
+    pub async fn hold_async(&self) {
+        // If already shut down, return immediately.
+        if !self.inner.running.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        self.inner.shutdown_notify.notified().await;
     }
 
     fn register_function_inner(
