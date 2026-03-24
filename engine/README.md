@@ -35,7 +35,11 @@ command -v iii && iii --version
 iii --use-default-config
 ```
 
-For a project-backed setup, create `iii-config.yaml` in your working directory or run `iii-cli start --config /path/to/iii-config.yaml`.
+For a project-backed setup, create `config.yaml` in your working directory,
+or run `iii-cli start --config /path/to/config.yaml`.
+
+If you prefer a custom filename (for example `iii-config.yaml`), pass it explicitly:
+`iii-cli start --config /path/to/iii-config.yaml`.
 
 Open the console:
 
