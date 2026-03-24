@@ -1446,44 +1446,44 @@ pub fn register_functions(bridge: &III) {
 
     // Queue management
     let b = bridge.clone();
-    bridge.register_function(reg_fn_msg("engine::console::queues_list"), move |_input| {
+    bridge.register_function_with(reg_fn_msg("engine::console::queues_list"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_queues_list(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function(reg_fn_msg("engine::console::queue_detail"), move |input| {
+    bridge.register_function_with(reg_fn_msg("engine::console::queue_detail"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_queue_detail(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function(reg_fn_msg("engine::console::queue_publish"), move |input| {
+    bridge.register_function_with(reg_fn_msg("engine::console::queue_publish"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_queue_publish(&bridge, input).await) }
     });
 
     // DLQ management
     let b = bridge.clone();
-    bridge.register_function(reg_fn_msg("engine::console::dlq_list"), move |_input| {
+    bridge.register_function_with(reg_fn_msg("engine::console::dlq_list"), move |_input| {
         let bridge = b.clone();
         async move { Ok(handle_dlq_list(&bridge).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function(reg_fn_msg("engine::console::dlq_messages"), move |input| {
+    bridge.register_function_with(reg_fn_msg("engine::console::dlq_messages"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_dlq_messages(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function(reg_fn_msg("engine::console::dlq_redrive"), move |input| {
+    bridge.register_function_with(reg_fn_msg("engine::console::dlq_redrive"), move |input| {
         let bridge = b.clone();
         async move { Ok(handle_dlq_redrive(&bridge, input).await) }
     });
 
     let b = bridge.clone();
-    bridge.register_function(
+    bridge.register_function_with(
         reg_fn_msg("engine::console::dlq_redrive_message"),
         move |input| {
             let bridge = b.clone();
@@ -1492,7 +1492,7 @@ pub fn register_functions(bridge: &III) {
     );
 
     let b = bridge.clone();
-    bridge.register_function(
+    bridge.register_function_with(
         reg_fn_msg("engine::console::dlq_discard_message"),
         move |input| {
             let bridge = b.clone();
