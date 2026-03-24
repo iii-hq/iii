@@ -128,31 +128,55 @@ fn is_binary_installed(name: &str) -> bool {
 }
 
 /// Detect the actual version of an installed binary by running it with `--version`.
-/// Returns None if the binary doesn't exist, can't be executed, or output can't be parsed.
-fn detect_binary_version(name: &str) -> Option<Version> {
-    let path = platform::binary_path(name);
-    if !path.exists() {
-        // Try PATH
-        if let Some(p) = platform::find_existing_binary(name) {
-            return run_version_check(&p);
-        }
-        return None;
+/// Runs the blocking subprocess on a dedicated thread with a 5-second timeout so it
+/// never stalls the async reactor.
+/// Returns None if the binary doesn't exist, times out, or output can't be parsed.
+async fn detect_binary_version(name: &str) -> Option<Version> {
+    let path = if platform::binary_path(name).exists() {
+        platform::binary_path(name)
+    } else {
+        platform::find_existing_binary(name)?
+    };
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || run_version_check(&path)),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(version)) => version,
+        _ => None, // timeout, join error, or version parse failure
     }
-    run_version_check(&path)
 }
 
 fn run_version_check(path: &std::path::Path) -> Option<Version> {
+    parse_version_output(&run_version_command(path)?)
+}
+
+/// Execute `binary --version` with a 5-second timeout via spawn_blocking so it
+/// never blocks the async reactor.  Returns the raw stdout on success.
+fn run_version_command(path: &std::path::Path) -> Option<String> {
     let output = std::process::Command::new(path)
         .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Version could be just "0.8.0" or "iii 0.8.0" — take the last word
-    let version_str = stdout
-        .trim()
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Parse version from `--version` output.  Handles both bare ("0.8.0") and
+/// prefixed ("iii 0.8.0") formats.
+fn parse_version_output(stdout: &str) -> Option<Version> {
+    let trimmed = stdout.trim();
+    let version_str = trimmed
         .rsplit_once(' ')
         .map(|(_, v)| v)
-        .unwrap_or(stdout.trim());
+        .unwrap_or(trimmed);
     Version::parse(version_str).ok()
 }
 
@@ -174,21 +198,28 @@ pub async fn update_binary(
     let latest_version = github::parse_release_version(&release.tag_name)
         .map_err(|e| UpdateError::VersionParse(e.to_string()))?;
 
-    // Check if already up to date using the actual on-disk binary version,
-    // not the state file (which can be stale after manual installs or migrations).
-    if binary_installed {
-        if let Some(actual_version) = detect_binary_version(spec.name) {
-            if actual_version >= latest_version {
-                state.record_install(
-                    spec.name,
-                    actual_version.clone(),
-                    platform::asset_name(spec.name),
-                );
-                return Ok(UpdateResult::AlreadyUpToDate {
-                    binary: spec.name.to_string(),
-                    version: actual_version,
-                });
-            }
+    // Detect the actual on-disk binary version rather than trusting the state
+    // file (which can be stale after manual installs or migrations).  The
+    // detected version is used for both the up-to-date check AND as the "from"
+    // version in telemetry/reporting.
+    let detected_version = if binary_installed {
+        detect_binary_version(spec.name).await
+    } else {
+        None
+    };
+
+    if let Some(ref actual) = detected_version {
+        if *actual >= latest_version {
+            // Sync state to match reality so future checks are fast
+            state.record_install(
+                spec.name,
+                actual.clone(),
+                platform::asset_name(spec.name),
+            );
+            return Ok(UpdateResult::AlreadyUpToDate {
+                binary: spec.name.to_string(),
+                version: actual.clone(),
+            });
         }
     }
 
@@ -211,14 +242,15 @@ pub async fn update_binary(
         None
     };
 
-    // Capture previous version before record_install overwrites it.
-    // Only consider state if the binary actually exists on disk —
-    // stale state entries for missing binaries should show as fresh installs.
-    let previous_version = if binary_installed {
-        state.installed_version(spec.name).cloned()
-    } else {
-        None
-    };
+    // Use the detected on-disk version as the "from" version.  Fall back to
+    // state only when detection wasn't possible (e.g. binary not executable).
+    let previous_version = detected_version.or_else(|| {
+        if binary_installed {
+            state.installed_version(spec.name).cloned()
+        } else {
+            None
+        }
+    });
 
     if binary_installed {
         eprintln!("  Updating {} to v{}...", spec.name, latest_version);
@@ -281,23 +313,28 @@ pub async fn self_update(
     let latest_version = github::parse_release_version(&release.tag_name)
         .map_err(|e| UpdateError::VersionParse(e.to_string()))?;
 
-    // Detect the actual version of the on-disk binary rather than trusting
-    // the state file, which can be stale (e.g. binary was reinstalled via
-    // install.sh without updating state, or state was migrated from iii-cli).
-    if binary_installed {
-        if let Some(actual_version) = detect_binary_version(spec.name) {
-            if actual_version >= latest_version {
-                // Update state to match reality so future checks are fast
-                state.record_install(
-                    spec.name,
-                    actual_version.clone(),
-                    platform::asset_name(spec.name),
-                );
-                return Ok(UpdateResult::AlreadyUpToDate {
-                    binary: spec.name.to_string(),
-                    version: actual_version,
-                });
-            }
+    // Detect the actual on-disk binary version rather than trusting the state
+    // file, which can be stale (e.g. binary was reinstalled via install.sh
+    // without updating state, or state was migrated from iii-cli).  The
+    // detected version is used for both the up-to-date check AND as the "from"
+    // version in telemetry/reporting.
+    let detected_version = if binary_installed {
+        detect_binary_version(spec.name).await
+    } else {
+        None
+    };
+
+    if let Some(ref actual) = detected_version {
+        if *actual >= latest_version {
+            state.record_install(
+                spec.name,
+                actual.clone(),
+                platform::asset_name(spec.name),
+            );
+            return Ok(UpdateResult::AlreadyUpToDate {
+                binary: spec.name.to_string(),
+                version: actual.clone(),
+            });
         }
     }
 
@@ -318,12 +355,15 @@ pub async fn self_update(
         None
     };
 
-    // Capture previous version for telemetry and result reporting.
-    let previous_version = if binary_installed {
-        state.installed_version(spec.name).cloned()
-    } else {
-        None
-    };
+    // Use detected on-disk version as "from". Fall back to state only when
+    // detection wasn't possible.
+    let previous_version = detected_version.or_else(|| {
+        if binary_installed {
+            state.installed_version(spec.name).cloned()
+        } else {
+            None
+        }
+    });
 
     if binary_installed {
         eprintln!("  Updating {} to v{}...", spec.name, latest_version);
@@ -516,12 +556,39 @@ mod tests {
         assert_eq!(v, Version::new(2, 0, 0));
     }
 
-    // ── detect_binary_version tests ─────────────────────────────────
+    // ── parse_version_output tests ─────────────────────────────────
 
     #[test]
-    fn detect_binary_version_returns_none_for_unknown_binary() {
+    fn parse_version_output_bare() {
+        assert_eq!(parse_version_output("1.2.3\n"), Some(Version::new(1, 2, 3)));
+    }
+
+    #[test]
+    fn parse_version_output_prefixed() {
+        assert_eq!(parse_version_output("iii 0.9.0\n"), Some(Version::new(0, 9, 0)));
+    }
+
+    #[test]
+    fn parse_version_output_invalid() {
+        assert!(parse_version_output("not-a-version\n").is_none());
+    }
+
+    #[test]
+    fn parse_version_output_empty() {
+        assert!(parse_version_output("").is_none());
+    }
+
+    #[test]
+    fn parse_version_output_trailing_whitespace() {
+        assert_eq!(parse_version_output("2.0.0  \n  "), Some(Version::new(2, 0, 0)));
+    }
+
+    // ── detect_binary_version tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn detect_binary_version_returns_none_for_unknown_binary() {
         // A binary name that doesn't exist anywhere
-        assert!(detect_binary_version("nonexistent-binary-zzz-12345").is_none());
+        assert!(detect_binary_version("nonexistent-binary-zzz-12345").await.is_none());
     }
 
     // ── cli_command_for_binary tests ────────────────────────────────
