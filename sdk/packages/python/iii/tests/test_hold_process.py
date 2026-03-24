@@ -1,8 +1,5 @@
 """Tests for process hold-alive behavior."""
 
-import threading
-import time
-
 from iii.iii import III
 
 
