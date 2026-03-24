@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use iii_sdk::{
     InitOptions, OtelConfig, RegisterFunction, Streams, TriggerRequest, UpdateBuilder, UpdateOp,
@@ -192,6 +192,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("\n--- All examples completed! Process stays alive via connection thread. ---");
+
+    sleep(Duration::from_secs(10));
+    println!("Finishing III");
+    iii.shutdown();
+    sleep(Duration::from_secs(10));
 
     Ok(())
 }
