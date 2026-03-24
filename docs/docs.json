@@ -35,6 +35,7 @@
                   "how-to/use-functions-and-triggers",
                   "how-to/trigger-actions",
                   "how-to/trigger-functions-from-cli",
+                  "how-to/define-request-response-formats",
                   "how-to/use-queues",
                   "how-to/dead-letter-queues",
                   "how-to/expose-http-endpoint",
