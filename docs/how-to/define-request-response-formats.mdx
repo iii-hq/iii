@@ -50,10 +50,6 @@ The result includes a `functions` array. Each entry has `function_id`, `descript
 
 Use `request_format` to shape the JSON you pass to `trigger()` or `iii trigger --payload='...'`. Use `response_format` when you need to document or validate the return shape (when present).
 
-<Info title="Optional payload for list">
-  `engine::functions::list` accepts an optional `include_internal` flag. Pass `{"include_internal": true}` if you need internal functions in the listing. The default is `false`.
-</Info>
-
 ## Register formats in your SDK
 
 Define schemas in the way that fits each language, then register the function. The engine stores the JSON Schema (or schema-compatible object) you send.
