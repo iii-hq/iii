@@ -282,21 +282,14 @@ export const cloudLogos = [
   },
 ];
 
-const rotatingWords = [
-  'trigger',
-  'discover',
-  'register',
-  'observe',
-  'scale',
-  'connect',
-];
+const rotatingWords = ['create', 'connect', 'share', 'observe', 'use', 'build'];
 
 const rotatingContexts = [
   'any language',
   'any location',
   'any runtime',
-  'any worker',
-  'any event',
+  'any service',
+  'any queue',
   'any function',
 ];
 
@@ -320,6 +313,9 @@ const features: Feature[] = [
     text: 'Connect any service',
   },
   {
+    text: 'Create perfect context for Agents',
+  },
+  {
     text: 'Reduce complexity for humans and AI',
   },
   {
@@ -335,8 +331,14 @@ const features: Feature[] = [
     text: 'Make PLACEHOLDER a design pattern',
     rotatingWord: {
       target: 'PLACEHOLDER',
-      items: ['anything', 'any service', 'any framework', 'any protocol'],
-      intervalMs: 2600,
+      items: [
+        'any agent',
+        'any service',
+        'any framework',
+        'any protocol',
+        'anything',
+      ],
+      intervalMs: 3000,
     },
   },
   {
@@ -495,9 +497,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
             <div className="space-y-2">
               <h1 className="text-2xl sm:text-3xl md:text-5xl lg:text-7xl font-bold leading-tight tracking-tighter font-chivo">
                 <span
-                  className={
-                    isDarkMode ? 'text-iii-light' : 'text-iii-black'
-                  }
+                  className={isDarkMode ? 'text-iii-light' : 'text-iii-black'}
                 >
                   Unreasonably simple to
                 </span>
