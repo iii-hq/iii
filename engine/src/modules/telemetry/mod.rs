@@ -346,8 +346,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
         })
         .collect();
 
-    let worker_count_non_iii_sdk_framework =
-        worker_count_total.saturating_sub(worker_count_motia);
+    let worker_count_non_iii_sdk_framework = worker_count_total.saturating_sub(worker_count_motia);
 
     WorkerData {
         worker_count_total,
