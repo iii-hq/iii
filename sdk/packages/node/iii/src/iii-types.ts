@@ -99,7 +99,7 @@ export type RegisterFunctionFormat = {
   /**
    * The body of the parameter
    */
-  properties?: RegisterFunctionFormat[]
+  properties?: Record<string, RegisterFunctionFormat>
   /**
    * The items of the parameter
    */
@@ -107,7 +107,7 @@ export type RegisterFunctionFormat = {
   /**
    * Whether the parameter is required
    */
-  required?: boolean
+  required?: string[]
 }
 
 export type RegisterFunctionMessage = {

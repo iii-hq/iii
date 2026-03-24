@@ -1,4 +1,4 @@
-import { toJSONSchema, z } from 'zod'
+import { z } from 'zod'
 import { iii } from './iii'
 
 const inputSchema = z.object({
@@ -18,8 +18,8 @@ iii.registerFunction(
   {
     id: 'example::hello-world',
     description: 'description',
-    request_format: toJSONSchema(inputSchema),
-    response_format: toJSONSchema(outputSchema),
+    request_format: z.toJSONSchema(inputSchema),
+    response_format: z.toJSONSchema(outputSchema),
   },
   helloWorld,
 )
