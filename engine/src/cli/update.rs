@@ -173,10 +173,7 @@ fn run_version_command(path: &std::path::Path) -> Option<String> {
 /// prefixed ("iii 0.8.0") formats.
 fn parse_version_output(stdout: &str) -> Option<Version> {
     let trimmed = stdout.trim();
-    let version_str = trimmed
-        .rsplit_once(' ')
-        .map(|(_, v)| v)
-        .unwrap_or(trimmed);
+    let version_str = trimmed.rsplit_once(' ').map(|(_, v)| v).unwrap_or(trimmed);
     Version::parse(version_str).ok()
 }
 
@@ -211,11 +208,7 @@ pub async fn update_binary(
     if let Some(ref actual) = detected_version {
         if *actual >= latest_version {
             // Sync state to match reality so future checks are fast
-            state.record_install(
-                spec.name,
-                actual.clone(),
-                platform::asset_name(spec.name),
-            );
+            state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
             return Ok(UpdateResult::AlreadyUpToDate {
                 binary: spec.name.to_string(),
                 version: actual.clone(),
@@ -326,11 +319,7 @@ pub async fn self_update(
 
     if let Some(ref actual) = detected_version {
         if *actual >= latest_version {
-            state.record_install(
-                spec.name,
-                actual.clone(),
-                platform::asset_name(spec.name),
-            );
+            state.record_install(spec.name, actual.clone(), platform::asset_name(spec.name));
             return Ok(UpdateResult::AlreadyUpToDate {
                 binary: spec.name.to_string(),
                 version: actual.clone(),
@@ -565,7 +554,10 @@ mod tests {
 
     #[test]
     fn parse_version_output_prefixed() {
-        assert_eq!(parse_version_output("iii 0.9.0\n"), Some(Version::new(0, 9, 0)));
+        assert_eq!(
+            parse_version_output("iii 0.9.0\n"),
+            Some(Version::new(0, 9, 0))
+        );
     }
 
     #[test]
@@ -580,7 +572,10 @@ mod tests {
 
     #[test]
     fn parse_version_output_trailing_whitespace() {
-        assert_eq!(parse_version_output("2.0.0  \n  "), Some(Version::new(2, 0, 0)));
+        assert_eq!(
+            parse_version_output("2.0.0  \n  "),
+            Some(Version::new(2, 0, 0))
+        );
     }
 
     // ── detect_binary_version tests ─────────────────────────────────
@@ -588,7 +583,11 @@ mod tests {
     #[tokio::test]
     async fn detect_binary_version_returns_none_for_unknown_binary() {
         // A binary name that doesn't exist anywhere
-        assert!(detect_binary_version("nonexistent-binary-zzz-12345").await.is_none());
+        assert!(
+            detect_binary_version("nonexistent-binary-zzz-12345")
+                .await
+                .is_none()
+        );
     }
 
     // ── cli_command_for_binary tests ────────────────────────────────
