@@ -189,6 +189,16 @@ enum DisableReason {
     Config,
 }
 
+fn is_iii_builtin_function_id(id: &str) -> bool {
+    id.starts_with("engine::")
+        || id.starts_with("state::")
+        || id.starts_with("stream::")
+        || id == "enqueue"
+        || id == "publish"
+        || id.starts_with("bridge.")
+        || id.starts_with("iii::")
+}
+
 fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
     if !config.enabled {
         return Some(DisableReason::Config);
@@ -216,9 +226,22 @@ struct FunctionTriggerData {
     functions: Vec<String>,
     trigger_count: usize,
     trigger_types: Vec<String>,
+    functions_iii_builtin_count: usize,
+    functions_non_iii_builtin_count: usize,
 }
 
 fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
+    let mut functions_iii_builtin_count = 0usize;
+    let mut functions_non_iii_builtin_count = 0usize;
+    for entry in engine.functions.iter() {
+        let id = entry.key();
+        if is_iii_builtin_function_id(id) {
+            functions_iii_builtin_count += 1;
+        } else {
+            functions_non_iii_builtin_count += 1;
+        }
+    }
+
     let functions: Vec<String> = engine
         .functions
         .iter()
@@ -242,12 +265,15 @@ fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
         functions,
         trigger_count,
         trigger_types: trigger_types_used.into_iter().collect(),
+        functions_iii_builtin_count,
+        functions_non_iii_builtin_count,
     }
 }
 
 struct WorkerData {
     worker_count_total: usize,
     worker_count_motia: usize,
+    worker_count_non_iii_sdk_framework: usize,
     worker_count_by_language: HashMap<String, u64>,
     workers: Vec<String>,
     sdk_languages: Vec<String>,
@@ -320,9 +346,13 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
         })
         .collect();
 
+    let worker_count_non_iii_sdk_framework =
+        worker_count_total.saturating_sub(worker_count_motia);
+
     WorkerData {
         worker_count_total,
         worker_count_motia,
+        worker_count_non_iii_sdk_framework,
         worker_count_by_language: runtime_counts,
         workers,
         sdk_languages,
@@ -522,6 +552,8 @@ impl Module for TelemetryModule {
         let engine_for_started = Arc::clone(&self.engine);
         let client_for_started = Arc::clone(self.active_client());
         let ctx_for_started = self.ctx.clone();
+        let start_time_boot = start_time;
+        let interval_secs_boot = interval_secs;
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
@@ -543,9 +575,11 @@ impl Module for TelemetryModule {
                 let _ = client_for_started.send_event(first_run_event).await;
             }
 
-            let started_event = ctx_for_started.build_event(
-                "engine_started",
+            let uptime_secs = start_time_boot.elapsed().as_secs();
+            let boot_heartbeat = ctx_for_started.build_event(
+                "heartbeat",
                 serde_json::json!({
+                    "session_start": true,
                     "project_id": project.project_id,
                     "project_name": project.project_name,
                     "version": env!("CARGO_PKG_VERSION"),
@@ -553,17 +587,32 @@ impl Module for TelemetryModule {
                     "trigger_count": ft.trigger_count,
                     "functions": ft.functions,
                     "trigger_types": ft.trigger_types,
+                    "functions_iii_builtin_count": ft.functions_iii_builtin_count,
+                    "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
                     "client_type": wd.client_type,
                     "sdk_languages": wd.sdk_languages,
                     "worker_count_total": wd.worker_count_total,
                     "worker_count_motia": wd.worker_count_motia,
+                    "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
                     "worker_count_by_language": wd.worker_count_by_language,
                     "workers": wd.workers,
+                    "delta_invocations_total": 0u64,
+                    "delta_invocations_success": 0u64,
+                    "delta_invocations_error": 0u64,
+                    "delta_api_requests": 0u64,
+                    "delta_queue_emits": 0u64,
+                    "delta_queue_consumes": 0u64,
+                    "delta_pubsub_publishes": 0u64,
+                    "delta_pubsub_subscribes": 0u64,
+                    "delta_cron_executions": 0u64,
+                    "period_secs": interval_secs_boot,
+                    "uptime_secs": uptime_secs,
+                    "is_active": false,
                 }),
                 wd.sdk_telemetry.as_ref(),
             );
 
-            let _ = client_for_started.send_event(started_event).await;
+            let _ = client_for_started.send_event(boot_heartbeat).await;
         });
 
         tokio::spawn(async move {
@@ -613,10 +662,13 @@ impl Module for TelemetryModule {
                                     "trigger_count": ft.trigger_count,
                                     "functions": ft.functions,
                                     "trigger_types": ft.trigger_types,
+                                    "functions_iii_builtin_count": ft.functions_iii_builtin_count,
+                                    "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
                                     "client_type": wd.client_type,
                                     "sdk_languages": wd.sdk_languages,
                                     "worker_count_total": wd.worker_count_total,
                                     "worker_count_motia": wd.worker_count_motia,
+                                    "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
                                     "workers": wd.workers,
                                 }),
                                 wd.sdk_telemetry.as_ref(),
@@ -672,21 +724,25 @@ impl Module for TelemetryModule {
                         let project = resolve_project_context(wd.sdk_telemetry.as_ref());
 
                         let properties = serde_json::json!({
-                            "invocations_total": delta_invocations_total,
-                            "invocations_success": delta_invocations_success,
-                            "invocations_error": delta_invocations_error,
-                            "api_requests": delta_api_requests,
-                            "queue_emits": delta_queue_emits,
-                            "queue_consumes": delta_queue_consumes,
-                            "pubsub_publishes": delta_pubsub_publishes,
-                            "pubsub_subscribes": delta_pubsub_subscribes,
-                            "cron_executions": delta_cron_executions,
+                            "session_start": false,
+                            "delta_invocations_total": delta_invocations_total,
+                            "delta_invocations_success": delta_invocations_success,
+                            "delta_invocations_error": delta_invocations_error,
+                            "delta_api_requests": delta_api_requests,
+                            "delta_queue_emits": delta_queue_emits,
+                            "delta_queue_consumes": delta_queue_consumes,
+                            "delta_pubsub_publishes": delta_pubsub_publishes,
+                            "delta_pubsub_subscribes": delta_pubsub_subscribes,
+                            "delta_cron_executions": delta_cron_executions,
                             "function_count": ft.function_count,
                             "trigger_count": ft.trigger_count,
                             "functions": ft.functions,
                             "trigger_types": ft.trigger_types,
+                            "functions_iii_builtin_count": ft.functions_iii_builtin_count,
+                            "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
                             "worker_count_total": wd.worker_count_total,
                             "worker_count_motia": wd.worker_count_motia,
+                            "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
                             "worker_count_by_language": wd.worker_count_by_language,
                             "workers": wd.workers,
                             "sdk_languages": wd.sdk_languages,
@@ -1523,6 +1579,8 @@ mod tests {
         assert_eq!(result.trigger_count, 0);
         assert!(result.functions.is_empty());
         assert!(result.trigger_types.is_empty());
+        assert_eq!(result.functions_iii_builtin_count, 0);
+        assert_eq!(result.functions_non_iii_builtin_count, 0);
     }
 
     #[test]
@@ -1560,6 +1618,8 @@ mod tests {
         assert_eq!(result.function_count, 1);
         assert_eq!(result.functions.len(), 1);
         assert_eq!(result.functions[0], "user::my_function");
+        assert_eq!(result.functions_iii_builtin_count, 1);
+        assert_eq!(result.functions_non_iii_builtin_count, 1);
     }
 
     #[test]
@@ -1606,6 +1666,7 @@ mod tests {
 
         assert_eq!(wd.worker_count_total, 0);
         assert_eq!(wd.worker_count_motia, 0);
+        assert_eq!(wd.worker_count_non_iii_sdk_framework, 0);
         assert!(wd.sdk_telemetry.is_none());
         assert!(wd.sdk_languages.is_empty());
     }
@@ -1636,6 +1697,7 @@ mod tests {
 
         assert_eq!(wd.worker_count_total, 2);
         assert_eq!(wd.worker_count_motia, 1);
+        assert_eq!(wd.worker_count_non_iii_sdk_framework, 1);
 
         assert!(wd.sdk_telemetry.is_some());
         let telem = wd.sdk_telemetry.unwrap();
@@ -1728,6 +1790,19 @@ mod tests {
         let wd = collect_worker_data(&engine);
         assert_eq!(wd.worker_count_total, 1);
         assert_eq!(wd.worker_count_motia, 1);
+        assert_eq!(wd.worker_count_non_iii_sdk_framework, 0);
+    }
+
+    #[test]
+    fn test_is_iii_builtin_function_id() {
+        assert!(is_iii_builtin_function_id("engine::x"));
+        assert!(is_iii_builtin_function_id("state::get"));
+        assert!(is_iii_builtin_function_id("stream::list"));
+        assert!(is_iii_builtin_function_id("enqueue"));
+        assert!(is_iii_builtin_function_id("publish"));
+        assert!(is_iii_builtin_function_id("bridge.invoke"));
+        assert!(is_iii_builtin_function_id("iii::queue::redrive"));
+        assert!(!is_iii_builtin_function_id("orders::process"));
     }
 
     // =========================================================================
