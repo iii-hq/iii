@@ -25,7 +25,7 @@ use self::amplitude::{AmplitudeClient, AmplitudeEvent};
 use self::collector::collector;
 use self::environment::EnvironmentInfo;
 
-const API_KEY: &str = "e8fb1f8d290a72dbb2d9b264926be4bf";
+const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelemetryConfig {

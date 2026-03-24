@@ -24,6 +24,7 @@ import type { StreamMessage } from '@/api'
 import { getConnectionInfo, streamsQuery } from '@/api'
 import { useConfig } from '@/api/config-provider'
 import { Button, Input } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
 import { Pagination } from '@/components/ui/pagination'
 
@@ -490,11 +491,11 @@ function StreamsPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <Layers className="w-4 h-4 text-green-400" />
+          <h1 className="font-sans font-semibold text-lg tracking-tight flex items-center gap-2">
+            <Layers className="w-5 h-5 text-green-400" />
             Streams
           </h1>
-          <div className="text-[10px] md:text-xs text-muted bg-dark-gray/50 px-1.5 md:px-2 py-0.5 md:py-1 rounded flex items-center gap-1 hidden sm:flex">
+          <div className="font-sans text-sm text-secondary bg-dark-gray/50 px-1.5 md:px-2 py-0.5 md:py-1 rounded flex items-center gap-1 hidden sm:flex">
             <ArrowLeftRight className="w-3 h-3" />
             <span className="hidden md:inline">WebSocket Monitor</span>
             <span className="md:hidden">WS</span>
@@ -573,7 +574,7 @@ function StreamsPage() {
 
       {/* Subscriptions Bar */}
       <div className="flex items-center gap-3 px-5 py-2 bg-dark-gray/20 border-b border-border">
-        <span className="text-[11px] font-medium text-muted uppercase tracking-wide">
+        <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
           Subscriptions
         </span>
 
@@ -698,19 +699,18 @@ function StreamsPage() {
         >
           <div ref={messagesContainerRef} className="flex-1 overflow-auto">
             {filteredMessages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-64 text-muted">
-                <Layers className="w-8 h-8 mb-3 opacity-30" />
-                <span className="text-sm">
-                  {messages.length === 0
-                    ? 'Waiting for WebSocket messages...'
-                    : 'No messages match your filters'}
-                </span>
-                {wsConnected && messages.length === 0 && (
-                  <span className="text-xs mt-1 text-green-400">
-                    Connected to ws://localhost:{websocketPort}
-                  </span>
-                )}
-              </div>
+              <EmptyState
+                icon={Layers}
+                title={
+                  messages.length === 0 ? 'No active streams' : 'No messages match your filters'
+                }
+                description={
+                  messages.length === 0
+                    ? 'Streams appear when your functions publish messages'
+                    : 'Try adjusting your search or filters'
+                }
+                className="h-64"
+              />
             ) : (
               <div className="divide-y divide-border/30">
                 {paginatedMessages.map((msg) => {
@@ -815,7 +815,9 @@ function StreamsPage() {
             <div className="flex-1 overflow-auto p-4 space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-dark-gray/30 rounded p-2">
-                  <div className="text-[9px] text-muted uppercase mb-1">Event Type</div>
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                    Event Type
+                  </div>
                   <div
                     className={`text-xs font-medium ${EVENT_TYPE_INFO[selectedMessage.eventType]?.color || ''}`}
                   >
@@ -828,15 +830,19 @@ function StreamsPage() {
                   )}
                 </div>
                 <div className="bg-dark-gray/30 rounded p-2">
-                  <div className="text-[9px] text-muted uppercase mb-1">Size</div>
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                    Size
+                  </div>
                   <div className="text-xs font-mono">{formatBytes(selectedMessage.size)}</div>
                 </div>
               </div>
 
               {selectedMessage.streamName && (
                 <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Stream</div>
-                  <code className="text-xs font-mono bg-dark-gray px-2 py-1.5 rounded block">
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                    Stream
+                  </div>
+                  <code className="font-mono text-[13px] bg-dark-gray px-2 py-1.5 rounded block">
                     {selectedMessage.streamName}
                   </code>
                 </div>
@@ -844,17 +850,17 @@ function StreamsPage() {
 
               {selectedMessage.groupId && (
                 <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
                     Group ID
                   </div>
-                  <code className="text-xs font-mono bg-dark-gray px-2 py-1.5 rounded block">
+                  <code className="font-mono text-[13px] bg-dark-gray px-2 py-1.5 rounded block">
                     {selectedMessage.groupId}
                   </code>
                 </div>
               )}
 
               <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2 flex items-center gap-2">
                   Data
                   <button
                     type="button"
@@ -884,7 +890,7 @@ function StreamsPage() {
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <h3 className="font-semibold flex items-center gap-2">
+              <h3 className="font-sans font-semibold flex items-center gap-2">
                 <Layers className="w-4 h-4 text-green-400" />
                 Subscribe to Stream
               </h3>
@@ -961,7 +967,9 @@ function StreamsPage() {
 
               {streams.length > 0 && (
                 <div>
-                  <span className="text-xs text-muted block mb-2">Available Streams</span>
+                  <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted block mb-2">
+                    Available Streams
+                  </span>
                   <div className="flex flex-wrap gap-2 max-h-32 overflow-auto">
                     {streams
                       .filter((s) => !subscribedStreams.some((sub) => sub.streamName === s.id))

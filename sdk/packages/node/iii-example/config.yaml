@@ -24,8 +24,7 @@ modules:
       concurrency_request_limit: 1024
       cors:
         allowed_origins:
-          - http://localhost:3000
-          - http://localhost:5173
+          - "*"
         allowed_methods:
           - GET
           - POST
@@ -42,7 +41,7 @@ modules:
       service_namespace: ${SERVICE_NAMESPACE:production}
       service_instance_id: ${SERVICE_INSTANCE_ID:auto-generated}
 
-      exporter: ${OTEL_EXPORTER_TYPE:both}
+      exporter: ${OTEL_EXPORTER_TYPE:memory}
       endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
 
       sampling_ratio: 1.0
@@ -50,13 +49,13 @@ modules:
       memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
 
       metrics_enabled: true
-      metrics_exporter: ${OTEL_METRICS_EXPORTER:both}
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}
       prometheus_port: ${PROMETHEUS_PORT:9464}
       metrics_retention_seconds: 3600
       metrics_max_count: 10000
 
       logs_enabled: ${OTEL_LOGS_ENABLED:true}
-      logs_exporter: ${OTEL_LOGS_EXPORTER:both}
+      logs_exporter: ${OTEL_LOGS_EXPORTER:memory}
       logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}
       logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
 
@@ -64,13 +63,6 @@ modules:
         enabled: true
         collection_interval_seconds: 5
         history_size: 60
-
-  - class: modules::event::EventModule
-    config:
-      adapter:
-        class: modules::event::RedisAdapter
-        config:
-          redis_url: redis://localhost:6379
 
   - class: modules::pubsub::PubSubModule
     config:
@@ -81,6 +73,49 @@ modules:
     config:
       adapter:
         class: modules::cron::KvCronAdapter
+
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 10
+          type: standard
+        payment:
+          max_retries: 10
+          concurrency: 2
+          type: fifo
+          message_group_field: orderId
+        email:
+          max_retries: 8
+          concurrency: 5
+          type: standard
+          backoff_ms: 2000
+        bulk-email:
+          max_retries: 5
+          concurrency: 3
+          type: standard
+          backoff_ms: 5000
+        ledger:
+          max_retries: 15
+          concurrency: 1
+          type: fifo
+          message_group_field: account_id
+          backoff_ms: 500
+        dlq-demo:
+          max_retries: 2
+          concurrency: 1
+          type: standard
+          backoff_ms: 500
+      # adapter:
+      #   class: modules::queue::BuiltinQueueAdapter
+      #   config:
+      #     store_method: file_based
+      #     file_path: ./data/queue_store
+      adapter:
+        class: modules::queue::RabbitMQAdapter
+        config:
+        amqp_url: amqp://guest:guest@localhost:5672
 
   - class: modules::shell::ExecModule
     config:

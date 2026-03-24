@@ -19,7 +19,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BREW_FORMULA="${BREW_FORMULA:-$BIN_NAME}"
 
 AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
-AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-e8fb1f8d290a72dbb2d9b264926be4bf}"
+AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-a7182ac460dde671c8f2e1318b517228}"
 
 # Validate REPO format (owner/repo)
 if [[ ! "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then

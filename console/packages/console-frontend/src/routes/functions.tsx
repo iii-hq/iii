@@ -12,16 +12,20 @@ import {
   Loader2,
   Play,
   RefreshCw,
-  Search,
   Server,
   X,
   XCircle,
 } from 'lucide-react'
-import { useReducer } from 'react'
+import { useEffect, useReducer } from 'react'
+import { z } from 'zod'
 import type { FunctionInfo } from '@/api'
 import { functionsQuery, invokeFunction as invokeFunctionApi, workersQuery } from '@/api'
-import { Badge, Button, Input } from '@/components/ui/card'
+import { Badge, Button } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
+import { PageHeader } from '@/components/ui/page-header'
+import { SearchBar } from '@/components/ui/search-bar'
+import { Skeleton } from '@/components/ui/skeleton'
 
 // --- invocation reducer ---
 interface InvocationResult {
@@ -105,7 +109,12 @@ function functionsUiReducer(state: FunctionsUiState, action: FunctionsUiAction):
   }
 }
 
+const functionsSearchSchema = z.object({
+  q: z.string().optional(),
+})
+
 export const Route = createFileRoute('/functions')({
+  validateSearch: functionsSearchSchema,
   component: FunctionsPage,
   loader: ({ context: { queryClient } }) => {
     Promise.allSettled([
@@ -116,6 +125,8 @@ export const Route = createFileRoute('/functions')({
 })
 
 function FunctionsPage() {
+  const { q: qFromSearch } = Route.useSearch()
+
   const [uiState, dispatchUi] = useReducer(functionsUiReducer, {
     searchQuery: '',
     showSystem: false,
@@ -124,6 +135,12 @@ function FunctionsPage() {
     collapsedGroups: new Set<string>(),
   })
   const { searchQuery, showSystem, selectedFunction, copied, collapsedGroups } = uiState
+
+  useEffect(() => {
+    if (qFromSearch !== undefined) {
+      dispatchUi({ type: 'SET_SEARCH_QUERY', payload: qFromSearch })
+    }
+  }, [qFromSearch])
 
   const [invocationState, dispatchInvocation] = useReducer(invocationReducer, invocationInitial)
   const { invoking, invocationResult, requestBody } = invocationState
@@ -254,91 +271,87 @@ function FunctionsPage() {
 
   return (
     <div className="flex flex-col h-full bg-background text-foreground">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
-        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <Server className="w-4 h-4" />
-            Functions
-          </h1>
-          <Badge variant="success" className="gap-1 text-[10px] md:text-xs">
-            <Activity className="w-2.5 h-2.5 md:w-3 md:h-3" />
-            {userFunctions.length}
-          </Badge>
-          {systemFunctions.length > 0 && !showSystem && (
-            <span className="text-[10px] md:text-xs text-muted hidden md:inline">
-              ({systemFunctions.length} system)
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5 md:gap-2">
-          <Button
-            variant={showSystem ? 'accent' : 'ghost'}
-            size="sm"
-            onClick={() => dispatchUi({ type: 'TOGGLE_SHOW_SYSTEM' })}
-            className="h-6 md:h-7 text-[10px] md:text-xs px-2"
-          >
-            {showSystem ? (
-              <Eye className="w-3 h-3 md:mr-1.5" />
-            ) : (
-              <EyeOff className="w-3 h-3 md:mr-1.5" />
-            )}
-            <span className={`hidden md:inline ${showSystem ? '' : 'line-through opacity-60'}`}>
-              System
-            </span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={loadData}
-            disabled={loading}
-            className="h-7 text-xs"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        icon={Server}
+        title="Functions"
+        actions={
+          <>
+            <Button
+              variant={showSystem ? 'accent' : 'ghost'}
+              size="sm"
+              onClick={() => dispatchUi({ type: 'TOGGLE_SHOW_SYSTEM' })}
+              className="h-6 md:h-7 text-[10px] md:text-xs px-2"
+            >
+              {showSystem ? (
+                <Eye className="w-3 h-3 md:mr-1.5" />
+              ) : (
+                <EyeOff className="w-3 h-3 md:mr-1.5" />
+              )}
+              <span className={`hidden md:inline ${showSystem ? '' : 'line-through opacity-60'}`}>
+                System
+              </span>
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={loadData}
+              disabled={loading}
+              className="h-7 text-xs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </>
+        }
+      >
+        <Badge variant="success" className="gap-1 text-[10px] md:text-xs">
+          <Activity className="w-2.5 h-2.5 md:w-3 md:h-3" />
+          {userFunctions.length}
+        </Badge>
+        {systemFunctions.length > 0 && !showSystem && (
+          <span className="text-[10px] md:text-xs text-muted hidden md:inline">
+            ({systemFunctions.length} system)
+          </span>
+        )}
+      </PageHeader>
 
       {/* Search Bar Row */}
-      <div className="flex items-center gap-2 p-2 border-b border-border bg-dark-gray/20">
-        <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
-          <Input
-            value={searchQuery}
-            onChange={(e) => dispatchUi({ type: 'SET_SEARCH_QUERY', payload: e.target.value })}
-            className="pl-9 pr-9 h-9"
-            placeholder="Search functions..."
-          />
-          {searchQuery && (
-            <button
-              type="button"
-              onClick={() => dispatchUi({ type: 'SET_SEARCH_QUERY', payload: '' })}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-foreground"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
+      <SearchBar
+        value={searchQuery}
+        onChange={(value) => dispatchUi({ type: 'SET_SEARCH_QUERY', payload: value })}
+        placeholder="Search functions..."
+      />
 
       <div
         className={`flex-1 flex overflow-hidden ${selectedFunction ? 'divide-x divide-border' : ''}`}
       >
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
           {loading ? (
-            <div className="flex items-center justify-center py-12 text-muted">
-              <RefreshCw className="w-5 h-5 animate-spin mr-2" />
-              Loading functions...
+            <div className="space-y-3 py-4">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
             </div>
           ) : filteredFunctions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Code2 className="w-12 h-12 text-muted/30 mb-4" />
-              <div className="text-sm font-medium mb-1">No functions found</div>
-              <div className="text-xs text-muted">
-                {searchQuery ? 'Try a different search term' : 'Register functions using the SDK'}
+            searchQuery ? (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Code2 className="w-12 h-12 text-muted/30 mb-4" />
+                <div className="font-sans font-semibold text-base text-foreground mb-1">
+                  No functions found
+                </div>
+                <div className="font-sans text-[13px] text-secondary">
+                  Try a different search term
+                </div>
               </div>
-            </div>
+            ) : (
+              <EmptyState
+                icon={Server}
+                title="No functions registered"
+                description="Register functions using the SDK to see them here"
+              />
+            )
           ) : (
             groups.map((group) => (
               <div key={group}>
@@ -367,11 +380,11 @@ function FunctionsPage() {
                           key={fn.function_id}
                           type="button"
                           onClick={() => handleSelectFunction(fn)}
-                          className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all w-full text-left
+                          className={`group flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-lg)] cursor-pointer transition-all w-full text-left
                           ${
                             isSelected
                               ? 'bg-primary/10 border border-primary/30 ring-1 ring-primary/20'
-                              : 'bg-dark-gray/30 border border-transparent hover:bg-dark-gray/50 hover:border-border'
+                              : 'bg-elevated border border-transparent hover:bg-hover hover:border-border'
                           }
                         `}
                         >
@@ -381,7 +394,7 @@ function FunctionsPage() {
 
                           <div className="flex-1 min-w-0">
                             <span
-                              className={`font-mono text-sm font-medium ${isSelected ? 'text-primary' : 'text-yellow'}`}
+                              className={`font-mono text-[13px] font-medium ${isSelected ? 'text-primary' : 'text-yellow'}`}
                             >
                               {fn.function_id}
                             </span>
@@ -448,14 +461,14 @@ function FunctionsPage() {
 
             <div className="flex-1 overflow-y-auto p-4 space-y-5">
               <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-3 flex items-center gap-2">
                   <Play className="w-3 h-3" />
                   Invoke Function
                 </div>
 
                 <div className="space-y-3">
                   <div>
-                    <div className="text-[10px] text-muted uppercase tracking-wider mb-1.5">
+                    <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1.5">
                       Input (JSON)
                     </div>
                     <textarea

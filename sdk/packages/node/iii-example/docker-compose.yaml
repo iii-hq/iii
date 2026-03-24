@@ -37,6 +37,20 @@ services:
       - openobserve
     restart: unless-stopped
 
+  # RabbitMQ - Message broker for queue examples
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: iii-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    networks:
+      - iii-network
+    restart: unless-stopped
+
 networks:
   iii-network:
     driver: bridge

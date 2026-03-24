@@ -335,6 +335,18 @@ impl QueueAdapter for RedisAdapter {
         ))
     }
 
+    async fn redrive_dlq_message(&self, _topic: &str, _message_id: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!(
+            "RedisAdapter does not support DLQ operations (pub/sub only)"
+        ))
+    }
+
+    async fn discard_dlq_message(&self, _topic: &str, _message_id: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!(
+            "RedisAdapter does not support DLQ operations (pub/sub only)"
+        ))
+    }
+
     async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
         Err(anyhow::anyhow!(
             "RedisAdapter does not support DLQ operations (pub/sub only)"
@@ -388,5 +400,24 @@ impl QueueAdapter for RedisAdapter {
         _prefetch: u32,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::modules::queue::QueueMessage>> {
         anyhow::bail!("Redis function queue consumer not yet implemented")
+    }
+
+    async fn list_topics(&self) -> anyhow::Result<Vec<crate::modules::queue::TopicInfo>> {
+        // Redis adapter keys subscriptions by topic name directly.
+        // Multiple subscriptions can exist per topic, so count them.
+        let subs = self.subscriptions.read().await;
+        let mut topic_counts: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for topic in subs.keys() {
+            *topic_counts.entry(topic.clone()).or_insert(0) += 1;
+        }
+        Ok(topic_counts
+            .into_iter()
+            .map(|(name, count)| crate::modules::queue::TopicInfo {
+                name,
+                broker_type: "redis".to_string(),
+                subscriber_count: count,
+            })
+            .collect())
     }
 }

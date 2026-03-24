@@ -12,6 +12,7 @@ mod queue;
 pub mod registry;
 mod subscriber_config;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -19,6 +20,31 @@ pub use self::config::FunctionQueueConfig;
 pub use self::message::QueueMessage;
 pub use self::queue::QueueCoreModule;
 pub use self::subscriber_config::SubscriberQueueConfig;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopicInfo {
+    pub name: String,
+    pub broker_type: String,
+    pub subscriber_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopicStats {
+    pub depth: u64,
+    pub consumer_count: u64,
+    pub dlq_depth: u64,
+    pub config: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DlqMessage {
+    pub id: String,
+    pub payload: serde_json::Value,
+    pub error: String,
+    pub failed_at: u64,
+    pub retries: u32,
+    pub size_bytes: u64,
+}
 
 #[allow(clippy::too_many_arguments)]
 #[async_trait::async_trait]
@@ -40,6 +66,8 @@ pub trait QueueAdapter: Send + Sync + 'static {
     );
     async fn unsubscribe(&self, topic: &str, id: &str);
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64>;
+    async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool>;
+    async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool>;
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64>;
     async fn dlq_messages(&self, topic: &str, count: usize) -> anyhow::Result<Vec<Value>> {
         let _ = (topic, count);
@@ -97,5 +125,30 @@ pub trait QueueAdapter: Send + Sync + 'static {
         _max_retries: u32,
     ) -> anyhow::Result<()> {
         Ok(()) // no-op by default
+    }
+
+    /// List all known queue topics.
+    async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
+        Ok(vec![])
+    }
+
+    /// Get stats for a specific topic.
+    async fn topic_stats(&self, _topic: &str) -> anyhow::Result<TopicStats> {
+        Ok(TopicStats {
+            depth: 0,
+            consumer_count: 0,
+            dlq_depth: 0,
+            config: None,
+        })
+    }
+
+    /// Peek at DLQ messages non-destructively.
+    async fn dlq_peek(
+        &self,
+        _topic: &str,
+        _offset: u64,
+        _limit: u64,
+    ) -> anyhow::Result<Vec<DlqMessage>> {
+        Ok(vec![])
     }
 }

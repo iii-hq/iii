@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import {
-  AlertCircle,
   Check,
   Clock,
   Copy,
@@ -22,8 +21,10 @@ import type { OtelLog } from '@/api'
 import { otelLogsQuery } from '@/api/queries'
 import { type TimeRange, TimeRangeFilter } from '@/components/filters/TimeRangeFilter'
 import { Badge, Button, Input } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
 import { Pagination } from '@/components/ui/pagination'
+import { Skeleton } from '@/components/ui/skeleton'
 
 export const Route = createFileRoute('/logs')({
   component: LogsPage,
@@ -380,8 +381,8 @@ function LogsPage() {
     <div className="flex flex-col h-full bg-background text-foreground">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <Terminal className="w-4 h-4" />
+          <h1 className="font-sans font-semibold text-lg tracking-tight flex items-center gap-2">
+            <Terminal className="w-5 h-5" />
             Logs
           </h1>
           {isPaused && (
@@ -391,7 +392,7 @@ function LogsPage() {
             </Badge>
           )}
           {logs.length > 0 && (
-            <span className="text-[10px] md:text-xs text-muted">
+            <span className="font-sans text-sm text-secondary">
               {filteredLogs.length}/{logs.length}
             </span>
           )}
@@ -435,17 +436,32 @@ function LogsPage() {
         </div>
       </div>
 
+      {isLoading && (
+        <div className="flex-1 p-4 space-y-2">
+          {(
+            [
+              'log-sk-0',
+              'log-sk-1',
+              'log-sk-2',
+              'log-sk-3',
+              'log-sk-4',
+              'log-sk-5',
+              'log-sk-6',
+              'log-sk-7',
+            ] as const
+          ).map((sk) => (
+            <Skeleton key={sk} className="h-9 w-full" />
+          ))}
+        </div>
+      )}
+
       {!isLoading && !hasLoggingAdapter && (
         <div className="flex-1 flex items-center justify-center p-12">
-          <div className="text-center max-w-xs">
-            <div className="w-10 h-10 mb-3 mx-auto rounded-lg bg-dark-gray border border-border flex items-center justify-center">
-              <AlertCircle className="w-5 h-5 text-muted" />
-            </div>
-            <h3 className="text-xs font-medium mb-1 text-foreground">No logs found</h3>
-            <p className="text-[11px] text-muted leading-relaxed">
-              Configure a logging adapter in config.yaml. Logs will appear here once available.
-            </p>
-          </div>
+          <EmptyState
+            icon={Terminal}
+            title="No logs yet"
+            description="Logs will appear here as your functions run"
+          />
         </div>
       )}
 
@@ -463,7 +479,7 @@ function LogsPage() {
               <select
                 value={selectedSeverity}
                 onChange={(e) => dispatchFilter({ type: 'SET_SEVERITY', payload: e.target.value })}
-                className="px-3 py-1.5 rounded text-xs bg-[#1D1D1D] border border-[#1D1D1D] hover:border-[#5B5B5B] text-[#F4F4F4]"
+                className="px-3 py-1.5 rounded-[var(--radius-md)] text-xs bg-border-subtle border border-border-subtle hover:border-muted text-foreground"
               >
                 <option value="">All Severities</option>
                 <option value="DEBUG">DEBUG</option>
@@ -555,26 +571,31 @@ function LogsPage() {
               <div ref={logContainerRef} className="flex-1 overflow-auto">
                 <div className="relative w-full">
                   {filteredLogs.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-64 text-muted">
-                      <Terminal className="w-8 h-8 mb-3 opacity-30" />
-                      <span className="text-sm">
-                        {searchQuery || activeLevelFilters.size > 0
+                    <EmptyState
+                      icon={Terminal}
+                      title={
+                        searchQuery || activeLevelFilters.size > 0
                           ? 'No logs match your filters'
-                          : 'No logs to display'}
-                      </span>
-                      {(searchQuery || activeLevelFilters.size > 0) && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            dispatchFilter({ type: 'SET_SEARCH_QUERY', payload: '' })
-                            dispatchFilter({ type: 'CLEAR_LEVEL_FILTERS' })
-                          }}
-                          className="mt-2 text-xs text-primary hover:underline"
-                        >
-                          Clear all filters
-                        </button>
-                      )}
-                    </div>
+                          : 'No logs yet'
+                      }
+                      description={
+                        searchQuery || activeLevelFilters.size > 0
+                          ? 'Try adjusting your search or level filters'
+                          : 'Logs will appear here as your functions run'
+                      }
+                      action={
+                        searchQuery || activeLevelFilters.size > 0
+                          ? {
+                              label: 'Clear all filters',
+                              onClick: () => {
+                                dispatchFilter({ type: 'SET_SEARCH_QUERY', payload: '' })
+                                dispatchFilter({ type: 'CLEAR_LEVEL_FILTERS' })
+                              },
+                            }
+                          : undefined
+                      }
+                      className="h-64"
+                    />
                   ) : (
                     paginatedLogs.map((log) => {
                       const config = LEVEL_CONFIG[log.level] || LEVEL_CONFIG.info
@@ -687,7 +708,7 @@ function LogsPage() {
 
                 <div className="p-4 space-y-5">
                   <div>
-                    <div className="text-[10px] text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2 flex items-center gap-2">
                       Message
                       <button
                         type="button"
@@ -710,7 +731,7 @@ function LogsPage() {
 
                   {selectedLog.traceId && (
                     <div>
-                      <div className="text-[10px] text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2 flex items-center gap-2">
                         Trace ID
                         <button
                           type="button"
@@ -725,7 +746,7 @@ function LogsPage() {
                         </button>
                       </div>
                       <div className="flex items-center gap-2">
-                        <code className="text-xs font-mono bg-black/40 px-2 py-1.5 rounded flex-1 break-all">
+                        <code className="font-mono text-[13px] bg-black/40 px-2 py-1.5 rounded flex-1 break-all">
                           {selectedLog.traceId}
                         </code>
                         <button
@@ -741,11 +762,11 @@ function LogsPage() {
                   )}
 
                   <div>
-                    <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
                       Source Function
                     </div>
                     <div className="flex items-center gap-2">
-                      <code className="text-xs font-mono bg-cyan-500/10 text-cyan-400 px-2 py-1.5 rounded border border-cyan-500/20">
+                      <code className="font-mono text-[13px] bg-cyan-500/10 text-cyan-400 px-2 py-1.5 rounded border border-cyan-500/20">
                         <Zap className="w-3 h-3 inline mr-1.5" />
                         {selectedLog.source}
                       </code>
@@ -753,26 +774,30 @@ function LogsPage() {
                   </div>
 
                   <div>
-                    <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
                       Timestamp
                     </div>
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="bg-black/30 rounded px-2 py-1.5">
-                        <div className="text-[9px] text-muted uppercase">ISO</div>
-                        <code className="text-[10px] font-mono">{selectedLog.timestamp}</code>
+                      <div className="bg-elevated rounded-[var(--radius-md)] px-2 py-1.5">
+                        <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                          ISO
+                        </div>
+                        <code className="font-mono text-[13px]">{selectedLog.timestamp}</code>
                       </div>
-                      <div className="bg-black/30 rounded px-2 py-1.5">
-                        <div className="text-[9px] text-muted uppercase">Unix</div>
-                        <code className="text-[10px] font-mono">{selectedLog.time}</code>
+                      <div className="bg-elevated rounded-[var(--radius-md)] px-2 py-1.5">
+                        <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                          Unix
+                        </div>
+                        <code className="font-mono text-[13px]">{selectedLog.time}</code>
                       </div>
                     </div>
                   </div>
 
                   {selectedLog.context && Object.keys(selectedLog.context).length > 0 && (
                     <div>
-                      <div className="text-[10px] text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2 flex items-center gap-2">
                         Context Data
-                        <span className="text-[9px] bg-dark-gray/50 px-1.5 py-0.5 rounded">
+                        <span className="text-[9px] bg-dark-gray/50 px-1.5 py-0.5 rounded font-normal normal-case tracking-normal">
                           {Object.keys(selectedLog.context).length} fields
                         </span>
                         <button
@@ -789,7 +814,7 @@ function LogsPage() {
                           )}
                         </button>
                       </div>
-                      <div className="bg-black/40 px-3 py-2 rounded overflow-x-auto max-h-64 overflow-y-auto">
+                      <div className="bg-elevated rounded-[var(--radius-md)] px-3 py-2 overflow-x-auto max-h-64 overflow-y-auto">
                         <JsonViewer data={selectedLog.context} collapsed={false} maxDepth={4} />
                       </div>
                     </div>
@@ -896,12 +921,12 @@ function LogsPage() {
               <div className="space-y-6">
                 {/* Message */}
                 <div>
-                  <div className="text-xs text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
                     <Terminal className="w-4 h-4" />
                     Message
                   </div>
                   <div
-                    className={`text-lg font-medium leading-relaxed p-4 rounded-lg bg-dark-gray/30 border border-border ${LEVEL_CONFIG[fullscreenLog.level]?.text}`}
+                    className={`text-lg font-medium leading-relaxed p-4 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle ${LEVEL_CONFIG[fullscreenLog.level]?.text}`}
                   >
                     {fullscreenLog.message}
                   </div>
@@ -910,23 +935,27 @@ function LogsPage() {
                 {/* Metadata Grid */}
                 <div className="grid grid-cols-2 gap-4">
                   {/* Source */}
-                  <div className="p-4 rounded-lg bg-dark-gray/30 border border-border">
-                    <div className="text-xs text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                  <div className="p-4 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2 flex items-center gap-2">
                       <Zap className="w-3.5 h-3.5" />
                       Source Function
                     </div>
-                    <code className="text-sm font-mono text-cyan-400">{fullscreenLog.source}</code>
+                    <code className="font-mono text-[13px] text-cyan-400">
+                      {fullscreenLog.source}
+                    </code>
                   </div>
 
                   {/* Trace ID */}
                   {fullscreenLog.traceId && (
-                    <div className="p-4 rounded-lg bg-dark-gray/30 border border-border">
-                      <div className="text-xs text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <div className="p-4 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2 flex items-center gap-2">
                         <ExternalLink className="w-3.5 h-3.5" />
                         Trace ID
                       </div>
                       <div className="flex items-center gap-2">
-                        <code className="text-sm font-mono break-all">{fullscreenLog.traceId}</code>
+                        <code className="font-mono text-[13px] break-all">
+                          {fullscreenLog.traceId}
+                        </code>
                         <button
                           type="button"
                           onClick={() => {
@@ -944,23 +973,29 @@ function LogsPage() {
                 </div>
 
                 {/* Timestamps */}
-                <div className="p-4 rounded-lg bg-dark-gray/30 border border-border">
-                  <div className="text-xs text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                <div className="p-4 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+                  <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
                     <Clock className="w-3.5 h-3.5" />
                     Timestamps
                   </div>
                   <div className="grid grid-cols-3 gap-4">
                     <div>
-                      <div className="text-[10px] text-muted mb-1">ISO 8601</div>
-                      <code className="text-xs font-mono">{fullscreenLog.timestamp}</code>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                        ISO 8601
+                      </div>
+                      <code className="font-mono text-[13px]">{fullscreenLog.timestamp}</code>
                     </div>
                     <div>
-                      <div className="text-[10px] text-muted mb-1">Unix (ms)</div>
-                      <code className="text-xs font-mono">{fullscreenLog.time}</code>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                        Unix (ms)
+                      </div>
+                      <code className="font-mono text-[13px]">{fullscreenLog.time}</code>
                     </div>
                     <div>
-                      <div className="text-[10px] text-muted mb-1">Local</div>
-                      <code className="text-xs font-mono">
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-1">
+                        Local
+                      </div>
+                      <code className="font-mono text-[13px]">
                         {new Date(fullscreenLog.time).toLocaleString()}
                       </code>
                     </div>
@@ -970,10 +1005,10 @@ function LogsPage() {
                 {/* Context Data */}
                 {fullscreenLog.context && Object.keys(fullscreenLog.context).length > 0 && (
                   <div>
-                    <div className="text-xs text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
                       <CornerDownRight className="w-3.5 h-3.5" />
                       Context Data
-                      <span className="text-[10px] bg-dark-gray px-2 py-0.5 rounded">
+                      <span className="text-[10px] bg-dark-gray px-2 py-0.5 rounded font-normal normal-case tracking-normal">
                         {Object.keys(fullscreenLog.context).length} fields
                       </span>
                       <button
@@ -993,7 +1028,7 @@ function LogsPage() {
                         )}
                       </button>
                     </div>
-                    <div className="bg-dark-gray p-4 rounded-lg overflow-x-auto max-h-[400px] overflow-y-auto border border-border">
+                    <div className="bg-elevated p-4 rounded-[var(--radius-lg)] overflow-x-auto max-h-[400px] overflow-y-auto border border-border-subtle">
                       <JsonViewer data={fullscreenLog.context} collapsed={false} maxDepth={6} />
                     </div>
                   </div>

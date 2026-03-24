@@ -1,44 +1,103 @@
 @import "tailwindcss";
 
-/* iii Brand Color Palette */
+/* === Design System Tokens (DESIGN.md) === */
 :root {
   /* Core Palette */
+  --background: #000000;
+  --foreground: #F4F4F4;
+  --sidebar: #0A0A0A;
+  --elevated: #111111;
+  --hover: #1A1A1A;
+  --border: #2D2D2D;
+  --border-subtle: #1D1D1D;
+  --muted: #5B5B5B;
+  --secondary: #9CA3AF;
+
+  /* Accent */
+  --accent: #F3F724;
+  --accent-hover: #D4D820;
+  --accent-subtle: rgba(243, 247, 36, 0.08);
+  --accent-text: #000000;
+
+  /* Status */
+  --success: #22C55E;
+  --warning: #F3F724;
+  --error: #EF4444;
+  --info: #3B82F6;
+
+  /* Typography */
+  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  /* Radii (DESIGN.md) */
+  --radius-lg: 10px;
+  --radius-md: 6px;
+  --radius-sm: 2px;
+  --radius-full: 9999px;
+
+  /* Legacy aliases for backward compat */
   --light-gray: #F4F4F4;
   --medium-gray: #5B5B5B;
   --dark-gray: #1D1D1D;
   --black: #000000;
   --yellow: #F3F724;
   --white: #FFFFFF;
-  
-  /* Semantic Colors */
-  --background: #000000;
-  --foreground: #F4F4F4;
-  --sidebar: #0A0A0A;
-  --border: #2D2D2D;
-  --muted: #9CA3AF;
-  --accent: #F3F724;
-  
-  /* Status Colors */
-  --success: #22C55E;
-  --warning: #F3F724;
-  --error: #EF4444;
-  --info: #5B5B5B;
+}
+
+/* Light Mode */
+[data-theme="light"] {
+  --background: #FAFAFA;
+  --foreground: #1A1A1A;
+  --sidebar: #FFFFFF;
+  --elevated: #FFFFFF;
+  --hover: #F0F0F0;
+  --border: #E0E0E0;
+  --border-subtle: #EBEBEB;
+  --muted: #6B7280;
+  --secondary: #6B7280;
+  --accent: #C8CC00;
+  --accent-hover: #A8AB00;
+  --accent-subtle: rgba(200, 204, 0, 0.08);
+  --accent-text: #000000;
+  --success: #16A34A;
+  --warning: #C8CC00;
+  --error: #DC2626;
+  --info: #2563EB;
+  --light-gray: #1A1A1A;
+  --medium-gray: #6B7280;
+  --dark-gray: #EBEBEB;
+  --black: #FAFAFA;
+  --yellow: #C8CC00;
+  --white: #1A1A1A;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-sidebar: var(--sidebar);
+  --color-elevated: var(--elevated);
+  --color-hover: var(--hover);
   --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
   --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
   --color-accent: var(--accent);
-  --color-light-gray: var(--light-gray);
-  --color-dark-gray: var(--dark-gray);
-  --color-yellow: var(--yellow);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-text: var(--accent-text);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-error: var(--error);
-  }
+  --color-info: var(--info);
+  --color-light-gray: var(--light-gray);
+  --color-dark-gray: var(--dark-gray);
+  --color-yellow: var(--yellow);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-lg: var(--radius-lg);
+  --radius-md: var(--radius-md);
+  --radius-sm: var(--radius-sm);
+}
 
 html {
   font-feature-settings: "liga" 1, "calt" 1;
@@ -47,18 +106,17 @@ html {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-mono), 'JetBrains Mono', monospace;
+  font-family: var(--font-mono);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* JetBrains Mono font weights */
-.font-semibold {
-  font-weight: 600;
-}
-
-.font-regular {
-  font-weight: 400;
+/* Theme transition — only active during theme toggle to avoid interfering with hover animations */
+[data-theme-transitioning],
+[data-theme-transitioning] *,
+[data-theme-transitioning] *::before,
+[data-theme-transitioning] *::after {
+  transition: background-color 200ms ease-in-out, border-color 200ms ease-in-out, color 200ms ease-in-out !important;
 }
 
 /* Custom scrollbar */
@@ -72,12 +130,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--dark-gray);
+  background: var(--border-subtle);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--medium-gray);
+  background: var(--muted);
 }
 
 /* iii Logo animation */
@@ -125,57 +183,11 @@ body {
   .animate-trace-flash {
     animation: none;
   }
-}
-
-/* Button styles */
-.btn-primary {
-  background: var(--white);
-  color: var(--black);
-  padding: 8px 16px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  transition: all 0.15s ease;
-}
-
-.btn-primary:hover {
-  background: var(--light-gray);
-}
-
-.btn-accent {
-  background: var(--yellow);
-  color: var(--black);
-  padding: 8px 16px;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  transition: all 0.15s ease;
-}
-
-.btn-accent:hover {
-  filter: brightness(0.9);
-}
-
-.btn-outline {
-  background: transparent;
-  color: var(--foreground);
-  padding: 8px 16px;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  transition: all 0.15s ease;
-}
-
-.btn-outline:hover {
-  background: var(--dark-gray);
-  border-color: var(--medium-gray);
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
 }
 
 /* Status indicators */
@@ -189,43 +201,17 @@ body {
 }
 
 .status-pending {
-  background: var(--yellow);
-}
-
-/* Card hover effects */
-.card-interactive {
-  transition: border-color 0.15s ease, transform 0.15s ease;
-}
-
-.card-interactive:hover {
-  border-color: var(--medium-gray);
-  transform: translateY(-1px);
-}
-
-
-/* Table styles */
-.table-row {
-  border-bottom: 1px solid var(--border);
-  transition: background 0.15s ease;
-}
-
-.table-row:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-/* Code/monospace blocks */
-.code-block {
-  background: var(--dark-gray);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 12px 16px;
-  font-family: var(--font-mono), 'JetBrains Mono', monospace;
-  font-size: 13px;
-  line-height: 1.5;
+  background: var(--accent);
 }
 
 /* Selection styling */
 ::selection {
-  background: var(--yellow);
-  color: var(--black);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

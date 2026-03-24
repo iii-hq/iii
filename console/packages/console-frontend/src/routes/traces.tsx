@@ -25,8 +25,10 @@ import { TraceMap } from '@/components/traces/TraceMap'
 import { ViewSwitcher, type ViewType } from '@/components/traces/ViewSwitcher'
 import { WaterfallChart } from '@/components/traces/WaterfallChart'
 import { Badge, Button } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBoundary } from '@/components/ui/error-boundary'
 import { Pagination } from '@/components/ui/pagination'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useResizablePanels } from '@/hooks/useResizablePanels'
 import { type TraceGroup, useTraceData } from '@/hooks/useTraceData'
 import { useTraceFilters } from '@/hooks/useTraceFilters'
@@ -218,10 +220,10 @@ function TracesPage() {
 
   return (
     <div className="flex flex-col h-full bg-background text-foreground">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 md:px-6 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <GitBranch className="w-4 h-4 text-cyan-400" />
+          <h1 className="font-sans font-semibold text-lg tracking-tight flex items-center gap-2">
+            <GitBranch className="w-5 h-5 text-accent" />
             Traces
           </h1>
           {isPaused && (
@@ -306,34 +308,44 @@ function TracesPage() {
             }}
           >
             {isQueryLoading && traceGroups.length === 0 ? (
-              <div className="flex items-center justify-center h-32">
-                <RefreshCw className="w-5 h-5 text-muted animate-spin" />
+              <div className="flex flex-col gap-0">
+                {(['tr-sk-0', 'tr-sk-1', 'tr-sk-2', 'tr-sk-3', 'tr-sk-4'] as const).map((sk) => (
+                  <div key={sk} className="p-3 border-b border-border">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Skeleton className="w-3.5 h-3.5 rounded-full" />
+                      <Skeleton className="h-4 w-48" />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Skeleton className="h-3 w-16" />
+                      <Skeleton className="h-3 w-12" />
+                      <Skeleton className="h-3 w-20" />
+                      <Skeleton className="h-3 w-14 ml-auto" />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : filteredTraces.length === 0 ? (
               <div className="flex-1 flex items-center justify-center p-12">
-                <div className="text-center max-w-xs">
-                  <div className="w-10 h-10 mb-3 mx-auto rounded-lg bg-dark-gray border border-border flex items-center justify-center">
-                    <GitBranch className="w-5 h-5 text-muted" />
-                  </div>
-                  <h3 className="text-xs font-medium mb-1 text-foreground">No traces found</h3>
-                  <p className="text-[11px] text-muted leading-relaxed">
-                    {activeFilterCount > 0 || searchQuery
-                      ? 'No traces match the current filters. Try adjusting or clearing them.'
-                      : 'No traces recorded yet. They will appear here once available.'}
-                  </p>
-                  {(activeFilterCount > 0 || searchQuery) && (
-                    <button
-                      type="button"
-                      onClick={() => {
+                {activeFilterCount > 0 || searchQuery ? (
+                  <EmptyState
+                    icon={GitBranch}
+                    title="No traces found"
+                    description="No traces match the current filters. Try adjusting or clearing them."
+                    action={{
+                      label: 'Clear all filters',
+                      onClick: () => {
                         resetFilters()
                         handleSearchChange('')
-                      }}
-                      className="mt-2.5 text-[11px] text-yellow hover:underline"
-                    >
-                      Clear all filters
-                    </button>
-                  )}
-                </div>
+                      },
+                    }}
+                  />
+                ) : (
+                  <EmptyState
+                    icon={GitBranch}
+                    title="No traces recorded"
+                    description="Traces are captured when functions execute"
+                  />
+                )}
               </div>
             ) : (
               pagedTraces.map((group) => {
@@ -360,10 +372,12 @@ function TracesPage() {
                   >
                     <div className="flex items-center gap-2 mb-1">
                       <StatusIcon status={group.status} />
-                      <span className="font-medium text-sm truncate flex-1">
+                      <span className="font-sans font-medium text-sm truncate flex-1">
                         {group.topic ? (
                           <>
-                            <span className="text-muted text-xs font-normal mr-1">enqueue:</span>
+                            <span className="font-sans text-muted text-xs font-normal mr-1">
+                              enqueue:
+                            </span>
                             {group.topic}
                           </>
                         ) : (
@@ -373,7 +387,7 @@ function TracesPage() {
                     </div>
 
                     <div className="flex items-center gap-3 text-[10px] text-muted">
-                      <code className="font-mono">{group.traceId.slice(0, 8)}</code>
+                      <code className="font-mono text-[13px]">{group.traceId.slice(0, 8)}</code>
                       <span className="flex items-center gap-1">
                         <Timer className="w-2.5 h-2.5" />
                         {formatDuration(group.duration ?? 0)}
@@ -425,15 +439,22 @@ function TracesPage() {
             )}
             <div
               style={{ width: panelWidths.trace }}
-              className={`bg-[#0A0A0A] flex flex-col h-full overflow-hidden flex-shrink-0 animate-trace-panel-in ${isResizing ? 'pointer-events-none select-none' : ''}`}
+              className={`bg-sidebar flex flex-col h-full overflow-hidden flex-shrink-0 animate-trace-panel-in ${isResizing ? 'pointer-events-none select-none' : ''}`}
             >
               {isLoadingSpans && (
-                <div className="flex-1 flex flex-col items-center justify-center p-8">
-                  <RefreshCw className="w-6 h-6 text-yellow animate-spin mb-3" />
-                  <div className="text-xs font-medium mb-1">Loading trace...</div>
-                  <div className="text-[10px] text-muted font-mono">
-                    {selectedTrace.traceId.slice(0, 12)}
+                <div className="flex-1 flex flex-col p-4 gap-3">
+                  <div className="flex items-center gap-2">
+                    <Skeleton className="w-4 h-4 rounded-full" />
+                    <Skeleton className="h-4 w-32" />
+                    <Skeleton className="h-4 w-20 ml-auto" />
                   </div>
+                  {(['tr-p-sk-0', 'tr-p-sk-1', 'tr-p-sk-2', 'tr-p-sk-3', 'tr-p-sk-4'] as const).map(
+                    (sk) => (
+                      <div key={sk} className="flex items-center gap-2">
+                        <Skeleton className="h-6 w-full" />
+                      </div>
+                    ),
+                  )}
                 </div>
               )}
 
@@ -467,7 +488,7 @@ function TracesPage() {
                     onSpanClick={setSelectedSpan}
                   />
 
-                  <div className="border-b border-[#1D1D1D] px-4 py-2.5">
+                  <div className="border-b border-border-subtle px-4 py-2.5">
                     <ViewSwitcher currentView={activeView} onViewChange={setActiveView} />
                   </div>
 
@@ -502,7 +523,7 @@ function TracesPage() {
                   </div>
 
                   {activeView !== 'flow' && (
-                    <div className="border-t border-[#1D1D1D] flex-shrink-0">
+                    <div className="border-t border-border-subtle flex-shrink-0">
                       <ServiceBreakdown data={waterfallData} />
                     </div>
                   )}
@@ -530,7 +551,7 @@ function TracesPage() {
             </button>
             <div
               style={{ width: panelWidths.span }}
-              className={`bg-[#0A0A0A] flex-shrink-0 h-full overflow-hidden ${isResizing ? 'pointer-events-none select-none' : ''}`}
+              className={`bg-sidebar flex-shrink-0 h-full overflow-hidden ${isResizing ? 'pointer-events-none select-none' : ''}`}
             >
               <SpanPanel
                 key={selectedSpan.span_id}

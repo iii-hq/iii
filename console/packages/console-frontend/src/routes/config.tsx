@@ -38,6 +38,7 @@ import {
 } from '@/api'
 import { useConfig } from '@/api/config-provider'
 import { Badge, Button } from '@/components/ui/card'
+import { Skeleton } from '@/components/ui/skeleton'
 
 export const Route = createFileRoute('/config')({
   component: ConfigPage,
@@ -92,12 +93,22 @@ function ConfigPage() {
     },
   ])
 
-  const { data: triggerTypesData } = useQuery(triggerTypesQuery)
-  const { data: adaptersData, refetch: refetchAdapters } = useQuery(adaptersQuery)
-  const { data: statusData, refetch: refetchStatus } = useQuery(statusQuery)
+  const { data: triggerTypesData, isLoading: isLoadingTriggerTypes } = useQuery(triggerTypesQuery)
+  const {
+    data: adaptersData,
+    refetch: refetchAdapters,
+    isLoading: isLoadingAdapters,
+  } = useQuery(adaptersQuery)
+  const {
+    data: statusData,
+    refetch: refetchStatus,
+    isLoading: isLoadingStatus,
+  } = useQuery(statusQuery)
   const { data: functionsData } = useQuery(functionsQuery({ include_internal: showSystem }))
   const { data: triggersData } = useQuery(triggersQuery({ include_internal: showSystem }))
   const { data: streamsData } = useQuery(streamsQuery)
+
+  const isInitialLoading = isLoadingTriggerTypes || isLoadingAdapters || isLoadingStatus
 
   const triggerTypes = triggerTypesData?.trigger_types || []
   const adapters = adaptersData?.adapters || []
@@ -314,10 +325,10 @@ ${workerPools.map((w) => `# ${w.id}: ${w.count || 0} connected`).join('\n')}
 
   return (
     <div className="flex flex-col h-full bg-background text-foreground">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 md:px-6 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <Settings className="w-4 h-4" />
+          <h1 className="font-sans font-semibold text-lg tracking-tight flex items-center gap-2">
+            <Settings className="w-5 h-5" />
             <span className="hidden sm:inline">Configuration</span>
             <span className="sm:hidden">Config</span>
           </h1>
@@ -376,400 +387,482 @@ ${workerPools.map((w) => `# ${w.id}: ${w.count || 0} connected`).join('\n')}
         </div>
       </div>
 
-      <div className="grid grid-cols-6 gap-3 p-4 border-b border-border bg-dark-gray/20">
-        <div className="p-3 rounded-lg bg-background border border-border">
-          <div className="flex items-center justify-between mb-1">
-            <Layers className="w-4 h-4 text-cyan" />
-            <span className="text-xs text-muted">Modules</span>
-          </div>
-          <div className="text-2xl font-bold text-cyan">{stats.modules}</div>
-        </div>
-        <div className="p-3 rounded-lg bg-background border border-border">
-          <div className="flex items-center justify-between mb-1">
-            <Box className="w-4 h-4 text-purple-400" />
-            <span className="text-xs text-muted">Functions</span>
-          </div>
-          <div className="text-2xl font-bold text-purple-400">{stats.functions}</div>
-        </div>
-        <div className="p-3 rounded-lg bg-background border border-border">
-          <div className="flex items-center justify-between mb-1">
-            <Zap className="w-4 h-4 text-yellow" />
-            <span className="text-xs text-muted">Triggers</span>
-          </div>
-          <div className="text-2xl font-bold text-yellow">{stats.triggers}</div>
-        </div>
-        <div className="p-3 rounded-lg bg-background border border-border">
-          <div className="flex items-center justify-between mb-1">
-            <Database className="w-4 h-4 text-green-400" />
-            <span className="text-xs text-muted">Streams</span>
-          </div>
-          <div className="text-2xl font-bold text-green-400">{stats.streams}</div>
-        </div>
-        <div className="p-3 rounded-lg bg-background border border-border">
-          <div className="flex items-center justify-between mb-1">
-            <Users className="w-4 h-4 text-blue-400" />
-            <span className="text-xs text-muted">Workers</span>
-          </div>
-          <div className="text-2xl font-bold text-blue-400">{stats.workers}</div>
-        </div>
-        <div className="p-3 rounded-lg bg-background border border-border">
-          <div className="flex items-center justify-between mb-1">
-            <CheckCircle className="w-4 h-4 text-success" />
-            <span className="text-xs text-muted">Healthy</span>
-          </div>
-          <div className="text-2xl font-bold text-success">{stats.healthy}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-3 gap-3 p-4 border-b border-border">
-        {endpoints.map((ep) => (
-          <div
-            key={`${ep.url}-${ep.name}`}
-            className={`p-3 rounded-lg border transition-all ${
-              ep.status === 'online'
-                ? 'bg-success/5 border-success/30'
-                : ep.status === 'offline'
-                  ? 'bg-error/5 border-error/30'
-                  : 'bg-dark-gray/30 border-border'
-            }`}
-          >
-            <div className="flex items-center gap-2 mb-2">
+      {isInitialLoading ? (
+        <div className="flex-1 p-4 md:p-6 space-y-6">
+          <div className="grid grid-cols-6 gap-3">
+            {(
+              ['cfg-sk-0', 'cfg-sk-1', 'cfg-sk-2', 'cfg-sk-3', 'cfg-sk-4', 'cfg-sk-5'] as const
+            ).map((sk) => (
               <div
-                className={`p-1.5 rounded ${
+                key={sk}
+                className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <Skeleton className="w-4 h-4 rounded-full" />
+                  <Skeleton className="h-3 w-12" />
+                </div>
+                <Skeleton className="h-7 w-10" />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {(['cfg-sk-row-0', 'cfg-sk-row-1', 'cfg-sk-row-2'] as const).map((sk) => (
+              <div
+                key={sk}
+                className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle"
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <Skeleton className="w-8 h-8 rounded-[var(--radius-md)]" />
+                  <div className="flex-1">
+                    <Skeleton className="h-4 w-24 mb-1" />
+                    <Skeleton className="h-3 w-32" />
+                  </div>
+                </div>
+                <Skeleton className="h-3 w-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-6 gap-3 p-4 md:p-6 border-b border-border bg-dark-gray/20">
+            <div className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+              <div className="flex items-center justify-between mb-1">
+                <Layers className="w-4 h-4 text-cyan" />
+                <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                  Modules
+                </span>
+              </div>
+              <div className="font-mono text-[13px] text-2xl font-bold text-cyan">
+                {stats.modules}
+              </div>
+            </div>
+            <div className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+              <div className="flex items-center justify-between mb-1">
+                <Box className="w-4 h-4 text-purple-400" />
+                <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                  Functions
+                </span>
+              </div>
+              <div className="font-mono text-[13px] text-2xl font-bold text-purple-400">
+                {stats.functions}
+              </div>
+            </div>
+            <div className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+              <div className="flex items-center justify-between mb-1">
+                <Zap className="w-4 h-4 text-yellow" />
+                <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                  Triggers
+                </span>
+              </div>
+              <div className="font-mono text-[13px] text-2xl font-bold text-yellow">
+                {stats.triggers}
+              </div>
+            </div>
+            <div className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+              <div className="flex items-center justify-between mb-1">
+                <Database className="w-4 h-4 text-green-400" />
+                <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                  Streams
+                </span>
+              </div>
+              <div className="font-mono text-[13px] text-2xl font-bold text-green-400">
+                {stats.streams}
+              </div>
+            </div>
+            <div className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+              <div className="flex items-center justify-between mb-1">
+                <Users className="w-4 h-4 text-blue-400" />
+                <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                  Workers
+                </span>
+              </div>
+              <div className="font-mono text-[13px] text-2xl font-bold text-blue-400">
+                {stats.workers}
+              </div>
+            </div>
+            <div className="p-3 rounded-[var(--radius-lg)] bg-elevated border border-border-subtle">
+              <div className="flex items-center justify-between mb-1">
+                <CheckCircle className="w-4 h-4 text-success" />
+                <span className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
+                  Healthy
+                </span>
+              </div>
+              <div className="font-mono text-[13px] text-2xl font-bold text-success">
+                {stats.healthy}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3 p-4 md:p-6 border-b border-border">
+            {endpoints.map((ep) => (
+              <div
+                key={`${ep.url}-${ep.name}`}
+                className={`p-3 rounded-[var(--radius-lg)] border transition-all ${
                   ep.status === 'online'
-                    ? 'bg-success/20 text-success'
+                    ? 'bg-success/5 border-success/30'
                     : ep.status === 'offline'
-                      ? 'bg-error/20 text-error'
-                      : 'bg-muted/20 text-muted'
+                      ? 'bg-error/5 border-error/30'
+                      : 'bg-elevated border-border-subtle'
                 }`}
               >
-                {ep.icon}
+                <div className="flex items-center gap-2 mb-2">
+                  <div
+                    className={`p-1.5 rounded-[var(--radius-md)] ${
+                      ep.status === 'online'
+                        ? 'bg-success/20 text-success'
+                        : ep.status === 'offline'
+                          ? 'bg-error/20 text-error'
+                          : 'bg-muted/20 text-muted'
+                    }`}
+                  >
+                    {ep.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-sans font-medium text-sm">{ep.name}</div>
+                    <div className="font-sans text-[10px] text-secondary">{ep.description}</div>
+                  </div>
+                  {ep.status === 'online' && ep.latency && (
+                    <span className="font-mono text-[13px] text-success">{ep.latency}ms</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <code className="font-mono text-[13px] text-muted truncate">{ep.url}</code>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(ep.url, ep.url)}
+                    className="p-1 hover:bg-hover rounded-[var(--radius-md)] transition-colors"
+                  >
+                    {copied === ep.url ? (
+                      <Check className="w-3 h-3 text-success" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-muted" />
+                    )}
+                  </button>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-sm">{ep.name}</div>
-                <div className="text-[10px] text-muted">{ep.description}</div>
-              </div>
-              {ep.status === 'online' && ep.latency && (
-                <span className="text-xs text-success font-mono">{ep.latency}ms</span>
-              )}
-            </div>
-            <div className="flex items-center justify-between">
-              <code className="text-[10px] text-muted font-mono truncate">{ep.url}</code>
-              <button
-                type="button"
-                onClick={() => copyToClipboard(ep.url, ep.url)}
-                className="p-1 hover:bg-dark-gray rounded transition-colors"
-              >
-                {copied === ep.url ? (
-                  <Check className="w-3 h-3 text-success" />
-                ) : (
-                  <Copy className="w-3 h-3 text-muted" />
-                )}
-              </button>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
 
-      <div
-        className={`flex-1 grid overflow-hidden ${selectedModule ? 'grid-cols-[1fr_320px]' : 'grid-cols-1'}`}
-      >
-        <div className="flex flex-col h-full overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-4">
-            <div className="space-y-6">
-              {/* Trigger Types */}
-              <div>
-                <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Zap className="w-3.5 h-3.5 text-yellow" />
-                  Trigger Types ({triggerTypes.length})
-                </h3>
-                <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-                  {triggerTypes.map((tt) => (
-                    <div
-                      key={tt}
-                      className="p-3 rounded-lg border border-border bg-dark-gray/30 hover:border-yellow/30 transition-colors group"
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        {tt === 'api' && <Globe className="w-3.5 h-3.5 text-cyan" />}
-                        {tt === 'cron' && <Calendar className="w-3.5 h-3.5 text-orange-400" />}
-                        {tt === 'event' && <Radio className="w-3.5 h-3.5 text-green-400" />}
-                        {tt.includes('stream') && (
-                          <Database className="w-3.5 h-3.5 text-purple-400" />
-                        )}
-                        {!['api', 'cron', 'event'].includes(tt) && !tt.includes('stream') && (
-                          <Zap className="w-3.5 h-3.5 text-muted" />
-                        )}
-                        <span className="font-medium text-sm">{tt}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <code className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-muted font-mono flex-1 truncate">
-                          "{tt}"
-                        </code>
-                        <button
-                          type="button"
-                          onClick={() => copyToClipboard(tt, `tt-${tt}`)}
-                          className="p-1 hover:bg-dark-gray rounded transition-colors opacity-0 group-hover:opacity-100"
+          <div
+            className={`flex-1 grid overflow-hidden ${selectedModule ? 'grid-cols-[1fr_320px]' : 'grid-cols-1'}`}
+          >
+            <div className="flex flex-col h-full overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                <div className="space-y-6">
+                  {/* Trigger Types */}
+                  <div>
+                    <h3 className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
+                      <Zap className="w-3.5 h-3.5 text-yellow" />
+                      Trigger Types ({triggerTypes.length})
+                    </h3>
+                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+                      {triggerTypes.map((tt) => (
+                        <div
+                          key={tt}
+                          className="p-3 rounded-[var(--radius-lg)] border border-border-subtle bg-elevated hover:border-yellow/30 transition-colors group"
                         >
-                          {copied === `tt-${tt}` ? (
-                            <Check className="w-3 h-3 text-success" />
-                          ) : (
-                            <Copy className="w-3 h-3 text-muted" />
-                          )}
+                          <div className="flex items-center gap-2 mb-1">
+                            {tt === 'api' && <Globe className="w-3.5 h-3.5 text-cyan" />}
+                            {tt === 'cron' && <Calendar className="w-3.5 h-3.5 text-orange-400" />}
+                            {tt === 'event' && <Radio className="w-3.5 h-3.5 text-green-400" />}
+                            {tt.includes('stream') && (
+                              <Database className="w-3.5 h-3.5 text-purple-400" />
+                            )}
+                            {!['api', 'cron', 'event'].includes(tt) && !tt.includes('stream') && (
+                              <Zap className="w-3.5 h-3.5 text-muted" />
+                            )}
+                            <span className="font-sans font-medium text-sm">{tt}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <code className="font-mono text-[13px] px-1.5 py-0.5 rounded-[var(--radius-sm)] bg-black/40 text-muted flex-1 truncate">
+                              "{tt}"
+                            </code>
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(tt, `tt-${tt}`)}
+                              className="p-1 hover:bg-hover rounded-[var(--radius-md)] transition-colors opacity-0 group-hover:opacity-100"
+                            >
+                              {copied === `tt-${tt}` ? (
+                                <Check className="w-3 h-3 text-success" />
+                              ) : (
+                                <Copy className="w-3 h-3 text-muted" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Active Modules */}
+                  <div>
+                    <h3 className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
+                      <Layers className="w-3.5 h-3.5" />
+                      Active Modules ({modules.length})
+                    </h3>
+                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                      {modules.map((mod) => (
+                        <button
+                          key={mod.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedModule(selectedModule === mod.id ? null : mod.id)
+                          }
+                          className={`p-3 rounded-[var(--radius-lg)] border text-left transition-all ${
+                            selectedModule === mod.id
+                              ? 'bg-primary/10 border-primary'
+                              : mod.health === 'healthy'
+                                ? 'bg-success/5 border-success/30 hover:border-success/50'
+                                : 'bg-error/5 border-error/30 hover:border-error/50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 mb-1">
+                            {mod.health === 'healthy' ? (
+                              <CheckCircle className="w-3.5 h-3.5 text-success" />
+                            ) : (
+                              <XCircle className="w-3.5 h-3.5 text-error" />
+                            )}
+                            <span className="font-sans font-medium text-sm truncate">
+                              {mod.id.split('::').pop()}
+                            </span>
+                            {mod.port && (
+                              <code className="font-mono text-[13px] px-1.5 py-0.5 rounded-[var(--radius-sm)] bg-black/40 text-muted ml-auto">
+                                :{mod.port}
+                              </code>
+                            )}
+                          </div>
+                          <div className="font-mono text-[13px] text-muted truncate">{mod.id}</div>
                         </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Adapters Section */}
+                  {visibleAdapters.length > 0 && (
+                    <div>
+                      <h3 className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
+                        <Plug className="w-3.5 h-3.5 text-purple-400" />
+                        Adapters ({visibleAdapters.length})
+                      </h3>
+                      <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                        {visibleAdapters.map((adapter) => (
+                          <div
+                            key={adapter.id}
+                            className={`p-3 rounded-[var(--radius-lg)] border ${
+                              adapter.health === 'healthy'
+                                ? 'border-purple-400/30 bg-purple-400/5'
+                                : 'border-error/30 bg-error/5'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              {adapter.health === 'healthy' ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-purple-400" />
+                              ) : (
+                                <XCircle className="w-3.5 h-3.5 text-error" />
+                              )}
+                              <span className="font-sans font-medium text-sm truncate">
+                                {adapter.id.split('::').pop()}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-400/20 text-purple-400">
+                                {adapter.type}
+                              </span>
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                  adapter.status === 'active'
+                                    ? 'bg-success/20 text-success'
+                                    : 'bg-muted/20 text-muted'
+                                }`}
+                              >
+                                {adapter.status}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                  )}
 
-              {/* Active Modules */}
-              <div>
-                <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Layers className="w-3.5 h-3.5" />
-                  Active Modules ({modules.length})
-                </h3>
-                <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-                  {modules.map((mod) => (
-                    <button
-                      key={mod.id}
-                      type="button"
-                      onClick={() => setSelectedModule(selectedModule === mod.id ? null : mod.id)}
-                      className={`p-3 rounded-lg border text-left transition-all ${
-                        selectedModule === mod.id
-                          ? 'bg-primary/10 border-primary'
-                          : mod.health === 'healthy'
-                            ? 'bg-success/5 border-success/30 hover:border-success/50'
-                            : 'bg-error/5 border-error/30 hover:border-error/50'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        {mod.health === 'healthy' ? (
-                          <CheckCircle className="w-3.5 h-3.5 text-success" />
-                        ) : (
-                          <XCircle className="w-3.5 h-3.5 text-error" />
-                        )}
-                        <span className="font-medium text-sm truncate">
-                          {mod.id.split('::').pop()}
-                        </span>
-                        {mod.port && (
-                          <code className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-muted font-mono ml-auto">
-                            :{mod.port}
-                          </code>
-                        )}
+                  {triggerHandlers.length > 0 && (
+                    <div>
+                      <h3 className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
+                        <Zap className="w-3.5 h-3.5 text-yellow" />
+                        Trigger Handlers ({triggerHandlers.length})
+                      </h3>
+                      <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
+                        {triggerHandlers.map((handler) => (
+                          <div
+                            key={handler.id}
+                            className="p-3 rounded-[var(--radius-lg)] border border-yellow/30 bg-yellow/5"
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <Zap className="w-3.5 h-3.5 text-yellow" />
+                              <span className="font-sans font-medium text-sm truncate">
+                                {handler.id}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                  handler.status === 'active'
+                                    ? 'bg-success/20 text-success'
+                                    : 'bg-muted/20 text-muted'
+                                }`}
+                              >
+                                {handler.status}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div className="text-[10px] text-muted truncate">{mod.id}</div>
-                    </button>
-                  ))}
+                    </div>
+                  )}
+
+                  {workers.length > 0 && (
+                    <div>
+                      <h3 className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-3 flex items-center gap-2">
+                        <Users className="w-3.5 h-3.5 text-blue-400" />
+                        Worker Pools ({workers.length})
+                      </h3>
+                      <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+                        {workers.map((worker) => (
+                          <div
+                            key={worker.id}
+                            className="p-3 rounded-[var(--radius-lg)] border border-blue-400/30 bg-blue-400/5"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <Users className="w-3.5 h-3.5 text-blue-400" />
+                                <span className="font-sans font-medium text-sm">{worker.id}</span>
+                              </div>
+                              <span className="font-mono text-[13px] font-bold text-blue-400">
+                                {worker.count || 0}
+                              </span>
+                            </div>
+                            <div className="font-sans text-[10px] text-secondary">
+                              connected workers
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
+            </div>
 
-              {/* Adapters Section */}
-              {visibleAdapters.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                    <Plug className="w-3.5 h-3.5 text-purple-400" />
-                    Adapters ({visibleAdapters.length})
-                  </h3>
-                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-                    {visibleAdapters.map((adapter) => (
-                      <div
-                        key={adapter.id}
-                        className={`p-3 rounded-lg border ${
-                          adapter.health === 'healthy'
-                            ? 'border-purple-400/30 bg-purple-400/5'
-                            : 'border-error/30 bg-error/5'
+            {selectedModuleData && (
+              <div className="border-l border-border bg-elevated overflow-y-auto">
+                <div className="p-4 border-b border-border sticky top-0 bg-elevated/90 backdrop-blur">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {selectedModuleData.health === 'healthy' ? (
+                        <CheckCircle className="w-4 h-4 text-success" />
+                      ) : (
+                        <XCircle className="w-4 h-4 text-error" />
+                      )}
+                      <h2 className="font-sans font-medium text-sm">
+                        {selectedModuleData.id.split('::').pop()}
+                      </h2>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedModule(null)}
+                      className="h-6 w-6 p-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="p-4 space-y-4">
+                  <div>
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                      Full ID
+                    </div>
+                    <code className="font-mono text-[13px] bg-black/40 px-2 py-1 rounded-[var(--radius-md)] block break-all">
+                      {selectedModuleData.id}
+                    </code>
+                  </div>
+
+                  <div>
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                      Type
+                    </div>
+                    <Badge variant="outline">{selectedModuleData.type}</Badge>
+                  </div>
+
+                  <div>
+                    <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                      Status
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs ${
+                          selectedModuleData.status === 'active'
+                            ? 'bg-success/20 text-success'
+                            : 'bg-muted/20 text-muted'
                         }`}
                       >
-                        <div className="flex items-center gap-2 mb-1">
-                          {adapter.health === 'healthy' ? (
-                            <CheckCircle className="w-3.5 h-3.5 text-purple-400" />
-                          ) : (
-                            <XCircle className="w-3.5 h-3.5 text-error" />
-                          )}
-                          <span className="font-medium text-sm truncate">
-                            {adapter.id.split('::').pop()}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-400/20 text-purple-400">
-                            {adapter.type}
-                          </span>
-                          <span
-                            className={`text-[10px] px-1.5 py-0.5 rounded ${
-                              adapter.status === 'active'
-                                ? 'bg-success/20 text-success'
-                                : 'bg-muted/20 text-muted'
-                            }`}
-                          >
-                            {adapter.status}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {triggerHandlers.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                    <Zap className="w-3.5 h-3.5 text-yellow" />
-                    Trigger Handlers ({triggerHandlers.length})
-                  </h3>
-                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-4">
-                    {triggerHandlers.map((handler) => (
-                      <div
-                        key={handler.id}
-                        className="p-3 rounded-lg border border-yellow/30 bg-yellow/5"
+                        {selectedModuleData.status}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-xs ${
+                          selectedModuleData.health === 'healthy'
+                            ? 'bg-success/20 text-success'
+                            : 'bg-error/20 text-error'
+                        }`}
                       >
-                        <div className="flex items-center gap-2 mb-1">
-                          <Zap className="w-3.5 h-3.5 text-yellow" />
-                          <span className="font-medium text-sm truncate">{handler.id}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`text-[10px] px-1.5 py-0.5 rounded ${
-                              handler.status === 'active'
-                                ? 'bg-success/20 text-success'
-                                : 'bg-muted/20 text-muted'
-                            }`}
-                          >
-                            {handler.status}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+                        {selectedModuleData.health}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              )}
 
-              {workers.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                    <Users className="w-3.5 h-3.5 text-blue-400" />
-                    Worker Pools ({workers.length})
-                  </h3>
-                  <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-                    {workers.map((worker) => (
-                      <div
-                        key={worker.id}
-                        className="p-3 rounded-lg border border-blue-400/30 bg-blue-400/5"
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center gap-2">
-                            <Users className="w-3.5 h-3.5 text-blue-400" />
-                            <span className="font-medium text-sm">{worker.id}</span>
-                          </div>
-                          <span className="text-sm font-bold text-blue-400">
-                            {worker.count || 0}
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-muted">connected workers</div>
+                  {selectedModuleData.port && (
+                    <div>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                        Port
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {selectedModuleData && (
-          <div className="border-l border-border bg-dark-gray/20 overflow-y-auto">
-            <div className="p-4 border-b border-border sticky top-0 bg-dark-gray/50 backdrop-blur">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {selectedModuleData.health === 'healthy' ? (
-                    <CheckCircle className="w-4 h-4 text-success" />
-                  ) : (
-                    <XCircle className="w-4 h-4 text-error" />
+                      <code className="font-mono text-[13px]">{selectedModuleData.port}</code>
+                    </div>
                   )}
-                  <h2 className="font-medium text-sm">{selectedModuleData.id.split('::').pop()}</h2>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setSelectedModule(null)}
-                  className="h-6 w-6 p-0"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </Button>
-              </div>
-            </div>
 
-            <div className="p-4 space-y-4">
-              <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Full ID</div>
-                <code className="text-xs font-mono bg-black/40 px-2 py-1 rounded block break-all">
-                  {selectedModuleData.id}
-                </code>
-              </div>
+                  {selectedModuleData.description && (
+                    <div>
+                      <div className="font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted mb-2">
+                        Description
+                      </div>
+                      <p className="font-sans text-sm text-secondary">
+                        {selectedModuleData.description}
+                      </p>
+                    </div>
+                  )}
 
-              <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Type</div>
-                <Badge variant="outline">{selectedModuleData.type}</Badge>
-              </div>
-
-              <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Status</div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs ${
-                      selectedModuleData.status === 'active'
-                        ? 'bg-success/20 text-success'
-                        : 'bg-muted/20 text-muted'
-                    }`}
-                  >
-                    {selectedModuleData.status}
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs ${
-                      selectedModuleData.health === 'healthy'
-                        ? 'bg-success/20 text-success'
-                        : 'bg-error/20 text-error'
-                    }`}
-                  >
-                    {selectedModuleData.health}
-                  </span>
+                  {selectedModuleData.internal && (
+                    <div className="pt-2 border-t border-border">
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-muted/20 text-muted">
+                        Internal Module
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
-
-              {selectedModuleData.port && (
-                <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Port</div>
-                  <code className="text-sm font-mono">{selectedModuleData.port}</code>
-                </div>
-              )}
-
-              {selectedModuleData.description && (
-                <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
-                    Description
-                  </div>
-                  <p className="text-xs text-muted">{selectedModuleData.description}</p>
-                </div>
-              )}
-
-              {selectedModuleData.internal && (
-                <div className="pt-2 border-t border-border">
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-muted/20 text-muted">
-                    Internal Module
-                  </span>
-                </div>
-              )}
-            </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* Config File Modal */}
       {showConfigModal && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] flex flex-col">
+          <div className="bg-background border border-border rounded-[var(--radius-lg)] shadow-xl w-full max-w-4xl max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <div className="flex items-center gap-2">
-                <Code className="w-4 h-4 text-cyan-400" />
-                <h3 className="font-semibold">Runtime Configuration</h3>
+                <Code className="w-4 h-4 text-accent" />
+                <h3 className="font-sans font-semibold">Runtime Configuration</h3>
                 <span className="text-[10px] text-success bg-success/10 px-2 py-0.5 rounded">
                   Live
                 </span>
@@ -803,7 +896,7 @@ ${workerPools.map((w) => `# ${w.id}: ${w.count || 0} connected`).join('\n')}
                 <button
                   type="button"
                   onClick={() => setShowConfigModal(false)}
-                  className="p-1 rounded hover:bg-dark-gray"
+                  className="p-1 rounded-[var(--radius-md)] hover:bg-hover"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -811,7 +904,7 @@ ${workerPools.map((w) => `# ${w.id}: ${w.count || 0} connected`).join('\n')}
             </div>
 
             <div className="flex-1 overflow-auto p-4">
-              <pre className="text-xs font-mono bg-dark-gray p-4 rounded-lg overflow-x-auto whitespace-pre text-foreground">
+              <pre className="font-mono text-[13px] bg-elevated p-4 rounded-[var(--radius-lg)] overflow-x-auto whitespace-pre text-foreground">
                 {generateConfigYaml()}
               </pre>
             </div>

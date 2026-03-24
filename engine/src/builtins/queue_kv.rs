@@ -364,19 +364,42 @@ impl QueueKvStore {
         removed
     }
 
+    pub async fn lrange(&self, key: &str, offset: usize, limit: usize) -> Vec<String> {
+        let lists = self.lists.read().await;
+        lists
+            .get(key)
+            .map(|list| list.iter().skip(offset).take(limit).cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub async fn llen(&self, key: &str) -> usize {
         let lists = self.lists.read().await;
         lists.get(key).map_or(0, |list| list.len())
     }
 
-    /// Returns up to `count` elements from the front of the list without removing them.
-    /// If count is 0 or the list doesn't exist, returns an empty Vec.
-    pub async fn lrange(&self, key: &str, count: usize) -> Vec<String> {
-        let lists = self.lists.read().await;
-        lists
-            .get(key)
-            .map(|list| list.iter().take(count).cloned().collect())
-            .unwrap_or_default()
+    /// Remove the first element from a list where `predicate` returns true.
+    /// Returns the removed element if found.
+    pub async fn lremove_first_by<F>(&self, key: &str, predicate: F) -> Option<String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut lists = self.lists.write().await;
+        if let Some(list) = lists.get_mut(key) {
+            if let Some(pos) = list.iter().position(|v| predicate(v)) {
+                let removed = list.remove(pos);
+                if list.is_empty() {
+                    lists.remove(key);
+                }
+                // Mark dirty for file persistence
+                if self.file_store_dir.is_some() {
+                    drop(lists);
+                    let mut dirty = self.dirty.write().await;
+                    dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+                }
+                return removed;
+            }
+        }
+        None
     }
 
     pub async fn zadd(&self, key: &str, score: i64, member: String) {
@@ -549,6 +572,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_lrange_with_offset_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_offset_zero";
+
+        // lpush adds to front: [c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+
+        // offset=0, limit=2 => first two items
+        let result = kv_store.lrange(key, 0, 2).await;
+        assert_eq!(result, vec!["c".to_string(), "b".to_string()]);
+
+        // offset=0, limit=5 => all items (limit exceeds length)
+        let result = kv_store.lrange(key, 0, 5).await;
+        assert_eq!(
+            result,
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+
+        // offset=0, limit=3 => exactly all items
+        let result = kv_store.lrange(key, 0, 3).await;
+        assert_eq!(
+            result,
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lrange_with_offset() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_offset";
+
+        // lpush adds to front: [d, c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+        kv_store.lpush(key, "d".to_string()).await;
+
+        // offset=1, limit=2 => skip first, take next two
+        let result = kv_store.lrange(key, 1, 2).await;
+        assert_eq!(result, vec!["c".to_string(), "b".to_string()]);
+
+        // offset=2, limit=10 => skip first two, take rest
+        let result = kv_store.lrange(key, 2, 10).await;
+        assert_eq!(result, vec!["b".to_string(), "a".to_string()]);
+
+        // offset=3, limit=1 => skip three, take one (last item)
+        let result = kv_store.lrange(key, 3, 1).await;
+        assert_eq!(result, vec!["a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_lrange_offset_beyond_length() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_beyond";
+
+        // lpush adds to front: [b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+
+        // offset=2 with 2 items => empty
+        let result = kv_store.lrange(key, 2, 5).await;
+        assert!(result.is_empty());
+
+        // offset=100 => well beyond length => empty
+        let result = kv_store.lrange(key, 100, 10).await;
+        assert!(result.is_empty());
+
+        // non-existent key => empty
+        let result = kv_store.lrange("nonexistent", 0, 10).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lrange_limit_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_limit_zero";
+
+        // lpush adds to front: [c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+
+        // limit=0 always returns empty regardless of offset
+        let result = kv_store.lrange(key, 0, 0).await;
+        assert!(result.is_empty());
+
+        let result = kv_store.lrange(key, 1, 0).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_sorted_set_operations() {
         let kv_store = make_queue_kv(None);
         let key = "test_sorted_set";
@@ -696,6 +812,85 @@ mod tests {
         assert_eq!(next, Some("b".to_string()));
         let next = kv_store.rpop(key).await;
         assert_eq!(next, Some("c".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_removes_matching_element_and_preserves_order() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lremove_first_by";
+
+        // lpush adds to front: [e, d, c, b, a]
+        for val in &["a", "b", "c", "d", "e"] {
+            kv_store.lpush(key, val.to_string()).await;
+        }
+        assert_eq!(kv_store.llen(key).await, 5);
+
+        // Remove "c" (the middle element)
+        let removed = kv_store.lremove_first_by(key, |v| v == "c").await;
+        assert_eq!(
+            removed,
+            Some("c".to_string()),
+            "must return the removed element"
+        );
+        assert_eq!(
+            kv_store.llen(key).await,
+            4,
+            "list length must decrease by 1"
+        );
+
+        // Remaining order: [e, d, b, a]
+        let remaining: Vec<String> = {
+            let mut acc = Vec::new();
+            while let Some(v) = kv_store.rpop(key).await {
+                acc.push(v);
+            }
+            acc.reverse(); // rpop gives back-to-front, flip so we get front-to-back
+            acc
+        };
+        assert_eq!(remaining, vec!["e", "d", "b", "a"]);
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_returns_none_when_predicate_never_matches() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lremove_first_by_nomatch";
+
+        kv_store.lpush(key, "x".to_string()).await;
+        kv_store.lpush(key, "y".to_string()).await;
+
+        let removed = kv_store.lremove_first_by(key, |v| v == "z").await;
+        assert_eq!(
+            removed, None,
+            "must return None when predicate never matches"
+        );
+        assert_eq!(kv_store.llen(key).await, 2, "list must be unchanged");
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_only_removes_first_match() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lremove_first_by_first_only";
+
+        // Push duplicate values: front-to-back order will be [dup, other, dup]
+        kv_store.rpush(key, "dup".to_string()).await;
+        kv_store.rpush(key, "other".to_string()).await;
+        kv_store.rpush(key, "dup".to_string()).await;
+
+        let removed = kv_store.lremove_first_by(key, |v| v == "dup").await;
+        assert_eq!(removed, Some("dup".to_string()));
+        // One "dup" should remain
+        assert_eq!(kv_store.llen(key).await, 2);
+        let range = kv_store.lrange(key, 0, 10).await;
+        let dup_count = range.iter().filter(|v| v.as_str() == "dup").count();
+        assert_eq!(dup_count, 1, "only the first match must be removed");
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_on_nonexistent_key_returns_none() {
+        let kv_store = make_queue_kv(None);
+
+        let removed = kv_store.lremove_first_by("nonexistent_key", |_| true).await;
+        assert_eq!(removed, None);
     }
 
     #[tokio::test]
