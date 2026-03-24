@@ -639,10 +639,9 @@ impl III {
             config
         };
 
-        // Spawn a dedicated OS thread with its own tokio runtime.
-        // OS threads are non-daemon in Rust: the process stays alive
-        // as long as this thread is running, matching Node.js/Python
-        // SDK behaviour where the connection keeps the process alive.
+        // Spawn a dedicated OS thread with its own tokio runtime so
+        // the connection loop is independent of the caller's runtime.
+        // Call shutdown() to join this thread before main() returns.
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
             .spawn(move || {
