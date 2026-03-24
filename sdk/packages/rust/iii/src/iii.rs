@@ -641,7 +641,9 @@ impl III {
 
         // Spawn a dedicated OS thread with its own tokio runtime so
         // the connection loop is independent of the caller's runtime.
-        // Call shutdown() to join this thread before main() returns.
+        // In Rust, a spawned thread does not keep the process alive on its own;
+        // call shutdown() to signal the thread and join connection_thread so
+        // run_connection() can exit cleanly before main() returns.
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
             .spawn(move || {
@@ -684,12 +686,15 @@ impl III {
 
     /// Shutdown the III client.
     ///
-    /// This stops the connection loop and sends a shutdown signal.
-    /// Telemetry (when enabled) is flushed inside the connection thread.
+    /// This stops the connection loop and sends a shutdown signal, but it
+    /// does not join `connection_thread`.
     ///
     /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
-    /// to join the connection thread, making it safe to call from an async
-    /// context without stalling the executor.
+    /// to wait for `run_connection()` to finish, making it safe to call from
+    /// an async context without stalling the executor. When the `otel`
+    /// feature is enabled, `telemetry::shutdown_otel()` still runs inside the
+    /// connection thread after `run_connection()` returns, so it may not
+    /// complete unless [`shutdown`](Self::shutdown) is used to join the thread.
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
