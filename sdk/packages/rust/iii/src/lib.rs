@@ -51,20 +51,25 @@ pub struct InitOptions {
 }
 
 /// Create and return a connected SDK instance. The WebSocket connection is
-/// established automatically in a background Tokio task.
+/// established automatically in a dedicated background thread.
+///
+/// The background thread keeps the process alive until
+/// [`III::shutdown`] or [`III::shutdown_async`] is called, matching the
+/// behaviour of the Node.js and Python SDKs.
 ///
 /// # Arguments
 /// * `address` - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
 /// * `options` - Configuration for worker metadata and OTel.
 ///
-/// # Errors
-/// Returns [`IIIError::Runtime`] if no active Tokio runtime is found.
-///
 /// # Examples
 /// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// fn main() {
+///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
+///     // register functions...
+///     // process stays alive until shutdown() is called
+/// }
 /// ```
 pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {
@@ -82,13 +87,6 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
     #[cfg(feature = "otel")]
     if let Some(cfg) = otel {
         iii.set_otel_config(cfg);
-    }
-
-    if let Err(err) = tokio::runtime::Handle::try_current() {
-        panic!(
-            "iii_sdk::register_worker requires an active Tokio runtime: {}",
-            err
-        );
     }
 
     iii.connect();

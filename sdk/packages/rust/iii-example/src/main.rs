@@ -191,8 +191,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_result.new_value["counter"]
     );
 
-    println!("\n--- All examples completed! Holding process... ---");
-    iii.hold_async().await;
+    println!("\n--- All examples completed! Process stays alive via connection thread. ---");
 
     Ok(())
 }

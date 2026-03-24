@@ -1,52 +1,33 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use iii_sdk::{III, InitOptions, register_worker};
+use iii_sdk::{IIIConnectionState, InitOptions, register_worker};
 
-#[tokio::test]
-async fn hold_async_resolves_on_shutdown() {
-    // register_worker calls connect() internally, setting running=true
+#[test]
+fn shutdown_stops_connection_thread() {
+    // register_worker spawns a non-daemon connection thread that
+    // keeps the process alive. shutdown() joins it.
     let iii = register_worker("ws://127.0.0.1:1", InitOptions::default());
 
-    let iii_clone = iii.clone();
-    let resolved = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let resolved_clone = resolved.clone();
+    // Give the connection thread time to start
+    std::thread::sleep(Duration::from_millis(50));
 
-    let handle = tokio::spawn(async move {
-        iii_clone.hold_async().await;
-        resolved_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-    });
+    // shutdown() should signal and join the thread
+    iii.shutdown();
 
-    // Give the spawned task time to start waiting
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !resolved.load(std::sync::atomic::Ordering::SeqCst),
-        "hold_async should still be waiting"
-    );
-
-    iii.shutdown_async().await;
-
-    // Wait for the spawned task to finish
-    tokio::time::timeout(Duration::from_secs(2), handle)
-        .await
-        .expect("hold_async should have resolved within timeout")
-        .expect("task should not panic");
-
-    assert!(
-        resolved.load(std::sync::atomic::Ordering::SeqCst),
-        "hold_async should have resolved after shutdown"
-    );
+    assert_eq!(iii.get_connection_state(), IIIConnectionState::Disconnected);
 }
 
-#[tokio::test]
-async fn hold_async_returns_immediately_when_not_running() {
-    // III::new() does NOT call connect(), so running is false
-    let iii = III::new("ws://127.0.0.1:1");
+#[test]
+fn shutdown_completes_quickly() {
+    let iii = register_worker("ws://127.0.0.1:1", InitOptions::default());
 
-    // hold_async should return immediately since running is false
-    let result = tokio::time::timeout(Duration::from_millis(200), iii.hold_async()).await;
+    let start = std::time::Instant::now();
+    iii.shutdown();
+    let elapsed = start.elapsed();
+
     assert!(
-        result.is_ok(),
-        "hold_async should return immediately when not running"
+        elapsed < Duration::from_secs(5),
+        "shutdown took too long: {:?}",
+        elapsed,
     );
 }

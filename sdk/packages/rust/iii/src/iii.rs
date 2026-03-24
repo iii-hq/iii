@@ -524,7 +524,7 @@ struct IIIInner {
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
-    shutdown_notify: tokio::sync::Notify,
+    connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
     functions_available_callback_counter: AtomicUsize,
     functions_available_function_id: Mutex<Option<String>>,
@@ -587,7 +587,7 @@ impl III {
             services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
-            shutdown_notify: tokio::sync::Notify::new(),
+            connection_thread: Mutex::new(None),
             functions_available_callbacks: Mutex::new(HashMap::new()),
             functions_available_callback_counter: AtomicUsize::new(0),
             functions_available_function_id: Mutex::new(None),
@@ -627,94 +627,74 @@ impl III {
         self.inner.running.store(true, Ordering::SeqCst);
 
         let iii = self.clone();
-        tokio::spawn(async move {
-            iii.run_connection(rx).await;
-        });
 
         #[cfg(feature = "otel")]
-        {
-            let config = self.inner.otel_config.lock_or_recover().take();
-            if let Some(mut config) = config {
-                if config.engine_ws_url.is_none() {
-                    config.engine_ws_url = Some(self.inner.address.clone());
+        let otel_config = {
+            let mut config = self.inner.otel_config.lock_or_recover().take();
+            if let Some(ref mut cfg) = config {
+                if cfg.engine_ws_url.is_none() {
+                    cfg.engine_ws_url = Some(self.inner.address.clone());
                 }
-                tokio::spawn(async move {
-                    telemetry::init_otel(config).await;
-                });
             }
+            config
+        };
+
+        // Spawn a dedicated OS thread with its own tokio runtime.
+        // OS threads are non-daemon in Rust: the process stays alive
+        // as long as this thread is running, matching Node.js/Python
+        // SDK behaviour where the connection keeps the process alive.
+        let handle = std::thread::Builder::new()
+            .name("iii-connection".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create iii connection runtime");
+
+                rt.block_on(async move {
+                    #[cfg(feature = "otel")]
+                    if let Some(cfg) = otel_config {
+                        telemetry::init_otel(cfg).await;
+                    }
+
+                    iii.run_connection(rx).await;
+
+                    #[cfg(feature = "otel")]
+                    telemetry::shutdown_otel().await;
+                });
+            })
+            .expect("failed to spawn iii connection thread");
+
+        *self.inner.connection_thread.lock_or_recover() = Some(handle);
+    }
+
+    /// Shutdown the III client and wait for the connection thread to finish.
+    ///
+    /// This stops the connection loop, sends a shutdown signal, and joins
+    /// the background connection thread. When the `otel` feature is enabled,
+    /// telemetry is flushed inside the connection thread before it exits.
+    pub fn shutdown(&self) {
+        self.inner.running.store(false, Ordering::SeqCst);
+        let _ = self.inner.outbound.send(Outbound::Shutdown);
+        self.set_connection_state(IIIConnectionState::Disconnected);
+
+        if let Some(handle) = self.inner.connection_thread.lock_or_recover().take() {
+            let _ = handle.join();
         }
     }
 
     /// Shutdown the III client.
     ///
     /// This stops the connection loop and sends a shutdown signal.
-    /// If the `otel` feature is enabled, this will spawn a background task
-    /// to flush telemetry data, but does NOT wait for it to complete.
-    /// For guaranteed telemetry flush, use `shutdown_async()` instead.
-    #[deprecated(note = "Use shutdown_async() for guaranteed telemetry flush")]
-    pub fn shutdown(&self) {
-        self.inner.running.store(false, Ordering::SeqCst);
-        let _ = self.inner.outbound.send(Outbound::Shutdown);
-        self.set_connection_state(IIIConnectionState::Disconnected);
-        self.inner.shutdown_notify.notify_waiters();
-
-        #[cfg(feature = "otel")]
-        {
-            tracing::warn!(
-                "shutdown() does not await telemetry flush; use shutdown_async() instead"
-            );
-            tokio::spawn(async {
-                telemetry::shutdown_otel().await;
-            });
-        }
-    }
-
-    /// Shutdown the III client and flush all pending telemetry data.
+    /// Telemetry (when enabled) is flushed inside the connection thread.
     ///
-    /// This method stops the connection loop and sends a shutdown signal.
-    /// When the `otel` feature is enabled, it additionally awaits the
-    /// OpenTelemetry flush, ensuring all spans, metrics, and logs are
-    /// exported before returning.
+    /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
+    /// to join the connection thread, making it safe to call from an async
+    /// context without stalling the executor.
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
-        self.inner.shutdown_notify.notify_waiters();
-
-        #[cfg(feature = "otel")]
-        telemetry::shutdown_otel().await;
-    }
-
-    /// Block the current task until [`shutdown`](Self::shutdown) or
-    /// [`shutdown_async`](Self::shutdown_async) is called.
-    ///
-    /// This keeps the process alive while the SDK is connected to the engine,
-    /// matching the behaviour of the Node.js SDK where the open WebSocket
-    /// prevents the event loop from exiting.
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// use iii_sdk::{register_worker, InitOptions};
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
-    ///     // register functions...
-    ///     iii.hold_async().await; // blocks until shutdown() is called
-    /// }
-    /// ```
-    pub async fn hold_async(&self) {
-        // Register the notification future before checking the flag to avoid
-        // a TOCTOU race where shutdown() fires between the check and the await.
-        let notified = self.inner.shutdown_notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-
-        if !self.inner.running.load(Ordering::SeqCst) {
-            return;
-        }
-
-        notified.await;
     }
 
     fn register_function_inner(
