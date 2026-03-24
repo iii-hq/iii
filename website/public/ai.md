@@ -15,13 +15,18 @@ For implementation details and source examples, visit:
 - [Skills Repository](https://github.com/iii-hq/skills)
 
 ## Overview
-### One Engine.trigger any language
-The centralized orchestration runtime for distributed polyglot function execution.
-React simplified frontend with Component and Context. iii does the same for backend.
-- Polyglot execution — any language participates through one universal protocol.
-- Complete observability — logs and traces auto-injected into every invocation.
-- Self-hosting/BYOC — connect existing domains and services, full portability.
-- Shared capabilities — State, Streaming, Observability accessible to every function.
+### Unreasonably simple tocreate any language
+- Code in any language
+- Observe every operation; end-to-end
+- Connect any service
+- Create perfect context for Agents
+- Reduce complexity for humans and AI
+- Collaborate seamlessly across teams
+- Tolerate any fault
+- Integrate without disruption
+- Make any agent a design pattern
+- Create and share abstractions
+Follow our development
 
 ## Architecture
 ### One engine.Three primitives.

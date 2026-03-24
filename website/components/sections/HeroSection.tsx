@@ -286,7 +286,7 @@ const rotatingWords = ['create', 'connect', 'share', 'observe', 'use', 'build'];
 
 const rotatingContexts = [
   'any language',
-  'any location',
+  'any domain',
   'any runtime',
   'any service',
   'any queue',
