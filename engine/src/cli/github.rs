@@ -1,8 +1,8 @@
 use semver::Version;
 use serde::Deserialize;
 
-use crate::error::{NetworkError, RegistryError};
-use crate::registry::BinarySpec;
+use super::error::{NetworkError, RegistryError};
+use super::registry::BinarySpec;
 
 /// A GitHub release from the /releases/latest endpoint.
 #[derive(Debug, Deserialize)]
@@ -24,7 +24,7 @@ pub struct ReleaseAsset {
 /// Build an HTTP client with proper configuration.
 pub fn build_client() -> Result<reqwest::Client, reqwest::Error> {
     let mut builder = reqwest::Client::builder()
-        .user_agent(format!("iii-cli/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("iii/{}", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30));
 
     // Support optional GitHub token for higher rate limits

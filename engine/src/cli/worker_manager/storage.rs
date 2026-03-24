@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::WorkerError;
+use crate::cli::error::WorkerError;
 
 /// Returns the path where a worker binary should be stored within the project.
 /// On Unix: project_dir/iii_workers/worker_name

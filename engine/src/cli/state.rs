@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::error::StateError;
+use super::error::StateError;
 
 /// Persistent state tracking installed binaries and update checks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,13 +52,28 @@ impl Default for AppState {
 
 impl AppState {
     /// Load state from the state file. Returns default state if file doesn't exist.
+    ///
+    /// Automatically migrates legacy `iii-cli` state entries to `iii` so that
+    /// users upgrading from the old separate CLI binary retain their version
+    /// tracking without re-downloading.
     pub fn load(path: &Path) -> Result<Self, StateError> {
         if !path.exists() {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)
             .map_err(|e| StateError::ReadFailed(format!("{}: {}", path.display(), e)))?;
-        let state: Self = serde_json::from_str(&content)?;
+        let mut state: Self = serde_json::from_str(&content)?;
+
+        // Migrate legacy iii-cli state entry to iii
+        if state.binaries.contains_key("iii-cli") && !state.binaries.contains_key("iii") {
+            if let Some(old_entry) = state.binaries.remove("iii-cli") {
+                state.binaries.insert("iii".to_string(), old_entry);
+            }
+        } else if state.binaries.contains_key("iii-cli") {
+            // Both exist — remove the legacy entry, keep the newer iii entry
+            state.binaries.remove("iii-cli");
+        }
+
         Ok(state)
     }
 
@@ -135,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_returns_default() {
-        let path = Path::new("/tmp/nonexistent-iii-cli-state.json");
+        let path = Path::new("/tmp/nonexistent-iii-state.json");
         let state = AppState::load(path).unwrap();
         assert!(state.binaries.is_empty());
     }
@@ -189,5 +204,67 @@ mod tests {
         // Temp file should not exist after successful save
         let temp_path = path.with_extension("json.tmp");
         assert!(!temp_path.exists());
+    }
+
+    #[test]
+    fn test_load_migrates_iii_cli_to_iii() {
+        // Simulate old state file with "iii-cli" entry
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+
+        let mut old_state = AppState::default();
+        old_state.record_install(
+            "iii-cli",
+            Version::new(0, 2, 5),
+            "iii-cli-aarch64-apple-darwin.tar.gz".to_string(),
+        );
+        old_state.save(&path).unwrap();
+
+        // Load should migrate "iii-cli" to "iii"
+        let loaded = AppState::load(&path).unwrap();
+        assert!(
+            loaded.binaries.contains_key("iii"),
+            "should have migrated iii-cli to iii"
+        );
+        assert!(
+            !loaded.binaries.contains_key("iii-cli"),
+            "should have removed iii-cli entry"
+        );
+        assert_eq!(
+            loaded.installed_version("iii"),
+            Some(&Version::new(0, 2, 5))
+        );
+    }
+
+    #[test]
+    fn test_load_removes_iii_cli_when_both_exist() {
+        // Simulate state with both "iii-cli" and "iii" entries
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+
+        let mut state = AppState::default();
+        state.record_install(
+            "iii-cli",
+            Version::new(0, 2, 5),
+            "iii-cli-aarch64-apple-darwin.tar.gz".to_string(),
+        );
+        state.record_install(
+            "iii",
+            Version::new(0, 9, 0),
+            "iii-aarch64-apple-darwin.tar.gz".to_string(),
+        );
+        state.save(&path).unwrap();
+
+        // Load should keep "iii" and remove "iii-cli"
+        let loaded = AppState::load(&path).unwrap();
+        assert_eq!(
+            loaded.installed_version("iii"),
+            Some(&Version::new(0, 9, 0)),
+            "should keep the newer iii entry"
+        );
+        assert!(
+            !loaded.binaries.contains_key("iii-cli"),
+            "should remove legacy iii-cli entry"
+        );
     }
 }

@@ -91,7 +91,7 @@ rabbitmq = ["lapin"]
 [dependencies]
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true, features = ["otel"] }
-tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal"] }
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 tower-http = { version = "0.6", features = ["cors", "timeout"] }
 tracing = "0.1"
@@ -118,7 +118,7 @@ dashmap = "6"
 indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
 lapin = { version = "3", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
 cron = "0.15"
@@ -141,6 +141,14 @@ glob = "0.3.3"
 base64 = "0.22.1"
 subtle = "2.6"
 toml = "1.0.7"
+toml_edit = "0.22"
+indicatif = "0.17"
+semver = { version = "1", features = ["serde"] }
+flate2 = "1"
+tar = "0.4"
+zip = "2"
+serde_yml = "0.0.12"
+thiserror = "2"
 tokio-tungstenite = "0.28"
 
 [dev-dependencies]

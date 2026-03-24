@@ -32,7 +32,7 @@ One config file. One process. Everything discoverable. Think of it the way React
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-This installs both the engine and iii-cli.
+This installs the iii engine (which includes all CLI commands).
 
 <details>
 <summary>Override install directory or pin a version</summary>
@@ -56,15 +56,15 @@ command -v iii && iii --version
 ### Start the engine
 
 ```bash
-iii-cli start --use-default-config
+iii --use-default-config
 ```
 
-For a project-backed setup, create `config.yaml` in your working directory or run `iii-cli start --config /path/to/config.yaml`.
+For a project-backed setup, create `config.yaml` in your working directory or run `iii --config /path/to/config.yaml`.
 
 Open the console:
 
 ```bash
-iii-cli console
+iii console
 ```
 
 Your engine is running at `ws://localhost:49134` with HTTP API at `http://localhost:3111`.
@@ -154,7 +154,7 @@ Your function is now live at `http://localhost:3111/add`.
 The [iii-console](https://github.com/iii-hq/console) is a developer and operations dashboard for inspecting functions, triggers, traces, and real-time state. Launch it with:
 
 ```bash
-iii-cli console
+iii console
 ```
 
 ![iii console dashboard](https://raw.githubusercontent.com/iii-hq/docs/main/public/docs/console/dashboard-dark.png)
@@ -289,7 +289,7 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 ## Resources
 
 - [Documentation](https://iii.dev/docs)
-- [CLI](https://github.com/iii-hq/iii-cli)
+- [CLI & Engine](https://github.com/iii-hq/iii)
 - [Console](https://github.com/iii-hq/console)
 - [Examples](https://github.com/iii-hq/iii-examples)
 - [SDKs](https://github.com/iii-hq/sdk)

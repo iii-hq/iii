@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::error::RegistryError;
-use crate::registry::BinarySpec;
+use super::error::RegistryError;
+use super::registry::BinarySpec;
 
 /// Returns the current platform's target triple for asset lookup.
 ///
@@ -42,7 +42,7 @@ pub fn current_target() -> &'static str {
         all(target_os = "windows", target_arch = "x86"),
         all(target_os = "windows", target_arch = "aarch64"),
     )))]
-    compile_error!("unsupported target platform for iii-cli")
+    compile_error!("unsupported target platform for iii")
 }
 
 /// Returns the archive extension for the current platform.
@@ -65,26 +65,38 @@ pub fn asset_name(binary_name: &str) -> String {
     )
 }
 
-/// Returns the platform-appropriate data directory for iii-cli.
+/// Returns the platform-appropriate data directory for iii.
 ///
-/// - Linux: $XDG_DATA_HOME/iii-cli/ (fallback ~/.local/share/iii-cli/)
-/// - macOS: ~/Library/Application Support/iii-cli/
-/// - Windows: %LOCALAPPDATA%\iii-cli\
+/// - Linux: $XDG_DATA_HOME/iii/ (fallback ~/.local/share/iii/)
+/// - macOS: ~/Library/Application Support/iii/
+/// - Windows: %LOCALAPPDATA%\iii\
+///
+/// For backward compatibility, if the old `iii-cli` directory exists and the
+/// new `iii` directory does not, the old path is returned so existing state
+/// is preserved until the user migrates.
 pub fn data_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("share")
-        })
-        .join("iii-cli")
+    let base = dirs::data_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local")
+            .join("share")
+    });
+
+    let new_dir = base.join("iii");
+    let old_dir = base.join("iii-cli");
+
+    // Prefer the new directory; fall back to the old one for migration compat.
+    if !new_dir.exists() && old_dir.exists() {
+        old_dir
+    } else {
+        new_dir
+    }
 }
 
 /// Returns the directory where binaries are stored.
 ///
 /// On macOS/Linux: ~/.local/bin/ (matches install.sh convention).
-/// On Windows: %LOCALAPPDATA%\iii-cli\bin\ (unchanged).
+/// On Windows: %LOCALAPPDATA%\iii\bin\ (unchanged).
 ///
 /// Deliberately decoupled from data_dir() so that binaries live in a
 /// PATH-visible location shared with shell-script installers.
@@ -197,17 +209,17 @@ pub fn checksum_asset_name(binary_name: &str) -> String {
 /// Ensures the storage directories exist.
 ///
 /// Creates both bin_dir() (~/.local/bin/) and data_dir() (for state.json).
-pub fn ensure_dirs() -> Result<(), crate::error::StorageError> {
+pub fn ensure_dirs() -> Result<(), super::error::StorageError> {
     let bin = bin_dir();
     if !bin.exists() {
-        std::fs::create_dir_all(&bin).map_err(|e| crate::error::StorageError::CreateDir {
+        std::fs::create_dir_all(&bin).map_err(|e| super::error::StorageError::CreateDir {
             path: bin.display().to_string(),
             source: e,
         })?;
     }
     let data = data_dir();
     if !data.exists() {
-        std::fs::create_dir_all(&data).map_err(|e| crate::error::StorageError::CreateDir {
+        std::fs::create_dir_all(&data).map_err(|e| super::error::StorageError::CreateDir {
             path: data.display().to_string(),
             source: e,
         })?;
@@ -250,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_platform_support_check() {
-        use crate::registry::REGISTRY;
+        use crate::cli::registry::REGISTRY;
         // iii-console supports all major platforms
         let console = &REGISTRY[0];
         let result = check_platform_support(console);

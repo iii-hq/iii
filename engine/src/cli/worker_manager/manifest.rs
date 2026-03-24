@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 use toml_edit::{value, DocumentMut};
 
-use crate::error::WorkerError;
+use crate::cli::error::WorkerError;
 
 #[derive(Deserialize)]
 struct ManifestFile {

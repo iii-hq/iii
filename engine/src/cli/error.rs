@@ -98,7 +98,7 @@ pub enum ExecError {
 
 #[derive(Error, Debug)]
 pub enum RegistryError {
-    #[error("Unknown command: '{command}'. Run 'iii-cli --help' to see available commands.")]
+    #[error("Unknown command: '{command}'. Run 'iii --help' to see available commands.")]
     UnknownCommand { command: String },
 
     #[error("{binary} is not available for {platform}. Supported platforms: {supported}")]
@@ -126,7 +126,7 @@ pub enum StateError {
 
 #[derive(Error, Debug)]
 pub enum WorkerError {
-    #[error("Worker '{name}' not found in registry. Verify the spelling or run `iii info <name>` to check available workers.")]
+    #[error("Worker '{name}' not found in registry. Verify the spelling or run `iii worker info <name>` to check available workers.")]
     WorkerNotFound { name: String },
 
     #[error("Failed to fetch worker registry from {url}: {reason}. Check your internet connection. If using a private registry, ensure GITHUB_TOKEN or III_GITHUB_TOKEN is set.")]
@@ -153,7 +153,7 @@ pub enum WorkerError {
     #[error("Failed to read/write config.yaml: {0}")]
     ConfigError(String),
 
-    #[error("Worker '{name}' is not installed. Run `iii list` to see installed workers.")]
+    #[error("Worker '{name}' is not installed. Run `iii worker list` to see installed workers.")]
     WorkerNotInstalled { name: String },
 
     #[error("Version '{version}' not found for worker '{name}'. Check the available versions in the worker's GitHub releases.")]
@@ -177,7 +177,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("foo"), "Should contain worker name");
-        assert!(msg.contains("iii info"), "Should suggest iii info command");
+        assert!(msg.contains("iii worker info"), "Should suggest iii worker info command");
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
             name: "foo".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("iii list"), "Should suggest list command");
+        assert!(msg.contains("iii worker list"), "Should suggest list command");
     }
 
     #[test]

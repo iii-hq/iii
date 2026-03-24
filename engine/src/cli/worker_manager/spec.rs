@@ -1,5 +1,5 @@
 use super::registry::WorkerEntry;
-use crate::registry::BinarySpec;
+use crate::cli::registry::BinarySpec;
 
 /// Build a `BinarySpec` from a dynamic `WorkerEntry`.
 ///

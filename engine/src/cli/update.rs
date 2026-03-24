@@ -3,11 +3,11 @@ use std::time::Duration;
 use colored::Colorize;
 use semver::Version;
 
-use crate::error::RegistryError;
-use crate::github::{self, IiiGithubError};
-use crate::registry::{self, BinarySpec};
-use crate::state::AppState;
-use crate::{download, platform, telemetry};
+use super::error::RegistryError;
+use super::github::{self, IiiGithubError};
+use super::registry::{self, BinarySpec};
+use super::state::AppState;
+use super::{download, platform, telemetry};
 
 /// Information about an available update.
 #[derive(Debug)]
@@ -65,7 +65,7 @@ pub fn print_update_notifications(updates: &[UpdateInfo]) {
     eprintln!();
     for update in updates {
         eprintln!(
-            "  {} Update available: {} {} → {} (run `iii-cli update {}`)",
+            "  {} Update available: {} {} → {} (run `iii update {}`)",
             "info:".yellow(),
             update.binary_name,
             update.current_version.to_string().dimmed(),
@@ -121,6 +121,31 @@ fn is_binary_installed(name: &str) -> bool {
     platform::binary_path(name).exists() || platform::find_existing_binary(name).is_some()
 }
 
+/// Detect the actual version of an installed binary by running it with `--version`.
+/// Returns None if the binary doesn't exist, can't be executed, or output can't be parsed.
+fn detect_binary_version(name: &str) -> Option<Version> {
+    let path = platform::binary_path(name);
+    if !path.exists() {
+        // Try PATH
+        if let Some(p) = platform::find_existing_binary(name) {
+            return run_version_check(&p);
+        }
+        return None;
+    }
+    run_version_check(&path)
+}
+
+fn run_version_check(path: &std::path::Path) -> Option<Version> {
+    let output = std::process::Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Version could be just "0.8.0" or "iii 0.8.0" — take the last word
+    let version_str = stdout.trim().rsplit_once(' ').map(|(_, v)| v).unwrap_or(stdout.trim());
+    Version::parse(version_str).ok()
+}
+
 /// Update a specific binary to the latest version.
 pub async fn update_binary(
     client: &reqwest::Client,
@@ -139,13 +164,19 @@ pub async fn update_binary(
     let latest_version = github::parse_release_version(&release.tag_name)
         .map_err(|e| UpdateError::VersionParse(e.to_string()))?;
 
-    // Check if already up to date (only if the binary file actually exists on disk)
+    // Check if already up to date using the actual on-disk binary version,
+    // not the state file (which can be stale after manual installs or migrations).
     if binary_installed {
-        if let Some(installed) = state.installed_version(spec.name) {
-            if *installed >= latest_version {
+        if let Some(actual_version) = detect_binary_version(spec.name) {
+            if actual_version >= latest_version {
+                state.record_install(
+                    spec.name,
+                    actual_version.clone(),
+                    platform::asset_name(spec.name),
+                );
                 return Ok(UpdateResult::AlreadyUpToDate {
                     binary: spec.name.to_string(),
-                    version: installed.clone(),
+                    version: actual_version,
                 });
             }
         }
@@ -155,7 +186,7 @@ pub async fn update_binary(
     let asset_name = platform::asset_name(spec.name);
     let asset = github::find_asset(&release, &asset_name).ok_or_else(|| {
         UpdateError::Github(IiiGithubError::Network(
-            crate::error::NetworkError::AssetNotFound {
+            super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
                 platform: platform::current_target().to_string(),
             },
@@ -217,7 +248,13 @@ pub async fn update_binary(
     }
 }
 
-/// Update iii-cli itself to the latest version.
+/// Update iii itself to the latest version.
+///
+/// Uses the same logic as `update_binary`: only skip the download if the state
+/// file explicitly records a version >= the latest release AND the binary exists
+/// on disk.  When there is no state entry (e.g. first run after install.sh, or
+/// migrating from the old iii-cli), the update always proceeds so the on-disk
+/// binary is replaced with the latest release.
 pub async fn self_update(
     client: &reqwest::Client,
     state: &mut AppState,
@@ -226,35 +263,38 @@ pub async fn self_update(
 
     platform::check_platform_support(spec)?;
 
+    let binary_installed = is_binary_installed(spec.name);
+
     eprintln!("  Checking for updates to {}...", spec.name);
 
     let release = github::fetch_latest_release(client, spec).await?;
     let latest_version = github::parse_release_version(&release.tag_name)
         .map_err(|e| UpdateError::VersionParse(e.to_string()))?;
 
-    // Use the installed binary version from state if available,
-    // falling back to the compile-time version of the running binary.
-    // This prevents re-downloading when the managed binary is already up-to-date
-    // but the running binary is a dev build with an older compile-time version.
-    let current_version = state
-        .installed_version(spec.name)
-        .cloned()
-        .unwrap_or_else(|| {
-            Version::parse(env!("CARGO_PKG_VERSION"))
-                .expect("CARGO_PKG_VERSION is always valid semver")
-        });
-
-    if current_version >= latest_version {
-        return Ok(UpdateResult::AlreadyUpToDate {
-            binary: spec.name.to_string(),
-            version: current_version,
-        });
+    // Detect the actual version of the on-disk binary rather than trusting
+    // the state file, which can be stale (e.g. binary was reinstalled via
+    // install.sh without updating state, or state was migrated from iii-cli).
+    if binary_installed {
+        if let Some(actual_version) = detect_binary_version(spec.name) {
+            if actual_version >= latest_version {
+                // Update state to match reality so future checks are fast
+                state.record_install(
+                    spec.name,
+                    actual_version.clone(),
+                    platform::asset_name(spec.name),
+                );
+                return Ok(UpdateResult::AlreadyUpToDate {
+                    binary: spec.name.to_string(),
+                    version: actual_version,
+                });
+            }
+        }
     }
 
     let asset_name = platform::asset_name(spec.name);
     let asset = github::find_asset(&release, &asset_name).ok_or_else(|| {
         UpdateError::Github(IiiGithubError::Network(
-            crate::error::NetworkError::AssetNotFound {
+            super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
                 platform: platform::current_target().to_string(),
             },
@@ -268,13 +308,27 @@ pub async fn self_update(
         None
     };
 
-    eprintln!("  Updating {} to v{}...", spec.name, latest_version);
+    // Capture previous version for telemetry and result reporting.
+    let previous_version = if binary_installed {
+        state.installed_version(spec.name).cloned()
+    } else {
+        None
+    };
 
-    let from_version_str = current_version.to_string();
+    if binary_installed {
+        eprintln!("  Updating {} to v{}...", spec.name, latest_version);
+    } else {
+        eprintln!("  Installing {} v{}...", spec.name, latest_version);
+    }
+
+    let from_version_str = previous_version
+        .as_ref()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
     telemetry::send_cli_update_started(spec.name, &from_version_str);
 
-    // Install to the standard managed location (~/.local/bin/iii-cli),
+    // Install to the standard managed location (~/.local/bin/iii),
     // consistent with install.sh and other managed binaries.
     let target_path = platform::binary_path(spec.name);
 
@@ -290,7 +344,7 @@ pub async fn self_update(
             );
             Ok(UpdateResult::Updated {
                 binary: spec.name.to_string(),
-                from: Some(current_version),
+                from: previous_version,
                 to: latest_version,
             })
         }
@@ -301,7 +355,7 @@ pub async fn self_update(
     }
 }
 
-/// Update all installed binaries (including iii-cli itself).
+/// Update all installed binaries (including iii itself).
 pub async fn update_all(
     client: &reqwest::Client,
     state: &mut AppState,

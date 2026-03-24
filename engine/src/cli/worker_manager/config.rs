@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::error::WorkerError;
+use crate::cli::error::WorkerError;
 
 fn begin_marker(worker_name: &str) -> String {
     format!("  # === iii:{} BEGIN ===", worker_name)

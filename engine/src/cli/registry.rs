@@ -1,4 +1,4 @@
-use crate::error::RegistryError;
+use super::error::RegistryError;
 
 /// Specification for a managed binary
 #[derive(Debug, Clone)]
@@ -14,16 +14,16 @@ pub struct BinarySpec {
 /// Maps a CLI command to a binary subcommand
 #[derive(Debug, Clone)]
 pub struct CommandMapping {
-    /// The command name as exposed by iii-cli (e.g., "console", "create")
+    /// The command name as exposed by iii (e.g., "console", "create")
     pub cli_command: &'static str,
     /// The subcommand to pass to the binary, or None for direct passthrough
     pub binary_subcommand: Option<&'static str>,
 }
 
-/// Specification for iii-cli itself (the dispatcher).
-/// Kept separate from REGISTRY because iii-cli is not a dispatched binary.
+/// Specification for iii itself (the dispatcher).
+/// Kept separate from REGISTRY because iii is not a dispatched binary.
 pub static SELF_SPEC: BinarySpec = BinarySpec {
-    name: "iii-cli",
+    name: "iii",
     repo: "iii-hq/iii",
     has_checksum: true,
     supported_targets: &[
@@ -96,26 +96,6 @@ pub static REGISTRY: &[BinarySpec] = &[
             binary_subcommand: None,
         }],
         tag_prefix: None,
-    },
-    BinarySpec {
-        name: "iii",
-        repo: "iii-hq/iii",
-        has_checksum: false,
-        supported_targets: &[
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "x86_64-pc-windows-msvc",
-            "aarch64-pc-windows-msvc",
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-            "armv7-unknown-linux-gnueabihf",
-        ],
-        commands: &[CommandMapping {
-            cli_command: "start",
-            binary_subcommand: None,
-        }],
-        tag_prefix: Some("iii"),
     },
 ];
 
@@ -197,20 +177,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_start() {
-        let (spec, sub) = resolve_command("start").unwrap();
-        assert_eq!(spec.name, "iii");
-        assert_eq!(spec.repo, "iii-hq/iii");
-        assert!(sub.is_none());
-    }
-
-    #[test]
-    fn test_start_no_checksum() {
-        let (spec, _) = resolve_command("start").unwrap();
-        assert!(!spec.has_checksum);
-    }
-
-    #[test]
     fn test_unknown_command() {
         assert!(resolve_command("foobar").is_err());
     }
@@ -250,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_self_spec_fields() {
-        assert_eq!(SELF_SPEC.name, "iii-cli");
+        assert_eq!(SELF_SPEC.name, "iii");
         assert_eq!(SELF_SPEC.repo, "iii-hq/iii");
         assert!(SELF_SPEC.has_checksum);
         assert!(SELF_SPEC.commands.is_empty());
@@ -283,13 +249,13 @@ mod tests {
     #[test]
     fn test_self_spec_not_in_registry() {
         for spec in REGISTRY {
-            assert_ne!(spec.name, "iii-cli", "iii-cli should not be in REGISTRY");
+            assert_ne!(spec.name, "iii", "iii should not be in REGISTRY");
         }
     }
 
     #[test]
     fn test_self_spec_platform_support() {
-        let result = crate::platform::check_platform_support(&SELF_SPEC);
+        let result = crate::cli::platform::check_platform_support(&SELF_SPEC);
         assert!(result.is_ok());
     }
 }

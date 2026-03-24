@@ -4,9 +4,9 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 
-use crate::error::{DownloadError, ExtractError};
-use crate::github::ReleaseAsset;
-use crate::registry::BinarySpec;
+use super::error::{DownloadError, ExtractError};
+use super::github::ReleaseAsset;
+use super::registry::BinarySpec;
 
 /// Download an asset with a progress bar, verify checksum if available,
 /// and extract the binary to the target path using atomic write.
