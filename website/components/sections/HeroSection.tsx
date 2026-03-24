@@ -525,21 +525,6 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                   {currentContext}
                 </span>
               </h1>
-              <p
-                className={`text-sm sm:text-base md:text-lg lg:text-xl max-w-2xl mx-auto ${
-                  isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
-                }`}
-              >
-                iii transforms any backend into a single unified system
-              </p>
-              <p
-                className={`text-xs md:text-sm tracking-wide max-w-md mx-auto ${
-                  isDarkMode ? 'text-iii-medium' : 'text-iii-medium'
-                }`}
-              >
-                <p>React made the frontend composable.</p>
-                <p>iii makes the backend composable.</p>
-              </p>
             </div>
 
             {/* Feature checklist */}
@@ -582,59 +567,64 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
             <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-stretch sm:items-start pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
               <InstallShButton isDarkMode={isDarkMode} />
 
-              <form
-                onSubmit={handleEmailSubmit}
-                className="flex items-center w-full sm:w-auto"
-              >
-                {isSubmitted ? (
-                  <div
-                    className={`flex items-center gap-2 text-xs md:text-sm px-3 py-2.5 md:px-4 md:py-3 border rounded w-full justify-center ${
-                      isDarkMode
-                        ? 'text-iii-accent bg-iii-accent/10 border-iii-accent/20'
-                        : 'text-iii-accent-light bg-iii-accent-light/10 border-iii-accent-light/20'
-                    }`}
-                  >
-                    <CheckedIcon size={16} />
-                    <span className="font-mono tracking-tight text-xs sm:text-sm">
-                      SUBSCRIBED — STAY UPDATED
-                    </span>
-                  </div>
-                ) : (
-                  <div
-                    className={`flex w-full border-b transition-colors relative ${
-                      isDarkMode
-                        ? 'border-iii-light focus-within:border-iii-accent'
-                        : 'border-iii-dark focus-within:border-iii-accent-light'
-                    }`}
-                  >
-                    <input
-                      type="email"
-                      placeholder="EMAIL_FOR_UPDATES"
-                      className={`bg-transparent outline-none text-xs md:text-sm py-2.5 md:py-3 px-1 w-full sm:w-48 md:w-64 placeholder-iii-medium/50 font-mono ${
-                        isDarkMode ? 'text-iii-light' : 'text-iii-black'
-                      }`}
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className={`absolute right-0 top-1/2 -translate-y-1/2 disabled:opacity-50 transition-colors p-1.5 md:p-2 ${
+              <div className="w-full sm:w-auto relative">
+                <form
+                  onSubmit={handleEmailSubmit}
+                  className="flex items-center w-full"
+                >
+                  {isSubmitted ? (
+                    <div
+                      className={`flex items-center gap-2 text-xs md:text-sm px-3 py-2.5 md:px-4 md:py-3 border rounded w-full justify-center ${
                         isDarkMode
-                          ? 'text-iii-light hover:text-iii-accent'
-                          : 'text-iii-black hover:text-iii-accent-light'
+                          ? 'text-iii-accent bg-iii-accent/10 border-iii-accent/20'
+                          : 'text-iii-accent-light bg-iii-accent-light/10 border-iii-accent-light/20'
                       }`}
                     >
-                      {isSubmitting ? (
-                        '...'
-                      ) : (
-                        <ArrowNarrowRightIcon size={20} />
-                      )}
-                    </button>
-                  </div>
-                )}
-              </form>
+                      <CheckedIcon size={16} />
+                      <span className="font-mono tracking-tight text-xs sm:text-sm">
+                        SUBSCRIBED — STAY UPDATED
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className={`flex w-full border-b transition-colors relative ${
+                        isDarkMode
+                          ? 'border-iii-light focus-within:border-iii-accent'
+                          : 'border-iii-dark focus-within:border-iii-accent-light'
+                      }`}
+                    >
+                      <input
+                        type="email"
+                        placeholder="your@email.here"
+                        className={`bg-transparent outline-none text-xs md:text-sm py-2.5 md:py-3 px-1 w-full sm:w-48 md:w-64 placeholder-iii-medium/50 font-mono ${
+                          isDarkMode ? 'text-iii-light' : 'text-iii-black'
+                        }`}
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className={`absolute right-0 top-1/2 -translate-y-1/2 disabled:opacity-50 transition-colors p-1.5 md:p-2 ${
+                          isDarkMode
+                            ? 'text-iii-light hover:text-iii-accent'
+                            : 'text-iii-black hover:text-iii-accent-light'
+                        }`}
+                      >
+                        {isSubmitting ? (
+                          '...'
+                        ) : (
+                          <ArrowNarrowRightIcon size={20} />
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </form>
+                <p className="absolute left-0 top-full mt-1 text-[10px] sm:text-xs text-iii-medium">
+                  Follow our development
+                </p>
+              </div>
             </div>
 
             {/* Tech logos section */}
@@ -727,8 +717,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                       isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
                     }`}
                   >
-                    Workers register, engine orchestrates — one protocol,
-                    infinite possibilities.
+                    EVERY SERVICE
                   </span>
                   <div
                     className={`hidden sm:block flex-1 h-px ${
