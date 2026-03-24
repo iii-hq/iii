@@ -214,6 +214,10 @@ class III:
         except ImportError:
             log.debug("OpenTelemetry not available")
 
+        # Schedule the event loop to stop on the next iteration so the
+        # non-daemon background thread exits and the process can terminate.
+        self._loop.call_soon(self._loop.stop)
+
     async def _do_connect(self) -> None:
         try:
             log.debug(f"Connecting to {self._address}")
