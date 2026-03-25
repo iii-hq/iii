@@ -1,12 +1,18 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::path::Path;
 
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 
-use crate::error::{DownloadError, ExtractError};
-use crate::github::ReleaseAsset;
-use crate::registry::BinarySpec;
+use super::error::{DownloadError, ExtractError};
+use super::github::ReleaseAsset;
+use super::registry::BinarySpec;
 
 /// Download an asset with a progress bar, verify checksum if available,
 /// and extract the binary to the target path using atomic write.

@@ -8,17 +8,16 @@ This Quickstart will show how any project can leverage iii and the iii SDK to un
 ### 1. Create a new quickstart project
 
 <Warning title="install iii">
-  Make sure to install iii-cli and iii before proceeding:
+  Make sure to install iii before proceeding:
 ```bash
-curl -fsSL https://install.iii.dev/iii-cli/main/install.sh | sh
-iii-cli update
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 </Warning>
 
 The project setup will indicate that this project includes TypeScript, Python, and Rust languages. The README contains instructions for using Docker Compose in case not all of these runtimes are available on the system.
 
 ```bash
-iii-cli create --template quickstart --directory quickstart
+iii create --template quickstart --directory quickstart
 cd quickstart
 ```
 
@@ -85,7 +84,7 @@ iii also comes with a web console that shows logs, traces, and runtime state for
 Start it in a new terminal window with:
 
 ```bash
-iii-cli console
+iii console
 ```
 
 Then open your web browser to: http://localhost:3113/

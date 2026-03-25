@@ -62,7 +62,7 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 ## Resources
 
 - [Documentation](https://iii.dev/docs)
-- [CLI](https://github.com/iii-hq/iii-cli)
+- [CLI & Engine](https://github.com/iii-hq/iii)
 - [Console](console/)
 - [Examples](https://github.com/iii-hq/iii-examples)
 - [Contributing](CONTRIBUTING.md)

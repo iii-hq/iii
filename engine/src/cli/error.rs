@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -33,7 +39,9 @@ pub enum NetworkError {
     #[error("HTTP request failed: {0}")]
     RequestFailed(#[from] reqwest::Error),
 
-    #[error("GitHub API rate limit exceeded. Set GITHUB_TOKEN or III_GITHUB_TOKEN environment variable for higher limits.")]
+    #[error(
+        "GitHub API rate limit exceeded. Set GITHUB_TOKEN or III_GITHUB_TOKEN environment variable for higher limits."
+    )]
     RateLimited,
 
     #[error("Release asset not found for platform {platform}: {binary}")]
@@ -45,7 +53,9 @@ pub enum DownloadError {
     #[error("Download failed: {0}")]
     Failed(String),
 
-    #[error("SHA256 checksum mismatch for {asset}. Expected: {expected}, got: {actual}. The downloaded file may be corrupted. Try running the command again.")]
+    #[error(
+        "SHA256 checksum mismatch for {asset}. Expected: {expected}, got: {actual}. The downloaded file may be corrupted. Try running the command again."
+    )]
     ChecksumMismatch {
         asset: String,
         expected: String,
@@ -98,7 +108,7 @@ pub enum ExecError {
 
 #[derive(Error, Debug)]
 pub enum RegistryError {
-    #[error("Unknown command: '{command}'. Run 'iii-cli --help' to see available commands.")]
+    #[error("Unknown command: '{command}'. Run 'iii --help' to see available commands.")]
     UnknownCommand { command: String },
 
     #[error("{binary} is not available for {platform}. Supported platforms: {supported}")]
@@ -126,10 +136,14 @@ pub enum StateError {
 
 #[derive(Error, Debug)]
 pub enum WorkerError {
-    #[error("Worker '{name}' not found in registry. Verify the spelling or run `iii info <name>` to check available workers.")]
+    #[error(
+        "Worker '{name}' not found in registry. Verify the spelling or run `iii worker info <name>` to check available workers."
+    )]
     WorkerNotFound { name: String },
 
-    #[error("Failed to fetch worker registry from {url}: {reason}. Check your internet connection. If using a private registry, ensure GITHUB_TOKEN or III_GITHUB_TOKEN is set.")]
+    #[error(
+        "Failed to fetch worker registry from {url}: {reason}. Check your internet connection. If using a private registry, ensure GITHUB_TOKEN or III_GITHUB_TOKEN is set."
+    )]
     RegistryFetchFailed { url: String, reason: String },
 
     #[error(
@@ -140,23 +154,29 @@ pub enum WorkerError {
     #[error("Failed to read/write iii.toml: {0}")]
     ManifestError(String),
 
-    #[error("Worker '{name}' is not available for {platform}. Supported platforms: {supported}. Check if a different architecture is available.")]
+    #[error(
+        "Worker '{name}' is not available for {platform}. Supported platforms: {supported}. Check if a different architecture is available."
+    )]
     UnsupportedPlatform {
         name: String,
         platform: String,
         supported: String,
     },
 
-    #[error("Download failed for worker '{name}': {reason}. Check your internet connection and try again. If the problem persists, set GITHUB_TOKEN or III_GITHUB_TOKEN for authenticated access.")]
+    #[error(
+        "Download failed for worker '{name}': {reason}. Check your internet connection and try again. If the problem persists, set GITHUB_TOKEN or III_GITHUB_TOKEN for authenticated access."
+    )]
     DownloadFailed { name: String, reason: String },
 
     #[error("Failed to read/write config.yaml: {0}")]
     ConfigError(String),
 
-    #[error("Worker '{name}' is not installed. Run `iii list` to see installed workers.")]
+    #[error("Worker '{name}' is not installed. Run `iii worker list` to see installed workers.")]
     WorkerNotInstalled { name: String },
 
-    #[error("Version '{version}' not found for worker '{name}'. Check the available versions in the worker's GitHub releases.")]
+    #[error(
+        "Version '{version}' not found for worker '{name}'. Check the available versions in the worker's GitHub releases."
+    )]
     VersionNotFound { name: String, version: String },
 
     #[error("Release asset not found for worker '{name}': {reason}")]
@@ -177,7 +197,10 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("foo"), "Should contain worker name");
-        assert!(msg.contains("iii info"), "Should suggest iii info command");
+        assert!(
+            msg.contains("iii worker info"),
+            "Should suggest iii worker info command"
+        );
     }
 
     #[test]
@@ -224,7 +247,10 @@ mod tests {
             name: "foo".to_string(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("iii list"), "Should suggest list command");
+        assert!(
+            msg.contains("iii worker list"),
+            "Should suggest list command"
+        );
     }
 
     #[test]

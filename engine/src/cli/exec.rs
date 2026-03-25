@@ -1,6 +1,12 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::path::Path;
 
-use crate::error::ExecError;
+use super::error::ExecError;
 
 /// Run a binary with the given arguments.
 ///
@@ -11,7 +17,7 @@ use crate::error::ExecError;
 /// On Windows: Spawns the binary as a child process with inherited stdio and
 /// returns its exit code.
 ///
-/// IMPORTANT: All iii-cli output (progress bars, update notifications) MUST be
+/// IMPORTANT: All iii output (progress bars, update notifications) MUST be
 /// flushed before calling this function.
 pub fn run_binary(binary_path: &Path, args: &[String]) -> Result<i32, ExecError> {
     if !binary_path.exists() {
@@ -34,7 +40,7 @@ pub fn run_binary(binary_path: &Path, args: &[String]) -> Result<i32, ExecError>
     }
 }
 
-/// Flush stdout and stderr to ensure all iii-cli output is visible
+/// Flush stdout and stderr to ensure all iii output is visible
 /// before the child binary takes over.
 fn flush_output() {
     use std::io::Write;

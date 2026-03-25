@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-  "cli",
   "engine",
   "engine/function-macros",
   "sdk/packages/rust/iii",

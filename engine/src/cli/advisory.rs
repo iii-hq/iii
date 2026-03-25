@@ -1,8 +1,14 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use colored::Colorize;
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
-use crate::state::AppState;
+use super::state::AppState;
 
 /// URL where advisories are hosted.
 const ADVISORIES_URL: &str =
@@ -116,14 +122,14 @@ pub fn print_advisory_warnings(matched: &[MatchedAdvisory]) {
         );
 
         // Show CLI command to update
-        let cmd = crate::registry::REGISTRY
+        let cmd = super::registry::REGISTRY
             .iter()
             .find(|s| s.name == m.advisory.affected_binary)
             .and_then(|s| s.commands.first())
             .map(|c| c.cli_command)
             .unwrap_or(&m.advisory.affected_binary);
 
-        eprintln!("         Run: {}", format!("iii-cli update {}", cmd).bold());
+        eprintln!("         Run: {}", format!("iii update {}", cmd).bold());
 
         if let Some(url) = &m.advisory.url {
             eprintln!("         Details: {}", url);
@@ -135,7 +141,7 @@ pub fn print_advisory_warnings(matched: &[MatchedAdvisory]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::BinaryState;
+    use crate::cli::state::BinaryState;
     use chrono::Utc;
     use std::collections::HashMap;
 

@@ -1,11 +1,17 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::path::Path;
 
 use colored::Colorize;
 use semver::Version;
 
-use crate::error::WorkerError;
-use crate::workers::{config, manifest, registry, storage};
-use crate::{download, github, platform};
+use super::{config, manifest, registry, storage};
+use crate::cli::error::WorkerError;
+use crate::cli::{download, github, platform};
 
 #[derive(Debug)]
 pub enum InstallOutcome {
@@ -322,14 +328,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -341,7 +349,9 @@ mod tests {
             false,
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
@@ -356,8 +366,7 @@ mod tests {
             _ => panic!("Expected Installed outcome"),
         }
 
-        let installed =
-            crate::workers::storage::worker_binary_path(project_dir.path(), "image-resize");
+        let installed = super::storage::worker_binary_path(project_dir.path(), "image-resize");
         assert!(
             installed.exists(),
             "Binary should be copied to iii_workers/"
@@ -429,14 +438,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -448,7 +459,9 @@ mod tests {
             false,
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let err = result.unwrap_err();
         match err {
@@ -488,14 +501,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -507,7 +522,9 @@ mod tests {
             false,
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let err = result.unwrap_err();
         match err {
@@ -551,14 +568,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json_v1).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -601,7 +620,7 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json_v2).unwrap();
 
@@ -613,7 +632,9 @@ mod tests {
             false,
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome2 = result2.unwrap();
         match outcome2 {
@@ -660,14 +681,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -679,7 +702,9 @@ mod tests {
             false,
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
@@ -743,14 +768,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -762,7 +789,9 @@ mod tests {
             false, // force=false
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
@@ -825,14 +854,16 @@ mod tests {
                 }}
             }}
         }}"#,
-            crate::platform::current_target()
+            crate::cli::platform::current_target()
         );
         fs::write(&registry_path, &registry_json).unwrap();
 
-        std::env::set_var(
-            "III_REGISTRY_URL",
-            format!("file://{}", registry_path.display()),
-        );
+        unsafe {
+            std::env::set_var(
+                "III_REGISTRY_URL",
+                format!("file://{}", registry_path.display()),
+            );
+        }
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
@@ -844,7 +875,9 @@ mod tests {
             true, // force=true
         ));
 
-        std::env::remove_var("III_REGISTRY_URL");
+        unsafe {
+            std::env::remove_var("III_REGISTRY_URL");
+        }
 
         let outcome = result.unwrap();
         match outcome {
