@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -197,7 +203,7 @@ fn build_event(event_type: &str, properties: serde_json::Value) -> Option<Amplit
         event_type: event_type.to_string(),
         event_properties: properties,
         user_properties: Some(build_user_properties()),
-        platform: "iii-cli".to_string(),
+        platform: "iii".to_string(),
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         time: chrono::Utc::now().timestamp_millis(),
@@ -356,7 +362,7 @@ mod tests {
         assert!(result.is_some());
         let event = result.unwrap();
         assert_eq!(event.event_type, "cli_update_started");
-        assert_eq!(event.platform, "iii-cli");
+        assert_eq!(event.platform, "iii");
         assert_eq!(event.app_version, env!("CARGO_PKG_VERSION"));
         assert!(!event.device_id.is_empty());
         assert!(!event.insert_id.is_empty());

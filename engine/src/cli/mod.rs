@@ -1,57 +1,26 @@
-mod advisory;
-mod cli;
-mod download;
-mod error;
-mod exec;
-mod github;
-mod platform;
-mod registry;
-mod state;
-mod telemetry;
-mod update;
-mod workers;
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
 
-use std::process;
+pub mod advisory;
+pub mod download;
+pub mod error;
+pub mod exec;
+pub mod github;
+pub mod platform;
+pub mod registry;
+pub mod state;
+pub mod telemetry;
+pub mod update;
+pub mod worker_manager;
 
-use clap::Parser;
 use colored::Colorize;
-
-use cli::{Cli, CommandInfo};
 use error::WorkerError;
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-    let exit_code = run(cli).await;
-    process::exit(exit_code);
-}
-
-async fn run(cli: Cli) -> i32 {
-    let cmd_info = cli::extract_command_info(&cli.command);
-
-    match cmd_info {
-        CommandInfo::Dispatch { command, args } => {
-            handle_dispatch(command, args, cli.no_update_check).await
-        }
-        CommandInfo::Install { worker_name, force } => match worker_name {
-            Some(name) => match parse_worker_arg(name) {
-                Ok((name, version)) => handle_install_single(name, version, force).await,
-                Err(e) => {
-                    eprintln!("{} {}", "error:".red(), e);
-                    1
-                }
-            },
-            None => handle_install_all(force).await,
-        },
-        CommandInfo::Uninstall { worker_name } => handle_uninstall(worker_name),
-        CommandInfo::Update { target } => handle_update(target).await,
-        CommandInfo::List => handle_worker_list(),
-        CommandInfo::Info { worker_name } => handle_info(worker_name).await,
-    }
-}
-
 /// Handle dispatching a command to a managed binary.
-async fn handle_dispatch(command: &str, args: &[String], no_update_check: bool) -> i32 {
+pub async fn handle_dispatch(command: &str, args: &[String], no_update_check: bool) -> i32 {
     // Resolve command to binary spec
     let (spec, binary_subcommand) = match registry::resolve_command(command) {
         Ok(result) => result,
@@ -259,9 +228,16 @@ async fn handle_install_single(worker_name: &str, version: Option<&str>, force: 
         version_display
     );
 
-    match workers::install::install_worker(worker_name, version, &project_dir, &client, force).await
+    match worker_manager::install::install_worker(
+        worker_name,
+        version,
+        &project_dir,
+        &client,
+        force,
+    )
+    .await
     {
-        Ok(workers::install::InstallOutcome::Installed {
+        Ok(worker_manager::install::InstallOutcome::Installed {
             name,
             version: ver,
             config_updated,
@@ -275,7 +251,7 @@ async fn handle_install_single(worker_name: &str, version: Option<&str>, force: 
             }
             0
         }
-        Ok(workers::install::InstallOutcome::Updated {
+        Ok(worker_manager::install::InstallOutcome::Updated {
             name,
             old_version,
             new_version,
@@ -317,7 +293,7 @@ async fn handle_install_all(force: bool) -> i32 {
         }
     };
 
-    let manifest = match workers::manifest::read_manifest(&project_dir) {
+    let manifest = match worker_manager::manifest::read_manifest(&project_dir) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -346,9 +322,10 @@ async fn handle_install_all(force: bool) -> i32 {
     let mut up_to_date = 0u32;
 
     for (name, version) in &manifest {
-        let binary_path = workers::storage::worker_binary_path(&project_dir, name);
+        let binary_path = worker_manager::storage::worker_binary_path(&project_dir, name);
         if binary_path.exists() {
-            let installed_version = workers::storage::read_installed_version(&project_dir, name);
+            let installed_version =
+                worker_manager::storage::read_installed_version(&project_dir, name);
             if installed_version.as_deref() == Some(version.as_str()) {
                 eprintln!(
                     "  {} {} v{} (already installed)",
@@ -371,7 +348,7 @@ async fn handle_install_all(force: bool) -> i32 {
             eprintln!("  Installing {}@{}...", name.bold(), version);
         }
 
-        match workers::install::install_worker(
+        match worker_manager::install::install_worker(
             name,
             Some(version.as_str()),
             &project_dir,
@@ -380,7 +357,7 @@ async fn handle_install_all(force: bool) -> i32 {
         )
         .await
         {
-            Ok(workers::install::InstallOutcome::Installed {
+            Ok(worker_manager::install::InstallOutcome::Installed {
                 name: n,
                 version: v,
                 config_updated,
@@ -391,7 +368,7 @@ async fn handle_install_all(force: bool) -> i32 {
                 }
                 installed += 1;
             }
-            Ok(workers::install::InstallOutcome::Updated {
+            Ok(worker_manager::install::InstallOutcome::Updated {
                 name: n,
                 old_version,
                 new_version,
@@ -429,8 +406,22 @@ async fn handle_install_all(force: bool) -> i32 {
     }
 }
 
+/// Handle the install command. Routes to single or bulk install.
+pub async fn handle_install(worker_name: Option<&str>, force: bool) -> i32 {
+    match worker_name {
+        Some(name) => match parse_worker_arg(name) {
+            Ok((name, version)) => handle_install_single(name, version, force).await,
+            Err(e) => {
+                eprintln!("{} {}", "error:".red(), e);
+                1
+            }
+        },
+        None => handle_install_all(force).await,
+    }
+}
+
 /// Handle the uninstall command for workers.
-fn handle_uninstall(worker_name: &str) -> i32 {
+pub fn handle_uninstall(worker_name: &str) -> i32 {
     let project_dir = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -445,7 +436,7 @@ fn handle_uninstall(worker_name: &str) -> i32 {
 
     eprintln!("  Uninstalling worker {}...", worker_name.bold());
 
-    match workers::uninstall::uninstall_worker(worker_name, &project_dir) {
+    match worker_manager::uninstall::uninstall_worker(worker_name, &project_dir) {
         Ok(outcome) => {
             if outcome.binary_removed {
                 eprintln!("  {} Removed binary", "✓".green());
@@ -476,7 +467,7 @@ fn handle_uninstall(worker_name: &str) -> i32 {
 }
 
 /// Handle the update command.
-async fn handle_update(target: Option<&str>) -> i32 {
+pub async fn handle_update(target: Option<&str>) -> i32 {
     let client = match github::build_client() {
         Ok(c) => c,
         Err(e) => {
@@ -500,8 +491,8 @@ async fn handle_update(target: Option<&str>) -> i32 {
     }
 
     let results = match target {
-        Some("iii-cli" | "self") => {
-            // Self-update only
+        Some("iii" | "iii-cli" | "self") => {
+            // Self-update only ("iii-cli" accepted for backward compat)
             vec![update::self_update(&client, &mut app_state).await]
         }
         Some(cmd) => {
@@ -532,7 +523,7 @@ async fn handle_update(target: Option<&str>) -> i32 {
     for result in &results {
         update::print_update_result(result);
         if let Ok(update::UpdateResult::Updated { binary, .. }) = result {
-            if binary == "iii-cli" {
+            if binary == "iii" {
                 self_updated = true;
             }
         }
@@ -542,7 +533,7 @@ async fn handle_update(target: Option<&str>) -> i32 {
     if self_updated {
         eprintln!();
         eprintln!(
-            "  {} iii-cli has been updated. Restart your shell or run the command again to use the new version.",
+            "  {} iii has been updated. Restart your shell or run the command again to use the new version.",
             "note:".cyan(),
         );
     }
@@ -562,7 +553,7 @@ async fn handle_update(target: Option<&str>) -> i32 {
 }
 
 /// Handle the list command for workers (reads iii.toml).
-fn handle_worker_list() -> i32 {
+pub fn handle_worker_list() -> i32 {
     let project_dir = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -575,7 +566,7 @@ fn handle_worker_list() -> i32 {
         }
     };
 
-    let workers = match workers::manifest::read_manifest(&project_dir) {
+    let workers = match worker_manager::manifest::read_manifest(&project_dir) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -584,7 +575,7 @@ fn handle_worker_list() -> i32 {
     };
 
     if workers.is_empty() {
-        eprintln!("  No workers installed. Run `iii install <worker>` to get started.");
+        eprintln!("  No workers installed. Run `iii worker add <worker>` to get started.");
         return 0;
     }
 
@@ -599,7 +590,7 @@ fn handle_worker_list() -> i32 {
 }
 
 /// Handle the info command for a worker (fetches registry + GitHub).
-async fn handle_info(worker_name: &str) -> i32 {
+pub async fn handle_info(worker_name: &str) -> i32 {
     let client = match github::build_client() {
         Ok(c) => c,
         Err(e) => {
@@ -609,7 +600,7 @@ async fn handle_info(worker_name: &str) -> i32 {
     };
 
     // Fetch registry
-    let registry_manifest = match workers::registry::fetch_registry(&client).await {
+    let registry_manifest = match worker_manager::registry::fetch_registry(&client).await {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{} {}", "error:".red(), e);
@@ -627,7 +618,7 @@ async fn handle_info(worker_name: &str) -> i32 {
     };
 
     // Build BinarySpec for fetch_latest_release
-    let spec = workers::spec::leaked_binary_spec(worker_name, worker_entry);
+    let spec = worker_manager::spec::leaked_binary_spec(worker_name, worker_entry);
 
     // Fetch latest version from GitHub
     let version_display = match github::fetch_latest_release(&client, &spec).await {
@@ -660,4 +651,59 @@ async fn handle_info(worker_name: &str) -> i32 {
     );
     eprintln!();
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_worker_arg tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_worker_arg_name_only() {
+        let (name, version) = parse_worker_arg("pdfkit").unwrap();
+        assert_eq!(name, "pdfkit");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn parse_worker_arg_name_with_version() {
+        let (name, version) = parse_worker_arg("pdfkit@1.2.3").unwrap();
+        assert_eq!(name, "pdfkit");
+        assert_eq!(version, Some("1.2.3"));
+    }
+
+    #[test]
+    fn parse_worker_arg_name_with_prerelease_version() {
+        let (name, version) = parse_worker_arg("myworker@0.1.0-beta.1").unwrap();
+        assert_eq!(name, "myworker");
+        assert_eq!(version, Some("0.1.0-beta.1"));
+    }
+
+    #[test]
+    fn parse_worker_arg_empty_name_rejected() {
+        let result = parse_worker_arg("@1.0.0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_worker_arg_empty_version_rejected() {
+        let result = parse_worker_arg("pdfkit@");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_worker_arg_multiple_at_signs() {
+        // "scope@org@1.0.0" splits on the LAST @
+        let (name, version) = parse_worker_arg("scope@org@1.0.0").unwrap();
+        assert_eq!(name, "scope@org");
+        assert_eq!(version, Some("1.0.0"));
+    }
+
+    #[test]
+    fn parse_worker_arg_hyphenated_name() {
+        let (name, version) = parse_worker_arg("my-cool-worker").unwrap();
+        assert_eq!(name, "my-cool-worker");
+        assert!(version.is_none());
+    }
 }
