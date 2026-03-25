@@ -75,8 +75,8 @@ iii.register_function({"id": "users::create"}, create_user)
 </Tab>
 <Tab title="Rust">
 ```rust title="http_endpoint.rs"
-use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage, Logger};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction};
+use serde_json::{json, Value};
 use tokio::signal;
 
 #[tokio::main]
@@ -84,20 +84,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
     let iii = register_worker(&url, InitOptions::default())?;
 
-    iii.register_function(
-        RegisterFunctionMessage::with_id("users::create".into()),
-        |req| async move {
-            let logger = Logger::new();
-            let name = req["body"]["name"].as_str().unwrap_or("");
-            let email = req["body"]["email"].as_str().unwrap_or("");
-            let user_id = uuid::Uuid::new_v4().to_string();
-            logger.info("User created", Some(json!({ "userId": user_id })));
-            Ok(json!({
-                "status_code": 201,
-                "body": { "id": user_id, "name": name, "email": email }
-            }))
-        },
-    );
+    let reg = RegisterFunction::new_async("users::create", |req: Value| async move {
+        let logger = Logger::new();
+        let name = req["body"]["name"].as_str().unwrap_or("");
+        let email = req["body"]["email"].as_str().unwrap_or("");
+        let user_id = uuid::Uuid::new_v4().to_string();
+        logger.info("User created", Some(json!({ "userId": user_id })));
+        Ok(json!({
+            "status_code": 201,
+            "body": { "id": user_id, "name": name, "email": email }
+        }))
+    });
+    iii.register_function(reg);
 
     println!("HTTP endpoint ready on POST /users");
     signal::ctrl_c().await?;

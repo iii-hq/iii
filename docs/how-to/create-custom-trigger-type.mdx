@@ -222,23 +222,21 @@ iii.register_trigger({
 </Tab>
 <Tab title="Rust">
 ```rust title="github_webhook.rs"
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, RegisterTriggerInput};
+use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
     let iii = register_worker(&url, InitOptions::default());
 
-    iii.register_function(
-        RegisterFunctionMessage::with_id("github::push".into()),
-        |payload| async move {
-            let logger = Logger::new();
-            let repo = payload["repository"]["full_name"].as_str().unwrap_or("unknown");
-            logger.info("Push event received", Some(json!({ "repo": repo })));
-            Ok(json!({ "ok": true }))
-        },
-    );
+    let reg = RegisterFunction::new_async("github::push", |payload: Value| async move {
+        let logger = Logger::new();
+        let repo = payload["repository"]["full_name"].as_str().unwrap_or("unknown");
+        logger.info("Push event received", Some(json!({ "repo": repo })));
+        Ok(json!({ "ok": true }))
+    });
+    iii.register_function(reg);
 
     iii.register_trigger(RegisterTriggerInput {
         trigger_type: "webhook".into(),

@@ -66,8 +66,8 @@ iii.register_function({"id": "orders::process-high-value"}, process_high_value)
 </Tab>
 <Tab title="Rust">
 ```rust title="conditions_functions.rs"
-use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,25 +75,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker(&url, InitOptions::default());
 
     // condition
-    iii.register_function(
-        RegisterFunctionMessage::with_id("conditions::is-high-value".into()),
-        |input| async move {
-            let amount = input["new_value"]["amount"].as_f64().unwrap_or(0.0);
-            Ok(json!(amount >= 1000.0))
-        },
-    );
+    let condition_reg = RegisterFunction::new_async("conditions::is-high-value", |input: Value| async move {
+        let amount = input["new_value"]["amount"].as_f64().unwrap_or(0.0);
+        Ok(json!(amount >= 1000.0))
+    });
+    iii.register_function(condition_reg);
 
     // handler
-    iii.register_function(
-        RegisterFunctionMessage::with_id("orders::process-high-value".into()),
-        |input| async move {
-            let amount = input["new_value"]["amount"].as_f64().unwrap_or(0.0);
-            Ok(json!({
-                "status_code": 200,
-                "body": { "processed": true, "amount": amount }
-            }))
-        },
-    );
+    let handler_reg = RegisterFunction::new_async("orders::process-high-value", |input: Value| async move {
+        let amount = input["new_value"]["amount"].as_f64().unwrap_or(0.0);
+        Ok(json!({
+            "status_code": 200,
+            "body": { "processed": true, "amount": amount }
+        }))
+    });
+    iii.register_function(handler_reg);
 
     Ok(())
 }

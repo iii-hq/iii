@@ -68,33 +68,31 @@ iii.register_function({"id": "reports::generate"}, generate_report)
 </Tab>
 <Tab title="Rust">
 ```rust title="worker.rs"
-use iii_sdk::{Logger, RegisterFunctionMessage, TriggerRequest, register_worker, InitOptions};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, TriggerRequest};
+use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
     let iii = register_worker(&url, InitOptions::default());
 
-    iii.register_function(
-        RegisterFunctionMessage::with_id("reports::generate".into()),
-        |req| async move {
-            let logger = Logger::new();
-            let report_id = req["body"]["reportId"].as_str().unwrap_or("unknown");
+    let reg = RegisterFunction::new_async("reports::generate", |req: Value| async move {
+        let logger = Logger::new();
+        let report_id = req["body"]["reportId"].as_str().unwrap_or("unknown");
 
-            logger.info("Generating heavy report...", Some(json!({ "reportId": report_id })));
+        logger.info("Generating heavy report...", Some(json!({ "reportId": report_id })));
 
-            // ... perform resource-intensive work here ...
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await; // example 5 second delay
+        // ... perform resource-intensive work here ...
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await; // example 5 second delay
 
-            logger.info("Report generated", Some(json!({ "reportId": report_id })));
+        logger.info("Report generated", Some(json!({ "reportId": report_id })));
 
-            Ok(json!({
-                "status_code": 200,
-                "body": { "success": true, "reportId": report_id }
-            }))
-        },
-    );
+        Ok(json!({
+            "status_code": 200,
+            "body": { "success": true, "reportId": report_id }
+        }))
+    });
+    iii.register_function(reg);
 ```
 </Tab>
 </Tabs>

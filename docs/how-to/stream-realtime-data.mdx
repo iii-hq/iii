@@ -102,7 +102,7 @@ print("Sent message:", result["messageId"])
 </Tab>
 <Tab title="Rust">
 ```rust title="stream_writer.rs"
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, TriggerRequest};
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, TriggerRequest};
 use serde_json::{json, Value};
 use tokio::signal;
 
@@ -112,35 +112,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker(&url, InitOptions::default());
 
     let iii_clone = iii.clone();
-    iii.register_function(
-        RegisterFunctionMessage::with_id("chat::send".into()),
-        move |input: Value| {
-            let iii = iii_clone.clone();
-            async move {
-                let logger = Logger::new();
-                let message_id = uuid::Uuid::new_v4().to_string();
-                let room_id = input["roomId"].as_str().unwrap_or("");
-                let text = input["text"].as_str().unwrap_or("");
-                let author = input["author"].as_str().unwrap_or("");
+    let reg = RegisterFunction::new_async("chat::send", move |input: Value| {
+        let iii = iii_clone.clone();
+        async move {
+            let logger = Logger::new();
+            let message_id = uuid::Uuid::new_v4().to_string();
+            let room_id = input["roomId"].as_str().unwrap_or("");
+            let text = input["text"].as_str().unwrap_or("");
+            let author = input["author"].as_str().unwrap_or("");
 
-                iii.trigger(TriggerRequest {
-                    function_id: "stream::set".into(),
-                    payload: json!({
-                        "stream_name": "chat",
-                        "group_id": room_id,
-                        "item_id": message_id,
-                        "data": { "text": text, "author": author },
-                    }),
-                    action: None,
-                    timeout_ms: None,
-                })
-                .await?;
+            iii.trigger(TriggerRequest {
+                function_id: "stream::set".into(),
+                payload: json!({
+                    "stream_name": "chat",
+                    "group_id": room_id,
+                    "item_id": message_id,
+                    "data": { "text": text, "author": author },
+                }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await?;
 
-                logger.info("Message sent to stream", Some(json!({ "messageId": message_id })));
-                Ok(json!({ "messageId": message_id }))
-            }
-        },
-    );
+            logger.info("Message sent to stream", Some(json!({ "messageId": message_id })));
+            Ok(json!({ "messageId": message_id }))
+        }
+    });
+    iii.register_function(reg);
 
     signal::ctrl_c().await?;
     Ok(())
@@ -211,29 +209,30 @@ print("Messages:", messages)
 </Tab>
 <Tab title="Rust">
 ```rust title="stream_reader.rs"
+use iii_sdk::RegisterFunction;
+use serde_json::Value;
+
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage::with_id("chat::list".into()),
-    move |input: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let logger = Logger::new();
-            let room_id = input["roomId"].as_str().unwrap_or("");
+let reg = RegisterFunction::new_async("chat::list", move |input: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let logger = Logger::new();
+        let room_id = input["roomId"].as_str().unwrap_or("");
 
-            let messages = iii
-                .trigger(TriggerRequest {
-                    function_id: "stream::list".into(),
-                    payload: json!({ "stream_name": "chat", "group_id": room_id }),
-                    action: None,
-                    timeout_ms: None,
-                })
-                .await?;
+        let messages = iii
+            .trigger(TriggerRequest {
+                function_id: "stream::list".into(),
+                payload: json!({ "stream_name": "chat", "group_id": room_id }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await?;
 
-            logger.info("Messages retrieved", Some(json!({ "count": messages.as_array().map(|a| a.len()).unwrap_or(0) })));
-            Ok(messages)
-        }
-    },
-);
+        logger.info("Messages retrieved", Some(json!({ "count": messages.as_array().map(|a| a.len()).unwrap_or(0) })));
+        Ok(messages)
+    }
+});
+iii.register_function(reg);
 
 // Then call from another function or worker
 let messages = iii

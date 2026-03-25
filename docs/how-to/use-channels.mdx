@@ -434,11 +434,11 @@ iii_client.register_function({"id": "pipeline::producer"}, producer_handler)
 </Tab>
 <Tab title="Rust">
 ```rust
-use iii_sdk::{III, IIIError, ChannelReader, extract_channel_refs, ChannelDirection, RegisterFunctionMessage, TriggerRequest};
+use iii_sdk::{III, IIIError, ChannelReader, ChannelDirection, RegisterFunction, TriggerRequest, extract_channel_refs};
 use serde_json::{json, Value};
 
 let iii_for_consumer = iii.clone();
-iii.register_function(RegisterFunctionMessage { id: "pipeline::consumer".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, move |input: Value| {
+let consumer_reg = RegisterFunction::new_async("pipeline::consumer", move |input: Value| {
     let iii = iii_for_consumer.clone();
     async move {
         let label = input["label"].as_str().unwrap_or_default().to_string();
@@ -461,9 +461,10 @@ iii.register_function(RegisterFunctionMessage { id: "pipeline::consumer".into(),
         Ok(json!({ "label": label, "count": records.len(), "total": total }))
     }
 });
+iii.register_function(consumer_reg);
 
 let iii_for_producer = iii.clone();
-iii.register_function(RegisterFunctionMessage { id: "pipeline::producer".into(), description: None, request_format: None, response_format: None, metadata: None, invocation: None }, move |input: Value| {
+let producer_reg = RegisterFunction::new_async("pipeline::producer", move |input: Value| {
     let iii = iii_for_producer.clone();
     async move {
         let records = input["records"].clone();
@@ -490,6 +491,7 @@ iii.register_function(RegisterFunctionMessage { id: "pipeline::producer".into(),
         Ok(result)
     }
 });
+iii.register_function(producer_reg);
 ```
 </Tab>
 </Tabs>

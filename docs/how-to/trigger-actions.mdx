@@ -377,7 +377,7 @@ iii.register_trigger({
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, Logger, RegisterFunctionMessage,
+    register_worker, InitOptions, Logger, RegisterFunction,
     RegisterTriggerInput, TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -385,40 +385,34 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::create".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
-    move |req: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let logger = Logger::new();
-            let order_id = uuid::Uuid::new_v4().to_string();
-            let order = json!({ "id": order_id, "items": req["body"]["items"] });
+let reg = RegisterFunction::new_async("orders::create", move |req: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let logger = Logger::new();
+        let order_id = uuid::Uuid::new_v4().to_string();
+        let order = json!({ "id": order_id, "items": req["body"]["items"] });
 
-            // Reliable payment processing — enqueued with retries
-            iii.trigger(TriggerRequest {
-                function_id: "orders::process-payment".into(),
-                payload: order.clone(),
-                action: Some(TriggerAction::Enqueue { queue: "payment".into() }),
-                timeout_ms: None,
-            }).await?;
+        // Reliable payment processing — enqueued with retries
+        iii.trigger(TriggerRequest {
+            function_id: "orders::process-payment".into(),
+            payload: order.clone(),
+            action: Some(TriggerAction::Enqueue { queue: "payment".into() }),
+            timeout_ms: None,
+        }).await?;
 
-            // Best-effort analytics — fire and forget
-            iii.trigger(TriggerRequest {
-                function_id: "analytics::track".into(),
-                payload: json!({ "event": "order_created", "orderId": order_id }),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            }).await?;
+        // Best-effort analytics — fire and forget
+        iii.trigger(TriggerRequest {
+            function_id: "analytics::track".into(),
+            payload: json!({ "event": "order_created", "orderId": order_id }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }).await?;
 
-            logger.info("Order created", Some(json!({ "orderId": order_id })));
-            Ok(json!({ "status_code": 201, "body": { "orderId": order_id } }))
-        }
-    },
-);
+        logger.info("Order created", Some(json!({ "orderId": order_id })));
+        Ok(json!({ "status_code": 201, "body": { "orderId": order_id } }))
+    }
+});
+iii.register_function(reg);
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
@@ -538,7 +532,7 @@ fn = iii.register_function({"id": "users::register"}, register_user)
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, RegisterFunctionMessage,
+    register_worker, InitOptions, RegisterFunction,
     TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -546,52 +540,46 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "users::register".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
-    move |req: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let email = req["body"]["email"].as_str().unwrap_or("");
-            let name = req["body"]["name"].as_str().unwrap_or("");
+let reg = RegisterFunction::new_async("users::register", move |req: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let email = req["body"]["email"].as_str().unwrap_or("");
+        let name = req["body"]["name"].as_str().unwrap_or("");
 
-            // Synchronous — need the validation result before proceeding
-            let validation = iii.trigger(TriggerRequest {
-                function_id: "users::validate-email".into(),
-                payload: json!({ "email": email }),
-                action: None,
-                timeout_ms: None,
-            }).await?;
+        // Synchronous — need the validation result before proceeding
+        let validation = iii.trigger(TriggerRequest {
+            function_id: "users::validate-email".into(),
+            payload: json!({ "email": email }),
+            action: None,
+            timeout_ms: None,
+        }).await?;
 
-            if validation["valid"].as_bool() != Some(true) {
-                return Ok(json!({ "status_code": 400, "body": { "error": "Invalid email" } }));
-            }
-
-            let user = create_user_in_db(email, name).await;
-
-            // Enqueue — welcome email must be delivered reliably
-            iii.trigger(TriggerRequest {
-                function_id: "emails::send-welcome".into(),
-                payload: json!({ "userId": user.id, "email": email, "name": name }),
-                action: Some(TriggerAction::Enqueue { queue: "email".into() }),
-                timeout_ms: None,
-            }).await?;
-
-            // Void — audit log is best-effort
-            iii.trigger(TriggerRequest {
-                function_id: "audit::log".into(),
-                payload: json!({ "action": "user_registered", "userId": user.id }),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            }).await?;
-
-            Ok(json!({ "status_code": 201, "body": { "userId": user.id } }))
+        if validation["valid"].as_bool() != Some(true) {
+            return Ok(json!({ "status_code": 400, "body": { "error": "Invalid email" } }));
         }
-    },
-);
+
+        let user = create_user_in_db(email, name).await;
+
+        // Enqueue — welcome email must be delivered reliably
+        iii.trigger(TriggerRequest {
+            function_id: "emails::send-welcome".into(),
+            payload: json!({ "userId": user.id, "email": email, "name": name }),
+            action: Some(TriggerAction::Enqueue { queue: "email".into() }),
+            timeout_ms: None,
+        }).await?;
+
+        // Void — audit log is best-effort
+        iii.trigger(TriggerRequest {
+            function_id: "audit::log".into(),
+            payload: json!({ "action": "user_registered", "userId": user.id }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }).await?;
+
+        Ok(json!({ "status_code": 201, "body": { "userId": user.id } }))
+    }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -699,7 +687,7 @@ iii.register_trigger({
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, Logger, RegisterFunctionMessage,
+    register_worker, InitOptions, Logger, RegisterFunction,
     RegisterTriggerInput, TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -707,39 +695,33 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "etl::extract".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
-    move |_: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let logger = Logger::new();
-            let raw_data = fetch_from_source().await;
+let reg = RegisterFunction::new_async("etl::extract", move |_: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let logger = Logger::new();
+        let raw_data = fetch_from_source().await;
 
-            // Reliable handoff — transform stage must not lose data
-            iii.trigger(TriggerRequest {
-                function_id: "etl::transform".into(),
-                payload: json!({ "records": raw_data, "extractedAt": now_ms() }),
-                action: Some(TriggerAction::Enqueue { queue: "etl-transform".into() }),
-                timeout_ms: None,
-            }).await?;
+        // Reliable handoff — transform stage must not lose data
+        iii.trigger(TriggerRequest {
+            function_id: "etl::transform".into(),
+            payload: json!({ "records": raw_data, "extractedAt": now_ms() }),
+            action: Some(TriggerAction::Enqueue { queue: "etl-transform".into() }),
+            timeout_ms: None,
+        }).await?;
 
-            // Best-effort monitoring
-            iii.trigger(TriggerRequest {
-                function_id: "monitoring::report".into(),
-                payload: json!({ "stage": "extract", "recordCount": raw_data.len() }),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            }).await?;
+        // Best-effort monitoring
+        iii.trigger(TriggerRequest {
+            function_id: "monitoring::report".into(),
+            payload: json!({ "stage": "extract", "recordCount": raw_data.len() }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }).await?;
 
-            logger.info("Extraction complete", Some(json!({ "records": raw_data.len() })));
-            Ok(json!(null))
-        }
-    },
-);
+        logger.info("Extraction complete", Some(json!({ "records": raw_data.len() })));
+        Ok(json!(null))
+    }
+});
+iii.register_function(reg);
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
@@ -879,7 +861,7 @@ iii.register_function({"id": "checkout::process"}, process_checkout)
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, Logger, RegisterFunctionMessage,
+    register_worker, InitOptions, Logger, RegisterFunction,
     TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -887,16 +869,10 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "checkout::process".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
-    move |cart: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let logger = Logger::new();
+let reg = RegisterFunction::new_async("checkout::process", move |cart: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let logger = Logger::new();
 
             // 1. Synchronous — validate inventory before charging
             let inventory = iii.trigger(TriggerRequest {
@@ -950,11 +926,11 @@ iii.register_function(
                 timeout_ms: None,
             }).await?;
 
-            logger.info("Checkout complete", Some(json!({ "orderId": order_id })));
-            Ok(json!({ "status_code": 200, "body": { "orderId": order_id } }))
-        }
-    },
-);
+        logger.info("Checkout complete", Some(json!({ "orderId": order_id })));
+        Ok(json!({ "status_code": 200, "body": { "orderId": order_id } }))
+    }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>

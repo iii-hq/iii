@@ -61,8 +61,8 @@ iii.trigger({"function_id": "math::add", "payload": {"a": 2, "b": 3}})
 </Tab>
 <Tab title="Rust">
 ```rust title="math_add.rs"
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, TriggerRequest};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, TriggerRequest};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -71,24 +71,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let iii = register_worker(&url, InitOptions::default());
 
   let iii_clone = iii.clone();
-  iii.register_function(
-    RegisterFunctionMessage::with_id("math::add".into()).with_description("Add two numbers and store result".into()),
-    move |input| {
-      let iii = iii_clone.clone();
-      async move {
-        let logger = Logger::new();
-        let a = input["a"].as_i64().unwrap_or(0);
-        let b = input["b"].as_i64().unwrap_or(0);
-        let result = a + b;
-        let id = Uuid::new_v4().to_string();
+  let reg = RegisterFunction::new_async("math::add", move |input: Value| {
+    let iii = iii_clone.clone();
+    async move {
+      let logger = Logger::new();
+      let a = input["a"].as_i64().unwrap_or(0);
+      let b = input["b"].as_i64().unwrap_or(0);
+      let result = a + b;
+      let id = Uuid::new_v4().to_string();
 
-        iii.trigger(TriggerRequest { function_id: "state::set".into(), payload: json!({ "scope": "math", "key": id, "value": result }), action: None, timeout_ms: None }).await?;
+      iii.trigger(TriggerRequest { function_id: "state::set".into(), payload: json!({ "scope": "math", "key": id, "value": result }), action: None, timeout_ms: None }).await?;
 
-        logger.info("Math add completed", Some(json!({ "id": id, "result": result })));
-        Ok(json!({ "id": id, "result": result }))
-      }
-    },
-  );
+      logger.info("Math add completed", Some(json!({ "id": id, "result": result })));
+      Ok(json!({ "id": id, "result": result }))
+    }
+  }).description("Add two numbers and store result");
+  iii.register_function(reg);
 
   // Triggerable from any other function or worker
   iii.trigger(TriggerRequest { function_id: "math::add".into(), payload: json!({ "a": 2, "b": 3 }), action: None, timeout_ms: None }).await?;
@@ -247,18 +245,19 @@ iii.register_function({"id": "math::calculate"}, calculate)
 </Tab>
 <Tab title="Rust">
 ```rust title="trigger.rs"
+use iii_sdk::RegisterFunction;
+use serde_json::Value;
+
 let iii_clone = iii.clone();
-iii.register_function(
-  RegisterFunctionMessage::with_id("math::calculate".into()),
-  move |input| {
-    let iii = iii_clone.clone();
-    async move {
-      let result = iii.trigger(TriggerRequest { function_id: "math::add".into(), payload: json!({"a": input["a"], "b": input["b"]}), action: None, timeout_ms: None }).await?;
-      println!("{:?}", result); // {"result": 5}
-      Ok(result)
-    }
-  },
-);
+let reg = RegisterFunction::new_async("math::calculate", move |input: Value| {
+  let iii = iii_clone.clone();
+  async move {
+    let result = iii.trigger(TriggerRequest { function_id: "math::add".into(), payload: json!({"a": input["a"], "b": input["b"]}), action: None, timeout_ms: None }).await?;
+    println!("{:?}", result); // {"result": 5}
+    Ok(result)
+  }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -289,24 +288,23 @@ iii.register_function({"id": "math::calculate-async"}, calculate_async)
 </Tab>
 <Tab title="Rust">
 ```rust title="trigger_void.rs"
-use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
+use iii_sdk::{RegisterFunction, TriggerAction, TriggerRequest};
+use serde_json::Value;
 
 let iii_clone = iii.clone();
-iii.register_function(
-  RegisterFunctionMessage::with_id("math::calculate-async".into()),
-  move |input| {
-    let iii = iii_clone.clone();
-    async move {
-      iii.trigger(TriggerRequest {
-        function_id: "math::add".into(),
-        payload: json!({"a": input["a"], "b": input["b"]}),
-        action: Some(TriggerAction::Void),
-        timeout_ms: None,
-      }).await?;
-      Ok(serde_json::Value::Null)
-    }
-  },
-);
+let reg = RegisterFunction::new_async("math::calculate-async", move |input: Value| {
+  let iii = iii_clone.clone();
+  async move {
+    iii.trigger(TriggerRequest {
+      function_id: "math::add".into(),
+      payload: json!({"a": input["a"], "b": input["b"]}),
+      action: Some(TriggerAction::Void),
+      timeout_ms: None,
+    }).await?;
+    Ok(serde_json::Value::Null)
+  }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -353,26 +351,25 @@ iii.register_function({"id": "orders::create"}, create_order)
 </Tab>
 <Tab title="Rust">
 ```rust title="trigger_enqueue.rs"
-use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
+use iii_sdk::{RegisterFunction, TriggerAction, TriggerRequest};
+use serde_json::Value;
 
 let iii_clone = iii.clone();
-iii.register_function(
-  RegisterFunctionMessage::with_id("orders::create".into()),
-  move |input| {
-    let iii = iii_clone.clone();
-    async move {
-      let order_id = uuid::Uuid::new_v4().to_string();
-      let order = json!({ "id": order_id, "items": input["items"], "total": input["total"] });
-      let result = iii.trigger(TriggerRequest {
-        function_id: "orders::process-order".into(),
-        payload: order,
-        action: Some(TriggerAction::Enqueue { queue: "payment".into() }),
-        timeout_ms: None,
-      }).await?;
-      Ok(json!({ "orderId": order_id, "messageReceiptId": result["messageReceiptId"] }))
-    }
-  },
-);
+let reg = RegisterFunction::new_async("orders::create", move |input: Value| {
+  let iii = iii_clone.clone();
+  async move {
+    let order_id = uuid::Uuid::new_v4().to_string();
+    let order = json!({ "id": order_id, "items": input["items"], "total": input["total"] });
+    let result = iii.trigger(TriggerRequest {
+      function_id: "orders::process-order".into(),
+      payload: order,
+      action: Some(TriggerAction::Enqueue { queue: "payment".into() }),
+      timeout_ms: None,
+    }).await?;
+    Ok(json!({ "orderId": order_id, "messageReceiptId": result["messageReceiptId"] }))
+  }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -437,21 +434,22 @@ iii.register_trigger({
 </Tab>
 <Tab title="Rust">
 ```rust title="http_trigger.rs"
-iii.register_function(
-  RegisterFunctionMessage::with_id("math::multiply".into()),
-  |req| async move {
-    let logger = Logger::new();
-    let a = req["body"]["a"].as_i64().unwrap_or(0);
-    let b = req["body"]["b"].as_i64().unwrap_or(0);
-    let result = a * b;
-    logger.info("Math multiply", Some(json!({ "a": a, "b": b, "result": result })));
-    Ok(json!({
-      "status_code": 200,
-      "body": { "result": result },
-      "headers": { "Content-Type": "application/json" }
-    }))
-  },
-);
+use iii_sdk::RegisterFunction;
+use serde_json::Value;
+
+let reg = RegisterFunction::new_async("math::multiply", |req: Value| async move {
+  let logger = Logger::new();
+  let a = req["body"]["a"].as_i64().unwrap_or(0);
+  let b = req["body"]["b"].as_i64().unwrap_or(0);
+  let result = a * b;
+  logger.info("Math multiply", Some(json!({ "a": a, "b": b, "result": result })));
+  Ok(json!({
+    "status_code": 200,
+    "body": { "result": result },
+    "headers": { "Content-Type": "application/json" }
+  }))
+});
+iii.register_function(reg);
 
 iii.register_trigger(RegisterTriggerInput {
   trigger_type: "http".into(),
@@ -509,25 +507,26 @@ iii.register_trigger({
 </Tab>
 <Tab title="Rust">
 ```rust title="cron_trigger.rs"
+use iii_sdk::RegisterFunction;
+use serde_json::Value;
+
 let iii_clone = iii.clone();
-iii.register_function(
-  RegisterFunctionMessage::with_id("math::aggregation".into()),
-  move |_| {
-    let iii = iii_clone.clone();
-    async move {
-      let logger = Logger::new();
-      let results = iii.trigger(TriggerRequest { function_id: "state::list".into(), payload: json!({ "scope": "math" }), action: None, timeout_ms: None }).await?;
-      let values: Vec<i64> = results.as_array()
-        .map(|arr| arr.iter().filter_map(|r| r.as_i64()).collect())
-        .unwrap_or_default();
-      let sum: i64 = values.iter().sum();
-      let count = values.len();
-      let avg = sum as f64 / count as f64;
-      logger.info("Math aggregation completed", Some(json!({ "count": count, "sum": sum, "average": avg })));
-      Ok(json!({ "count": count, "sum": sum, "average": avg }))
-    }
-  },
-);
+let reg = RegisterFunction::new_async("math::aggregation", move |_: Value| {
+  let iii = iii_clone.clone();
+  async move {
+    let logger = Logger::new();
+    let results = iii.trigger(TriggerRequest { function_id: "state::list".into(), payload: json!({ "scope": "math" }), action: None, timeout_ms: None }).await?;
+    let values: Vec<i64> = results.as_array()
+      .map(|arr| arr.iter().filter_map(|r| r.as_i64()).collect())
+      .unwrap_or_default();
+    let sum: i64 = values.iter().sum();
+    let count = values.len();
+    let avg = sum as f64 / count as f64;
+    logger.info("Math aggregation completed", Some(json!({ "count": count, "sum": sum, "average": avg })));
+    Ok(json!({ "count": count, "sum": sum, "average": avg }))
+  }
+});
+iii.register_function(reg);
 
 iii.register_trigger(RegisterTriggerInput {
   trigger_type: "cron".into(),
@@ -667,20 +666,21 @@ iii.register_function({"id": "math::double"}, double)
 </Tab>
 <Tab title="Rust">
 ```rust title="cross_language.rs"
+use iii_sdk::RegisterFunction;
+use serde_json::Value;
+
 let iii_clone = iii.clone();
-iii.register_function(
-  RegisterFunctionMessage::with_id("math::double".into()),
-  move |input| {
-    let iii = iii_clone.clone();
-    async move {
-      // Trigger a function that might be implemented in Node, Python, or any other language
-      let value = input["value"].as_i64().unwrap_or(0);
-      let result = iii.trigger(TriggerRequest { function_id: "math::add".into(), payload: json!({"a": value, "b": value}), action: None, timeout_ms: None }).await?;
-      println!("{:?}", result); // {"result": 10} if value was 5
-      Ok(result)
-    }
-  },
-);
+let reg = RegisterFunction::new_async("math::double", move |input: Value| {
+  let iii = iii_clone.clone();
+  async move {
+    // Trigger a function that might be implemented in Node, Python, or any other language
+    let value = input["value"].as_i64().unwrap_or(0);
+    let result = iii.trigger(TriggerRequest { function_id: "math::add".into(), payload: json!({"a": value, "b": value}), action: None, timeout_ms: None }).await?;
+    println!("{:?}", result); // {"result": 10} if value was 5
+    Ok(result)
+  }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -731,13 +731,14 @@ trigger.unregister()
 </Tab>
 <Tab title="Rust">
 ```rust title="unregister.rs"
-let fn_ref = iii.register_function(
-    RegisterFunctionMessage::with_id("orders::create".into()),
-    |input| async move {
-        let item = input["body"]["item"].as_str().unwrap_or("");
-        Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
-    },
-);
+use iii_sdk::RegisterFunction;
+use serde_json::Value;
+
+let reg = RegisterFunction::new_async("orders::create", |input: Value| async move {
+    let item = input["body"]["item"].as_str().unwrap_or("");
+    Ok(json!({ "status_code": 201, "body": { "id": "123", "item": item } }))
+});
+let fn_ref = iii.register_function(reg);
 
 let trigger = iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),

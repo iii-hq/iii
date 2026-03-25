@@ -517,7 +517,7 @@ iii.register_trigger({
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, Logger, RegisterFunctionMessage,
+    register_worker, InitOptions, Logger, RegisterFunction,
     RegisterTriggerInput, TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -525,40 +525,38 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function((
-    RegisterFunctionMessage::with_id("orders::create".to_string()),
-    move |req: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let logger = Logger::new();
-            let order_id = uuid::Uuid::new_v4().to_string();
+let reg = RegisterFunction::new_async("orders::create", move |req: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let logger = Logger::new();
+        let order_id = uuid::Uuid::new_v4().to_string();
 
-            iii.trigger(TriggerRequest {
-                function_id: "orders::process-payment".into(),
-                payload: json!({ "orderId": order_id, "amount": req["body"]["total"], "currency": "USD" }),
-                action: Some(TriggerAction::Enqueue { queue: "payment".into() }),
-                timeout_ms: None,
-            }).await?;
+        iii.trigger(TriggerRequest {
+            function_id: "orders::process-payment".into(),
+            payload: json!({ "orderId": order_id, "amount": req["body"]["total"], "currency": "USD" }),
+            action: Some(TriggerAction::Enqueue { queue: "payment".into() }),
+            timeout_ms: None,
+        }).await?;
 
-            iii.trigger(TriggerRequest {
-                function_id: "emails::confirmation".into(),
-                payload: json!({ "email": req["body"]["email"], "orderId": order_id }),
-                action: Some(TriggerAction::Enqueue { queue: "email".into() }),
-                timeout_ms: None,
-            }).await?;
+        iii.trigger(TriggerRequest {
+            function_id: "emails::confirmation".into(),
+            payload: json!({ "email": req["body"]["email"], "orderId": order_id }),
+            action: Some(TriggerAction::Enqueue { queue: "email".into() }),
+            timeout_ms: None,
+        }).await?;
 
-            iii.trigger(TriggerRequest {
-                function_id: "analytics::track".into(),
-                payload: json!({ "event": "order_created", "orderId": order_id }),
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            }).await?;
+        iii.trigger(TriggerRequest {
+            function_id: "analytics::track".into(),
+            payload: json!({ "event": "order_created", "orderId": order_id }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }).await?;
 
-            logger.info("Order created", Some(json!({ "orderId": order_id })));
-            Ok(json!({ "status_code": 201, "body": { "orderId": order_id } }))
-        }
-    },
-);
+        logger.info("Order created", Some(json!({ "orderId": order_id })));
+        Ok(json!({ "status_code": 201, "body": { "orderId": order_id } }))
+    }
+});
+iii.register_function(reg);
 
 iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
@@ -613,31 +611,22 @@ iii.register_function({"id": "orders::process-order"}, process_order)
 </Tab>
 <Tab title="Rust">
 ```rust title="process_order.rs"
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction};
+use serde_json::{json, Value};
 
 let iii = register_worker(
     &std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string()),
     InitOptions::default(),
 );
 
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::process-order".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
-    |order| async move {
-        let logger = Logger::new();
-        let order_id = order["id"].as_str().unwrap_or("");
-        logger.info("Processing payment", Some(json!({ "orderId": order_id })));
-        // ...payment logic...
-        Ok(json!({ "processed": true }))
-    },
-);
+let reg = RegisterFunction::new_async("orders::process-order", |order: Value| async move {
+    let logger = Logger::new();
+    let order_id = order["id"].as_str().unwrap_or("");
+    logger.info("Processing payment", Some(json!({ "orderId": order_id })));
+    // ...payment logic...
+    Ok(json!({ "processed": true }))
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -676,33 +665,24 @@ def process_order(order):
 </Tab>
 <Tab title="Rust">
 ```rust
-use iii_sdk::{RegisterFunctionMessage, TriggerAction, TriggerRequest};
-use serde_json::json;
+use iii_sdk::{RegisterFunction, TriggerAction, TriggerRequest};
+use serde_json::{json, Value};
 
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "orders::process-order".to_string(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-    },
-    |order| async move {
-        iii.trigger(TriggerRequest {
-            function_id: "notifications::send".to_string(),
-            payload: json!({
-                "orderId": order["id"],
-                "type": "payment-confirmed",
-            }),
-            action: Some(TriggerAction::Enqueue { queue: "default".to_string() }),
-            timeout_ms: None,
-        })
-        .await?;
+let reg = RegisterFunction::new_async("orders::process-order", |order: Value| async move {
+    iii.trigger(TriggerRequest {
+        function_id: "notifications::send".to_string(),
+        payload: json!({
+            "orderId": order["id"],
+            "type": "payment-confirmed",
+        }),
+        action: Some(TriggerAction::Enqueue { queue: "default".to_string() }),
+        timeout_ms: None,
+    })
+    .await?;
 
-        Ok(json!({ "processed": true }))
-    },
-);
+    Ok(json!({ "processed": true }))
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -833,7 +813,7 @@ iii.register_function({"id": "emails::send"}, send_email)
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, RegisterFunctionMessage,
+    register_worker, InitOptions, RegisterFunction,
     TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -841,32 +821,26 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "campaigns::launch".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
-    move |campaign: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let recipients = campaign["recipients"].as_array().unwrap();
-            for recipient in recipients {
-                iii.trigger(TriggerRequest {
-                    function_id: "emails::send".into(),
-                    payload: json!({
-                        "to": recipient["email"],
-                        "subject": campaign["subject"],
-                        "body": campaign["body"],
-                    }),
-                    action: Some(TriggerAction::Enqueue { queue: "bulk-email".into() }),
-                    timeout_ms: None,
-                }).await?;
-            }
-            Ok(json!({ "enqueued": recipients.len() }))
+let reg = RegisterFunction::new_async("campaigns::launch", move |campaign: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let recipients = campaign["recipients"].as_array().unwrap();
+        for recipient in recipients {
+            iii.trigger(TriggerRequest {
+                function_id: "emails::send".into(),
+                payload: json!({
+                    "to": recipient["email"],
+                    "subject": campaign["subject"],
+                    "body": campaign["body"],
+                }),
+                action: Some(TriggerAction::Enqueue { queue: "bulk-email".into() }),
+                timeout_ms: None,
+            }).await?;
         }
-    },
-);
+        Ok(json!({ "enqueued": recipients.len() }))
+    }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
@@ -998,7 +972,7 @@ iii.register_function({"id": "ledger::apply"}, apply_transaction)
 <Tab title="Rust">
 ```rust
 use iii_sdk::{
-    register_worker, InitOptions, RegisterFunctionMessage,
+    register_worker, InitOptions, RegisterFunction,
     TriggerAction, TriggerRequest,
 };
 use serde_json::{json, Value};
@@ -1006,33 +980,27 @@ use serde_json::{json, Value};
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
 let iii_clone = iii.clone();
-iii.register_function(
-    RegisterFunctionMessage {
-        id: "transactions::submit".into(), description: None,
-        request_format: None, response_format: None,
-        metadata: None, invocation: None,
-    },
-    move |req: Value| {
-        let iii = iii_clone.clone();
-        async move {
-            let receipt = iii.trigger(TriggerRequest {
-                function_id: "ledger::apply".into(),
-                payload: json!({
-                    "account_id": req["body"]["account_id"],
-                    "type": req["body"]["type"],
-                    "amount": req["body"]["amount"],
-                }),
-                action: Some(TriggerAction::Enqueue { queue: "ledger".into() }),
-                timeout_ms: None,
-            }).await?;
+let reg = RegisterFunction::new_async("transactions::submit", move |req: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        let receipt = iii.trigger(TriggerRequest {
+            function_id: "ledger::apply".into(),
+            payload: json!({
+                "account_id": req["body"]["account_id"],
+                "type": req["body"]["type"],
+                "amount": req["body"]["amount"],
+            }),
+            action: Some(TriggerAction::Enqueue { queue: "ledger".into() }),
+            timeout_ms: None,
+        }).await?;
 
-            Ok(json!({
-                "status_code": 202,
-                "body": { "receiptId": receipt["messageReceiptId"] },
-            }))
-        }
-    },
-);
+        Ok(json!({
+            "status_code": 202,
+            "body": { "receiptId": receipt["messageReceiptId"] },
+        }))
+    }
+});
+iii.register_function(reg);
 ```
 </Tab>
 </Tabs>
