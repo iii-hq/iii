@@ -14,6 +14,7 @@ export type {
   TriggerAction as TriggerActionType,
   TriggerInfo,
   TriggerRequest,
+  TriggerTypeInfo,
 } from './iii-types'
 
 export { Logger } from './logger'

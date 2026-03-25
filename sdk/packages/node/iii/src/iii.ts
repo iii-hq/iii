@@ -27,6 +27,7 @@ import {
   type TriggerInfo,
   type TriggerRegistrationResultMessage,
   type TriggerRequest,
+  type TriggerTypeInfo,
   type WorkerInfo,
   type WorkerRegisteredMessage,
 } from './iii-types'
@@ -488,6 +489,26 @@ class Sdk implements ISdk {
       payload: { include_internal: includeInternal },
     })
     return result.triggers
+  }
+
+  /**
+   * Lists all trigger types registered with the engine.
+   *
+   * @param includeInternal - Whether to include internal trigger types (default: false).
+   * @returns An array of {@link TriggerTypeInfo} objects.
+   *
+   * @example
+   * ```typescript
+   * const triggerTypes = await iii.listTriggerTypes()
+   * triggerTypes.forEach(tt => console.log(`${tt.id}: ${tt.description}`))
+   * ```
+   */
+  listTriggerTypes = async (includeInternal = false): Promise<TriggerTypeInfo[]> => {
+    const result = await this.trigger<{ include_internal: boolean }, { trigger_types: TriggerTypeInfo[] }>({
+      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
+      payload: { include_internal: includeInternal },
+    })
+    return result.trigger_types
   }
 
   private registerWorkerMetadata(): void {

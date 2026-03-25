@@ -114,6 +114,32 @@ describe('List Triggers', () => {
   })
 })
 
+describe('List Trigger Types', () => {
+  it('should list registered trigger types', async () => {
+    const triggerTypes = await iii.listTriggerTypes()
+    expect(Array.isArray(triggerTypes)).toBe(true)
+
+    // The engine always registers the built-in 'http' trigger type
+    const httpType = triggerTypes.find((tt) => tt.id === 'http')
+    expect(httpType).toBeDefined()
+    expect(httpType?.description).toBeDefined()
+  })
+
+  it('should return an array even when called with no custom trigger types', async () => {
+    const triggerTypes = await iii.listTriggerTypes()
+    expect(Array.isArray(triggerTypes)).toBe(true)
+  })
+
+  it('should accept includeInternal parameter', async () => {
+    const triggerTypes = await iii.listTriggerTypes(false)
+    expect(Array.isArray(triggerTypes)).toBe(true)
+
+    const triggerTypesWithInternal = await iii.listTriggerTypes(true)
+    expect(Array.isArray(triggerTypesWithInternal)).toBe(true)
+    expect(triggerTypesWithInternal.length).toBeGreaterThanOrEqual(triggerTypes.length)
+  })
+})
+
 describe('Channel readAll', () => {
   it('should read all data from a channel using readAll', async () => {
     const processor = iii.registerFunction(
