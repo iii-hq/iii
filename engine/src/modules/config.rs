@@ -525,7 +525,7 @@ impl EngineBuilder {
             .route("/", get(ws_handler))
             .route(
                 "/ws/channels/{channel_id}",
-                get(crate::channels::ws_handler::channel_ws_upgrade),
+                get(crate::modules::worker::ws_handler::channel_ws_upgrade),
             )
             .with_state(AppState {
                 engine,

@@ -1,16 +1,16 @@
-import { clsx } from 'clsx'
 import * as React from 'react'
-import { twMerge } from 'tailwind-merge'
+import { cn } from '@/lib/utils'
 
-export function cn(...inputs: (string | undefined | null | false)[]) {
-  return twMerge(clsx(inputs))
-}
+export { cn }
 
 export const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
-      className={cn('rounded border border-[#1D1D1D] bg-[#0A0A0A] text-[#F4F4F4]', className)}
+      className={cn(
+        'rounded-[var(--radius-lg)] border border-border-subtle bg-elevated text-foreground',
+        className,
+      )}
       {...props}
     />
   ),
@@ -30,7 +30,10 @@ export const CardTitle = React.forwardRef<
 >(({ className, children, ...props }, ref) => (
   <h3
     ref={ref}
-    className={cn('text-xs font-medium tracking-wider uppercase text-[#5B5B5B]', className)}
+    className={cn(
+      'font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted',
+      className,
+    )}
     {...props}
   >
     {children}
@@ -64,12 +67,14 @@ export function StatCard({
     <Card className={cn('card-interactive', className)}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle>{title}</CardTitle>
-        {Icon && <Icon className="h-4 w-4 text-[#5B5B5B]" />}
+        {Icon && <Icon className="h-4 w-4 text-muted" />}
       </CardHeader>
       <CardContent>
         <div className="text-2xl font-semibold tracking-tight">{value}</div>
         {subtitle && (
-          <p className="text-[10px] text-[#5B5B5B] uppercase tracking-wider mt-1">{subtitle}</p>
+          <p className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mt-1">
+            {subtitle}
+          </p>
         )}
       </CardContent>
     </Card>
@@ -85,7 +90,7 @@ export function Table({ children, className }: { children: React.ReactNode; clas
 }
 
 export function TableHeader({ children }: { children: React.ReactNode }) {
-  return <thead className="border-b border-[#1D1D1D]">{children}</thead>
+  return <thead className="border-b border-border-subtle">{children}</thead>
 }
 
 export function TableBody({ children }: { children: React.ReactNode }) {
@@ -101,7 +106,10 @@ export function TableRow({
 }) {
   return (
     <tr
-      className={cn('border-b border-[#1D1D1D] transition-colors hover:bg-white/[0.02]', className)}
+      className={cn(
+        'border-b border-border-subtle transition-colors hover:bg-white/[0.02]',
+        className,
+      )}
     >
       {children}
     </tr>
@@ -118,7 +126,7 @@ export function TableHead({
   return (
     <th
       className={cn(
-        'text-left py-3 px-4 text-[10px] font-medium tracking-wider uppercase text-[#5B5B5B]',
+        'text-left py-3 px-4 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted',
         className,
       )}
     >
@@ -134,7 +142,7 @@ export function TableCell({
   children: React.ReactNode
   className?: string
 }) {
-  return <td className={cn('py-3 px-4 text-[#F4F4F4]', className)}>{children}</td>
+  return <td className={cn('py-3 px-4 text-foreground', className)}>{children}</td>
 }
 
 export function Badge({
@@ -147,18 +155,18 @@ export function Badge({
   className?: string
 }) {
   const variants = {
-    default: 'bg-[#1D1D1D] text-[#F4F4F4]',
-    success: 'bg-[#22C55E]/20 text-[#22C55E]',
-    warning: 'bg-[#F3F724]/20 text-[#F3F724]',
-    error: 'bg-[#EF4444]/20 text-[#EF4444]',
-    outline: 'border border-[#1D1D1D] text-[#5B5B5B]',
-    accent: 'bg-[#F3F724] text-black',
+    default: 'bg-border-subtle text-foreground',
+    success: 'bg-success/20 text-success',
+    warning: 'bg-warning/20 text-warning',
+    error: 'bg-error/20 text-error',
+    outline: 'border border-border-subtle text-muted',
+    accent: 'bg-accent text-accent-text',
   }
 
   return (
     <span
       className={cn(
-        'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium tracking-wider uppercase',
+        'inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium tracking-wider uppercase',
         variants[variant],
         className,
       )}
@@ -175,18 +183,19 @@ export function Button({
   className,
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'accent' | 'outline' | 'ghost'
+  variant?: 'primary' | 'accent' | 'outline' | 'ghost' | 'destructive'
   size?: 'sm' | 'default' | 'lg'
 }) {
   const baseStyles =
-    'inline-flex items-center justify-center gap-2 font-medium tracking-wider uppercase transition-all duration-150 whitespace-nowrap'
+    'inline-flex items-center justify-center gap-2 font-medium tracking-wider uppercase transition-all duration-150 whitespace-nowrap cursor-pointer focus:outline-none'
 
   const variants = {
-    primary: 'bg-white text-black rounded-full hover:bg-[#F4F4F4]',
-    accent: 'bg-[#F3F724] text-black rounded-full hover:brightness-90',
+    primary: 'bg-foreground text-background rounded-[var(--radius-md)] hover:bg-foreground/90',
+    accent: 'bg-accent text-accent-text rounded-[var(--radius-md)] hover:bg-accent-hover',
     outline:
-      'bg-transparent text-[#F4F4F4] border border-[#1D1D1D] rounded-full hover:bg-[#1D1D1D] hover:border-[#5B5B5B]',
-    ghost: 'text-[#5B5B5B] hover:text-[#F4F4F4] hover:bg-[#1D1D1D] rounded',
+      'bg-transparent text-foreground border border-border-subtle rounded-[var(--radius-md)] hover:bg-hover hover:border-muted',
+    ghost: 'text-muted hover:text-foreground hover:bg-hover rounded-[var(--radius-md)]',
+    destructive: 'bg-error text-white rounded-[var(--radius-md)] hover:bg-error/80',
   }
 
   const sizes = {
@@ -206,7 +215,7 @@ export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInp
   return (
     <input
       className={cn(
-        'w-full bg-[#1D1D1D] border border-[#1D1D1D] rounded px-3 py-2 text-xs text-[#F4F4F4] placeholder:text-[#5B5B5B] focus:outline-none focus:border-[#5B5B5B] transition-colors',
+        'w-full bg-border-subtle border border-border-subtle rounded-[var(--radius-md)] px-3 py-2 text-xs text-foreground placeholder:text-muted focus:outline-none focus:border-muted transition-colors',
         className,
       )}
       {...props}
@@ -222,7 +231,7 @@ export function Select({
   return (
     <select
       className={cn(
-        'bg-[#1D1D1D] border border-[#1D1D1D] rounded px-3 py-2 text-xs text-[#F4F4F4] focus:outline-none focus:border-[#5B5B5B] transition-colors appearance-none cursor-pointer',
+        'bg-border-subtle border border-border-subtle rounded-[var(--radius-md)] px-3 py-2 text-xs text-foreground focus:outline-none focus:border-muted transition-colors appearance-none cursor-pointer',
         className,
       )}
       {...props}

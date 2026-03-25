@@ -1,10 +1,7 @@
-import React, { useState, useEffect } from "react";
-import {
-  ArrowNarrowRightIcon,
-  CheckedIcon,
-} from "../icons";
-import { InstallShButton } from "../InstallShButton";
-import { useRotatingText } from "../../lib/useRotatingText";
+import React, { useState, useEffect } from 'react';
+import { ArrowNarrowRightIcon, CheckedIcon } from '../icons';
+import { InstallShButton } from '../InstallShButton';
+import { useRotatingText } from '../../lib/useRotatingText';
 // AUTHENTIC SVG LOGOS - Official & Community Verified Paths
 // Sources: Official branding pages, vectorlogo.zone, svgl.app, simpleicons.org
 
@@ -158,165 +155,259 @@ const KubernetesIcon = () => (
 
 export const languageLogos = [
   {
-    name: "TypeScript",
+    name: 'TypeScript',
     Icon: TypeScriptIcon,
-    hoverColor: "hover:text-[#3178C6]",
+    hoverColor: 'hover:text-[#3178C6]',
     official: true,
   },
   {
-    name: "Python",
+    name: 'Python',
     Icon: PythonIcon,
-    hoverColor: "hover:text-[#3776AB]",
+    hoverColor: 'hover:text-[#3776AB]',
     official: true,
   },
   {
-    name: "Go",
+    name: 'Go',
     Icon: GoIcon,
-    hoverColor: "hover:text-[#00ADD8]",
+    hoverColor: 'hover:text-[#00ADD8]',
     official: true,
   },
   {
-    name: "Rust",
+    name: 'Rust',
     Icon: RustIcon,
-    hoverColor: "hover:text-[#CE422B]",
+    hoverColor: 'hover:text-[#CE422B]',
     official: true,
   },
   {
-    name: "Node.js",
+    name: 'Node.js',
     Icon: NodeIcon,
-    hoverColor: "hover:text-[#339933]",
+    hoverColor: 'hover:text-[#339933]',
     official: true,
   },
   {
-    name: "Bun",
+    name: 'Bun',
     Icon: BunIcon,
-    hoverColor: "hover:text-[#FBF0DF]",
+    hoverColor: 'hover:text-[#FBF0DF]',
     official: true,
   },
 ];
 
 export const integrationLogos = [
   {
-    name: "PostgreSQL",
+    name: 'PostgreSQL',
     Icon: PostgresIcon,
-    hoverColor: "hover:text-[#4169E1]",
+    hoverColor: 'hover:text-[#4169E1]',
     official: true,
   },
   {
-    name: "MongoDB",
+    name: 'MongoDB',
     Icon: MongoIcon,
-    hoverColor: "hover:text-[#47A248]",
+    hoverColor: 'hover:text-[#47A248]',
     official: true,
   },
   {
-    name: "Redis",
+    name: 'Redis',
     Icon: RedisIcon,
-    hoverColor: "hover:text-[#DC382D]",
+    hoverColor: 'hover:text-[#DC382D]',
     official: true,
   },
   {
-    name: "Kafka",
+    name: 'Kafka',
     Icon: KafkaIcon,
-    hoverColor: "hover:text-[#231F20]",
+    hoverColor: 'hover:text-[#231F20]',
     official: true,
   },
   {
-    name: "GraphQL",
+    name: 'GraphQL',
     Icon: GraphQLIcon,
-    hoverColor: "hover:text-[#E10098]",
+    hoverColor: 'hover:text-[#E10098]',
     official: true,
   },
   {
-    name: "gRPC",
+    name: 'gRPC',
     Icon: GrpcIcon,
-    hoverColor: "hover:text-[#244C5A]",
+    hoverColor: 'hover:text-[#244C5A]',
     official: true,
   },
 ];
 
 export const cloudLogos = [
   {
-    name: "AWS",
+    name: 'AWS',
     Icon: AWSIcon,
-    hoverColor: "hover:text-[#FF9900]",
+    hoverColor: 'hover:text-[#FF9900]',
     official: true,
   },
   {
-    name: "Google Cloud",
+    name: 'Google Cloud',
     Icon: GoogleCloudIcon,
-    hoverColor: "hover:text-[#4285F4]",
+    hoverColor: 'hover:text-[#4285F4]',
     official: true,
   },
   {
-    name: "Azure",
+    name: 'Azure',
     Icon: AzureIcon,
-    hoverColor: "hover:text-[#0078D4]",
+    hoverColor: 'hover:text-[#0078D4]',
     official: true,
   },
   {
-    name: "Cloudflare",
+    name: 'Cloudflare',
     Icon: CloudflareIcon,
-    hoverColor: "hover:text-[#F38020]",
+    hoverColor: 'hover:text-[#F38020]',
     official: true,
   },
   {
-    name: "Vercel",
+    name: 'Vercel',
     Icon: VercelIcon,
-    hoverColor: "hover:text-white",
+    hoverColor: 'hover:text-white',
     official: true,
   },
   {
-    name: "Fly.io",
+    name: 'Fly.io',
     Icon: FlyIcon,
-    hoverColor: "hover:text-[#7B3FE4]",
+    hoverColor: 'hover:text-[#7B3FE4]',
     official: true,
   },
   {
-    name: "Docker",
+    name: 'Docker',
     Icon: DockerIcon,
-    hoverColor: "hover:text-[#2496ED]",
+    hoverColor: 'hover:text-[#2496ED]',
     official: true,
   },
   {
-    name: "Kubernetes",
+    name: 'Kubernetes',
     Icon: KubernetesIcon,
-    hoverColor: "hover:text-[#326CE5]",
+    hoverColor: 'hover:text-[#326CE5]',
     official: true,
   },
 ];
 
-const rotatingWords = [
-  "trigger",
-  "discover",
-  "register",
-  "observe",
-  "scale",
-  "connect",
-];
+const rotatingWords = ['create', 'connect', 'share', 'observe', 'use', 'build'];
 
 const rotatingContexts = [
-  "any language",
-  "any location",
-  "any runtime",
-  "any worker",
-  "any event",
-  "any function",
+  'any language',
+  'any domain',
+  'any runtime',
+  'any service',
+  'any queue',
+  'any function',
 ];
 
-const features = [
+interface Feature {
+  text: string;
+  rotatingWord?: {
+    target: string;
+    items: string[];
+    intervalMs?: number;
+  };
+}
+
+const features: Feature[] = [
   {
-    text: "Polyglot execution — any language participates through one universal protocol.",
+    text: 'Code in any language',
   },
   {
-    text: "Complete observability — logs and traces auto-injected into every invocation.",
+    text: 'Observe every operation; end-to-end',
   },
   {
-    text: "Self-hosting/BYOC — connect existing domains and services, full portability.",
+    text: 'Connect any service',
   },
   {
-    text: "Shared capabilities — State, Streaming, Observability accessible to every function.",
+    text: 'Create perfect context for Agents',
+  },
+  {
+    text: 'Reduce complexity for humans and AI',
+  },
+  {
+    text: 'Collaborate seamlessly across teams',
+  },
+  {
+    text: 'Tolerate any fault',
+  },
+  {
+    text: 'Integrate without disruption',
+  },
+  {
+    text: 'Make PLACEHOLDER a design pattern',
+    rotatingWord: {
+      target: 'PLACEHOLDER',
+      items: [
+        'any agent',
+        'any service',
+        'any framework',
+        'any protocol',
+        'anything',
+      ],
+      intervalMs: 3000,
+    },
+  },
+  {
+    text: 'Create and share abstractions',
   },
 ];
+
+interface RotatingFeatureWordProps {
+  items: string[];
+  isDarkMode: boolean;
+  intervalMs?: number;
+}
+
+function RotatingFeatureWord({
+  items,
+  isDarkMode,
+  intervalMs = 2600,
+}: RotatingFeatureWordProps) {
+  const { currentItem, isAnimating } = useRotatingText({
+    items,
+    intervalMs,
+  });
+
+  return (
+    <span className="inline-flex min-w-[9ch] align-baseline">
+      <span
+        className={`inline-block transition-all duration-500 ease-in-out ${
+          isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
+        } ${isAnimating ? 'opacity-0 -translate-y-1 scale-95' : 'opacity-100 translate-y-0 scale-100'}`}
+      >
+        {currentItem}
+      </span>
+    </span>
+  );
+}
+
+function FeatureText({
+  feature,
+  isDarkMode,
+}: {
+  feature: Feature;
+  isDarkMode: boolean;
+}) {
+  if (!feature.rotatingWord) {
+    return <>{feature.text}</>;
+  }
+
+  const { target, items, intervalMs } = feature.rotatingWord;
+  const targetIndex = feature.text.indexOf(target);
+
+  if (targetIndex === -1) {
+    return <>{feature.text}</>;
+  }
+
+  const beforeTarget = feature.text.slice(0, targetIndex);
+  const afterTarget = feature.text.slice(targetIndex + target.length);
+
+  return (
+    <>
+      {beforeTarget}
+      <RotatingFeatureWord
+        items={items}
+        isDarkMode={isDarkMode}
+        intervalMs={intervalMs}
+      />
+      {afterTarget}
+    </>
+  );
+}
 
 interface HeroSectionProps {
   isDarkMode?: boolean;
@@ -337,26 +428,26 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
     });
 
   // Email form state
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(() => {
-    if (typeof window === "undefined") {
+    if (typeof window === 'undefined') {
       return false;
     }
     try {
-      return window.localStorage.getItem("iii_access_requested") === "true";
+      return window.localStorage.getItem('iii_access_requested') === 'true';
     } catch {
       return false;
     }
   });
 
   const persistAccessRequest = (requestedEmail: string) => {
-    if (typeof window === "undefined") {
+    if (typeof window === 'undefined') {
       return;
     }
     try {
-      window.localStorage.setItem("iii_access_requested", "true");
-      window.localStorage.setItem("iii_access_email", requestedEmail);
+      window.localStorage.setItem('iii_access_requested', 'true');
+      window.localStorage.setItem('iii_access_email', requestedEmail);
     } catch {
       // Ignore storage failures (private mode, blocked storage, etc).
     }
@@ -372,21 +463,21 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
       const formUrl = import.meta.env.VITE_MAILMODO_FORM_URL;
       if (formUrl) {
         const res = await fetch(formUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email }),
         });
         if (!res.ok && res.status !== 409) {
-          throw new Error("Submission failed");
+          throw new Error('Submission failed');
         }
       }
       setIsSubmitted(true);
       persistAccessRequest(email);
-      setEmail("");
+      setEmail('');
     } catch {
       setIsSubmitted(true);
       persistAccessRequest(email);
-      setEmail("");
+      setEmail('');
     } finally {
       setIsSubmitting(false);
     }
@@ -395,7 +486,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
   return (
     <section
       className={`relative min-h-[60vh] sm:min-h-[70vh] overflow-x-hidden font-mono transition-colors duration-300 ${
-        isDarkMode ? "text-iii-light" : "text-iii-black"
+        isDarkMode ? 'text-iii-light' : 'text-iii-black'
       }`}
     >
       <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 pt-8 sm:pt-12 md:pt-24 pb-8 sm:pb-12 md:pb-16">
@@ -406,66 +497,48 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
             <div className="space-y-2">
               <h1 className="text-2xl sm:text-3xl md:text-5xl lg:text-7xl font-bold leading-tight tracking-tighter font-chivo">
                 <span
-                  className={
-                    isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
-                  }
+                  className={isDarkMode ? 'text-iii-light' : 'text-iii-black'}
                 >
-                  One Engine.
+                  Unreasonably simple to
                 </span>
                 <br />
                 <span
                   className={`inline-block transition-all duration-500 ease-in-out ${
-                    isDarkMode ? "text-iii-light" : "text-iii-black"
+                    isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
                   } ${
                     isAnimating
-                      ? "opacity-0 translate-y-5 scale-80"
-                      : "opacity-100 translate-y-0 scale-100"
+                      ? 'opacity-0 translate-y-5 scale-80'
+                      : 'opacity-100 translate-y-0 scale-100'
                   }`}
                 >
                   {currentWord}
-                </span>{" "}
+                </span>{' '}
                 <span
                   className={`inline-block transition-all duration-500 ease-in-out ${
-                    isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+                    isDarkMode ? 'text-iii-light' : 'text-iii-black'
                   } ${
                     isContextAnimating
-                      ? "opacity-0 -translate-y-3 scale-90"
-                      : "opacity-100 translate-y-0 scale-100"
+                      ? 'opacity-0 -translate-y-3 scale-90'
+                      : 'opacity-100 translate-y-0 scale-100'
                   }`}
                 >
                   {currentContext}
                 </span>
               </h1>
-              <p
-                className={`text-sm sm:text-base md:text-lg lg:text-xl max-w-2xl mx-auto ${
-                  isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
-                }`}
-              >
-                The centralized orchestration runtime for distributed polyglot
-                function execution.
-              </p>
-              <p
-                className={`text-xs md:text-sm tracking-wide max-w-md mx-auto ${
-                  isDarkMode ? "text-iii-medium" : "text-iii-medium"
-                }`}
-              >
-                React simplified frontend with Component and Context. iii does
-                the same for backend.
-              </p>
             </div>
 
             {/* Feature checklist */}
-            <ul className="space-y-2 sm:space-y-3 text-left inline-block px-2 sm:px-0">
+            <ul className="grid grid-cols-2 gap-x-4 gap-y-2 sm:gap-x-6 sm:gap-y-3 text-left px-2 sm:px-0">
               {features.map((feature, index) => (
                 <li key={index} className="flex items-start gap-2 sm:gap-3">
                   <span
                     className={`flex-shrink-0 w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center mt-0.5 ${
-                      isDarkMode ? "bg-iii-accent/20" : "bg-iii-accent-light/20"
+                      isDarkMode ? 'bg-iii-accent/20' : 'bg-iii-accent-light/20'
                     }`}
                   >
                     <svg
                       className={`w-2.5 h-2.5 sm:w-3 sm:h-3 ${
-                        isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+                        isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
                       }`}
                       fill="none"
                       viewBox="0 0 24 24"
@@ -481,10 +554,10 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                   </span>
                   <span
                     className={`text-xs sm:text-sm md:text-base leading-tight ${
-                      isDarkMode ? "text-iii-light/80" : "text-iii-black/80"
+                      isDarkMode ? 'text-iii-light/80' : 'text-iii-black/80'
                     }`}
                   >
-                    {feature.text}
+                    <FeatureText feature={feature} isDarkMode={isDarkMode} />
                   </span>
                 </li>
               ))}
@@ -494,59 +567,64 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
             <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-stretch sm:items-start pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
               <InstallShButton isDarkMode={isDarkMode} />
 
-              <form
-                onSubmit={handleEmailSubmit}
-                className="flex items-center w-full sm:w-auto"
-              >
-                {isSubmitted ? (
-                  <div
-                    className={`flex items-center gap-2 text-xs md:text-sm px-3 py-2.5 md:px-4 md:py-3 border rounded w-full justify-center ${
-                      isDarkMode
-                        ? "text-iii-accent bg-iii-accent/10 border-iii-accent/20"
-                        : "text-iii-accent-light bg-iii-accent-light/10 border-iii-accent-light/20"
-                    }`}
-                  >
-                    <CheckedIcon size={16} />
-                    <span className="font-mono tracking-tight text-xs sm:text-sm">
-                      SUBSCRIBED — STAY UPDATED
-                    </span>
-                  </div>
-                ) : (
-                  <div
-                    className={`flex w-full border-b transition-colors relative ${
-                      isDarkMode
-                        ? "border-iii-light focus-within:border-iii-accent"
-                        : "border-iii-dark focus-within:border-iii-accent-light"
-                    }`}
-                  >
-                    <input
-                      type="email"
-                      placeholder="EMAIL_FOR_UPDATES"
-                      className={`bg-transparent outline-none text-xs md:text-sm py-2.5 md:py-3 px-1 w-full sm:w-48 md:w-64 placeholder-iii-medium/50 font-mono ${
-                        isDarkMode ? "text-iii-light" : "text-iii-black"
-                      }`}
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                    />
-                    <button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className={`absolute right-0 top-1/2 -translate-y-1/2 disabled:opacity-50 transition-colors p-1.5 md:p-2 ${
+              <div className="w-full sm:w-auto relative">
+                <form
+                  onSubmit={handleEmailSubmit}
+                  className="flex items-center w-full"
+                >
+                  {isSubmitted ? (
+                    <div
+                      className={`flex items-center gap-2 text-xs md:text-sm px-3 py-2.5 md:px-4 md:py-3 border rounded w-full justify-center ${
                         isDarkMode
-                          ? "text-iii-light hover:text-iii-accent"
-                          : "text-iii-black hover:text-iii-accent-light"
+                          ? 'text-iii-accent bg-iii-accent/10 border-iii-accent/20'
+                          : 'text-iii-accent-light bg-iii-accent-light/10 border-iii-accent-light/20'
                       }`}
                     >
-                      {isSubmitting ? (
-                        "..."
-                      ) : (
-                        <ArrowNarrowRightIcon size={20} />
-                      )}
-                    </button>
-                  </div>
-                )}
-              </form>
+                      <CheckedIcon size={16} />
+                      <span className="font-mono tracking-tight text-xs sm:text-sm">
+                        SUBSCRIBED — STAY UPDATED
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className={`flex w-full border-b transition-colors relative ${
+                        isDarkMode
+                          ? 'border-iii-light focus-within:border-iii-accent'
+                          : 'border-iii-dark focus-within:border-iii-accent-light'
+                      }`}
+                    >
+                      <input
+                        type="email"
+                        placeholder="your@email.here"
+                        className={`bg-transparent outline-none text-xs md:text-sm py-2.5 md:py-3 px-1 w-full sm:w-48 md:w-64 placeholder-iii-medium/50 font-mono ${
+                          isDarkMode ? 'text-iii-light' : 'text-iii-black'
+                        }`}
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={isSubmitting}
+                        className={`absolute right-0 top-1/2 -translate-y-1/2 disabled:opacity-50 transition-colors p-1.5 md:p-2 ${
+                          isDarkMode
+                            ? 'text-iii-light hover:text-iii-accent'
+                            : 'text-iii-black hover:text-iii-accent-light'
+                        }`}
+                      >
+                        {isSubmitting ? (
+                          '...'
+                        ) : (
+                          <ArrowNarrowRightIcon size={20} />
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </form>
+                <p className="absolute left-0 top-full mt-1 text-[10px] sm:text-xs text-iii-medium">
+                  Follow our development
+                </p>
+              </div>
             </div>
 
             {/* Tech logos section */}
@@ -557,7 +635,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                 <div className="space-y-3">
                   <span
                     className={`text-[10px] sm:text-xs tracking-wider block text-center uppercase ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
+                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
                     }`}
                   >
                     Any language
@@ -568,16 +646,16 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                         key={index}
                         className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
                           isDarkMode
-                            ? "bg-iii-dark border-iii-light hover:border-iii-light"
-                            : "bg-white border-iii-dark hover:border-iii-dark"
+                            ? 'bg-iii-dark border-iii-light hover:border-iii-light'
+                            : 'bg-white border-iii-dark hover:border-iii-dark'
                         }`}
                         title={logo.name}
                       >
                         <div
                           className={`${
                             isDarkMode
-                              ? "text-iii-light/60"
-                              : "text-iii-black/60"
+                              ? 'text-iii-light/60'
+                              : 'text-iii-black/60'
                           } transition-colors ${
                             logo.hoverColor
                           } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
@@ -593,7 +671,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                 <div className="space-y-3">
                   <span
                     className={`text-[10px] sm:text-xs tracking-wider block text-center uppercase ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
+                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
                     }`}
                   >
                     Every integration
@@ -604,16 +682,16 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                         key={index}
                         className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
                           isDarkMode
-                            ? "bg-iii-dark border-iii-light hover:border-iii-light"
-                            : "bg-white border-iii-dark hover:border-iii-dark"
+                            ? 'bg-iii-dark border-iii-light hover:border-iii-light'
+                            : 'bg-white border-iii-dark hover:border-iii-dark'
                         }`}
                         title={logo.name}
                       >
                         <div
                           className={`${
                             isDarkMode
-                              ? "text-iii-light/60"
-                              : "text-iii-black/60"
+                              ? 'text-iii-light/60'
+                              : 'text-iii-black/60'
                           } transition-colors ${
                             logo.hoverColor
                           } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
@@ -631,20 +709,19 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                 <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
                   <div
                     className={`hidden sm:block flex-1 h-px ${
-                      isDarkMode ? "bg-iii-light/20" : "bg-iii-black/20"
+                      isDarkMode ? 'bg-iii-light/20' : 'bg-iii-black/20'
                     }`}
                   />
                   <span
                     className={`text-[10px] sm:text-xs tracking-wider max-w-xs sm:max-w-md text-center px-4 ${
-                      isDarkMode ? "text-iii-light/70" : "text-iii-black/70"
+                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
                     }`}
                   >
-                    Workers register, engine orchestrates — one protocol,
-                    infinite possibilities.
+                    EVERY SERVICE
                   </span>
                   <div
                     className={`hidden sm:block flex-1 h-px ${
-                      isDarkMode ? "bg-iii-light/20" : "bg-iii-black/20"
+                      isDarkMode ? 'bg-iii-light/20' : 'bg-iii-black/20'
                     }`}
                   />
                 </div>
@@ -654,14 +731,14 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
                       key={index}
                       className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
                         isDarkMode
-                          ? "bg-iii-dark border-iii-light hover:border-iii-light"
-                          : "bg-white border-iii-dark hover:border-iii-dark"
+                          ? 'bg-iii-dark border-iii-light hover:border-iii-light'
+                          : 'bg-white border-iii-dark hover:border-iii-dark'
                       }`}
                       title={logo.name}
                     >
                       <div
                         className={`${
-                          isDarkMode ? "text-iii-light/60" : "text-iii-black/60"
+                          isDarkMode ? 'text-iii-light/60' : 'text-iii-black/60'
                         } transition-colors ${
                           logo.hoverColor
                         } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}

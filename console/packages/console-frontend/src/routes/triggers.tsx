@@ -25,7 +25,9 @@ import type { FunctionInfo, TriggerInfo } from '@/api'
 import { emitEvent, functionsQuery, triggerCron, triggersQuery } from '@/api'
 import { getConfig } from '@/api/config'
 import { Badge, Button, Input, Select } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
+import { Skeleton } from '@/components/ui/skeleton'
 
 // --- httpRequest reducer ---
 interface HttpRequestState {
@@ -583,8 +585,8 @@ function TriggersPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 md:px-5 py-3 md:py-4 bg-dark-gray/30 border-b border-border">
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <h1 className="text-sm md:text-base font-semibold flex items-center gap-2">
-            <Zap className="w-4 h-4" />
+          <h1 className="font-sans font-semibold text-lg tracking-tight flex items-center gap-2">
+            <Zap className="w-5 h-5" />
             <span>Triggers</span>
           </h1>
           <Badge variant="success" className="gap-1 text-[10px] md:text-xs">
@@ -743,18 +745,31 @@ function TriggersPage() {
         {/* Trigger List */}
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
           {loading ? (
-            <div className="flex items-center justify-center py-12 text-muted">
-              <RefreshCw className="w-5 h-5 animate-spin mr-2" />
-              Loading triggers...
+            <div className="space-y-3 py-4">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
             </div>
           ) : filteredTriggers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Zap className="w-12 h-12 text-muted/30 mb-4" />
-              <div className="text-sm font-medium mb-1">No triggers found</div>
-              <div className="text-xs text-muted">
-                {searchQuery ? 'Try a different search term' : 'Register triggers using the SDK'}
+            searchQuery || filterType ? (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Zap className="w-12 h-12 text-muted/30 mb-4" />
+                <div className="font-sans font-semibold text-base text-foreground mb-1">
+                  No triggers found
+                </div>
+                <div className="font-sans text-[13px] text-secondary">
+                  Try a different search term
+                </div>
               </div>
-            </div>
+            ) : (
+              <EmptyState
+                icon={Zap}
+                title="No triggers configured"
+                description="Set up HTTP, cron, or event triggers"
+              />
+            )
           ) : (
             groups.map((group) => (
               <div key={group}>
@@ -784,11 +799,11 @@ function TriggersPage() {
                           key={trigger.id}
                           type="button"
                           onClick={() => handleSelectTrigger(trigger)}
-                          className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-all w-full text-left
+                          className={`group flex items-center gap-3 px-3 py-2.5 rounded-[var(--radius-lg)] cursor-pointer transition-all w-full text-left
                             ${
                               isSelected
                                 ? 'bg-primary/10 border border-primary/30 ring-1 ring-primary/20'
-                                : 'bg-dark-gray/30 border border-transparent hover:bg-dark-gray/50 hover:border-border'
+                                : 'bg-elevated border border-transparent hover:bg-hover hover:border-border'
                             }
                           `}
                         >
@@ -797,7 +812,7 @@ function TriggersPage() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <span
-                                className={`font-mono text-sm font-medium ${isSelected ? 'text-primary' : 'text-foreground'}`}
+                                className={`font-mono text-[13px] font-medium ${isSelected ? 'text-primary' : 'text-foreground'}`}
                               >
                                 {getTriggerSummary(trigger)}
                               </span>
@@ -887,7 +902,7 @@ function TriggersPage() {
                   return (
                     <>
                       <div>
-                        <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                        <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                           API Endpoint
                         </div>
                         <div className="flex items-center gap-2">
@@ -917,7 +932,7 @@ function TriggersPage() {
                       </div>
 
                       <div className="border-t border-border pt-4">
-                        <div className="text-[10px] text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                        <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-3 flex items-center gap-2">
                           <Terminal className="w-3 h-3" />
                           Test API
                         </div>
@@ -946,7 +961,7 @@ function TriggersPage() {
 
                           {Object.keys(pathParams).length > 0 && (
                             <div className="space-y-2">
-                              <div className="text-[10px] text-muted uppercase tracking-wider">
+                              <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
                                 Path Parameters
                               </div>
                               {Object.keys(pathParams).map((param) => (
@@ -978,7 +993,7 @@ function TriggersPage() {
                           {httpMethod === 'GET' && (
                             <div className="space-y-2">
                               <div className="flex items-center justify-between">
-                                <div className="text-[10px] text-muted uppercase tracking-wider">
+                                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
                                   Query Parameters
                                 </div>
                                 <button
@@ -1046,7 +1061,7 @@ function TriggersPage() {
                             httpMethod === 'PUT' ||
                             httpMethod === 'PATCH') && (
                             <div>
-                              <div className="text-[10px] text-muted uppercase tracking-wider mb-1.5">
+                              <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1.5">
                                 Request Body (JSON)
                               </div>
                               <textarea
@@ -1104,7 +1119,7 @@ function TriggersPage() {
                   return (
                     <>
                       <div>
-                        <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                        <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                           Schedule
                         </div>
                         <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 space-y-2">
@@ -1120,7 +1135,7 @@ function TriggersPage() {
 
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-dark-gray/50 rounded-lg p-3">
-                          <div className="text-[10px] text-muted uppercase tracking-wider mb-1">
+                          <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
                             Next Run
                           </div>
                           <div className="flex items-center gap-1.5 text-sm">
@@ -1129,7 +1144,7 @@ function TriggersPage() {
                           </div>
                         </div>
                         <div className="bg-dark-gray/50 rounded-lg p-3">
-                          <div className="text-[10px] text-muted uppercase tracking-wider mb-1">
+                          <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
                             Status
                           </div>
                           <div className="flex items-center gap-1.5 text-sm">
@@ -1141,7 +1156,7 @@ function TriggersPage() {
 
                       {config.description && (
                         <div>
-                          <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                          <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                             Description
                           </div>
                           <p className="text-xs text-muted">{config.description}</p>
@@ -1149,7 +1164,7 @@ function TriggersPage() {
                       )}
 
                       <div className="border-t border-border pt-4">
-                        <div className="text-[10px] text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                        <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-3 flex items-center gap-2">
                           <Play className="w-3 h-3" />
                           Manual Trigger
                         </div>
@@ -1193,7 +1208,7 @@ function TriggersPage() {
                   return (
                     <>
                       <div>
-                        <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                        <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                           Event Topic
                         </div>
                         <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3">
@@ -1206,7 +1221,7 @@ function TriggersPage() {
 
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-dark-gray/50 rounded-lg p-3">
-                          <div className="text-[10px] text-muted uppercase tracking-wider mb-1">
+                          <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
                             Type
                           </div>
                           <div className="flex items-center gap-1.5 text-sm">
@@ -1215,7 +1230,7 @@ function TriggersPage() {
                           </div>
                         </div>
                         <div className="bg-dark-gray/50 rounded-lg p-3">
-                          <div className="text-[10px] text-muted uppercase tracking-wider mb-1">
+                          <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
                             Status
                           </div>
                           <div className="flex items-center gap-1.5 text-sm">
@@ -1227,7 +1242,7 @@ function TriggersPage() {
 
                       {config.description && (
                         <div>
-                          <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                          <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                             Description
                           </div>
                           <p className="text-xs text-muted">{config.description}</p>
@@ -1235,7 +1250,7 @@ function TriggersPage() {
                       )}
 
                       <div className="border-t border-border pt-4">
-                        <div className="text-[10px] text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                        <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-3 flex items-center gap-2">
                           <Send className="w-3 h-3" />
                           Emit Test Event
                         </div>
@@ -1274,7 +1289,7 @@ function TriggersPage() {
               {/* Other trigger types - show config */}
               {!['http', 'cron', 'event'].includes(selectedTrigger.trigger_type) && (
                 <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                  <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                     Trigger Info
                   </div>
                   <div className="bg-dark-gray/50 rounded-lg p-3 space-y-2">
@@ -1330,7 +1345,7 @@ function TriggersPage() {
 
               {/* Raw Configuration */}
               <div>
-                <div className="text-[10px] text-muted uppercase tracking-wider mb-2">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2">
                   Configuration
                 </div>
                 <pre className="text-[10px] font-mono bg-black/40 px-3 py-2 rounded overflow-x-auto max-h-32 text-muted">

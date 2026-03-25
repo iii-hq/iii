@@ -6,7 +6,7 @@ BIN_NAME="${BIN_NAME:-iii}"
 CLI_INSTALL_URL="${CLI_INSTALL_URL:-https://install.iii.dev/iii-cli/main/install.sh}"
 
 AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
-AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-e8fb1f8d290a72dbb2d9b264926be4bf}"
+AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-a7182ac460dde671c8f2e1318b517228}"
 
 err() {
   _stage="$1"; shift

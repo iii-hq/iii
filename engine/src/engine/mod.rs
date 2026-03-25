@@ -17,9 +17,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::{
-    channels::ChannelManager,
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
+    modules::worker::channels::ChannelManager,
     modules::{http_functions::HttpFunctionsModule, worker::TRIGGER_WORKERS_AVAILABLE},
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},

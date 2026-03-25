@@ -17,10 +17,10 @@ use futures::{Future, FutureExt};
 use once_cell::sync::Lazy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::panic::AssertUnwindSafe;
 
-use super::{QueueAdapter, SubscriberQueueConfig, config::QueueModuleConfig};
+use super::{QueueAdapter, SubscriberQueueConfig, TopicInfo, config::QueueModuleConfig};
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -57,8 +57,32 @@ pub struct RedriveResult {
     pub redriven: u64,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct RedriveSingleInput {
+    queue: String,
+    message_id: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RedriveSingleResult {
+    pub queue: String,
+    pub message_id: String,
+    pub redriven: u64,
+}
+
 #[service(name = "queue")]
 impl QueueCoreModule {
+    /// Resolves a display-friendly queue name to the internal adapter key.
+    /// Function queues (listed in config) are prefixed with `__fn_queue::`;
+    /// topic-based queues pass through unchanged.
+    fn resolve_queue_key(&self, name: &str) -> String {
+        if self._config.queue_configs.contains_key(name) {
+            format!("__fn_queue::{}", name)
+        } else {
+            name.to_string()
+        }
+    }
+
     pub async fn enqueue_to_function_queue(
         &self,
         queue_name: &str,
@@ -179,9 +203,8 @@ impl QueueCoreModule {
             });
         }
 
-        let namespaced = format!("__fn_queue::{}", input.queue);
-
-        match self.adapter.redrive_dlq(&namespaced).await {
+        let resolved = self.resolve_queue_key(&input.queue);
+        match self.adapter.redrive_dlq(&resolved).await {
             Ok(count) => {
                 tracing::info!(
                     queue = %input.queue,
@@ -205,6 +228,269 @@ impl QueueCoreModule {
                     stacktrace: None,
                 })
             }
+        }
+    }
+
+    #[function(
+        id = "iii::queue::redrive_message",
+        description = "Redrive a single DLQ message by ID back to the main queue"
+    )]
+    pub async fn redrive_message(
+        &self,
+        input: RedriveSingleInput,
+    ) -> FunctionResult<RedriveSingleResult, ErrorBody> {
+        if input.queue.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "queue_not_set".into(),
+                message: "Queue name is required".into(),
+                stacktrace: None,
+            });
+        }
+
+        if input.message_id.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "message_id_not_set".into(),
+                message: "Message ID is required".into(),
+                stacktrace: None,
+            });
+        }
+
+        let resolved = self.resolve_queue_key(&input.queue);
+        match self
+            .adapter
+            .redrive_dlq_message(&resolved, &input.message_id)
+            .await
+        {
+            Ok(found) => {
+                let redriven = if found { 1 } else { 0 };
+                tracing::info!(
+                    queue = %input.queue,
+                    message_id = %input.message_id,
+                    redriven = %redriven,
+                    "Redrove single DLQ message back to main queue"
+                );
+                FunctionResult::Success(RedriveSingleResult {
+                    queue: input.queue,
+                    message_id: input.message_id,
+                    redriven,
+                })
+            }
+            Err(e) => {
+                tracing::error!(
+                    queue = %input.queue,
+                    message_id = %input.message_id,
+                    error = %e,
+                    "Failed to redrive single DLQ message"
+                );
+                FunctionResult::Failure(ErrorBody {
+                    code: "redrive_message_failed".into(),
+                    message: format!(
+                        "Failed to redrive DLQ message '{}' for queue '{}': {}",
+                        input.message_id, input.queue, e
+                    ),
+                    stacktrace: None,
+                })
+            }
+        }
+    }
+
+    #[function(
+        id = "iii::queue::discard_message",
+        description = "Discard (purge) a single DLQ message by ID"
+    )]
+    pub async fn discard_message(
+        &self,
+        input: RedriveSingleInput,
+    ) -> FunctionResult<RedriveSingleResult, ErrorBody> {
+        if input.queue.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "queue_not_set".into(),
+                message: "Queue name is required".into(),
+                stacktrace: None,
+            });
+        }
+        if input.message_id.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "message_id_not_set".into(),
+                message: "Message ID is required".into(),
+                stacktrace: None,
+            });
+        }
+
+        let resolved = self.resolve_queue_key(&input.queue);
+        match self
+            .adapter
+            .discard_dlq_message(&resolved, &input.message_id)
+            .await
+        {
+            Ok(found) => {
+                let discarded = if found { 1 } else { 0 };
+                FunctionResult::Success(RedriveSingleResult {
+                    queue: input.queue,
+                    message_id: input.message_id,
+                    redriven: discarded,
+                })
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "discard_message_failed".into(),
+                message: format!("Failed to discard DLQ message: {}", e),
+                stacktrace: None,
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine::queue::list_topics",
+        description = "List all queue topics"
+    )]
+    pub async fn console_list_topics(
+        &self,
+        _input: Value,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.adapter.list_topics().await {
+            Ok(topics) => {
+                // Merge function queue topics from config.
+                // Adapters report these with subscriber_count=0 because internal
+                // consumers aren't tracked in the subscription map. Override with
+                // the configured concurrency so the console shows the real count.
+                let mut all_topics = topics;
+                for (name, config) in &self._config.queue_configs {
+                    let namespaced = format!("__fn_queue::{}", name);
+                    if let Some(existing) = all_topics
+                        .iter_mut()
+                        .find(|t| t.name == namespaced || t.name == *name)
+                    {
+                        existing.subscriber_count = config.concurrency as u64;
+                    } else {
+                        all_topics.push(TopicInfo {
+                            name: name.clone(),
+                            broker_type: "function_queue".to_string(),
+                            subscriber_count: config.concurrency as u64,
+                        });
+                    }
+                }
+                // Normalize: strip __fn_queue:: prefix for display
+                for topic in &mut all_topics {
+                    if let Some(stripped) = topic.name.strip_prefix("__fn_queue::") {
+                        topic.name = stripped.to_string();
+                    }
+                }
+                FunctionResult::Success(Some(
+                    serde_json::to_value(&all_topics).unwrap_or(json!([])),
+                ))
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "list_topics_failed".into(),
+                message: format!("Failed to list topics: {}", e),
+                stacktrace: None,
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine::queue::topic_stats",
+        description = "Get stats for a queue topic"
+    )]
+    pub async fn console_topic_stats(
+        &self,
+        input: Value,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let topic = input.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+        if topic.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "topic_required".into(),
+                message: "topic is required".into(),
+                stacktrace: None,
+            });
+        }
+
+        let resolved = self.resolve_queue_key(topic);
+        match self.adapter.topic_stats(&resolved).await {
+            Ok(mut stats) => {
+                // Adapters report consumer_count=0 for function queues because
+                // internal consumers aren't tracked in the subscription map.
+                // Override with the configured concurrency.
+                if let Some(config) = self._config.queue_configs.get(topic) {
+                    stats.consumer_count = config.concurrency as u64;
+                }
+                FunctionResult::Success(Some(serde_json::to_value(&stats).unwrap_or(json!({}))))
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "topic_stats_failed".into(),
+                message: format!("Failed to get topic stats: {}", e),
+                stacktrace: None,
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine::queue::dlq_topics",
+        description = "List DLQ topics with counts"
+    )]
+    pub async fn console_dlq_topics(
+        &self,
+        _input: Value,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        match self.adapter.list_topics().await {
+            Ok(topics) => {
+                let mut dlq_topics = Vec::new();
+                for topic in &topics {
+                    let dlq_count = self.adapter.dlq_count(&topic.name).await.unwrap_or(0);
+                    dlq_topics.push(json!({
+                        "topic": topic.name,
+                        "broker_type": topic.broker_type,
+                        "message_count": dlq_count,
+                    }));
+                }
+                // Also include function queue DLQs
+                for name in self._config.queue_configs.keys() {
+                    let namespaced = format!("__fn_queue::{}", name);
+                    let dlq_count = self.adapter.dlq_count(&namespaced).await.unwrap_or(0);
+                    dlq_topics.push(json!({
+                        "topic": name,
+                        "broker_type": "function_queue",
+                        "message_count": dlq_count,
+                    }));
+                }
+                FunctionResult::Success(Some(json!(dlq_topics)))
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "dlq_topics_failed".into(),
+                message: format!("Failed to list DLQ topics: {}", e),
+                stacktrace: None,
+            }),
+        }
+    }
+
+    #[function(
+        id = "engine::queue::dlq_messages",
+        description = "Browse DLQ messages"
+    )]
+    pub async fn console_dlq_messages(
+        &self,
+        input: Value,
+    ) -> FunctionResult<Option<Value>, ErrorBody> {
+        let topic = input.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+        if topic.is_empty() {
+            return FunctionResult::Failure(ErrorBody {
+                code: "topic_required".into(),
+                message: "topic is required".into(),
+                stacktrace: None,
+            });
+        }
+        let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+        let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+
+        let resolved = self.resolve_queue_key(topic);
+        match self.adapter.dlq_peek(&resolved, offset, limit).await {
+            Ok(messages) => {
+                FunctionResult::Success(Some(serde_json::to_value(&messages).unwrap_or(json!([]))))
+            }
+            Err(e) => FunctionResult::Failure(ErrorBody {
+                code: "dlq_messages_failed".into(),
+                message: format!("Failed to browse DLQ messages: {}", e),
+                stacktrace: None,
+            }),
         }
     }
 }
@@ -690,6 +976,16 @@ mod tests {
         last_baggage: Mutex<Option<String>>,
         redrive_dlq_result: AtomicU64,
         redrive_dlq_should_fail: AtomicBool,
+        // Fields for console/DLQ management tests
+        list_topics_result: Mutex<Vec<TopicInfo>>,
+        list_topics_should_fail: AtomicBool,
+        topic_stats_result: Mutex<super::super::TopicStats>,
+        topic_stats_should_fail: AtomicBool,
+        dlq_peek_result: Mutex<Vec<super::super::DlqMessage>>,
+        dlq_peek_should_fail: AtomicBool,
+        dlq_count_value: AtomicU64,
+        dlq_count_should_fail: AtomicBool,
+        discard_should_fail: AtomicBool,
     }
 
     impl MockQueueAdapter {
@@ -705,6 +1001,20 @@ mod tests {
                 last_baggage: Mutex::new(None),
                 redrive_dlq_result: AtomicU64::new(0),
                 redrive_dlq_should_fail: AtomicBool::new(false),
+                list_topics_result: Mutex::new(vec![]),
+                list_topics_should_fail: AtomicBool::new(false),
+                topic_stats_result: Mutex::new(super::super::TopicStats {
+                    depth: 0,
+                    consumer_count: 0,
+                    dlq_depth: 0,
+                    config: None,
+                }),
+                topic_stats_should_fail: AtomicBool::new(false),
+                dlq_peek_result: Mutex::new(vec![]),
+                dlq_peek_should_fail: AtomicBool::new(false),
+                dlq_count_value: AtomicU64::new(0),
+                dlq_count_should_fail: AtomicBool::new(false),
+                discard_should_fail: AtomicBool::new(false),
             }
         }
     }
@@ -761,8 +1071,59 @@ mod tests {
             Ok(self.redrive_dlq_result.load(Ordering::SeqCst))
         }
 
+        async fn redrive_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            if self.redrive_dlq_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock redrive message error"));
+            }
+            Ok(self.redrive_dlq_result.load(Ordering::SeqCst) > 0)
+        }
+
+        async fn discard_dlq_message(
+            &self,
+            _topic: &str,
+            _message_id: &str,
+        ) -> anyhow::Result<bool> {
+            if self.discard_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock discard error"));
+            }
+            Ok(true)
+        }
+
         async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
-            Ok(0)
+            if self.dlq_count_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock dlq_count error"));
+            }
+            Ok(self.dlq_count_value.load(Ordering::SeqCst))
+        }
+
+        async fn list_topics(&self) -> anyhow::Result<Vec<TopicInfo>> {
+            if self.list_topics_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock list_topics error"));
+            }
+            Ok(self.list_topics_result.lock().await.clone())
+        }
+
+        async fn topic_stats(&self, _topic: &str) -> anyhow::Result<super::super::TopicStats> {
+            if self.topic_stats_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock topic_stats error"));
+            }
+            Ok(self.topic_stats_result.lock().await.clone())
+        }
+
+        async fn dlq_peek(
+            &self,
+            _topic: &str,
+            _offset: u64,
+            _limit: u64,
+        ) -> anyhow::Result<Vec<super::super::DlqMessage>> {
+            if self.dlq_peek_should_fail.load(Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("mock dlq_peek error"));
+            }
+            Ok(self.dlq_peek_result.lock().await.clone())
         }
 
         async fn setup_function_queue(
@@ -1579,5 +1940,500 @@ mod tests {
             "Tasks should start concurrently. Start gap was {:?} (expected < 200ms)",
             start_gap
         );
+    }
+
+    // =========================================================================
+    // resolve_queue_key tests
+    // =========================================================================
+
+    #[test]
+    fn resolve_queue_key_function_queue_gets_prefixed() {
+        let (_engine, module, _adapter) = setup_queue_module_with_configs();
+        assert_eq!(module.resolve_queue_key("default"), "__fn_queue::default");
+        assert_eq!(module.resolve_queue_key("payment"), "__fn_queue::payment");
+    }
+
+    #[test]
+    fn resolve_queue_key_topic_passes_through() {
+        let (_engine, module, _adapter) = setup_queue_module_with_configs();
+        assert_eq!(module.resolve_queue_key("some-topic"), "some-topic");
+        assert_eq!(
+            module.resolve_queue_key("events.user.created"),
+            "events.user.created"
+        );
+    }
+
+    #[test]
+    fn resolve_queue_key_empty_config_passes_through() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        assert_eq!(module.resolve_queue_key("anything"), "anything");
+    }
+
+    // =========================================================================
+    // redrive_message tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn redrive_message_empty_queue_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let input = RedriveSingleInput {
+            queue: "".to_string(),
+            message_id: "msg-1".to_string(),
+        };
+        let result = module.redrive_message(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "queue_not_set");
+            }
+            _ => panic!("Expected Failure for empty queue"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redrive_message_empty_message_id_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "".to_string(),
+        };
+        let result = module.redrive_message(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "message_id_not_set");
+            }
+            _ => panic!("Expected Failure for empty message_id"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redrive_message_success_found() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter.redrive_dlq_result.store(1, Ordering::SeqCst);
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "msg-1".to_string(),
+        };
+        let result = module.redrive_message(input).await;
+        match result {
+            FunctionResult::Success(r) => {
+                assert_eq!(r.queue, "payment");
+                assert_eq!(r.message_id, "msg-1");
+                assert_eq!(r.redriven, 1);
+            }
+            _ => panic!("Expected Success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redrive_message_success_not_found() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter.redrive_dlq_result.store(0, Ordering::SeqCst);
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "msg-nonexistent".to_string(),
+        };
+        let result = module.redrive_message(input).await;
+        match result {
+            FunctionResult::Success(r) => {
+                assert_eq!(r.redriven, 0);
+            }
+            _ => panic!("Expected Success with redriven=0"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redrive_message_adapter_error() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter
+            .redrive_dlq_should_fail
+            .store(true, Ordering::SeqCst);
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "msg-1".to_string(),
+        };
+        let result = module.redrive_message(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "redrive_message_failed");
+                assert!(e.message.contains("mock redrive message error"));
+            }
+            _ => panic!("Expected Failure on adapter error"),
+        }
+    }
+
+    // =========================================================================
+    // discard_message tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn discard_message_empty_queue_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let input = RedriveSingleInput {
+            queue: "".to_string(),
+            message_id: "msg-1".to_string(),
+        };
+        let result = module.discard_message(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "queue_not_set");
+            }
+            _ => panic!("Expected Failure for empty queue"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discard_message_empty_message_id_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "".to_string(),
+        };
+        let result = module.discard_message(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "message_id_not_set");
+            }
+            _ => panic!("Expected Failure for empty message_id"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discard_message_success() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "msg-1".to_string(),
+        };
+        let result = module.discard_message(input).await;
+        match result {
+            FunctionResult::Success(r) => {
+                assert_eq!(r.queue, "payment");
+                assert_eq!(r.message_id, "msg-1");
+                assert_eq!(r.redriven, 1); // found=true => 1
+            }
+            _ => panic!("Expected Success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn discard_message_adapter_error() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter.discard_should_fail.store(true, Ordering::SeqCst);
+        let input = RedriveSingleInput {
+            queue: "payment".to_string(),
+            message_id: "msg-1".to_string(),
+        };
+        let result = module.discard_message(input).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "discard_message_failed");
+                assert!(e.message.contains("mock discard error"));
+            }
+            _ => panic!("Expected Failure on adapter error"),
+        }
+    }
+
+    // =========================================================================
+    // console_list_topics tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn console_list_topics_returns_topics() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        *adapter.list_topics_result.lock().await = vec![TopicInfo {
+            name: "events.user".to_string(),
+            broker_type: "builtin".to_string(),
+            subscriber_count: 2,
+        }];
+
+        let result = module.console_list_topics(json!({})).await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                let topics: Vec<Value> = serde_json::from_value(val).unwrap();
+                // Should have: events.user + default + payment (from config)
+                assert!(topics.len() >= 3);
+            }
+            _ => panic!("Expected Success with topics"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_list_topics_merges_function_queue_concurrency() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        // Adapter reports the function queue with subscriber_count=0
+        *adapter.list_topics_result.lock().await = vec![TopicInfo {
+            name: "__fn_queue::default".to_string(),
+            broker_type: "builtin".to_string(),
+            subscriber_count: 0,
+        }];
+
+        let result = module.console_list_topics(json!({})).await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                let topics: Vec<Value> = serde_json::from_value(val).unwrap();
+                // "default" should have concurrency from config (10 is default)
+                let default_topic = topics.iter().find(|t| t["name"] == "default");
+                assert!(default_topic.is_some(), "default topic should exist");
+                let sub_count = default_topic.unwrap()["subscriber_count"].as_u64().unwrap();
+                assert!(
+                    sub_count > 0,
+                    "subscriber_count should be overridden from config"
+                );
+            }
+            _ => panic!("Expected Success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_list_topics_strips_fn_queue_prefix() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        *adapter.list_topics_result.lock().await = vec![TopicInfo {
+            name: "__fn_queue::default".to_string(),
+            broker_type: "builtin".to_string(),
+            subscriber_count: 0,
+        }];
+
+        let result = module.console_list_topics(json!({})).await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                let topics: Vec<Value> = serde_json::from_value(val).unwrap();
+                // No topic should have __fn_queue:: prefix
+                for topic in &topics {
+                    let name = topic["name"].as_str().unwrap();
+                    assert!(
+                        !name.starts_with("__fn_queue::"),
+                        "Topic name should not have __fn_queue:: prefix: {}",
+                        name
+                    );
+                }
+            }
+            _ => panic!("Expected Success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_list_topics_adapter_error() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter
+            .list_topics_should_fail
+            .store(true, Ordering::SeqCst);
+
+        let result = module.console_list_topics(json!({})).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "list_topics_failed");
+            }
+            _ => panic!("Expected Failure on adapter error"),
+        }
+    }
+
+    // =========================================================================
+    // console_topic_stats tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn console_topic_stats_empty_topic_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let result = module.console_topic_stats(json!({})).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "topic_required");
+            }
+            _ => panic!("Expected Failure for missing topic"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_topic_stats_returns_stats() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        *adapter.topic_stats_result.lock().await = super::super::TopicStats {
+            depth: 5,
+            consumer_count: 0,
+            dlq_depth: 2,
+            config: None,
+        };
+
+        let result = module
+            .console_topic_stats(json!({"topic": "default"}))
+            .await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                assert_eq!(val["depth"], 5);
+                assert_eq!(val["dlq_depth"], 2);
+                // consumer_count should be overridden with config concurrency
+                let consumer_count = val["consumer_count"].as_u64().unwrap();
+                assert!(
+                    consumer_count > 0,
+                    "consumer_count should be overridden from config"
+                );
+            }
+            _ => panic!("Expected Success with stats"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_topic_stats_adapter_error() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter
+            .topic_stats_should_fail
+            .store(true, Ordering::SeqCst);
+
+        let result = module
+            .console_topic_stats(json!({"topic": "some-topic"}))
+            .await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "topic_stats_failed");
+            }
+            _ => panic!("Expected Failure on adapter error"),
+        }
+    }
+
+    // =========================================================================
+    // console_dlq_topics tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn console_dlq_topics_returns_topics_with_counts() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        *adapter.list_topics_result.lock().await = vec![TopicInfo {
+            name: "events.user".to_string(),
+            broker_type: "builtin".to_string(),
+            subscriber_count: 1,
+        }];
+        adapter.dlq_count_value.store(3, Ordering::SeqCst);
+
+        let result = module.console_dlq_topics(json!({})).await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                let topics: Vec<Value> = serde_json::from_value(val).unwrap();
+                assert!(!topics.is_empty());
+                // Should include event topics + function queue topics
+                let has_events = topics.iter().any(|t| t["topic"] == "events.user");
+                assert!(has_events, "Should include events.user topic");
+            }
+            _ => panic!("Expected Success with DLQ topics"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_dlq_topics_adapter_error() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter
+            .list_topics_should_fail
+            .store(true, Ordering::SeqCst);
+
+        let result = module.console_dlq_topics(json!({})).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "dlq_topics_failed");
+            }
+            _ => panic!("Expected Failure on adapter error"),
+        }
+    }
+
+    // =========================================================================
+    // console_dlq_messages tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn console_dlq_messages_empty_topic_returns_failure() {
+        let (_engine, module, _adapter) = setup_queue_module();
+        let result = module.console_dlq_messages(json!({})).await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "topic_required");
+            }
+            _ => panic!("Expected Failure for missing topic"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_dlq_messages_returns_messages() {
+        let (_engine, module, adapter) = setup_queue_module();
+        *adapter.dlq_peek_result.lock().await = vec![super::super::DlqMessage {
+            id: "msg-1".to_string(),
+            payload: json!({"key": "value"}),
+            error: "test error".to_string(),
+            failed_at: 1234567890,
+            retries: 3,
+            size_bytes: 128,
+        }];
+
+        let result = module
+            .console_dlq_messages(json!({"topic": "my-queue", "offset": 0, "limit": 50}))
+            .await;
+        match result {
+            FunctionResult::Success(Some(val)) => {
+                let messages: Vec<Value> = serde_json::from_value(val).unwrap();
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0]["id"], "msg-1");
+                assert_eq!(messages[0]["error"], "test error");
+            }
+            _ => panic!("Expected Success with messages"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_dlq_messages_uses_resolve_queue_key() {
+        // When topic is a function queue name, it should be resolved
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        *adapter.dlq_peek_result.lock().await = vec![];
+
+        let result = module
+            .console_dlq_messages(json!({"topic": "default"}))
+            .await;
+        // Should succeed (even with empty results)
+        assert!(matches!(result, FunctionResult::Success(_)));
+    }
+
+    #[tokio::test]
+    async fn console_dlq_messages_adapter_error() {
+        let (_engine, module, adapter) = setup_queue_module();
+        adapter.dlq_peek_should_fail.store(true, Ordering::SeqCst);
+
+        let result = module
+            .console_dlq_messages(json!({"topic": "my-queue"}))
+            .await;
+        match result {
+            FunctionResult::Failure(e) => {
+                assert_eq!(e.code, "dlq_messages_failed");
+            }
+            _ => panic!("Expected Failure on adapter error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn console_dlq_messages_default_offset_and_limit() {
+        let (_engine, module, adapter) = setup_queue_module();
+        *adapter.dlq_peek_result.lock().await = vec![];
+
+        // Only provide topic, offset and limit should default
+        let result = module
+            .console_dlq_messages(json!({"topic": "my-queue"}))
+            .await;
+        assert!(matches!(result, FunctionResult::Success(_)));
+    }
+
+    // =========================================================================
+    // redrive uses resolve_queue_key
+    // =========================================================================
+
+    #[tokio::test]
+    async fn redrive_uses_resolve_queue_key_for_function_queues() {
+        let (_engine, module, adapter) = setup_queue_module_with_configs();
+        adapter.redrive_dlq_result.store(2, Ordering::SeqCst);
+
+        let input = RedriveInput {
+            queue: "default".to_string(),
+        };
+        let result = module.redrive(input).await;
+        match result {
+            FunctionResult::Success(r) => {
+                assert_eq!(r.queue, "default");
+                assert_eq!(r.redriven, 2);
+            }
+            _ => panic!("Expected Success"),
+        }
     }
 }

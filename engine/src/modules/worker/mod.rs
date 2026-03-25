@@ -4,6 +4,9 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
+pub mod channels;
+pub mod ws_handler;
+
 use std::{pin::Pin, sync::Arc};
 
 use dashmap::DashMap;

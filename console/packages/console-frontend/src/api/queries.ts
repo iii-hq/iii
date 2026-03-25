@@ -16,6 +16,7 @@ import {
   fetchRollups,
 } from './observability/metrics'
 import { fetchTraces, fetchTraceTree } from './observability/traces'
+import { fetchDlqMessages, fetchDlqTopics, fetchQueueDetail, fetchQueues } from './queues'
 import { fetchStateGroups, fetchStateItems } from './state/state'
 import { fetchStreams } from './state/streams'
 import { fetchAdapters } from './system/adapters'
@@ -85,6 +86,34 @@ export const streamsQuery = queryOptions({
   queryKey: ['streams'],
   queryFn: fetchStreams,
 })
+
+// Queues
+export const queuesQuery = queryOptions({
+  queryKey: ['queues'],
+  queryFn: fetchQueues,
+})
+
+export function queueDetailQuery(topic: string) {
+  return queryOptions({
+    queryKey: ['queue-detail', topic],
+    queryFn: () => fetchQueueDetail(topic),
+    enabled: !!topic,
+  })
+}
+
+// DLQ
+export const dlqTopicsQuery = queryOptions({
+  queryKey: ['dlq-topics'],
+  queryFn: fetchDlqTopics,
+})
+
+export function dlqMessagesQuery(topic: string, offset = 0, limit = 50) {
+  return queryOptions({
+    queryKey: ['dlq-messages', topic, offset, limit],
+    queryFn: () => fetchDlqMessages(topic, offset, limit),
+    enabled: !!topic,
+  })
+}
 
 // Logs with filters
 export interface LogsQueryOptions {

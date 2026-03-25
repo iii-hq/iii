@@ -308,6 +308,18 @@ impl QueueAdapter for BridgeAdapter {
         ))
     }
 
+    async fn redrive_dlq_message(&self, _topic: &str, _message_id: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!(
+            "Bridge queue adapter does not support DLQ operations"
+        ))
+    }
+
+    async fn discard_dlq_message(&self, _topic: &str, _message_id: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!(
+            "Bridge queue adapter does not support DLQ operations"
+        ))
+    }
+
     async fn dlq_count(&self, _topic: &str) -> anyhow::Result<u64> {
         Err(anyhow::anyhow!(
             "Bridge queue adapter does not support DLQ operations"
@@ -350,6 +362,10 @@ impl QueueAdapter for BridgeAdapter {
         // Return a channel that will never receive (consumer loop stays idle).
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
         Ok(rx)
+    }
+
+    async fn list_topics(&self) -> anyhow::Result<Vec<crate::modules::queue::TopicInfo>> {
+        Ok(vec![]) // Bridge doesn't track local queue state
     }
 }
 
@@ -409,6 +425,50 @@ mod tests {
         adapter
             .subscribe("test_topic", "test_id", "functions.test", None, None)
             .await;
+    }
+
+    #[tokio::test]
+    async fn test_redrive_dlq_message_returns_error() {
+        use crate::modules::queue::QueueAdapter;
+
+        let engine = Arc::new(Engine::new());
+        let result = BridgeAdapter::new(engine.clone(), "ws://invalid-host:9999".to_string()).await;
+        let Ok(adapter) = result else { return };
+
+        let res = adapter.redrive_dlq_message("test_topic", "msg-1").await;
+        assert!(res.is_err());
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "Bridge queue adapter does not support DLQ operations"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_discard_dlq_message_returns_error() {
+        use crate::modules::queue::QueueAdapter;
+
+        let engine = Arc::new(Engine::new());
+        let result = BridgeAdapter::new(engine.clone(), "ws://invalid-host:9999".to_string()).await;
+        let Ok(adapter) = result else { return };
+
+        let res = adapter.discard_dlq_message("test_topic", "msg-1").await;
+        assert!(res.is_err());
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "Bridge queue adapter does not support DLQ operations"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_topics_returns_empty() {
+        use crate::modules::queue::QueueAdapter;
+
+        let engine = Arc::new(Engine::new());
+        let result = BridgeAdapter::new(engine.clone(), "ws://invalid-host:9999".to_string()).await;
+        let Ok(adapter) = result else { return };
+
+        let topics = adapter.list_topics().await.unwrap();
+        assert!(topics.is_empty());
     }
 }
 

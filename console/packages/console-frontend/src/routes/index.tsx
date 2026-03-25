@@ -24,6 +24,8 @@ import {
   triggersQuery,
 } from '@/api/queries'
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Skeleton } from '@/components/ui/skeleton'
 
 export const Route = createFileRoute('/')({
   component: DashboardPage,
@@ -155,24 +157,26 @@ interface MetricsChartProps {
 
 function MetricsChart({ title, value, data, color, icon: Icon, trend, href }: MetricsChartProps) {
   const content = (
-    <div className="bg-dark-gray/40 rounded-xl border border-border p-4 transition-all duration-200 group-hover:border-muted/40 group-hover:-translate-y-0.5 cursor-pointer">
+    <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-4 transition-all duration-200 group-hover:border-muted/40 group-hover:-translate-y-0.5 cursor-pointer">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-md" style={{ backgroundColor: `${color}20` }}>
             <Icon className="w-4 h-4" style={{ color }} />
           </div>
-          <span className="text-xs font-medium text-muted uppercase tracking-wider">{title}</span>
+          <span className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em]">
+            {title}
+          </span>
         </div>
         {trend !== undefined && trend !== 0 && (
           <div
-            className={`flex items-center gap-1 text-xs font-medium ${trend > 0 ? 'text-green-400' : 'text-red-400'}`}
+            className={`flex items-center gap-1 text-xs font-medium ${trend > 0 ? 'text-success' : 'text-error'}`}
           >
             <TrendingUp className={`w-3 h-3 ${trend < 0 ? 'rotate-180' : ''}`} />
             {Math.abs(trend)}%
           </div>
         )}
       </div>
-      <div className="text-2xl font-bold mb-2">{value}</div>
+      <div className="font-mono text-2xl font-bold mb-2">{value}</div>
       <div className="h-8 opacity-60 group-hover:opacity-100 transition-opacity">
         <MiniChart data={data} color={color} height={32} />
       </div>
@@ -261,8 +265,8 @@ function DashboardPage() {
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1800px] mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg md:text-xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-xs md:text-sm text-muted mt-1 tracking-wide">System overview</p>
+          <h1 className="font-sans font-semibold text-lg tracking-tight">Dashboard</h1>
+          <p className="font-sans text-sm text-secondary mt-1">System overview</p>
         </div>
       </div>
 
@@ -271,7 +275,7 @@ function DashboardPage() {
           title="Functions"
           value={loading ? '—' : userFunctions.length}
           data={functionsChartData}
-          color="#22C55E"
+          color="var(--success)"
           icon={Activity}
           trend={calculateTrend(functionsChartData)}
           href="/functions"
@@ -280,7 +284,7 @@ function DashboardPage() {
           title="Triggers"
           value={loading ? '—' : userTriggers.length}
           data={triggersChartData}
-          color="#F3F724"
+          color="var(--accent)"
           icon={Zap}
           trend={calculateTrend(triggersChartData)}
           href="/triggers"
@@ -297,7 +301,7 @@ function DashboardPage() {
           title="Streams"
           value={loading ? '—' : streams.filter((s) => !s.internal).length}
           data={streamsChartData}
-          color="#3B82F6"
+          color="var(--info)"
           icon={Wifi}
           trend={calculateTrend(streamsChartData)}
           href="/streams"
@@ -319,19 +323,25 @@ function DashboardPage() {
         </CardHeader>
         <CardContent className="p-3 md:p-4">
           {loading ? (
-            <div className="text-xs text-muted py-4 text-center">Loading...</div>
-          ) : userTriggers.length === 0 && userFunctions.length === 0 ? (
-            <div className="text-xs text-muted py-4 text-center border border-dashed border-border rounded">
-              <div className="mb-1">No application components registered</div>
-              <div className="text-xs text-muted/60">
-                Register functions and triggers using the SDK
+            <div className="space-y-3 py-4">
+              <Skeleton className="h-4 w-48 mx-auto" />
+              <div className="flex gap-3">
+                <Skeleton className="h-24 flex-1" />
+                <Skeleton className="h-24 flex-1" />
+                <Skeleton className="h-24 flex-1" />
               </div>
             </div>
+          ) : userTriggers.length === 0 && userFunctions.length === 0 ? (
+            <EmptyState
+              icon={Activity}
+              title="No application components"
+              description="Register functions and triggers to get started"
+            />
           ) : (
             <div className="flex flex-col lg:flex-row items-stretch gap-3 lg:gap-0">
               {/* Triggers column */}
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-bold text-muted uppercase tracking-[0.2em] mb-2 text-center">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2 text-center">
                   Triggers
                 </div>
                 <div className="space-y-1.5">
@@ -417,7 +427,7 @@ function DashboardPage() {
 
               {/* Functions column */}
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-bold text-muted uppercase tracking-[0.2em] mb-2 text-center">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2 text-center">
                   Functions
                 </div>
                 <div className="bg-dark-gray/40 border border-border/50 rounded-lg p-2.5">
@@ -458,7 +468,7 @@ function DashboardPage() {
 
               {/* States + Streams column */}
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-bold text-muted uppercase tracking-[0.2em] mb-2 text-center">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-2 text-center">
                   Data
                 </div>
                 <div className="space-y-1.5">
@@ -521,7 +531,7 @@ function DashboardPage() {
             <CardTitle className="text-sm md:text-base">Registered Triggers</CardTitle>
             <Link
               to="/triggers"
-              className="text-xs tracking-wider uppercase text-[#5B5B5B] hover:text-[#F3F724] transition-colors flex items-center gap-1 group cursor-pointer"
+              className="text-xs tracking-wider uppercase text-muted hover:text-accent transition-colors flex items-center gap-1 group cursor-pointer"
             >
               View All{' '}
               <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
@@ -529,9 +539,14 @@ function DashboardPage() {
           </CardHeader>
           <CardContent className="p-3 md:p-4 pt-0 md:pt-0">
             {loading ? (
-              <div className="text-xs text-[#5B5B5B] py-4 text-center">Loading...</div>
+              <div className="space-y-2 py-4">
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </div>
             ) : userTriggers.length === 0 ? (
-              <div className="text-xs text-[#5B5B5B] py-4 text-center border border-dashed border-[#1D1D1D] rounded">
+              <div className="text-xs text-muted py-4 text-center border border-dashed border-border-subtle rounded">
                 No user triggers registered
                 {triggers.length > 0 && (
                   <div className="text-xs text-muted mt-1">
@@ -543,17 +558,17 @@ function DashboardPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-[#1D1D1D]">
-                      <th className="text-left py-2 px-3 text-xs font-medium tracking-wider uppercase text-[#5B5B5B]">
+                    <tr className="border-b border-border-subtle">
+                      <th className="text-left py-2 px-3 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
                         Type
                       </th>
-                      <th className="text-left py-2 px-3 text-xs font-medium tracking-wider uppercase text-[#5B5B5B]">
+                      <th className="text-left py-2 px-3 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
                         Function
                       </th>
-                      <th className="text-left py-2 px-3 text-xs font-medium tracking-wider uppercase text-[#5B5B5B] hidden sm:table-cell">
+                      <th className="text-left py-2 px-3 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted hidden sm:table-cell">
                         Detail
                       </th>
-                      <th className="text-left py-2 px-3 text-xs font-medium tracking-wider uppercase text-[#5B5B5B]">
+                      <th className="text-left py-2 px-3 font-sans font-semibold text-xs uppercase tracking-[0.04em] text-muted">
                         Status
                       </th>
                     </tr>
@@ -562,17 +577,17 @@ function DashboardPage() {
                     {userTriggers.slice(0, 5).map((trigger) => (
                       <tr
                         key={trigger.id}
-                        className="border-b border-[#1D1D1D]/60 transition-colors hover:bg-white/[0.02]"
+                        className="border-b border-border-subtle/60 transition-colors hover:bg-white/[0.02]"
                       >
                         <td className="py-2 px-3">
                           <Badge variant="outline" className="text-xs">
                             {trigger.trigger_type}
                           </Badge>
                         </td>
-                        <td className="py-2 px-3 font-mono text-xs max-w-[180px] truncate">
+                        <td className="py-2 px-3 font-mono text-[13px] max-w-[180px] truncate">
                           {trigger.function_id || '—'}
                         </td>
-                        <td className="py-2 px-3 font-mono text-xs text-muted hidden sm:table-cell max-w-[200px] truncate">
+                        <td className="py-2 px-3 font-mono text-[13px] text-muted hidden sm:table-cell max-w-[200px] truncate">
                           {trigger.trigger_type === 'http'
                             ? `${(trigger.config as { http_method?: string })?.http_method || 'GET'} /${((trigger.config as { api_path?: string })?.api_path || '').replace(/^\//, '')}`
                             : trigger.trigger_type === 'cron'
@@ -611,19 +626,25 @@ function DashboardPage() {
           <CardContent className="p-3 md:p-4 pt-0 space-y-2">
             {/* System info row */}
             <div className="grid grid-cols-3 gap-2">
-              <div className="bg-dark-gray/40 rounded-lg p-2.5 text-center">
-                <div className="text-xs text-muted uppercase tracking-wider mb-1">Uptime</div>
-                <div className="text-sm font-mono font-medium truncate">
+              <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-2.5 text-center">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
+                  Uptime
+                </div>
+                <div className="font-mono text-[13px] font-medium truncate">
                   {status?.uptime_formatted || '—'}
                 </div>
               </div>
-              <div className="bg-dark-gray/40 rounded-lg p-2.5 text-center">
-                <div className="text-xs text-muted uppercase tracking-wider mb-1">API</div>
-                <div className="text-sm font-mono font-medium">:{config.enginePort}</div>
+              <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-2.5 text-center">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
+                  API
+                </div>
+                <div className="font-mono text-[13px] font-medium">:{config.enginePort}</div>
               </div>
-              <div className="bg-dark-gray/40 rounded-lg p-2.5 text-center">
-                <div className="text-xs text-muted uppercase tracking-wider mb-1">WS</div>
-                <div className="text-sm font-mono font-medium">:{config.wsPort}</div>
+              <div className="bg-elevated rounded-[var(--radius-lg)] border border-border-subtle p-2.5 text-center">
+                <div className="font-sans font-semibold text-xs text-muted uppercase tracking-[0.04em] mb-1">
+                  WS
+                </div>
+                <div className="font-mono text-[13px] font-medium">:{config.wsPort}</div>
               </div>
             </div>
 

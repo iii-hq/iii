@@ -56,6 +56,102 @@ struct SubscriptionInfo {
 }
 
 impl RabbitMQAdapter {
+    /// Resolve the DLQ queue name for a given topic.
+    /// Handles both function queues (__fn_queue:: prefix) and topic-based queues.
+    fn resolve_dlq_name(topic: &str) -> (String, bool) {
+        use super::naming::{FnQueueNames, RabbitNames};
+        if let Some(queue_name) = topic.strip_prefix("__fn_queue::") {
+            (FnQueueNames::new(queue_name).dlq(), true)
+        } else {
+            (RabbitNames::new(topic).dlq(), false)
+        }
+    }
+
+    /// Scan a DLQ for a specific message by ID, applying `on_found` when the target is located.
+    /// Non-target messages are nacked back to the queue.
+    ///
+    /// CONCURRENCY NOTE: This uses basic_get + nack(requeue) which is not atomic.
+    /// Under concurrent DLQ operations, messages may be reordered. The iteration
+    /// is bounded by the queue depth snapshot to prevent infinite loops from
+    /// requeued messages, but concurrent producers may cause messages to be missed.
+    async fn find_dlq_message<F, Fut>(
+        &self,
+        topic: &str,
+        message_id: &str,
+        on_found: F,
+    ) -> anyhow::Result<bool>
+    where
+        F: FnOnce(&Delivery, bool, &str) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        let (dlq_name, is_fn_queue) = Self::resolve_dlq_name(topic);
+
+        let queue_info = self
+            .channel
+            .queue_declare(
+                &dlq_name,
+                lapin::options::QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get DLQ info: {}", e))?;
+
+        let count = queue_info.message_count();
+
+        for _ in 0..count {
+            let get_result = self
+                .channel
+                .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
+
+            let Some(delivery) = get_result else { break };
+
+            // Determine if this is the target message.
+            // Function queue DLQ: stable ID from AMQP message_id or body hash
+            // Topic DLQ: ID is in the JSON payload at job.id
+            let is_target = if is_fn_queue {
+                delivery_stable_id(&delivery.delivery) == message_id
+            } else {
+                let dlq_payload: Value =
+                    serde_json::from_slice(&delivery.delivery.data).unwrap_or(Value::Null);
+                dlq_payload
+                    .get("job")
+                    .and_then(|j| j.get("id"))
+                    .and_then(|id| id.as_str())
+                    == Some(message_id)
+            };
+
+            if is_target {
+                let queue_name = topic.strip_prefix("__fn_queue::").unwrap_or(topic);
+                on_found(&delivery.delivery, is_fn_queue, queue_name).await?;
+
+                delivery
+                    .delivery
+                    .ack(BasicAckOptions { multiple: false })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to ack target message: {}", e))?;
+
+                return Ok(true);
+            }
+
+            // Not the target -- put it back
+            delivery
+                .delivery
+                .nack(BasicNackOptions {
+                    requeue: true,
+                    multiple: false,
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to nack non-target message: {}", e))?;
+        }
+
+        Ok(false)
+    }
+
     pub async fn new(config: RabbitMQConfig, engine: Arc<Engine>) -> anyhow::Result<Self> {
         let connection = Connection::connect(&config.amqp_url, ConnectionProperties::default())
             .await
@@ -99,6 +195,24 @@ impl RabbitMQAdapter {
             delivery_counter: Arc::new(AtomicU64::new(0)),
         })
     }
+}
+
+/// Extracts a stable message ID from a DLQ delivery.
+/// Tries AMQP `message_id` property first, then falls back to a hash of the
+/// raw body so that `dlq_peek` and `redrive_dlq_message` always agree on the ID.
+fn delivery_stable_id(delivery: &Delivery) -> String {
+    // 1. Try AMQP message_id property
+    if let Some(mid) = delivery.properties.message_id() {
+        let s = mid.as_str();
+        if !s.is_empty() {
+            return s.to_string();
+        }
+    }
+    // 2. Fallback: deterministic hash of the raw body
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    delivery.data.hash(&mut hasher);
+    format!("dlq-{:016x}", hasher.finish())
 }
 
 impl Clone for RabbitMQAdapter {
@@ -291,13 +405,11 @@ impl QueueAdapter for RabbitMQAdapter {
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        use super::naming::RabbitNames;
+        use super::naming::FnQueueNames;
         use lapin::options::*;
         use serde_json::Value;
 
-        let names = RabbitNames::new(topic);
-        let dlq_name = names.dlq();
-
+        let (dlq_name, is_fn_queue) = Self::resolve_dlq_name(topic);
         let mut count: u64 = 0;
 
         loop {
@@ -309,25 +421,68 @@ impl QueueAdapter for RabbitMQAdapter {
 
             match get_result {
                 Some(delivery) => {
-                    let dlq_payload: Value = serde_json::from_slice(&delivery.delivery.data)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse DLQ message: {}", e))?;
+                    let republish_result: anyhow::Result<()> = if is_fn_queue {
+                        // Function queue DLQ: raw data payload, republish directly
+                        let queue_name = topic.strip_prefix("__fn_queue::").unwrap();
+                        let names = FnQueueNames::new(queue_name);
 
-                    let job: super::types::Job = serde_json::from_value(
-                        dlq_payload
-                            .get("job")
-                            .ok_or_else(|| anyhow::anyhow!("DLQ message missing 'job' field"))?
-                            .clone(),
-                    )
-                    .map_err(|e| anyhow::anyhow!("Failed to parse job from DLQ payload: {}", e))?;
+                        let mut headers = delivery
+                            .delivery
+                            .properties
+                            .headers()
+                            .clone()
+                            .unwrap_or_default();
+                        headers.insert("x-attempt".into(), lapin::types::AMQPValue::LongUInt(0));
 
-                    let mut job_with_reset_attempts = job.clone();
-                    job_with_reset_attempts.attempts_made = 0;
+                        let properties = lapin::BasicProperties::default()
+                            .with_content_type("application/json".into())
+                            .with_delivery_mode(2)
+                            .with_headers(headers);
 
-                    if let Err(e) = self
-                        .publisher
-                        .publish(topic, &job_with_reset_attempts)
-                        .await
-                    {
+                        let properties =
+                            if let Some(mid) = delivery.delivery.properties.message_id() {
+                                properties.with_message_id(mid.clone())
+                            } else {
+                                properties
+                            };
+
+                        self.channel
+                            .basic_publish(
+                                &names.exchange(),
+                                queue_name,
+                                BasicPublishOptions::default(),
+                                &delivery.delivery.data,
+                                properties,
+                            )
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to republish: {}", e))?
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to confirm: {}", e))?;
+                        Ok(())
+                    } else {
+                        // Topic DLQ: wrapped payload with job/error/exhausted_at
+                        let dlq_payload: Value = serde_json::from_slice(&delivery.delivery.data)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse DLQ message: {}", e))?;
+
+                        let job: super::types::Job = serde_json::from_value(
+                            dlq_payload
+                                .get("job")
+                                .ok_or_else(|| anyhow::anyhow!("DLQ message missing 'job' field"))?
+                                .clone(),
+                        )
+                        .map_err(|e| anyhow::anyhow!("Failed to parse job: {}", e))?;
+
+                        let mut redriven = job;
+                        redriven.attempts_made = 0;
+
+                        self.publisher
+                            .publish(topic, &redriven)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("Failed to republish: {}", e))?;
+                        Ok(())
+                    };
+
+                    if let Err(e) = republish_result {
                         tracing::error!(error = ?e, "Failed to republish DLQ message");
                         delivery
                             .delivery
@@ -355,17 +510,93 @@ impl QueueAdapter for RabbitMQAdapter {
         Ok(count)
     }
 
-    async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        use super::naming::{FnQueueNames, RabbitNames};
+    async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+        use super::naming::FnQueueNames;
 
-        // Function queues use FnQueueNames (e.g., __fn_queue::orders → ::dlq.queue),
-        // while topic-based queues use RabbitNames (e.g., user.created → .dlq).
-        let dlq_name = if topic.starts_with("__fn_queue::") {
-            let queue_name = topic.strip_prefix("__fn_queue::").unwrap();
-            FnQueueNames::new(queue_name).dlq()
-        } else {
-            RabbitNames::new(topic).dlq()
-        };
+        let publisher = self.publisher.clone();
+        let channel = Arc::clone(&self.channel);
+        let topic_owned = topic.to_string();
+
+        self.find_dlq_message(topic, message_id, |delivery, is_fn_queue, queue_name| {
+            let delivery_data = delivery.data.clone();
+            let delivery_props = delivery.properties.clone();
+            let queue_name = queue_name.to_string();
+
+            async move {
+                if is_fn_queue {
+                    // Function queue: republish raw data to the function queue exchange
+                    let names = FnQueueNames::new(&queue_name);
+
+                    // Preserve original headers, reset attempt counter
+                    let mut headers = delivery_props.headers().clone().unwrap_or_default();
+                    headers.insert("x-attempt".into(), lapin::types::AMQPValue::LongUInt(0));
+
+                    let properties = lapin::BasicProperties::default()
+                        .with_content_type("application/json".into())
+                        .with_delivery_mode(2)
+                        .with_headers(headers);
+
+                    // Copy message_id if present
+                    let properties = if let Some(mid) = delivery_props.message_id() {
+                        properties.with_message_id(mid.clone())
+                    } else {
+                        properties
+                    };
+
+                    channel
+                        .basic_publish(
+                            &names.exchange(),
+                            &queue_name,
+                            BasicPublishOptions::default(),
+                            &delivery_data,
+                            properties,
+                        )
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to republish to function queue: {}", e)
+                        })?
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to confirm republish: {}", e))?;
+                } else {
+                    // Topic queue: parse job, reset attempts, republish via Publisher
+                    let dlq_payload: Value = serde_json::from_slice(&delivery_data)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse DLQ message: {}", e))?;
+
+                    let job_value = dlq_payload
+                        .get("job")
+                        .ok_or_else(|| anyhow::anyhow!("DLQ message missing 'job' field"))?;
+
+                    let mut job: super::types::Job = serde_json::from_value(job_value.clone())
+                        .map_err(|e| anyhow::anyhow!("Failed to parse job: {}", e))?;
+
+                    job.attempts_made = 0;
+
+                    publisher
+                        .publish(&topic_owned, &job)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to republish message: {}", e))?;
+                }
+
+                Ok(())
+            }
+        })
+        .await
+    }
+
+    async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
+        // Discard = just ack (handled by find_dlq_message after on_found returns)
+        self.find_dlq_message(
+            topic,
+            message_id,
+            |_delivery, _is_fn_queue, _queue_name| async { Ok(()) },
+        )
+        .await
+    }
+
+    async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
+        // Function queues use FnQueueNames (e.g., __fn_queue::orders -> ::dlq.queue),
+        // while topic-based queues use RabbitNames (e.g., user.created -> .dlq).
+        let (dlq_name, _is_fn_queue) = Self::resolve_dlq_name(topic);
 
         let queue = self
             .channel
@@ -381,6 +612,202 @@ impl QueueAdapter for RabbitMQAdapter {
             .map_err(|e| anyhow::anyhow!("Failed to get DLQ info: {}", e))?;
 
         Ok(queue.message_count() as u64)
+    }
+
+    async fn dlq_messages(&self, topic: &str, count: usize) -> anyhow::Result<Vec<Value>> {
+        let (dlq_name, _is_fn_queue) = Self::resolve_dlq_name(topic);
+
+        // Cap iteration at actual queue depth to avoid unnecessary basic_get calls
+        let queue_depth = match self
+            .channel
+            .queue_declare(
+                &dlq_name,
+                lapin::options::QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+        {
+            Ok(info) => info.message_count() as usize,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let fetch_count = count.min(queue_depth);
+        let mut messages = Vec::new();
+        let mut deliveries = Vec::new();
+
+        for _ in 0..fetch_count {
+            let get_result = self
+                .channel
+                .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
+
+            let Some(delivery) = get_result else { break };
+
+            let payload: Value = serde_json::from_slice(&delivery.delivery.data)
+                .map_err(|e| anyhow::anyhow!("Failed to parse DLQ message: {}", e))?;
+
+            messages.push(payload);
+            deliveries.push(delivery);
+        }
+
+        // Nack all back to DLQ (peek, not consume)
+        for delivery in deliveries {
+            let _ = delivery
+                .delivery
+                .nack(BasicNackOptions {
+                    requeue: true,
+                    multiple: false,
+                })
+                .await;
+        }
+
+        Ok(messages)
+    }
+
+    async fn dlq_peek(
+        &self,
+        topic: &str,
+        offset: u64,
+        limit: u64,
+    ) -> anyhow::Result<Vec<crate::modules::queue::DlqMessage>> {
+        let (dlq_name, is_fn_queue) = Self::resolve_dlq_name(topic);
+
+        // Cap at actual queue depth
+        let queue_depth = match self
+            .channel
+            .queue_declare(
+                &dlq_name,
+                lapin::options::QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+        {
+            Ok(info) => info.message_count() as u64,
+            Err(_) => return Ok(vec![]),
+        };
+
+        let fetch_count = (offset + limit).min(queue_depth) as usize;
+        let mut results = Vec::new();
+        let mut deliveries_to_nack = Vec::new();
+
+        for i in 0..fetch_count {
+            let get_result = self
+                .channel
+                .basic_get(&dlq_name, BasicGetOptions { no_ack: false })
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to get message from DLQ: {}", e))?;
+
+            let Some(delivery) = get_result else { break };
+
+            // Only process messages past the offset
+            if (i as u64) >= offset {
+                let raw_data = &delivery.delivery.data;
+                let payload: Value = serde_json::from_slice(raw_data).unwrap_or(Value::Null);
+
+                let dlq_msg = if is_fn_queue {
+                    // Function queue DLQ: stable ID from AMQP properties or body hash
+                    let id = delivery_stable_id(&delivery.delivery);
+
+                    let function_id = delivery
+                        .delivery
+                        .properties
+                        .headers()
+                        .as_ref()
+                        .and_then(|h| h.inner().get("function_id"))
+                        .and_then(|v| match v {
+                            lapin::types::AMQPValue::LongString(s) => Some(s.to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+
+                    let error = format!("Function {} exhausted retries", function_id);
+
+                    crate::modules::queue::DlqMessage {
+                        id,
+                        payload,
+                        error,
+                        failed_at: 0,
+                        retries: delivery
+                            .delivery
+                            .properties
+                            .headers()
+                            .as_ref()
+                            .and_then(|h| h.inner().get("x-attempt"))
+                            .and_then(|v| match v {
+                                lapin::types::AMQPValue::LongUInt(n) => Some(*n),
+                                _ => None,
+                            })
+                            .unwrap_or(0),
+                        size_bytes: raw_data.len() as u64,
+                    }
+                } else {
+                    // Topic-based DLQ: wrapped payload with job/error/exhausted_at
+                    let id = payload
+                        .get("job")
+                        .and_then(|j| j.get("id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+
+                    let job_payload = payload
+                        .get("job")
+                        .and_then(|j| j.get("data"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+
+                    let error = payload
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let failed_at = payload
+                        .get("exhausted_at")
+                        .and_then(|v| v.as_u64())
+                        .map(|ms| ms / 1000)
+                        .unwrap_or(0);
+
+                    let retries = payload
+                        .get("job")
+                        .and_then(|j| j.get("attempts_made"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+
+                    crate::modules::queue::DlqMessage {
+                        id,
+                        payload: job_payload,
+                        error,
+                        failed_at,
+                        retries,
+                        size_bytes: raw_data.len() as u64,
+                    }
+                };
+
+                results.push(dlq_msg);
+            }
+
+            deliveries_to_nack.push(delivery);
+        }
+
+        // Nack all back to DLQ (peek, not consume)
+        for delivery in deliveries_to_nack {
+            let _ = delivery
+                .delivery
+                .nack(BasicNackOptions {
+                    requeue: true,
+                    multiple: false,
+                })
+                .await;
+        }
+
+        Ok(results)
     }
 
     async fn publish_to_function_queue(
@@ -645,10 +1072,15 @@ impl QueueAdapter for RabbitMQAdapter {
                 lapin::types::AMQPValue::LongUInt(current_attempt + 1),
             );
 
-            let properties = lapin::BasicProperties::default()
+            let mut properties = lapin::BasicProperties::default()
                 .with_content_type("application/json".into())
                 .with_delivery_mode(2)
                 .with_headers(headers);
+
+            // Preserve message_id through retries so DLQ messages remain identifiable
+            if let Some(mid) = delivery.properties.message_id() {
+                properties = properties.with_message_id(mid.clone());
+            }
 
             self.channel
                 .basic_publish(
@@ -689,6 +1121,87 @@ impl QueueAdapter for RabbitMQAdapter {
         }
 
         Ok(())
+    }
+
+    async fn topic_stats(&self, topic: &str) -> anyhow::Result<crate::modules::queue::TopicStats> {
+        use super::naming::{FnQueueNames, RabbitNames};
+
+        let (queue_name, dlq_name) = if topic.starts_with("__fn_queue::") {
+            let name = topic.strip_prefix("__fn_queue::").unwrap();
+            let names = FnQueueNames::new(name);
+            (names.queue(), names.dlq())
+        } else {
+            let names = RabbitNames::new(topic);
+            (names.queue(), names.dlq())
+        };
+
+        // Get main queue depth (passive declare to inspect without creating)
+        let depth = match self
+            .channel
+            .queue_declare(
+                &queue_name,
+                lapin::options::QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+        {
+            Ok(info) => info.message_count() as u64,
+            Err(_) => 0,
+        };
+
+        // Get DLQ depth
+        let dlq_depth = match self
+            .channel
+            .queue_declare(
+                &dlq_name,
+                lapin::options::QueueDeclareOptions {
+                    passive: true,
+                    ..Default::default()
+                },
+                lapin::types::FieldTable::default(),
+            )
+            .await
+        {
+            Ok(info) => info.message_count() as u64,
+            Err(_) => 0,
+        };
+
+        // Count consumers for this topic from subscriptions map
+        let consumer_count = {
+            let subs = self.subscriptions.read().await;
+            subs.keys()
+                .filter(|key| key.split(':').next().map(|t| t == topic).unwrap_or(false))
+                .count() as u64
+        };
+
+        Ok(crate::modules::queue::TopicStats {
+            depth,
+            consumer_count,
+            dlq_depth,
+            config: None,
+        })
+    }
+
+    async fn list_topics(&self) -> anyhow::Result<Vec<crate::modules::queue::TopicInfo>> {
+        let subs = self.subscriptions.read().await;
+        let mut topics: HashMap<String, u64> = HashMap::new();
+        for key in subs.keys() {
+            // subscription key format is "topic:id"
+            if let Some(topic) = key.split(':').next() {
+                *topics.entry(topic.to_string()).or_insert(0u64) += 1;
+            }
+        }
+        Ok(topics
+            .into_iter()
+            .map(|(name, count)| crate::modules::queue::TopicInfo {
+                name,
+                broker_type: "rabbitmq".to_string(),
+                subscriber_count: count,
+            })
+            .collect())
     }
 }
 

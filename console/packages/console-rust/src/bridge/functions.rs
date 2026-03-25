@@ -1013,6 +1013,231 @@ async fn handle_flow_config_save(bridge: &III, input: Value) -> Value {
     }
 }
 
+async fn handle_queues_list(bridge: &III) -> Value {
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "engine::queue::list_topics".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+    {
+        Ok(data) => success_response(json!({ "queues": data })),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_queue_detail(bridge: &III, input: Value) -> Value {
+    let topic = input
+        .get("path_params")
+        .and_then(|p| p.get("topic"))
+        .and_then(|v| v.as_str())
+        .or_else(|| input.get("topic").and_then(|v| v.as_str()));
+
+    let topic = match topic {
+        Some(t) => t.to_string(),
+        None => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing topic in path parameters".to_string(),
+            ))
+        }
+    };
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "engine::queue::topic_stats".to_string(),
+            payload: json!({ "topic": topic }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+    {
+        Ok(data) => success_response(json!({ "topic": topic, "stats": data })),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_queue_publish(bridge: &III, input: Value) -> Value {
+    let topic = input
+        .get("path_params")
+        .and_then(|p| p.get("topic"))
+        .and_then(|v| v.as_str())
+        .or_else(|| input.get("topic").and_then(|v| v.as_str()));
+
+    let topic = match topic {
+        Some(t) => t.to_string(),
+        None => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing topic in path parameters".to_string(),
+            ))
+        }
+    };
+
+    let body = input.get("body").unwrap_or(&input);
+    let data = body.get("data").cloned().unwrap_or(json!({}));
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "enqueue".to_string(),
+            payload: json!({ "topic": topic, "data": data }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+    {
+        Ok(_) => success_response(json!({ "message": "Message published", "topic": topic })),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_dlq_list(bridge: &III) -> Value {
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "engine::queue::dlq_topics".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+    {
+        Ok(data) => success_response(json!({ "topics": data })),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_dlq_messages(bridge: &III, input: Value) -> Value {
+    let topic = input
+        .get("path_params")
+        .and_then(|p| p.get("topic"))
+        .and_then(|v| v.as_str())
+        .or_else(|| input.get("topic").and_then(|v| v.as_str()));
+
+    let topic = match topic {
+        Some(t) => t.to_string(),
+        None => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing topic in path parameters".to_string(),
+            ))
+        }
+    };
+
+    let body = input.get("body").unwrap_or(&input);
+    let offset = body.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+    let limit = body.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "engine::queue::dlq_messages".to_string(),
+            payload: json!({ "topic": topic, "offset": offset, "limit": limit }),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+    {
+        Ok(data) => success_response(json!({ "topic": topic, "messages": data })),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_dlq_redrive(bridge: &III, input: Value) -> Value {
+    let topic = input
+        .get("path_params")
+        .and_then(|p| p.get("topic"))
+        .and_then(|v| v.as_str())
+        .or_else(|| input.get("topic").and_then(|v| v.as_str()));
+
+    let topic = match topic {
+        Some(t) => t.to_string(),
+        None => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing topic in path parameters".to_string(),
+            ))
+        }
+    };
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "iii::queue::redrive".to_string(),
+            payload: json!({ "queue": topic }),
+            action: None,
+            timeout_ms: Some(30000),
+        })
+        .await
+    {
+        Ok(data) => success_response(data),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_dlq_redrive_message(bridge: &III, input: Value) -> Value {
+    let topic = input
+        .get("path_params")
+        .and_then(|p| p.get("topic"))
+        .and_then(|v| v.as_str());
+
+    let message_id = input
+        .get("path_params")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str());
+
+    let (topic, message_id) = match (topic, message_id) {
+        (Some(t), Some(m)) => (t.to_string(), m.to_string()),
+        _ => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing topic or message id in path parameters".to_string(),
+            ))
+        }
+    };
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "iii::queue::redrive_message".to_string(),
+            payload: json!({ "queue": topic, "message_id": message_id }),
+            action: None,
+            timeout_ms: Some(30000),
+        })
+        .await
+    {
+        Ok(data) => success_response(data),
+        Err(err) => error_response(err),
+    }
+}
+
+async fn handle_dlq_discard_message(bridge: &III, input: Value) -> Value {
+    let topic = input
+        .get("path_params")
+        .and_then(|p| p.get("topic"))
+        .and_then(|v| v.as_str());
+
+    let message_id = input
+        .get("path_params")
+        .and_then(|p| p.get("id"))
+        .and_then(|v| v.as_str());
+
+    let (topic, message_id) = match (topic, message_id) {
+        (Some(t), Some(m)) => (t.to_string(), m.to_string()),
+        _ => {
+            return error_response(iii_sdk::IIIError::Handler(
+                "Missing topic or message id in path parameters".to_string(),
+            ))
+        }
+    };
+
+    match bridge
+        .trigger(TriggerRequest {
+            function_id: "iii::queue::discard_message".to_string(),
+            payload: json!({ "queue": topic, "message_id": message_id }),
+            action: None,
+            timeout_ms: Some(30000),
+        })
+        .await
+    {
+        Ok(data) => success_response(data),
+        Err(err) => error_response(err),
+    }
+}
+
 fn reg_fn_msg(id: &str) -> RegisterFunctionMessage {
     RegisterFunctionMessage {
         id: id.to_string(),
@@ -1218,4 +1443,60 @@ pub fn register_functions(bridge: &III) {
         let bridge = b.clone();
         async move { Ok(handle_cron_trigger(&bridge, input).await) }
     });
+
+    // Queue management
+    let b = bridge.clone();
+    bridge.register_function_with(reg_fn_msg("engine::console::queues_list"), move |_input| {
+        let bridge = b.clone();
+        async move { Ok(handle_queues_list(&bridge).await) }
+    });
+
+    let b = bridge.clone();
+    bridge.register_function_with(reg_fn_msg("engine::console::queue_detail"), move |input| {
+        let bridge = b.clone();
+        async move { Ok(handle_queue_detail(&bridge, input).await) }
+    });
+
+    let b = bridge.clone();
+    bridge.register_function_with(reg_fn_msg("engine::console::queue_publish"), move |input| {
+        let bridge = b.clone();
+        async move { Ok(handle_queue_publish(&bridge, input).await) }
+    });
+
+    // DLQ management
+    let b = bridge.clone();
+    bridge.register_function_with(reg_fn_msg("engine::console::dlq_list"), move |_input| {
+        let bridge = b.clone();
+        async move { Ok(handle_dlq_list(&bridge).await) }
+    });
+
+    let b = bridge.clone();
+    bridge.register_function_with(reg_fn_msg("engine::console::dlq_messages"), move |input| {
+        let bridge = b.clone();
+        async move { Ok(handle_dlq_messages(&bridge, input).await) }
+    });
+
+    let b = bridge.clone();
+    bridge.register_function_with(reg_fn_msg("engine::console::dlq_redrive"), move |input| {
+        let bridge = b.clone();
+        async move { Ok(handle_dlq_redrive(&bridge, input).await) }
+    });
+
+    let b = bridge.clone();
+    bridge.register_function_with(
+        reg_fn_msg("engine::console::dlq_redrive_message"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_dlq_redrive_message(&bridge, input).await) }
+        },
+    );
+
+    let b = bridge.clone();
+    bridge.register_function_with(
+        reg_fn_msg("engine::console::dlq_discard_message"),
+        move |input| {
+            let bridge = b.clone();
+            async move { Ok(handle_dlq_discard_message(&bridge, input).await) }
+        },
+    );
 }
