@@ -1,4 +1,4 @@
-use iii_sdk::builtin_triggers::HttpTriggerConfig;
+use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
 use iii_sdk::{ApiRequest, ApiResponse, III, IIIError, IIITrigger, Logger, execute_traced_request};
 use serde_json::json;
 
@@ -47,7 +47,7 @@ pub fn setup(iii: &III) {
     ));
 
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method("GET"))
+        IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method(HttpMethod::Get))
             .for_function("api::get::http::rust::fetch"),
     )
     .expect("failed to register GET http-fetch trigger");
@@ -101,7 +101,7 @@ pub fn setup(iii: &III) {
     ));
 
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method("POST"))
+        IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method(HttpMethod::Post))
             .for_function("api::post::http::rust::fetch"),
     )
     .expect("failed to register POST http-fetch trigger");

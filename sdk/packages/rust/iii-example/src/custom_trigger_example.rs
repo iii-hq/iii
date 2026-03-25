@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ScheduleTriggerConfig {
-    /// ISO 8601 datetime for when to fire (e.g. "2026-03-25T10:00:00Z")
+    /// ISO 8601 datetime for when to fire (e.g. "2099-01-01T10:00:00Z")
     pub at: String,
     /// Optional timezone (defaults to UTC)
     pub timezone: Option<String>,
@@ -114,7 +114,7 @@ pub fn setup(iii: &III) {
         .register_trigger(
             "example::send_report",
             ScheduleTriggerConfig {
-                at: "2026-03-25T09:00:00Z".into(),
+                at: "2099-01-01T09:00:00Z".into(),
                 timezone: Some("America/Sao_Paulo".into()),
                 repeat_daily: Some(true),
             },

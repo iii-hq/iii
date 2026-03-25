@@ -14,10 +14,22 @@ pub struct HttpTriggerConfig {
     pub api_path: String,
     /// HTTP method (defaults to GET)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub http_method: Option<String>,
+    pub http_method: Option<HttpMethod>,
     /// Optional function ID to evaluate before invoking handler
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition_function_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
 }
 
 impl HttpTriggerConfig {
@@ -29,8 +41,8 @@ impl HttpTriggerConfig {
         }
     }
 
-    pub fn method(mut self, method: impl Into<String>) -> Self {
-        self.http_method = Some(method.into());
+    pub fn method(mut self, method: HttpMethod) -> Self {
+        self.http_method = Some(method);
         self
     }
 
@@ -93,9 +105,9 @@ impl QueueTriggerConfig {
         self
     }
 
-    pub fn queue_config(mut self, config: impl Serialize) -> Self {
-        self.queue_config = Some(serde_json::to_value(config).unwrap());
-        self
+    pub fn queue_config(mut self, config: impl Serialize) -> Result<Self, serde_json::Error> {
+        self.queue_config = Some(serde_json::to_value(config)?);
+        Ok(self)
     }
 }
 
@@ -139,6 +151,16 @@ pub struct StateTriggerConfig {
     pub condition_function_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub enum StateEventType {
+    #[serde(rename = "state:created")]
+    Created,
+    #[serde(rename = "state:updated")]
+    Updated,
+    #[serde(rename = "state:deleted")]
+    Deleted,
+}
+
 impl StateTriggerConfig {
     pub fn new() -> Self {
         Self {
@@ -171,6 +193,41 @@ impl Default for StateTriggerConfig {
 }
 
 // ── Stream ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StreamJoinLeaveTriggerConfig {
+    /// Stream name to watch
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_name: Option<String>,
+    /// Optional function ID to evaluate before invoking handler
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition_function_id: Option<String>,
+}
+
+impl StreamJoinLeaveTriggerConfig {
+    pub fn new() -> Self {
+        Self {
+            stream_name: None,
+            condition_function_id: None,
+        }
+    }
+
+    pub fn stream_name(mut self, name: impl Into<String>) -> Self {
+        self.stream_name = Some(name.into());
+        self
+    }
+
+    pub fn condition(mut self, function_id: impl Into<String>) -> Self {
+        self.condition_function_id = Some(function_id.into());
+        self
+    }
+}
+
+impl Default for StreamJoinLeaveTriggerConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamTriggerConfig {
@@ -231,7 +288,17 @@ impl Default for StreamTriggerConfig {
 pub struct LogTriggerConfig {
     /// Minimum log level to trigger on
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<String>,
+    pub level: Option<LogLevel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    All,
+    Debug,
+    Info,
+    Warn,
+    Error,
 }
 
 impl LogTriggerConfig {
@@ -239,8 +306,8 @@ impl LogTriggerConfig {
         Self { level: None }
     }
 
-    pub fn level(mut self, level: impl Into<String>) -> Self {
-        self.level = Some(level.into());
+    pub fn level(mut self, level: LogLevel) -> Self {
+        self.level = Some(level);
         self
     }
 }
@@ -275,11 +342,20 @@ pub struct CronCallRequest {
 pub struct StateCallRequest {
     #[serde(rename = "type")]
     pub message_type: String,
-    pub event_type: String,
+    pub event_type: StateEventType,
     pub scope: String,
     pub key: String,
     pub old_value: Option<Value>,
     pub new_value: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StreamJoinLeaveCallRequest {
+    pub event_type: String,
+    pub timestamp: i64,
+    pub stream_name: String,
+    pub group_id: String,
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -327,8 +403,8 @@ pub enum IIITrigger {
     Subscribe(SubscribeTriggerConfig),
     State(StateTriggerConfig),
     Stream(StreamTriggerConfig),
-    StreamJoin(StreamTriggerConfig),
-    StreamLeave(StreamTriggerConfig),
+    StreamJoin(StreamJoinLeaveTriggerConfig),
+    StreamLeave(StreamJoinLeaveTriggerConfig),
     Log(LogTriggerConfig),
 }
 
@@ -354,5 +430,69 @@ impl IIITrigger {
             function_id: function_id.into(),
             config: serde_json::to_value(&self).unwrap(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn http_trigger_config_serializes_typed_method_enum() {
+        let config = HttpTriggerConfig::new("health").method(HttpMethod::Get);
+        let value = serde_json::to_value(config).expect("http trigger config should serialize");
+
+        assert_eq!(value["http_method"], "GET");
+    }
+
+    #[test]
+    fn log_trigger_config_serializes_typed_level_enum() {
+        let config = LogTriggerConfig::new().level(LogLevel::Error);
+        let value = serde_json::to_value(config).expect("log trigger config should serialize");
+
+        assert_eq!(value["level"], "error");
+    }
+
+    #[test]
+    fn state_call_request_deserializes_typed_event_type() {
+        let request: StateCallRequest = serde_json::from_value(json!({
+            "type": "state",
+            "event_type": "state:updated",
+            "scope": "users",
+            "key": "123",
+            "old_value": { "name": "old" },
+            "new_value": { "name": "new" }
+        }))
+        .expect("state call request should deserialize");
+
+        assert!(matches!(request.event_type, StateEventType::Updated));
+    }
+
+    #[test]
+    fn queue_config_returns_error_instead_of_panicking() {
+        struct FailingSerialize;
+
+        impl Serialize for FailingSerialize {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("boom"))
+            }
+        }
+
+        let result = QueueTriggerConfig::new("emails").queue_config(FailingSerialize);
+
+        assert!(result.is_err(), "serialization failures should be returned");
+    }
+
+    #[test]
+    fn stream_join_uses_dedicated_join_leave_config_shape() {
+        let trigger =
+            IIITrigger::StreamJoin(StreamJoinLeaveTriggerConfig::new().stream_name("chat"))
+                .for_function("example::on_join");
+
+        assert_eq!(trigger.config, json!({ "stream_name": "chat" }));
     }
 }

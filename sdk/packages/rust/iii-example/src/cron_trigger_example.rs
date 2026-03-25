@@ -35,7 +35,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("health").method("GET"))
+        IIITrigger::Http(HttpTriggerConfig::new("health").method(HttpMethod::Get))
             .for_function("example::health_check"),
     )
     .expect("failed to register http trigger");
@@ -70,7 +70,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        IIITrigger::Log(LogTriggerConfig::new().level("error"))
+        IIITrigger::Log(LogTriggerConfig::new().level(LogLevel::Error))
             .for_function("example::on_error_log"),
     )
     .expect("failed to register log trigger");
