@@ -19,8 +19,8 @@ use tracing::Instrument;
 
 use crate::{
     condition::check_condition,
-    modules::worker::channels::ChannelItem,
     modules::rest_api::types::{HttpRequest, HttpResponse},
+    modules::worker::channels::ChannelItem,
 };
 
 fn generate_error_id() -> String {
@@ -1261,12 +1261,12 @@ mod tests {
 
     // ── dynamic_handler integration tests ──────────────────────────────────
 
-    use crate::modules::worker::channels::ChannelItem;
     use crate::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
     use crate::function::FunctionResult;
     use crate::modules::observability::metrics::ensure_default_meter;
     use crate::modules::rest_api::api_core::{PathRouter, RestApiCoreModule};
     use crate::modules::rest_api::types::HttpRequest;
+    use crate::modules::worker::channels::ChannelItem;
     use crate::protocol::ErrorBody;
     use axum::http::Method;
 
