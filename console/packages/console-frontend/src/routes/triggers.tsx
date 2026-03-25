@@ -910,10 +910,7 @@ function TriggersPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              copyToClipboard(
-                                `${getEngineBaseUrl()}/${apiPath}`,
-                                'endpoint',
-                              )
+                              copyToClipboard(`${getEngineBaseUrl()}/${apiPath}`, 'endpoint')
                             }}
                             className="p-1.5 hover:bg-dark-gray rounded transition-colors"
                           >
