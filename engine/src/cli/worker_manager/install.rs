@@ -130,7 +130,7 @@ pub async fn install_worker(
         }
     } else {
         // 5. Build a BinarySpec for the existing github/download pipeline.
-        let spec = super::spec::leaked_binary_spec(worker_name, &worker_entry);
+        let spec = super::spec::leaked_binary_spec(worker_name, worker_entry);
 
         // 6. Fetch release from GitHub (version-pinned or latest)
         let release = match version {
