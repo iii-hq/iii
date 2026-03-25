@@ -170,7 +170,7 @@ let iii = register_worker("ws://localhost:49134", InitOptions::default());
 let mut headers = HashMap::new();
 headers.insert("X-Service".to_string(), "iii-worker".to_string());
 
-iii.register_function(
+iii.register_function((
   RegisterFunctionMessage::with_id("notifications::send".into()).with_description("POST notification to Service Provider webhook".into()),
   HttpInvocationConfig {
     url: "https://hooks.provider.example.com/notify".to_string(),
@@ -181,7 +181,7 @@ iii.register_function(
       token_key: "PROVIDER_API_TOKEN".to_string(),
     }),
   },
-);
+));
 
 iii.trigger(TriggerRequest { function_id: "notifications::send".into(), payload: json!({ "channel": "#alerts", "text": "Deploy succeeded" }), action: None, timeout_ms: None }).await?;
 ```
@@ -590,7 +590,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
   let iii = register_worker(&url, InitOptions::default());
 
-  iii.register_function(
+  iii.register_function((
     RegisterFunctionMessage::with_id("orders::webhook".into()),
     HttpInvocationConfig {
       url: std::env::var("WEBHOOK_URL").expect("WEBHOOK_URL required"),
@@ -599,7 +599,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       headers: HashMap::new(),
       auth: None,
     },
-  );
+  ));
 
   iii.register_trigger(RegisterTriggerInput {
     trigger_type: "state".into(),

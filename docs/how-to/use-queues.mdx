@@ -667,19 +667,23 @@ def process_order(order):
 use iii_sdk::{RegisterFunction, TriggerAction, TriggerRequest};
 use serde_json::{json, Value};
 
-let reg = RegisterFunction::new_async("orders::process-order", |order: Value| async move {
-    iii.trigger(TriggerRequest {
-        function_id: "notifications::send".to_string(),
-        payload: json!({
-            "orderId": order["id"],
-            "type": "payment-confirmed",
-        }),
-        action: Some(TriggerAction::Enqueue { queue: "default".to_string() }),
-        timeout_ms: None,
-    })
-    .await?;
+let iii_clone = iii.clone();
+let reg = RegisterFunction::new_async("orders::process-order", move |order: Value| {
+    let iii = iii_clone.clone();
+    async move {
+        iii.trigger(TriggerRequest {
+            function_id: "notifications::send".to_string(),
+            payload: json!({
+                "orderId": order["id"],
+                "type": "payment-confirmed",
+            }),
+            action: Some(TriggerAction::Enqueue { queue: "default".to_string() }),
+            timeout_ms: None,
+        })
+        .await?;
 
-    Ok(json!({ "processed": true }))
+        Ok(json!({ "processed": true }))
+    }
 });
 iii.register_function(reg);
 ```
