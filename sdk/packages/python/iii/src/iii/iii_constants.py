@@ -79,4 +79,5 @@ class InitOptions:
     invocation_timeout_ms: int = DEFAULT_INVOCATION_TIMEOUT_MS
     reconnection_config: ReconnectionConfig | None = None
     otel: OtelConfig | dict[str, Any] | None = None
+    headers: dict[str, str] | None = None
     telemetry: TelemetryOptions | None = None

@@ -151,7 +151,8 @@ impl Module for ExternalModule {
 
     async fn start_background_tasks(
         &self,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         // Write config to a temp file if we have config
         let config_path = if let Some(ref config) = self.config {
@@ -172,7 +173,7 @@ impl Module for ExternalModule {
         // if shutdown fires during the delay.
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-            _ = shutdown.changed() => {
+            _ = shutdown_rx.changed() => {
                 tracing::info!(
                     "External module '{}' received shutdown before spawn",
                     self.name
@@ -221,7 +222,7 @@ impl Module for ExternalModule {
         let child_for_shutdown = self.child.clone();
         let name_for_shutdown = self.name.clone();
         tokio::spawn(async move {
-            let _ = shutdown.changed().await;
+            let _ = shutdown_rx.changed().await;
             tracing::info!(
                 "External module '{}' received shutdown signal",
                 name_for_shutdown

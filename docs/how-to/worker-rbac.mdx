@@ -1,0 +1,369 @@
+---
+title: 'III Workers Role based access control'
+description: 'Configure the WorkerModule to enable role-based access control for workers connecting over WebSocket.'
+---
+
+This guide walks you through enabling RBAC on your iii instance using the **WorkerModule**. Workers connect via WebSocket to a dedicated RBAC port, separate from the internal engine bridge.
+
+## 1. Add RBAC Config to the WorkerModule
+
+Add a `modules::worker::WorkerModule` entry with RBAC config to your engine config file. At minimum you need a port:
+
+```yaml title="iii-config.yaml"
+modules:
+  # ... your existing modules ...
+
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49135
+      expose_functions:
+        - match("api::*")
+```
+
+This exposes all functions whose ID starts with `api::` on port 49135 with no authentication.
+
+## 2. Write an Auth Function
+
+For production, you should authenticate workers. Register a function that validates credentials from the WebSocket upgrade request:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker('ws://localhost:49134')
+
+iii.registerFunction({ id: 'my-project::auth-function' }, async (input) => {
+  const token = input.headers?.['authorization']?.replace(/^Bearer\s+/i, '')
+  const apiKey = input.query_params?.['api_key']?.[0]
+
+  if (!token && !apiKey) {
+    throw new Error('Missing credentials')
+  }
+
+  // Validate the token/key against your auth system
+  const user = await validateCredentials(token || apiKey)
+
+  return {
+    allowed_functions: [],
+    forbidden_functions: user.role === 'readonly'
+      ? ['api::users::delete', 'api::users::update']
+      : [],
+    allowed_trigger_types: user.role === 'admin'
+      ? ['cron', 'webhook']
+      : [],
+    allow_trigger_type_registration: user.role === 'admin',
+    context: {
+      user_id: user.id,
+      role: user.role,
+    },
+  }
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker
+
+iii = register_worker('ws://localhost:49134')
+
+async def auth_function(input):
+    headers = input.get('headers', {})
+    query_params = input.get('query_params', {})
+
+    token = headers.get('authorization', '').replace('Bearer ', '', 1)
+    api_key = (query_params.get('api_key') or [None])[0]
+
+    if not token and not api_key:
+        raise Exception('Missing credentials')
+
+    user = await validate_credentials(token or api_key)
+
+    return {
+        'allowed_functions': [],
+        'forbidden_functions': ['api::users::delete', 'api::users::update']
+            if user['role'] == 'readonly' else [],
+        'allowed_trigger_types': ['cron', 'webhook']
+            if user['role'] == 'admin' else [],
+        'allow_trigger_type_registration': user['role'] == 'admin',
+        'context': {
+            'user_id': user['id'],
+            'role': user['role'],
+        },
+    }
+
+iii.register_function({'id': 'my-project::auth-function'}, auth_function)
+```
+</Tab>
+</Tabs>
+
+Update your config to reference the auth function:
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49135
+      auth_function_id: my-project::auth-function
+      expose_functions:
+        - match("api::*")
+```
+
+## 3. Write an Interceptor Function (Optional)
+
+An interceptor sits between the worker and the target function. Use it for validation, rate limiting, audit logging, or enriching the payload with auth context:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+iii.registerFunction({ id: 'my-project::interceptor-function' }, async (input) => {
+  const { function_id, payload, context } = input
+
+  console.log(`[audit] user=${context.user_id} invoking ${function_id}`)
+
+  // Enrich payload with auth context
+  const enrichedPayload = {
+    ...payload,
+    _caller_id: context.user_id,
+    _caller_role: context.role,
+  }
+
+  // Call the target function
+  const result = await iii.trigger({
+    function_id,
+    payload: enrichedPayload,
+  })
+
+  return result
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+async def interceptor_function(input):
+    function_id = input['function_id']
+    payload = input['payload']
+    context = input['context']
+
+    print(f"[audit] user={context['user_id']} invoking {function_id}")
+
+    enriched_payload = {
+        **payload,
+        '_caller_id': context['user_id'],
+        '_caller_role': context['role'],
+    }
+
+    result = await iii.trigger({
+        'function_id': function_id,
+        'payload': enriched_payload,
+    })
+
+    return result
+
+iii.register_function({'id': 'my-project::interceptor-function'}, interceptor_function)
+```
+</Tab>
+</Tabs>
+
+Add it to your config:
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49135
+      auth_function_id: my-project::auth-function
+      interceptor_function_id: my-project::interceptor-function
+      expose_functions:
+        - match("api::*")
+```
+
+## 4. Connect a Worker
+
+The RBAC port speaks the standard iii engine protocol. The easiest way to connect is using the SDK:
+
+```typescript
+import { registerWorker } from 'iii-sdk'
+
+const worker = registerWorker('ws://localhost:49135', {
+  headers: { 'authorization': 'Bearer my-token' },
+})
+
+const result = await worker.trigger({
+  function_id: 'api::users::list',
+  payload: { limit: 10 },
+})
+
+console.log(result)
+```
+
+
+You can also test with `wscat`:
+
+```bash
+wscat -c "ws://localhost:49135?api_key=my-secret-key"
+> {"type":"ping"}
+< {"type":"pong"}
+> {"type":"invokefunction","invocation_id":null,"function_id":"api::users::list","data":{"limit":10}}
+< {"type":"invocationresult","invocation_id":"...","function_id":"api::users::list","result":[...]}
+```
+
+## 5. Use Channels Through the RBAC Port
+
+Channels work on the RBAC port exactly as they do on the main engine port. The SDK's `createChannel()` works without changes:
+
+```typescript
+const worker = registerWorker('ws://localhost:49135', {
+  headers: { 'authorization': 'Bearer my-token' },
+})
+
+const channel = await worker.createChannel()
+
+// Pass channel refs to other functions via trigger
+const result = await worker.trigger({
+  function_id: 'api::files::process',
+  payload: { reader: channel.readerRef },
+})
+
+// Write data to the channel
+channel.writer.stream.write(Buffer.from('hello'))
+channel.writer.stream.end()
+```
+
+The RBAC port mounts the channel WebSocket endpoint at `/ws/channels/{channel_id}` on the same port, so channel data flows through the secure port without exposing the main engine's channel endpoint.
+
+## 6. RBAC for Trigger Registration
+
+Workers connecting through the RBAC port can register trigger types and triggers, subject to access control.
+
+### Auth Result Fields
+
+The auth function controls trigger access via two fields:
+
+- **`allowed_trigger_types`** — List of trigger type IDs this worker can register triggers for.
+- **`allow_trigger_type_registration`** — Whether this worker can register new trigger types.
+
+### Registration Hook Functions
+
+For fine-grained control, configure hook functions that are called before each registration:
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49135
+      auth_function_id: my-project::auth-function
+      on_trigger_registration_function_id: my-project::on-trigger-reg
+      on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+      expose_functions:
+        - match("api::*")
+```
+
+Each hook receives the registration details and the auth context, and must return `true` to allow the registration:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+iii.registerFunction({ id: 'my-project::on-trigger-reg' }, async (input) => {
+  const { trigger_id, trigger_type, function_id, config, context } = input
+
+  // Only allow triggers for functions the worker owns
+  if (!function_id.startsWith(`${context.role}::`)) {
+    return false
+  }
+
+  return true
+})
+
+iii.registerFunction({ id: 'my-project::on-trigger-type-reg' }, async (input) => {
+  const { trigger_type_id, description, context } = input
+  return context.role === 'admin'
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+async def on_trigger_reg(input):
+    function_id = input['function_id']
+    context = input['context']
+
+    if not function_id.startswith(f"{context['role']}::"):
+        return False
+
+    return True
+
+async def on_trigger_type_reg(input):
+    context = input['context']
+    return context['role'] == 'admin'
+
+iii.register_function({'id': 'my-project::on-trigger-reg'}, on_trigger_reg)
+iii.register_function({'id': 'my-project::on-trigger-type-reg'}, on_trigger_type_reg)
+```
+</Tab>
+</Tabs>
+
+## Expose Functions by Metadata
+
+If your functions register metadata, you can use metadata filters instead of (or in addition to) wildcard patterns:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+iii.registerFunction({
+  id: 'api::users::list',
+  metadata: { public: true, tier: 'free' },
+}, async (input) => {
+  // ...
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+iii.register_function({
+    'id': 'api::users::list',
+    'metadata': {'public': True, 'tier': 'free'},
+}, list_users)
+```
+</Tab>
+</Tabs>
+
+Then filter by metadata in your config:
+
+```yaml title="iii-config.yaml"
+expose_functions:
+  - metadata:
+      public: true
+  - metadata:
+      tier: "free"
+```
+
+## Full Example Config
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49134
+
+  - class: modules::stream::StreamModule
+    config:
+      port: 3112
+
+  - class: modules::worker::WorkerModule
+    config:
+      host: 0.0.0.0
+      port: 49135
+      auth_function_id: my-project::auth-function
+      interceptor_function_id: my-project::interceptor-function
+      on_trigger_registration_function_id: my-project::on-trigger-reg
+      on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+      expose_functions:
+        - match("api::*")
+        - match("*::public")
+        - metadata:
+            public: true
+```
+
+<Info title="Port Security">
+  Only expose the RBAC port (49135) to external networks. The main engine port (49134) and stream port (3112) should remain internal. Use firewall rules or network policies to enforce this.
+</Info>

@@ -465,7 +465,8 @@ impl Module for DisabledTelemetryModule {
 
     async fn start_background_tasks(
         &self,
-        _shutdown: tokio::sync::watch::Receiver<bool>,
+        _shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -539,14 +540,14 @@ impl Module for TelemetryModule {
 
     async fn start_background_tasks(
         &self,
-        shutdown: tokio::sync::watch::Receiver<bool>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         let interval_secs = self.config.heartbeat_interval_secs;
         let client = Arc::clone(self.active_client());
         let engine = Arc::clone(&self.engine);
         let ctx = self.ctx.clone();
         let start_time = self.start_time;
-        let mut shutdown_rx = shutdown;
 
         let engine_for_started = Arc::clone(&self.engine);
         let client_for_started = Arc::clone(self.active_client());
@@ -1824,8 +1825,8 @@ mod tests {
     #[tokio::test]
     async fn test_disabled_telemetry_module_start_background_tasks() {
         let module = DisabledTelemetryModule;
-        let (_tx, rx) = tokio::sync::watch::channel(false);
-        let result = module.start_background_tasks(rx).await;
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let result = module.start_background_tasks(rx, tx).await;
         assert!(result.is_ok());
     }
 
@@ -2140,7 +2141,7 @@ mod tests {
         let module = build_manual_module(engine, true, 1);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
-            .start_background_tasks(shutdown_rx)
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
             .await
             .expect("start background tasks");
 

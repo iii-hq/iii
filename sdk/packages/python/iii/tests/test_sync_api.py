@@ -42,7 +42,7 @@ class DummyTriggerHandler(TriggerHandler[Any]):
 def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
     ws = FakeWebSocket()
 
-    async def fake_connect(_: str) -> FakeWebSocket:
+    async def fake_connect(_: str, **kwargs: object) -> FakeWebSocket:
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)

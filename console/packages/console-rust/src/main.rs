@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
         iii_sdk::InitOptions {
             metadata: None,
             otel: otel_config,
+            headers: None,
         },
     );
 

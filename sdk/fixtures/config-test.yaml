@@ -1,5 +1,20 @@
-port: 49199
 modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49199
+
+  - class: modules::worker::WorkerModule
+    config:
+      host: 0.0.0.0
+      port: 49135
+      middleware_function_id: test::rbac-worker::middleware
+      rbac:
+        auth_function_id: test::rbac-worker::auth
+        expose_functions:
+          - match("test::ew::public::*")
+          - metadata:
+              ew_public: true
+
   - class: modules::stream::StreamModule
     config:
       port: ${STREAMS_PORT:3112}

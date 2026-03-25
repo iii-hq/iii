@@ -47,7 +47,8 @@
                   "how-to/create-ephemeral-worker",
                   "how-to/stream-realtime-data",
                   "how-to/create-custom-trigger-type",
-                  "how-to/configure-engine"
+                  "how-to/configure-engine",
+                  "how-to/worker-rbac"
                 ]
               },
               {
@@ -74,7 +75,8 @@
                   "modules/module-state",
                   "modules/module-pubsub",
                   "modules/module-exec",
-                  "modules/module-bridge"
+                  "modules/module-bridge",
+                  "modules/module-worker-rbac"
                 ]
               },
               {

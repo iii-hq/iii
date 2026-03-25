@@ -660,6 +660,7 @@ struct IIIInner {
     functions_available_callback_counter: AtomicUsize,
     functions_available_function_id: Mutex<Option<String>>,
     functions_available_trigger: Mutex<Option<Trigger>>,
+    headers: Mutex<Option<HashMap<String, String>>>,
     #[cfg(feature = "otel")]
     otel_config: Mutex<Option<OtelConfig>>,
 }
@@ -723,6 +724,7 @@ impl III {
             functions_available_callback_counter: AtomicUsize::new(0),
             functions_available_function_id: Mutex::new(None),
             functions_available_trigger: Mutex::new(None),
+            headers: Mutex::new(None),
             #[cfg(feature = "otel")]
             otel_config: Mutex::new(None),
         };
@@ -739,6 +741,11 @@ impl III {
     /// Set custom worker metadata (call before connect)
     pub fn set_metadata(&self, metadata: WorkerMetadata) {
         *self.inner.worker_metadata.lock_or_recover() = Some(metadata);
+    }
+
+    /// Set custom HTTP headers for the WebSocket handshake (call before connect).
+    pub fn set_headers(&self, headers: HashMap<String, String>) {
+        *self.inner.headers.lock_or_recover() = Some(headers);
     }
 
     /// Set OpenTelemetry configuration (call before connect)
@@ -1403,7 +1410,31 @@ impl III {
                 IIIConnectionState::Connecting
             });
 
-            match connect_async(&self.inner.address).await {
+            let custom_headers = self.inner.headers.lock_or_recover().clone();
+
+            let connect_result = if let Some(ref h) = custom_headers {
+                use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+                use tokio_tungstenite::tungstenite::http;
+                let mut request = self
+                    .inner
+                    .address
+                    .as_str()
+                    .into_client_request()
+                    .expect("valid ws request");
+                for (k, v) in h {
+                    if let (Ok(name), Ok(val)) = (
+                        http::header::HeaderName::from_bytes(k.as_bytes()),
+                        http::header::HeaderValue::from_str(v),
+                    ) {
+                        request.headers_mut().insert(name, val);
+                    }
+                }
+                connect_async(request).await
+            } else {
+                connect_async(&self.inner.address).await
+            };
+
+            match connect_result {
                 Ok((stream, _)) => {
                     tracing::info!(address = %self.inner.address, "iii connected");
                     has_connected_before = true;

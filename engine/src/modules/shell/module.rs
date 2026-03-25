@@ -44,7 +44,8 @@ impl Module for ExecCoreModule {
 
     async fn start_background_tasks(
         &self,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         let watcher = self.watcher.clone();
 
@@ -56,7 +57,7 @@ impl Module for ExecCoreModule {
 
         let watcher = self.watcher.clone();
         tokio::spawn(async move {
-            let _ = shutdown.changed().await;
+            let _ = shutdown_rx.changed().await;
             watcher.shutdown().await;
         });
 
@@ -104,7 +105,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
-            .start_background_tasks(shutdown_rx)
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
             .await
             .expect("start background tasks");
         let _ = shutdown_tx.send(true);

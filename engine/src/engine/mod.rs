@@ -6,7 +6,10 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::{
+    extract::ws::{Message as WsMessage, WebSocket},
+    http::{HeaderMap, Uri},
+};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -19,8 +22,11 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    modules::worker::channels::ChannelManager,
-    modules::{http_functions::HttpFunctionsModule, worker::TRIGGER_WORKERS_AVAILABLE},
+    modules::{
+        engine_fn::TRIGGER_WORKERS_AVAILABLE,
+        http_functions::HttpFunctionsModule,
+        worker::{WorkerConfig, channels::ChannelManager, rbac_session},
+    },
     protocol::{ErrorBody, Message},
     services::{Service, ServicesRegistry},
     telemetry::{
@@ -414,6 +420,43 @@ impl Engine {
                     description = %description,
                     "RegisterTriggerType"
                 );
+
+                if let Some(session) = &worker.session {
+                    if !session.allow_trigger_type_registration {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            trigger_type_id = %id,
+                            "trigger type registration not allowed for this session"
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(hook_fn_id) = session
+                        .config
+                        .rbac
+                        .as_ref()
+                        .and_then(|c| c.on_trigger_type_registration_function_id.as_ref())
+                    {
+                        let hook_input = serde_json::json!({
+                            "trigger_type_id": id,
+                            "description": description,
+                            "context": session.context,
+                        });
+                        let allowed = match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) => v.as_bool() == Some(true),
+                            _ => false,
+                        };
+                        if !allowed {
+                            tracing::warn!(
+                                worker_id = %worker.id,
+                                trigger_type_id = %id,
+                                "trigger type registration denied by hook"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+
                 let mut trigger_type = TriggerType::new(
                     id.clone(),
                     description.clone(),
@@ -448,6 +491,46 @@ impl Engine {
                     config = ?config,
                     "RegisterTrigger"
                 );
+
+                if let Some(session) = &worker.session {
+                    if let Some(allowed_trigger_types) = &session.allowed_trigger_types
+                        && !allowed_trigger_types.iter().any(|t| t == trigger_type)
+                    {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            trigger_type = %trigger_type,
+                            "trigger registration not allowed for type"
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(hook_fn_id) = session
+                        .config
+                        .rbac
+                        .as_ref()
+                        .and_then(|c| c.on_trigger_registration_function_id.as_ref())
+                    {
+                        let hook_input = serde_json::json!({
+                            "trigger_id": id,
+                            "trigger_type": trigger_type,
+                            "function_id": function_id,
+                            "config": config,
+                            "context": session.context,
+                        });
+                        let allowed = match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) => v.as_bool() == Some(true),
+                            _ => false,
+                        };
+                        if !allowed {
+                            tracing::warn!(
+                                worker_id = %worker.id,
+                                trigger_id = %id,
+                                "trigger registration denied by hook"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
 
                 let _ = self
                     .trigger_registry
@@ -496,6 +579,72 @@ impl Engine {
                     payload = ?data,
                     "InvokeFunction"
                 );
+
+                if let Some(session) = &worker.session {
+                    let function = self.functions.get(function_id);
+                    if !crate::modules::worker::rbac_config::is_function_allowed(
+                        function_id,
+                        session.config.rbac.clone(),
+                        &session.allowed_functions,
+                        &session.forbidden_functions,
+                        function.as_ref(),
+                    ) {
+                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        self.send_msg(
+                            worker,
+                            Message::InvocationResult {
+                                invocation_id: inv_id,
+                                function_id: function_id.clone(),
+                                result: None,
+                                error: Some(ErrorBody::new("FORBIDDEN", "function not allowed")),
+                                traceparent: traceparent.clone(),
+                                baggage: baggage.clone(),
+                            },
+                        )
+                        .await;
+                        return Ok(());
+                    }
+
+                    if let Some(middleware_id) = &session.config.middleware_function_id {
+                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                        let middleware_input = serde_json::json!({
+                            "function_id": function_id,
+                            "payload": data,
+                            "action": action,
+                            "context": session.context,
+                        });
+                        let engine = self.clone();
+                        let w = worker.clone();
+                        let middleware_id = middleware_id.clone();
+                        let function_id = function_id.clone();
+                        let traceparent = traceparent.clone();
+                        let baggage = baggage.clone();
+
+                        tokio::spawn(async move {
+                            let response = match engine.call(&middleware_id, middleware_input).await
+                            {
+                                Ok(result) => Message::InvocationResult {
+                                    invocation_id: inv_id,
+                                    function_id,
+                                    result,
+                                    error: None,
+                                    traceparent,
+                                    baggage,
+                                },
+                                Err(err) => Message::InvocationResult {
+                                    invocation_id: inv_id,
+                                    function_id,
+                                    result: None,
+                                    error: Some(err),
+                                    traceparent,
+                                    baggage,
+                                },
+                            };
+                            engine.send_msg(&w, response).await;
+                        });
+                        return Ok(());
+                    }
+                }
 
                 match action {
                     Some(crate::protocol::TriggerAction::Enqueue { queue }) => {
@@ -830,10 +979,32 @@ impl Engine {
         &self,
         socket: WebSocket,
         peer: SocketAddr,
+        uri: Uri,
+        headers: HeaderMap,
+        config: Arc<WorkerConfig>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
         tracing::debug!(peer = %peer, "Worker connected via WebSocket");
         let (mut ws_tx, mut ws_rx) = socket.split();
+
+        let session =
+            match rbac_session::handle_session(peer, Arc::new(self.clone()), config, uri, headers)
+                .await
+            {
+                Ok(session) => session,
+                Err(err) => {
+                    let error_msg = serde_json::json!({
+                        "type": "error",
+                        "error": { "code": err.code, "message": err.message }
+                    });
+                    let _ = ws_tx
+                        .send(WsMessage::Text(error_msg.to_string().into()))
+                        .await;
+                    let _ = ws_tx.send(WsMessage::Close(None)).await;
+                    return Ok(());
+                }
+            };
+
         let (tx, mut rx) = mpsc::channel::<Outbound>(64);
 
         let writer = tokio::spawn(async move {
@@ -855,7 +1026,7 @@ impl Engine {
             }
         });
 
-        let worker = Worker::with_ip(tx.clone(), peer.ip().to_string());
+        let worker = Worker::with_session(tx.clone(), session);
 
         tracing::debug!(worker_id = %worker.id, peer = %peer, "Assigned worker ID");
         self.worker_registry.register_worker(worker.clone());
@@ -1126,10 +1297,10 @@ mod tests {
         config::SecurityConfig,
         function::FunctionResult,
         modules::{
+            engine_fn::TRIGGER_WORKERS_AVAILABLE,
             http_functions::{HttpFunctionsModule, config::HttpFunctionsConfig},
             module::Module,
             observability::metrics::ensure_default_meter,
-            worker::TRIGGER_WORKERS_AVAILABLE,
         },
         protocol::{HttpInvocationRef, Message},
         workers::Worker,

@@ -67,7 +67,7 @@ def test_preconnect_registration_sent_once(monkeypatch: pytest.MonkeyPatch) -> N
     ws = FakeWebSocket()
     connect_calls = 0
 
-    async def fake_connect(_addr: str) -> FakeWebSocket:
+    async def fake_connect(_addr: str, **kwargs: object) -> FakeWebSocket:
         nonlocal connect_calls
         connect_calls += 1
         return ws
@@ -104,7 +104,7 @@ def test_reconnect_replays_durable_state_once_per_connection(
 ) -> None:
     sockets: list[FakeWebSocket] = []
 
-    async def fake_connect(_addr: str) -> FakeWebSocket:
+    async def fake_connect(_addr: str, **kwargs: object) -> FakeWebSocket:
         ws = FakeWebSocket()
         sockets.append(ws)
         return ws
@@ -149,7 +149,7 @@ def test_call_void_queued_while_disconnected_flushes_after_connect(
 ) -> None:
     ws = FakeWebSocket()
 
-    async def fake_connect(_addr: str) -> FakeWebSocket:
+    async def fake_connect(_addr: str, **kwargs: object) -> FakeWebSocket:
         return ws
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)

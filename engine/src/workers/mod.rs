@@ -17,7 +17,10 @@ use uuid::Uuid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{engine::Outbound, modules::observability::metrics::get_engine_metrics};
+use crate::{
+    engine::Outbound,
+    modules::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
+};
 
 #[derive(Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct WorkerTelemetryMeta {
@@ -53,9 +56,10 @@ impl WorkerRegistry {
     }
 
     pub fn register_worker(&self, worker: Worker) {
+        let ip_address = worker.session.as_ref().map(|s| s.ip_address.as_str());
         tracing::info!(
             worker_id = %worker.id,
-            ip_address = ?worker.ip_address,
+            ip_address = ?ip_address,
             "Worker registered"
         );
         self.workers.insert(worker.id, worker);
@@ -78,7 +82,7 @@ impl WorkerRegistry {
         let (ip_address, pid) = self
             .workers
             .get(worker_id)
-            .map(|w| (w.ip_address.clone(), w.pid))
+            .map(|w| (w.session.as_ref().map(|s| s.ip_address.clone()), w.pid))
             .unwrap_or((None, None));
 
         tracing::info!(
@@ -201,10 +205,10 @@ pub struct Worker {
     pub connected_at: DateTime<Utc>,
     pub name: Option<String>,
     pub os: Option<String>,
-    pub ip_address: Option<String>,
     pub status: WorkerStatus,
     pub telemetry: Option<WorkerTelemetryMeta>,
     pub pid: Option<u32>,
+    pub session: Option<Arc<Session>>,
 }
 
 impl Worker {
@@ -221,14 +225,14 @@ impl Worker {
             connected_at: Utc::now(),
             name: None,
             os: None,
-            ip_address: None,
             status: WorkerStatus::Connected,
             telemetry: None,
             pid: None,
+            session: None,
         }
     }
 
-    pub fn with_ip(channel: mpsc::Sender<Outbound>, ip_address: String) -> Self {
+    pub fn with_session(channel: mpsc::Sender<Outbound>, session: Session) -> Self {
         let id = Uuid::new_v4();
         Self {
             id,
@@ -241,10 +245,10 @@ impl Worker {
             connected_at: Utc::now(),
             name: None,
             os: None,
-            ip_address: Some(ip_address),
             status: WorkerStatus::Connected,
             telemetry: None,
             pid: None,
+            session: Some(Arc::new(session)),
         }
     }
 
@@ -368,10 +372,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_with_ip_tracks_functions_external_ids_and_invocations() {
+    async fn worker_with_session_tracks_functions_external_ids_and_invocations() {
+        use crate::engine::Engine;
+        use crate::modules::worker::WorkerConfig;
+
         let (tx, _rx) = mpsc::channel(8);
-        let worker = Worker::with_ip(tx, "127.0.0.1".to_string());
-        assert_eq!(worker.ip_address.as_deref(), Some("127.0.0.1"));
+        let session = Session {
+            engine: Arc::new(Engine::new()),
+            config: Arc::new(WorkerConfig::default()),
+            ip_address: "127.0.0.1".to_string(),
+            session_id: Uuid::new_v4(),
+            allowed_functions: vec![],
+            forbidden_functions: vec![],
+            allowed_trigger_types: Some(vec![]),
+            allow_trigger_type_registration: false,
+            context: serde_json::json!({}),
+        };
+        let worker = Worker::with_session(tx, session);
+        assert_eq!(
+            worker.session.as_ref().unwrap().ip_address.as_str(),
+            "127.0.0.1"
+        );
 
         worker.include_function_id("fn.local").await;
         worker.include_external_function_id("fn.remote").await;

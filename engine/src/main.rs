@@ -9,10 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{
-    EngineBuilder, logging,
-    modules::config::{DEFAULT_PORT, EngineConfig},
-};
+use iii::{EngineBuilder, logging, modules::config::EngineConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -129,39 +126,24 @@ enum WorkerCommands {
 }
 
 async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
-    if cli.use_default_config {
-        logging::init_log_from_config(None);
-        let config = EngineConfig::default_config();
-        let port = if config.port == 0 {
-            DEFAULT_PORT
-        } else {
-            config.port
-        };
-
-        EngineBuilder::new()
-            .default_config()
-            .address(format!("0.0.0.0:{}", port).as_str())
-            .build()
-            .await?
-            .serve()
-            .await?;
+    let config = if cli.use_default_config {
+        EngineConfig::default_config()
     } else {
-        logging::init_log_from_config(Some(&cli.config));
-        let config = EngineConfig::config_file(&cli.config)?;
-        let port = if config.port == 0 {
-            DEFAULT_PORT
-        } else {
-            config.port
-        };
+        EngineConfig::config_file(&cli.config)?
+    };
 
-        EngineBuilder::new()
-            .config_file(&cli.config)?
-            .address(format!("0.0.0.0:{}", port).as_str())
-            .build()
-            .await?
-            .serve()
-            .await?;
-    }
+    logging::init_log_from_config(if cli.use_default_config {
+        None
+    } else {
+        Some(&cli.config)
+    });
+
+    EngineBuilder::new()
+        .with_config(config)
+        .build()
+        .await?
+        .serve()
+        .await?;
 
     Ok(())
 }
@@ -212,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+    use iii::modules::worker::DEFAULT_PORT;
 
     #[test]
     fn trigger_parses_all_arguments() {
