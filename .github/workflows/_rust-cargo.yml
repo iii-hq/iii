@@ -59,9 +59,20 @@ jobs:
 
       - name: Publish to crates.io
         working-directory: ${{ inputs.package_path }}
-        run: cargo publish ${{ inputs.dry_run == true && '--dry-run' || '' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set +e
+          OUTPUT=$(cargo publish ${{ inputs.dry_run == true && '--dry-run' || '' }} 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          if [[ $EXIT_CODE -ne 0 ]]; then
+            if echo "$OUTPUT" | grep -qiE "already uploaded|already exists"; then
+              echo "::notice::Version already published to crates.io — skipping (idempotent)"
+            else
+              exit $EXIT_CODE
+            fi
+          fi
 
       - name: Notify Slack — result
         if: always() && steps.slack.outputs.ts != ''

@@ -65,7 +65,6 @@ jobs:
         run: python -m build
 
       - name: Validate package
-        if: inputs.dry_run == true
         run: twine check ${{ inputs.package_path }}/dist/*
 
       - name: Publish to PyPI
@@ -74,6 +73,7 @@ jobs:
         with:
           packages-dir: ${{ inputs.package_path }}/dist/
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
 
       - name: Notify Slack — result
         if: always() && steps.slack.outputs.ts != ''

@@ -39,6 +39,9 @@ permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: create-tag-${{ github.repository }}
+
 jobs:
   create-tag:
     name: Bump Versions & Create Tag
@@ -285,12 +288,22 @@ jobs:
           echo "All versions validated."
 
       - name: Check tag does not exist
+        id: tag_check
         env:
           TAG: ${{ steps.versions.outputs.tag }}
         run: |
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "::error::Tag $TAG already exists"
-            exit 1
+            TAG_SHA=$(git rev-parse "$TAG^{}")
+            HEAD_SHA=$(git rev-parse HEAD)
+            if [[ "$TAG_SHA" == "$HEAD_SHA" ]]; then
+              echo "::notice::Tag $TAG already exists at HEAD — idempotent re-run"
+              echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Tag $TAG already exists at a different commit"
+              exit 1
+            fi
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Configure git identity
@@ -302,13 +315,30 @@ jobs:
         if: inputs.dry_run != true
         env:
           TAG: ${{ steps.versions.outputs.tag }}
+          TARGET: ${{ inputs.target }}
         run: |
-          git add -A
-          git commit -m "chore: bump versions for release -- ${{ inputs.target }}($TAG)"
+          if [[ "$TARGET" == "iii" ]]; then
+            git add \
+              engine/Cargo.toml \
+              sdk/packages/rust/iii/Cargo.toml \
+              sdk/packages/node/iii/package.json \
+              sdk/packages/python/iii/pyproject.toml \
+              console/packages/console-rust/Cargo.toml
+          elif [[ "$TARGET" == "motia" ]]; then
+            git add \
+              frameworks/motia/motia-js/packages/motia/package.json \
+              frameworks/motia/motia-py/packages/motia/pyproject.toml
+          fi
 
-          git push origin main
+          if git diff --cached --quiet; then
+            echo "::notice::No version changes detected — versions may already be bumped"
+          else
+            git commit -m "chore: bump versions for release -- ${TARGET}($TAG)"
+            git push origin main
+          fi
 
       - name: Create and push tag
+        if: steps.tag_check.outputs.tag_exists != 'true'
         env:
           TAG: ${{ steps.versions.outputs.tag }}
         run: |
