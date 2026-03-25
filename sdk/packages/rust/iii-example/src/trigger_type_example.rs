@@ -50,7 +50,7 @@ pub fn setup(iii: &III) {
     // Register trigger type — returns a typed handle
     let webhook = iii.register_trigger_type(
         RegisterTriggerType::new("webhook", "Incoming webhook trigger", WebhookHandler)
-            .configuration_format::<WebhookTriggerConfig>()
+            .trigger_request_format::<WebhookTriggerConfig>()
             .call_request_format::<WebhookCallRequest>(),
     );
 
@@ -88,8 +88,8 @@ pub async fn list_trigger_types_example(iii: &III) {
             println!("Found {} trigger types:\n", trigger_types.len());
             for tt in &trigger_types {
                 println!("  [{}] {}", tt.id, tt.description);
-                if let Some(config_fmt) = &tt.configuration_format {
-                    println!("    configuration_format: {}", config_fmt);
+                if let Some(config_fmt) = &tt.trigger_request_format {
+                    println!("    trigger_request_format: {}", config_fmt);
                 }
                 if let Some(call_fmt) = &tt.call_request_format {
                     println!("    call_request_format: {}", call_fmt);

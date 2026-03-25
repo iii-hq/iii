@@ -405,7 +405,7 @@ impl Engine {
             Message::RegisterTriggerType {
                 id,
                 description,
-                configuration_format,
+                trigger_request_format,
                 call_request_format,
             } => {
                 tracing::debug!(
@@ -421,8 +421,8 @@ impl Engine {
                     Some(worker.id),
                 );
                 // Allow SDK workers to override formats from the protocol message
-                if let Some(fmt) = configuration_format {
-                    trigger_type.configuration_format = Some(fmt.clone());
+                if let Some(fmt) = trigger_request_format {
+                    trigger_type.trigger_request_format = Some(fmt.clone());
                 }
                 if let Some(fmt) = call_request_format {
                     trigger_type.call_request_format = Some(fmt.clone());
@@ -1360,7 +1360,7 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "my_trigger_type".to_string(),
             description: "A test trigger type".to_string(),
-            configuration_format: None,
+            trigger_request_format: None,
             call_request_format: None,
         };
         engine
@@ -1409,7 +1409,7 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "unreg_type".to_string(),
             description: "Trigger type for unregister test".to_string(),
-            configuration_format: None,
+            trigger_request_format: None,
             call_request_format: None,
         };
         engine
@@ -2074,7 +2074,7 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "cleanup_trigger_type".to_string(),
             description: "Trigger type for cleanup test".to_string(),
-            configuration_format: None,
+            trigger_request_format: None,
             call_request_format: None,
         };
         engine
@@ -2491,7 +2491,7 @@ mod tests {
         let tt_msg = Message::RegisterTriggerType {
             id: "cleanup_trigger_type".to_string(),
             description: "Test trigger type for cleanup".to_string(),
-            configuration_format: None,
+            trigger_request_format: None,
             call_request_format: None,
         };
         engine

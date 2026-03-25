@@ -76,7 +76,7 @@ impl TriggerHandler for FileWatchHandler {
     }
 }
 
-// ── Example 3: Untyped trigger (no configuration_format) ────────────────
+// ── Example 3: Untyped trigger (no trigger_request_format) ──────────────
 
 struct NoopHandler;
 
@@ -100,7 +100,7 @@ pub fn setup(iii: &III) {
             "One-time or daily scheduled trigger",
             ScheduleHandler,
         )
-        .configuration_format::<ScheduleTriggerConfig>()
+        .trigger_request_format::<ScheduleTriggerConfig>()
         .call_request_format::<ScheduleCallRequest>(),
     );
 
@@ -128,7 +128,7 @@ pub fn setup(iii: &III) {
             "Watch filesystem for changes",
             FileWatchHandler,
         )
-        .configuration_format::<FileWatchConfig>()
+        .trigger_request_format::<FileWatchConfig>()
         .call_request_format::<FileWatchCallRequest>(),
     );
 

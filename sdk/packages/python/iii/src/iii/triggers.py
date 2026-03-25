@@ -64,7 +64,7 @@ class TriggerTypeRef(Generic[C, R]):
             RegisterTriggerTypeInput(
                 id="webhook",
                 description="Incoming webhook trigger",
-                configuration_format=WebhookTriggerConfig,
+                trigger_request_format=WebhookTriggerConfig,
                 call_request_format=WebhookCallRequest,
             ),
             WebhookHandler(),

@@ -79,7 +79,7 @@ class RegisterTriggerTypeMessage(BaseModel):
 
     id: str
     description: str
-    configuration_format: Any | None = Field(default=None)
+    trigger_request_format: Any | None = Field(default=None)
     call_request_format: Any | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER_TYPE, alias="type")
 
@@ -116,13 +116,13 @@ class RegisterTriggerTypeInput(BaseModel):
     Attributes:
         id: Unique identifier for the trigger type.
         description: Human-readable description of the trigger type.
-        configuration_format: JSON Schema describing the expected trigger config.
+        trigger_request_format: JSON Schema describing the expected trigger config.
         call_request_format: JSON Schema describing the payload sent to functions.
     """
 
     id: str = Field(description="Unique identifier for the trigger type.")
     description: str = Field(description="Human-readable description of the trigger type.")
-    configuration_format: Any | None = Field(
+    trigger_request_format: Any | None = Field(
         default=None, description="JSON Schema for trigger configuration."
     )
     call_request_format: Any | None = Field(
@@ -386,13 +386,13 @@ class TriggerTypeInfo(BaseModel):
     Attributes:
         id: Trigger type identifier (e.g. ``http``, ``cron``, ``queue``).
         description: Human-readable description of the trigger type.
-        configuration_format: JSON Schema for the trigger configuration.
+        trigger_request_format: JSON Schema for the trigger configuration.
         call_request_format: JSON Schema for the call request payload.
     """
 
     id: str = Field(description="Trigger type identifier.")
     description: str = Field(description="Human-readable description.")
-    configuration_format: Any | None = Field(
+    trigger_request_format: Any | None = Field(
         default=None, description="JSON Schema for trigger configuration."
     )
     call_request_format: Any | None = Field(

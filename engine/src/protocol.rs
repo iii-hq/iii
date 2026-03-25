@@ -44,7 +44,7 @@ pub enum Message {
         id: String,
         description: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        configuration_format: Option<Value>,
+        trigger_request_format: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         call_request_format: Option<Value>,
     },

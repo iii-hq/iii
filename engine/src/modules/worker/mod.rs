@@ -84,7 +84,7 @@ pub struct TriggerTypeInfo {
     pub id: String,
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub configuration_format: Option<Value>,
+    pub trigger_request_format: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_request_format: Option<Value>,
 }
@@ -229,7 +229,7 @@ impl WorkerModule {
                 TriggerTypeInfo {
                     id: tt.id.clone(),
                     description: tt._description.clone(),
-                    configuration_format: tt.configuration_format.clone(),
+                    trigger_request_format: tt.trigger_request_format.clone(),
                     call_request_format: tt.call_request_format.clone(),
                 }
             })

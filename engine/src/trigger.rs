@@ -16,7 +16,7 @@ use uuid::Uuid;
 pub struct TriggerType {
     pub id: String,
     pub _description: String,
-    pub configuration_format: Option<Value>,
+    pub trigger_request_format: Option<Value>,
     pub call_request_format: Option<Value>,
     pub registrator: Box<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
@@ -30,20 +30,20 @@ impl TriggerType {
         worker_id: Option<Uuid>,
     ) -> Self {
         let id = id.into();
-        let configuration_format = Self::configuration_format_for(&id);
+        let trigger_request_format = Self::trigger_request_format_for(&id);
         let call_request_format = Self::call_request_format_for(&id);
         Self {
             id,
             _description: description.into(),
-            configuration_format,
+            trigger_request_format,
             call_request_format,
             registrator,
             worker_id,
         }
     }
 
-    pub fn with_configuration_format<T: schemars::JsonSchema>(mut self) -> Self {
-        self.configuration_format = Self::schema_for::<T>();
+    pub fn with_trigger_request_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.trigger_request_format = Self::schema_for::<T>();
         self
     }
 
@@ -56,7 +56,7 @@ impl TriggerType {
         serde_json::to_value(schemars::schema_for!(T)).ok()
     }
 
-    fn configuration_format_for(id: &str) -> Option<Value> {
+    fn trigger_request_format_for(id: &str) -> Option<Value> {
         use crate::trigger_formats::*;
 
         match id {

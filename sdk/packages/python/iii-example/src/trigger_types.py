@@ -76,7 +76,7 @@ def setup(iii: IIIClient) -> None:
         RegisterTriggerTypeInput(
             id="webhook",
             description="Incoming webhook trigger",
-            configuration_format=WebhookTriggerConfig,
+            trigger_request_format=WebhookTriggerConfig,
             call_request_format=WebhookCallRequest,
         ),
         WebhookHandler(),
@@ -104,7 +104,7 @@ def setup(iii: IIIClient) -> None:
         {
             "id": "schedule",
             "description": "One-time or daily scheduled trigger",
-            "configuration_format": ScheduleTriggerConfig,
+            "trigger_request_format": ScheduleTriggerConfig,
             "call_request_format": ScheduleCallRequest,
         },
         ScheduleHandler(),
@@ -175,8 +175,8 @@ def list_trigger_types_example(iii: IIIClient) -> None:
     print(f"Found {len(trigger_types)} trigger types:\n")
     for tt in trigger_types:
         print(f"  [{tt.id}] {tt.description}")
-        if tt.configuration_format:
-            print(f"    configuration_format: {tt.configuration_format}")
+        if tt.trigger_request_format:
+            print(f"    trigger_request_format: {tt.trigger_request_format}")
         if tt.call_request_format:
             print(f"    call_request_format: {tt.call_request_format}")
         print()

@@ -91,7 +91,7 @@ pub struct TriggerTypeInfo {
     pub id: String,
     pub description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub configuration_format: Option<Value>,
+    pub trigger_request_format: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_request_format: Option<Value>,
 }
@@ -99,7 +99,7 @@ pub struct TriggerTypeInfo {
 /// Builder for registering a custom trigger type with optional format schemas.
 ///
 /// Type parameters:
-/// - `C` tracks the configuration type (set via `.configuration_format::<T>()`)
+/// - `C` tracks the trigger registration type (set via `.trigger_request_format::<T>()`)
 /// - `R` tracks the call request type (set via `.call_request_format::<T>()`)
 ///
 /// Both default to `Value` (untyped) and change when the respective builder
@@ -110,7 +110,7 @@ pub struct RegisterTriggerType<H, C = Value, R = Value> {
     id: String,
     description: String,
     handler: H,
-    configuration_format: Option<Value>,
+    trigger_request_format: Option<Value>,
     call_request_format: Option<Value>,
     _phantom: std::marker::PhantomData<(C, R)>,
 }
@@ -121,7 +121,7 @@ impl<H: TriggerHandler> RegisterTriggerType<H> {
             id: id.into(),
             description: description.into(),
             handler,
-            configuration_format: None,
+            trigger_request_format: None,
             call_request_format: None,
             _phantom: std::marker::PhantomData,
         }
@@ -129,17 +129,17 @@ impl<H: TriggerHandler> RegisterTriggerType<H> {
 }
 
 impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
-    /// Set the configuration format schema from a type.
+    /// Set the trigger request format schema from a type.
     /// Changes `C`, enabling compile-time validation on
     /// [`TriggerTypeRef::register_trigger`].
-    pub fn configuration_format<T: schemars::JsonSchema + Serialize>(
+    pub fn trigger_request_format<T: schemars::JsonSchema + Serialize>(
         self,
     ) -> RegisterTriggerType<H, T, R> {
         RegisterTriggerType {
             id: self.id,
             description: self.description,
             handler: self.handler,
-            configuration_format: json_schema_for::<T>(),
+            trigger_request_format: json_schema_for::<T>(),
             call_request_format: self.call_request_format,
             _phantom: std::marker::PhantomData,
         }
@@ -153,7 +153,7 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
             id: self.id,
             description: self.description,
             handler: self.handler,
-            configuration_format: self.configuration_format,
+            trigger_request_format: self.trigger_request_format,
             call_request_format: json_schema_for::<T>(),
             _phantom: std::marker::PhantomData,
         }
@@ -163,7 +163,7 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
 /// Typed handle returned by [`III::register_trigger_type`].
 ///
 /// Type parameters:
-/// - `C` — configuration type for [`register_trigger`](Self::register_trigger)
+/// - `C` — trigger registration type for [`register_trigger`](Self::register_trigger)
 /// - `R` — call request type for [`register_function`](Self::register_function)
 #[derive(Clone)]
 pub struct TriggerTypeRef<C = Value, R = Value> {
@@ -173,7 +173,7 @@ pub struct TriggerTypeRef<C = Value, R = Value> {
 }
 
 impl<C: Serialize, R> TriggerTypeRef<C, R> {
-    /// Register a trigger with compile-time validated config.
+    /// Register a trigger with compile-time validated trigger config.
     pub fn register_trigger(
         &self,
         function_id: impl Into<String>,
@@ -953,7 +953,7 @@ impl III {
     /// # let iii = III::new("ws://localhost:49134");
     /// let my_trigger = iii.register_trigger_type(
     ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
-    ///         .configuration_format::<MyConfig>()
+    ///         .trigger_request_format::<MyConfig>()
     ///         .call_request_format::<MyRequest>(),
     /// );
     ///
@@ -973,7 +973,7 @@ impl III {
         let message = RegisterTriggerTypeMessage {
             id: registration.id,
             description: registration.description,
-            configuration_format: registration.configuration_format,
+            trigger_request_format: registration.trigger_request_format,
             call_request_format: registration.call_request_format,
         };
 
@@ -1305,7 +1305,7 @@ impl III {
     }
 
     /// List all registered trigger types from the engine with their
-    /// `configuration_format` and `call_request_format` schemas.
+    /// `trigger_request_format` and `call_request_format` schemas.
     pub async fn list_trigger_types(
         &self,
         include_internal: bool,

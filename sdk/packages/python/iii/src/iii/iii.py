@@ -608,7 +608,7 @@ class III:
 
         Args:
             trigger_type: A ``RegisterTriggerTypeInput`` or dict with
-                ``id``, ``description``, and optional ``configuration_format``
+                ``id``, ``description``, and optional ``trigger_request_format``
                 / ``call_request_format`` (Pydantic class or dict).
             handler: A ``TriggerHandler`` instance.
 
@@ -621,7 +621,7 @@ class III:
             ...     RegisterTriggerTypeInput(
             ...         id="webhook",
             ...         description="Webhook trigger",
-            ...         configuration_format=WebhookConfig,
+            ...         trigger_request_format=WebhookConfig,
             ...         call_request_format=WebhookCallRequest,
             ...     ),
             ...     WebhookHandler(),
@@ -632,13 +632,17 @@ class III:
         if isinstance(trigger_type, dict):
             trigger_type = RegisterTriggerTypeInput(**trigger_type)
 
-        config_cls = trigger_type.configuration_format if isinstance(trigger_type.configuration_format, type) else None
+        config_cls = (
+            trigger_type.trigger_request_format
+            if isinstance(trigger_type.trigger_request_format, type)
+            else None
+        )
         request_cls = trigger_type.call_request_format if isinstance(trigger_type.call_request_format, type) else None
 
         msg = RegisterTriggerTypeMessage(
             id=trigger_type.id,
             description=trigger_type.description,
-            configuration_format=_resolve_format(trigger_type.configuration_format),
+            trigger_request_format=_resolve_format(trigger_type.trigger_request_format),
             call_request_format=_resolve_format(trigger_type.call_request_format),
         )
         self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(message=msg, handler=handler)
@@ -1082,13 +1086,13 @@ class III:
                 types (e.g. ``engine::functions-available``). Defaults to ``False``.
 
         Returns:
-            A list of ``TriggerTypeInfo`` objects with ``configuration_format``
+            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
             and ``call_request_format`` schemas.
 
         Examples:
             >>> trigger_types = iii.list_trigger_types()
             >>> for tt in trigger_types:
-            ...     print(tt.id, tt.configuration_format)
+            ...     print(tt.id, tt.trigger_request_format)
         """
         return self._run_on_loop(self.list_trigger_types_async(include_internal))
 
@@ -1100,7 +1104,7 @@ class III:
                 types (e.g. ``engine::functions-available``). Defaults to ``False``.
 
         Returns:
-            A list of ``TriggerTypeInfo`` objects with ``configuration_format``
+            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
             and ``call_request_format`` schemas.
 
         Examples:
