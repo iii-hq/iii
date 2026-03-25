@@ -22,11 +22,13 @@ def _setup(iii) -> None:
     from .hooks import use_api, use_functions_available
     from .state import State
     from .stream import StreamClient, register_streams
+    from .trigger_types import setup as setup_trigger_types
 
     global state, streams
     state = State(iii)
     streams = StreamClient(iii)
     register_streams(iii)
+    setup_trigger_types(iii)
 
     use_functions_available(
         iii,
@@ -202,6 +204,8 @@ async def _post_example(req: ApiRequest, logger) -> ApiResponse:
 
 
 def main() -> None:
+    from .trigger_types import list_trigger_types_example
+
     engine_ws_url = os.environ.get("III_URL", "ws://localhost:49134")
     iii = register_worker(
         address=engine_ws_url,
@@ -212,6 +216,8 @@ def main() -> None:
     )
     _setup(iii)
 
+    # List all available trigger types with their schemas
+    list_trigger_types_example(iii)
 
 if __name__ == "__main__":
     main()

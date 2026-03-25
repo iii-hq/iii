@@ -148,9 +148,7 @@ impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
     /// Set the call request format schema from a type.
     /// Changes `R`, enabling compile-time validation on
     /// [`TriggerTypeRef::register_function`].
-    pub fn call_request_format<T: schemars::JsonSchema>(
-        self,
-    ) -> RegisterTriggerType<H, C, T> {
+    pub fn call_request_format<T: schemars::JsonSchema>(self) -> RegisterTriggerType<H, C, T> {
         RegisterTriggerType {
             id: self.id,
             description: self.description,
@@ -184,8 +182,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         self.iii.register_trigger(RegisterTriggerInput {
             trigger_type: self.trigger_type_id.clone(),
             function_id: function_id.into(),
-            config: serde_json::to_value(config)
-                .map_err(|e| IIIError::Handler(e.to_string()))?,
+            config: serde_json::to_value(config).map_err(|e| IIIError::Handler(e.to_string()))?,
         })
     }
 }
@@ -196,11 +193,7 @@ where
 {
     /// Register a sync function whose input type must match
     /// the call request format `R`.
-    pub fn register_function<O, E, F>(
-        &self,
-        id: impl Into<String>,
-        f: F,
-    ) -> FunctionRef
+    pub fn register_function<O, E, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
         E: std::fmt::Display + Send + 'static,
@@ -211,11 +204,7 @@ where
 
     /// Register an async function whose input type must match
     /// the call request format `R`.
-    pub fn register_function_async<O, E, F, Fut>(
-        &self,
-        id: impl Into<String>,
-        f: F,
-    ) -> FunctionRef
+    pub fn register_function_async<O, E, F, Fut>(&self, id: impl Into<String>, f: F) -> FunctionRef
     where
         O: Serialize + schemars::JsonSchema + Send + 'static,
         E: std::fmt::Display + Send + 'static,

@@ -1,4 +1,4 @@
-use iii_sdk::{IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler, III};
+use iii_sdk::{III, IIIError, RegisterTriggerType, TriggerConfig, TriggerHandler};
 
 // ── Custom trigger type config & call request as typed structs ──────────
 
