@@ -422,10 +422,10 @@ impl Engine {
                 );
                 // Allow SDK workers to override formats from the protocol message
                 if let Some(fmt) = configuration_format {
-                    trigger_type = trigger_type.with_configuration_format(fmt.clone());
+                    trigger_type.configuration_format = Some(fmt.clone());
                 }
                 if let Some(fmt) = call_request_format {
-                    trigger_type = trigger_type.with_call_request_format(fmt.clone());
+                    trigger_type.call_request_format = Some(fmt.clone());
                 }
 
                 let _ = self

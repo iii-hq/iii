@@ -42,13 +42,13 @@ impl TriggerType {
         }
     }
 
-    pub fn with_configuration_format(mut self, format: impl Serialize) -> Self {
-        self.configuration_format = Some(serde_json::to_value(format).unwrap());
+    pub fn with_configuration_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.configuration_format = Self::schema_for::<T>();
         self
     }
 
-    pub fn with_call_request_format(mut self, format: impl Serialize) -> Self {
-        self.call_request_format = Some(serde_json::to_value(format).unwrap());
+    pub fn with_call_request_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.call_request_format = Self::schema_for::<T>();
         self
     }
 

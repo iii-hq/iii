@@ -1,3 +1,4 @@
+pub mod builtin_triggers;
 pub mod channels;
 pub mod error;
 pub mod iii;
@@ -16,7 +17,8 @@ pub use channels::{
 pub use error::IIIError;
 pub use iii::{
     FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIAsyncFn, IIIConnectionState, IIIFn,
-    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, TriggerInfo, WorkerInfo,
+    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, RegisterTriggerType,
+    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo,
     WorkerMetadata, iii_async_fn, iii_fn,
 };
 pub use logger::Logger;
@@ -26,6 +28,7 @@ pub use protocol::{
     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream::{Streams, UpdateBuilder};
+pub use builtin_triggers::BuiltinTrigger;
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
     ApiRequest, ApiResponse, Channel, FieldPath, StreamUpdateInput, UpdateOp, UpdateResult,
