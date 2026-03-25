@@ -10,7 +10,7 @@ modules:
       # TCP port for the HTTP server. Default: 3111
       port: 3111
       # Network interface to bind. Use 0.0.0.0 for all interfaces, 127.0.0.1 for localhost only.
-      host: 0.0.0.0
+      host: 127.0.0.1
       # Maximum time (ms) before an HTTP request times out. Default: 30000
       default_timeout: 30000
       # Maximum concurrent HTTP requests the server will handle. Default: 1024
@@ -19,7 +19,8 @@ modules:
       cors:
         # Origins allowed to make requests. Use '*' for any origin, or list specific domains.
         allowed_origins:
-          - localhost
+          - http://localhost:3113
+          - http://127.0.0.1:3113
         # HTTP methods permitted for cross-origin requests.
         # Options: GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD
         allowed_methods:
@@ -34,7 +35,7 @@ modules:
   - class: modules::stream::StreamModule
     config:
       # TCP port for WebSocket connections. Default: 3112
-      port: 3112
+      port: ${STREAM_PORT:3112}
       # Network interface to bind. Use 0.0.0.0 for all interfaces, 127.0.0.1 for localhost only.
       host: 0.0.0.0
       # Function that validates stream connection/subscription requests (e.g., auth checks).
@@ -93,6 +94,11 @@ modules:
   # Functions enqueue jobs; subscribers process them asynchronously.
   - class: modules::queue::QueueModule
     config:
+      queue_configs:
+        default:
+          max_retries: 3
+          concurrency: 5
+          type: standard
       adapter:
         # Built-in queue adapter - local job queue with persistence options.
         class: modules::queue::BuiltinQueueAdapter
@@ -181,18 +187,18 @@ modules:
   - class: modules::observability::OtelModule
     config:
       # Master switch for all observability features.
-      enabled: false
+      enabled: ${OTEL_ENABLED:true}
       # Service name in traces/metrics/logs. Used for filtering in observability backends.
-      service_name: iii
+      service_name: ${OTEL_SERVICE_NAME:iii}
       # Service version tag. Useful for correlating deployments with telemetry changes.
-      service_version: '1.0.0'
+      service_version: ${SERVICE_VERSION:1.0.0}
       # Namespace/environment label (e.g., production, staging, development).
-      service_namespace: production
+      service_namespace: ${SERVICE_NAMESPACE:development}
       # Trace export destination. Options: memory (queryable via API), otlp (send to collector), both
-      exporter: both
+      exporter: ${OTEL_EXPORTER_TYPE:memory}
       # OTLP collector endpoint. Required when exporter is otlp or both.
       # Common endpoints: Jaeger (4317), Grafana Tempo (4317), Honeycomb, Datadog.
-      endpoint: http://localhost:4317
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
       # Base sampling ratio (0.0-1.0). 1.0 = sample all traces, 0.1 = sample 10%.
       # Overridden by advanced sampling rules below when configured.
       sampling_ratio: 1.0
@@ -220,31 +226,31 @@ modules:
           max_traces_per_second: 100
       # Maximum spans to retain in memory. Used when exporter is memory or both.
       # Higher = more history for local debugging, more memory usage.
-      memory_max_spans: 10000
+      memory_max_spans: ${OTEL_MEMORY_MAX_SPANS:10000}
       # Metrics collection for counters, gauges, histograms.
       metrics_enabled: true
       # Metrics storage. Options: memory (queryable via API), otlp (send to collector)
-      metrics_exporter: memory
+      metrics_exporter: ${OTEL_METRICS_EXPORTER:memory}
       # How long (seconds) to retain metrics before expiration. Default: 3600 (1 hour)
       metrics_retention_seconds: 3600
       # Maximum metric data points to store. Prevents unbounded memory growth.
       metrics_max_count: 10000
       # Log collection and storage.
-      logs_enabled: true
+      logs_enabled: ${OTEL_LOGS_ENABLED:true}
       # Log export destination. Options: memory (queryable via API), otlp (send to collector), both
-      logs_exporter: both
+      logs_exporter: ${OTEL_LOGS_EXPORTER:memory}
       # Maximum log records to retain in memory.
-      logs_max_count: 1000
+      logs_max_count: ${OTEL_LOGS_MAX_COUNT:1000}
       # How long (seconds) to retain logs before expiration. Default: 3600 (1 hour)
-      logs_retention_seconds: 3600
+      logs_retention_seconds: ${OTEL_LOGS_RETENTION_SECONDS:3600}
       # Batch size for OTLP log export. Larger batches = fewer network calls, higher latency.
       logs_batch_size: 100
       # How often (ms) to flush logs to OTLP collector.
       logs_flush_interval_ms: 5000
       # Log sampling ratio (0.0-1.0). 1.0 = keep all logs, 0.5 = keep 50%.
-      logs_sampling_ratio: 1.0
+      logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}
       # Also print SDK logs to engine console for local debugging.
-      logs_console_output: true
+      logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:true}
       # Alert rules - trigger actions when metrics cross thresholds.
       alerts:
         # Alert when error rate exceeds threshold.
@@ -258,10 +264,10 @@ modules:
           # Time window (seconds) for metric aggregation.
           window_seconds: 60
           # Action when alert triggers.
-          action:
-            # Webhook action - POST alert payload to URL.
-            type: webhook
-            url: https://example.com/alert
+          # action:
+          #   # Webhook action - POST alert payload to URL.
+          #   type: webhook
+          #   url: https://example.com/alert
           enabled: true
           # Minimum seconds between repeated alerts (debounce).
           cooldown_seconds: 300
@@ -283,7 +289,7 @@ modules:
       # Alias for level (deprecated, use level instead).
       log_level: info
       # Console output format. Options: default (human-readable with colors), json (structured)
-      format: json
+      format: default
 
   # HTTP Functions module - enables HTTP-invoked functions (outbound HTTP calls from the engine).
   # Required for functions registered with HttpInvocationConfig.
@@ -311,44 +317,66 @@ modules:
   # Exec module - spawns external processes (SDK workers) and watches for file changes.
   # Useful for setups where workers need to run alongside the engine on the same host.
   # Also useful from frameworks that support this style of operation such as Motia.
-  # - class: modules::shell::ExecModule
-  #   config:
-  #     # Directories to watch for file changes. Changes trigger process restart.
-  #     watch:
-  #       - ./steps
-  #     # Command and arguments to execute. First element is command, rest are args.
-  #     exec:
-  #       - motia-py
+  # # Rust worker:
   # - class: modules::shell::ExecModule
   #   config:
   #     watch:
-  #       - ./steps
+  #       - ./workers/**/*.rs
+  #       - ./src/**/*.rs
   #     exec:
-  #       - npx
-  #       - motia-node
+  #       - cargo run --build my-rust-worker
+  #
+  # # Python worker:
+  # - class: modules::shell::ExecModule
+  #   config:
+  #     watch:
+  #       - ./workers/**/*.py
+  #       - ./src/**/*.py
+  #     exec:
+  #       - uv run ./src/my_python_worker.py
+  #
+  # # Node/TypeScript worker:
+  # - class: modules::shell::ExecModule
+  #   config:
+  #     watch:
+  #       - ./workers/**/*.ts
+  #       - ./src/**/*.ts
+  #       - ./workers/**/*.js
+  #       - ./src/**/*.js
+  #     exec:
+  #       - pnpm dev:my-node-worker
+  #
+  # # Motia worker:
+  # - class: modules::shell::ExecModule
+  #   config:
+  #     watch:
+  #       - ./steps/**/*.ts
+  #       - ./steps/**/*.py
+  #     exec:
+  #       - npx motia-node
 
   # Bridge Client module - connects this engine to a remote iii instance for cross-instance
   # function invocation. Enables distributed architectures and function federation.
-  - class: modules::bridge_client::BridgeClientModule
-    config:
-      # WebSocket URL of the remote iii engine to connect to.
-      url: ws://localhost:49134
-      # Unique identifier for this client in the remote engine's registry.
-      service_id: bridge-client
-      # Human-readable name for logging and observability.
-      service_name: bridge-client
-      # Functions to expose to the remote engine (remote can call local functions).
-      expose:
-        # Local function becomes callable from remote as remote_function (or same name if omitted).
-        - local_function: logger.info
-          remote_function: logger.info
-      # Functions to forward to remote engine (local calls invoke remote functions).
-      forward:
-        # Calling local_function locally will invoke remote_function on the remote engine.
-        - local_function: remote.kv.get
-          remote_function: kv_server::get
-          # Maximum time (ms) to wait for remote response.
-          timeout_ms: 5000
+  # - class: modules::bridge_client::BridgeClientModule
+  #   config:
+  #     # WebSocket URL of the remote iii engine to connect to.
+  #     url: ws://localhost:49134
+  #     # Unique identifier for this client in the remote engine's registry.
+  #     service_id: bridge-client
+  #     # Human-readable name for logging and observability.
+  #     service_name: bridge-client
+  #     # Functions to expose to the remote engine (remote can call local functions).
+  #     expose:
+  #       # Local function becomes callable from remote as remote_function (or same name if omitted).
+  #       - local_function: logger.info
+  #         remote_function: logger.info
+  #     # Functions to forward to remote engine (local calls invoke remote functions).
+  #     forward:
+  #       # Calling local_function locally will invoke remote_function on the remote engine.
+  #       - local_function: remote.state.get
+  #         remote_function: state::get
+  #         # Maximum time (ms) to wait for remote response.
+  #         timeout_ms: 5000
 
   # Telemetry module - anonymous product usage analytics for iii development.
   # Helps the team understand usage patterns and prioritize features.
@@ -362,14 +390,3 @@ modules:
       sdk_api_key: ''
       # How often (seconds) to send heartbeat events. Default: 21600 (6 hours)
       heartbeat_interval_secs: 21600
-
-  # KV Server module - shared key-value storage backend for internal use by adapters and functions.
-  # Provides kv_server.get/set/delete functions for direct KV access.
-  - class: modules::kv_server::KvServer
-    config:
-      # Storage mode. Options: file_based (persists to disk), in_memory (lost on restart)
-      store_method: file_based
-      # Directory path for file_based storage.
-      file_path: ./data/kv_store
-      # How often (ms) to flush dirty data to disk.
-      save_interval_ms: 5000
