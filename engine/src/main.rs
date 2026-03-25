@@ -9,7 +9,11 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{EngineBuilder, logging, modules::config::EngineConfig};
+use iii::{
+    EngineBuilder, logging,
+    modules::config::EngineConfig,
+    modules::worker::DEFAULT_PORT,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -70,6 +74,10 @@ enum Commands {
     #[command(subcommand)]
     Worker(WorkerCommands),
 
+    /// Internal: boot a libkrun VM (crash-isolated subprocess)
+    #[command(name = "__vm-boot", hide = true)]
+    VmBoot(cli::vm_boot::VmBootArgs),
+
     /// Update iii and managed binaries to their latest versions
     Update {
         /// Specific command or binary to update (e.g., "console", "self").
@@ -96,32 +104,121 @@ enum SdkCommands {
 
 #[derive(Subcommand, Debug)]
 enum WorkerCommands {
-    /// Add a worker from the registry (or all workers from iii.toml if no name given)
+    /// Add a worker from the registry or by OCI image reference
     Add {
-        /// Worker name to install, optionally with version (e.g., "pdfkit" or "pdfkit@1.0.0")
+        /// Worker name or OCI image reference (e.g., "pdfkit", "pdfkit@1.0.0", "ghcr.io/org/worker:tag")
         #[arg(value_name = "WORKER[@VERSION]")]
-        worker_name: Option<String>,
+        worker_name: String,
 
-        /// Overwrite existing config.yaml entries without prompting
-        #[arg(long, short)]
-        force: bool,
+        /// Container runtime
+        #[arg(long, default_value = "libkrun")]
+        runtime: String,
+
+        /// Engine host address
+        #[arg(long, default_value = "localhost")]
+        address: String,
+
+        /// Engine WebSocket port
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
     },
 
-    /// Remove a worker (removes binary, manifest entry, and config)
+    /// Remove a worker (stops and removes the container)
     Remove {
         /// Worker name to remove (e.g., "pdfkit")
         #[arg(value_name = "WORKER")]
         worker_name: String,
+
+        /// Engine host address
+        #[arg(long, default_value = "localhost")]
+        address: String,
+
+        /// Engine WebSocket port
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
     },
 
-    /// List installed workers and their versions
-    List,
-
-    /// Show details about a worker from the registry
-    Info {
-        /// Worker name to inspect (e.g., "pdfkit")
+    /// Start a previously stopped managed worker container
+    Start {
+        /// Worker name to start
         #[arg(value_name = "WORKER")]
         worker_name: String,
+
+        /// Engine host address
+        #[arg(long, default_value = "localhost")]
+        address: String,
+
+        /// Engine WebSocket port
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Stop a managed worker container
+    Stop {
+        /// Worker name to stop
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
+
+        /// Engine host address
+        #[arg(long, default_value = "localhost")]
+        address: String,
+
+        /// Engine WebSocket port
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// Run a worker project in an isolated environment for development.
+    ///
+    /// Auto-detects the project type (package.json, Cargo.toml, pyproject.toml)
+    /// and runs it inside a VM (libkrun) connected
+    /// to the engine.
+    Dev {
+        /// Path to the worker project directory
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Sandbox name (defaults to directory name)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Runtime to use (auto-detected if not set)
+        #[arg(long, value_parser = ["libkrun"])]
+        runtime: Option<String>,
+
+        /// Force rebuild: re-run setup and install scripts (libkrun only)
+        #[arg(long)]
+        rebuild: bool,
+
+        /// Engine host address
+        #[arg(long, default_value = "localhost")]
+        address: String,
+
+        /// Engine WebSocket port
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+    },
+
+    /// List all workers and their status
+    List,
+
+    /// Show logs from a managed worker container
+    Logs {
+        /// Worker name
+        #[arg(value_name = "WORKER")]
+        worker_name: String,
+
+        /// Follow log output
+        #[arg(long, short)]
+        follow: bool,
+
+        /// Engine host address
+        #[arg(long, default_value = "localhost")]
+        address: String,
+
+        /// Engine WebSocket port
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
     },
 }
 
@@ -173,14 +270,52 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Worker(worker_cmd)) => {
             let exit_code = match worker_cmd {
-                WorkerCommands::Add { worker_name, force } => {
-                    cli::handle_install(worker_name.as_deref(), *force).await
+                WorkerCommands::Add {
+                    worker_name,
+                    runtime,
+                    address,
+                    port,
+                } => {
+                    cli::managed::handle_managed_add(worker_name, runtime, address, *port).await
                 }
-                WorkerCommands::Remove { worker_name } => cli::handle_uninstall(worker_name),
-                WorkerCommands::List => cli::handle_worker_list(),
-                WorkerCommands::Info { worker_name } => cli::handle_info(worker_name).await,
+                WorkerCommands::Remove {
+                    worker_name,
+                    address,
+                    port,
+                } => {
+                    cli::managed::handle_managed_remove(worker_name, address, *port).await
+                }
+                WorkerCommands::Start {
+                    worker_name,
+                    address,
+                    port,
+                } => cli::managed::handle_managed_start(worker_name, address, *port).await,
+                WorkerCommands::Stop {
+                    worker_name,
+                    address,
+                    port,
+                } => cli::managed::handle_managed_stop(worker_name, address, *port).await,
+                WorkerCommands::Dev {
+                    path,
+                    name,
+                    runtime,
+                    rebuild,
+                    address,
+                    port,
+                } => cli::managed::handle_worker_dev(path, name.as_deref(), runtime.as_deref(), *rebuild, address, *port).await,
+                WorkerCommands::List => cli::managed::handle_worker_list().await,
+                WorkerCommands::Logs {
+                    worker_name,
+                    follow,
+                    address,
+                    port,
+                } => cli::managed::handle_managed_logs(worker_name, *follow, address, *port).await,
             };
             std::process::exit(exit_code);
+        }
+        Some(Commands::VmBoot(args)) => {
+            // Crash-isolated subprocess: boot VM and never return.
+            cli::vm_boot::run(args);
         }
         Some(Commands::Update { target }) => {
             let exit_code = cli::handle_update(target.as_deref()).await;
@@ -342,35 +477,11 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "worker", "add", "pdfkit@1.0.0"])
             .expect("should parse worker add with worker name");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Add { worker_name, force })) => {
-                assert_eq!(worker_name.as_deref(), Some("pdfkit@1.0.0"));
-                assert!(!force);
-            }
-            _ => panic!("expected Worker Add subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_add_parses_with_force_flag() {
-        let cli = Cli::try_parse_from(["iii", "worker", "add", "pdfkit", "--force"])
-            .expect("should parse worker add with force flag");
-        match cli.command {
-            Some(Commands::Worker(WorkerCommands::Add { worker_name, force })) => {
-                assert_eq!(worker_name.as_deref(), Some("pdfkit"));
-                assert!(force);
-            }
-            _ => panic!("expected Worker Add subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_add_parses_without_worker_name() {
-        let cli = Cli::try_parse_from(["iii", "worker", "add"])
-            .expect("should parse worker add without worker");
-        match cli.command {
-            Some(Commands::Worker(WorkerCommands::Add { worker_name, force })) => {
-                assert!(worker_name.is_none());
-                assert!(!force);
+            Some(Commands::Worker(WorkerCommands::Add {
+                worker_name, runtime, ..
+            })) => {
+                assert_eq!(worker_name, "pdfkit@1.0.0");
+                assert_eq!(runtime, "libkrun");
             }
             _ => panic!("expected Worker Add subcommand"),
         }
@@ -381,7 +492,7 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "worker", "remove", "pdfkit"])
             .expect("should parse worker remove");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Remove { worker_name })) => {
+            Some(Commands::Worker(WorkerCommands::Remove { worker_name, .. })) => {
                 assert_eq!(worker_name, "pdfkit");
             }
             _ => panic!("expected Worker Remove subcommand"),
@@ -398,14 +509,75 @@ mod tests {
     }
 
     #[test]
-    fn worker_info_parses_worker_name() {
-        let cli = Cli::try_parse_from(["iii", "worker", "info", "pdfkit"])
-            .expect("should parse worker info command");
+    fn worker_start_parses() {
+        let cli = Cli::try_parse_from(["iii", "worker", "start", "image-resize"])
+            .expect("should parse worker start");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Info { worker_name })) => {
-                assert_eq!(worker_name, "pdfkit");
+            Some(Commands::Worker(WorkerCommands::Start {
+                worker_name,
+                address,
+                port,
+            })) => {
+                assert_eq!(worker_name, "image-resize");
+                assert_eq!(address, "localhost");
+                assert_eq!(port, DEFAULT_PORT);
             }
-            _ => panic!("expected Worker Info subcommand"),
+            _ => panic!("expected Worker Start subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_stop_parses() {
+        let cli = Cli::try_parse_from(["iii", "worker", "stop", "image-resize"])
+            .expect("should parse worker stop");
+        match cli.command {
+            Some(Commands::Worker(WorkerCommands::Stop {
+                worker_name,
+                address,
+                port,
+            })) => {
+                assert_eq!(worker_name, "image-resize");
+                assert_eq!(address, "localhost");
+                assert_eq!(port, DEFAULT_PORT);
+            }
+            _ => panic!("expected Worker Stop subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_logs_parses() {
+        let cli = Cli::try_parse_from(["iii", "worker", "logs", "image-resize"])
+            .expect("should parse worker logs");
+        match cli.command {
+            Some(Commands::Worker(WorkerCommands::Logs {
+                worker_name,
+                follow,
+                address,
+                port,
+            })) => {
+                assert_eq!(worker_name, "image-resize");
+                assert!(!follow);
+                assert_eq!(address, "localhost");
+                assert_eq!(port, DEFAULT_PORT);
+            }
+            _ => panic!("expected Worker Logs subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_logs_parses_with_follow() {
+        let cli = Cli::try_parse_from(["iii", "worker", "logs", "image-resize", "--follow"])
+            .expect("should parse worker logs --follow");
+        match cli.command {
+            Some(Commands::Worker(WorkerCommands::Logs {
+                worker_name,
+                follow,
+                ..
+            })) => {
+                assert_eq!(worker_name, "image-resize");
+                assert!(follow);
+            }
+            _ => panic!("expected Worker Logs subcommand"),
         }
     }
 
