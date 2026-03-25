@@ -34,13 +34,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: taiki-e/install-action@cargo-nextest
 
       - name: Build and run coverage
         run: |
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo build -p iii --all-features
-          cargo nextest run -p iii --all-features --retries 2
+          cargo test -p iii --all-features || cargo test -p iii --all-features
           cargo llvm-cov report \
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
