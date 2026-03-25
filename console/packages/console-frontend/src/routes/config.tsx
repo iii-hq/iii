@@ -71,7 +71,7 @@ function ConfigPage() {
   const consoleConfig = useConfig()
   const [endpoints, setEndpoints] = useState<EndpointStatus[]>([
     {
-      url: '',
+      url: `${window.location.origin}/api/engine`,
       name: 'iii Engine',
       icon: <Terminal className="w-4 h-4" />,
       status: 'checking',
@@ -121,7 +121,27 @@ function ConfigPage() {
     const results = await Promise.all(
       endpoints.map(async (ep) => {
         if (ep.url.startsWith('ws://') || ep.url.startsWith('wss://')) {
-          return { ...ep, status: 'online' as const }
+          try {
+            const status = await new Promise<'online' | 'offline'>((resolve) => {
+              const ws = new WebSocket(ep.url)
+              const timer = setTimeout(() => {
+                ws.close()
+                resolve('offline')
+              }, 3000)
+              ws.onopen = () => {
+                clearTimeout(timer)
+                ws.close()
+                resolve('online')
+              }
+              ws.onerror = () => {
+                clearTimeout(timer)
+                resolve('offline')
+              }
+            })
+            return { ...ep, status }
+          } catch {
+            return { ...ep, status: 'offline' as const }
+          }
         }
         const start = Date.now()
         try {

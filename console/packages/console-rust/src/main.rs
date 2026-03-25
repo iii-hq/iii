@@ -47,7 +47,6 @@ struct Args {
     /// Enable the experimental flow visualization page
     #[arg(long, env = "III_ENABLE_FLOW")]
     enable_flow: bool,
-
 }
 
 async fn shutdown_signal() {

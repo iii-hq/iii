@@ -155,6 +155,8 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         // avoiding proxy loops since this is a local reverse proxy.
         client: reqwest::Client::builder()
             .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client"),
     });
@@ -187,13 +189,13 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         &app_state.config.host
     };
     if cors_host != "localhost" && cors_host != "127.0.0.1" {
-        if let Ok(v) = format!("http://{}:{}", cors_host, app_state.config.port)
-            .parse::<HeaderValue>()
+        if let Ok(v) =
+            format!("http://{}:{}", cors_host, app_state.config.port).parse::<HeaderValue>()
         {
             origins.push(v);
         }
-        if let Ok(v) = format!("https://{}:{}", cors_host, app_state.config.port)
-            .parse::<HeaderValue>()
+        if let Ok(v) =
+            format!("https://{}:{}", cors_host, app_state.config.port).parse::<HeaderValue>()
         {
             origins.push(v);
         }

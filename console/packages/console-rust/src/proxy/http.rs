@@ -55,9 +55,7 @@ pub async fn http_proxy_handler(
     debug!("Proxying {} {} -> {}", parts.method, parts.uri, target_url);
 
     // Build the upstream request
-    let mut upstream_req = state
-        .client
-        .request(parts.method.clone(), &target_url);
+    let mut upstream_req = state.client.request(parts.method.clone(), &target_url);
 
     // Forward headers, filtering out hop-by-hop headers
     let forwarded_headers = filter_hop_by_hop(&parts.headers);
@@ -73,13 +71,10 @@ pub async fn http_proxy_handler(
     }
 
     // Send the request
-    let upstream_resp = upstream_req
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("Proxy request failed: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?;
+    let upstream_resp = upstream_req.send().await.map_err(|e| {
+        tracing::error!("Proxy request failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
 
     // Build the response
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())
@@ -88,17 +83,14 @@ pub async fn http_proxy_handler(
     let mut response_headers = HeaderMap::new();
     for (key, value) in upstream_resp.headers() {
         if !is_hop_by_hop(key.as_str()) {
-            response_headers.insert(key.clone(), value.clone());
+            response_headers.append(key.clone(), value.clone());
         }
     }
 
-    let response_body = upstream_resp
-        .bytes()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to read proxy response body: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?;
+    let response_body = upstream_resp.bytes().await.map_err(|e| {
+        tracing::error!("Failed to read proxy response body: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
 
     let mut response = (status, Body::from(response_body)).into_response();
     *response.headers_mut() = response_headers;
@@ -113,7 +105,7 @@ fn filter_hop_by_hop(headers: &HeaderMap) -> reqwest::header::HeaderMap {
         if !is_hop_by_hop(key.as_str()) && key.as_str() != "host" {
             if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_ref()) {
                 if let Ok(val) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
-                    filtered.insert(name, val);
+                    filtered.append(name, val);
                 }
             }
         }

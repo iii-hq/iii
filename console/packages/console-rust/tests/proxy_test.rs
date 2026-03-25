@@ -85,9 +85,11 @@ async fn test_proxy_forwards_get_request() {
 async fn test_proxy_preserves_query_params() {
     let app = Router::new().route(
         "/_console/functions",
-        get(|axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>| async move {
-            Json(json!({"received_params": params}))
-        }),
+        get(
+            |axum::extract::Query(params): axum::extract::Query<
+                std::collections::HashMap<String, String>,
+            >| async move { Json(json!({"received_params": params})) },
+        ),
     );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
