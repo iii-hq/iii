@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { getConnectionInfo } from './config'
+import { getStreamsWs } from './config'
 import type { MetricsSnapshot, StreamMessage } from './types/shared'
 
 const DEVTOOLS_STREAM = 'iii:devtools:state'
@@ -11,7 +11,7 @@ export function createMetricsSubscription(queryClient: QueryClient) {
   let isActive = false
   const subscriptionId = `console-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
-  const { streamsWs } = getConnectionInfo()
+  const streamsWs = getStreamsWs()
 
   function connect() {
     if (!isActive) return
@@ -126,7 +126,7 @@ export function createStreamCapture(queryClient: QueryClient) {
   let isActive = false
   let currentSubscriptions: string[] = []
 
-  const { streamsWs } = getConnectionInfo()
+  const streamsWs = getStreamsWs()
 
   function connect() {
     if (!isActive) return

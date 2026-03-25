@@ -4,14 +4,18 @@ use axum::{
     extract::Path,
     http::{header, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{any, get},
     Json, Router,
 };
 use rust_embed::Embed;
 use serde_json::json;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
+
+use crate::proxy::http::{ProxyConfig, ProxyState};
+use crate::proxy::{http::http_proxy_handler, ws::ws_proxy_handler};
 
 #[derive(Embed)]
 #[folder = "assets/"]
@@ -25,6 +29,12 @@ pub struct ServerConfig {
     pub engine_port: u16,
     pub ws_port: u16,
     pub enable_flow: bool,
+}
+
+pub struct AppState {
+    pub config: ServerConfig,
+    #[allow(dead_code)]
+    pub proxy: Arc<ProxyState>,
 }
 
 /// Generate index.html with runtime config injected
@@ -68,28 +78,29 @@ fn get_index_html(config: &ServerConfig) -> String {
 
 /// Serve the /api/config endpoint with runtime configuration
 async fn serve_config(
-    axum::extract::State(config): axum::extract::State<std::sync::Arc<ServerConfig>>,
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
 ) -> Json<serde_json::Value> {
+    let config = &state.config;
     Json(json!({
         "engineHost": config.engine_host,
         "enginePort": config.engine_port,
         "wsPort": config.ws_port,
         "consolePort": config.port,
         "version": env!("CARGO_PKG_VERSION"),
-        "enableFlow": config.enable_flow
+        "enableFlow": config.enable_flow,
     }))
 }
 
 /// Serve the index.html with runtime config
 async fn serve_index(
-    axum::extract::State(config): axum::extract::State<std::sync::Arc<ServerConfig>>,
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
 ) -> Html<String> {
-    Html(get_index_html(&config))
+    Html(get_index_html(&state.config))
 }
 
 /// Serve static files or fallback to index.html for SPA routing
 async fn serve_static_or_index(
-    axum::extract::State(config): axum::extract::State<std::sync::Arc<ServerConfig>>,
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
     Path(path): Path<String>,
 ) -> Response {
     // Try to serve the static file first
@@ -107,7 +118,7 @@ async fn serve_static_or_index(
             .unwrap()
     } else {
         // Fallback to index.html for SPA routing
-        Html(get_index_html(&config)).into_response()
+        Html(get_index_html(&state.config)).into_response()
     }
 }
 
@@ -133,31 +144,57 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
 
-    let config = std::sync::Arc::new(config);
+    let proxy_config = ProxyConfig {
+        engine_host: config.engine_host.clone(),
+        engine_port: config.engine_port,
+        ws_port: config.ws_port,
+    };
+    let proxy_state = Arc::new(ProxyState {
+        config: proxy_config,
+        // .no_proxy() prevents the HTTP client from using system proxy settings,
+        // avoiding proxy loops since this is a local reverse proxy.
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("Failed to build HTTP client"),
+    });
+
+    let app_state = Arc::new(AppState {
+        config,
+        proxy: proxy_state.clone(),
+    });
 
     // Build CORS layer - restrict to console origins
     let mut origins: Vec<HeaderValue> = vec![
-        format!("http://127.0.0.1:{}", config.port).parse().unwrap(),
-        format!("http://localhost:{}", config.port).parse().unwrap(),
-        format!("https://127.0.0.1:{}", config.port)
+        format!("http://127.0.0.1:{}", app_state.config.port)
             .parse()
             .unwrap(),
-        format!("https://localhost:{}", config.port)
+        format!("http://localhost:{}", app_state.config.port)
+            .parse()
+            .unwrap(),
+        format!("https://127.0.0.1:{}", app_state.config.port)
+            .parse()
+            .unwrap(),
+        format!("https://localhost:{}", app_state.config.port)
             .parse()
             .unwrap(),
     ];
 
     // Add configured host origins if different from defaults
-    let cors_host = if config.host == "0.0.0.0" {
+    let cors_host = if app_state.config.host == "0.0.0.0" {
         "localhost" // 0.0.0.0 is not a valid Origin host; browsers use the resolved name
     } else {
-        &config.host
+        &app_state.config.host
     };
     if cors_host != "localhost" && cors_host != "127.0.0.1" {
-        if let Ok(v) = format!("http://{}:{}", cors_host, config.port).parse::<HeaderValue>() {
+        if let Ok(v) = format!("http://{}:{}", cors_host, app_state.config.port)
+            .parse::<HeaderValue>()
+        {
             origins.push(v);
         }
-        if let Ok(v) = format!("https://{}:{}", cors_host, config.port).parse::<HeaderValue>() {
+        if let Ok(v) = format!("https://{}:{}", cors_host, app_state.config.port)
+            .parse::<HeaderValue>()
+        {
             origins.push(v);
         }
     }
@@ -166,17 +203,32 @@ pub async fn run_server(config: ServerConfig) -> Result<()> {
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT]);
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::AUTHORIZATION]);
 
-    // Build the router
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", get(serve_index))
-        .route("/api/config", get(serve_config))
+        .route("/api/config", get(serve_config));
+
+    // IMPORTANT: Call .with_state(proxy) BEFORE merging. This converts
+    // Router<Arc<ProxyState>> to Router<()>, which can be merged into
+    // any Router<S>. The proxy routes carry their own state; the main
+    // app routes use AppState. This ordering is required by Axum.
+    let proxy_router = Router::new()
+        .route("/ws/streams", any(ws_proxy_handler))
+        .route("/api/engine/{*path}", any(http_proxy_handler))
+        .with_state(proxy_state);
+
+    app = app.merge(proxy_router);
+
+    let app = app
         .route("/{*path}", get(serve_static_or_index))
         .layer(cors)
-        .with_state(config);
+        .with_state(app_state);
 
     info!("Console available at http://{}", addr);
 

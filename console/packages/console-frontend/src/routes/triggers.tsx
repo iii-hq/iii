@@ -23,7 +23,7 @@ import {
 import { useMemo, useReducer } from 'react'
 import type { FunctionInfo, TriggerInfo } from '@/api'
 import { emitEvent, functionsQuery, triggerCron, triggersQuery } from '@/api'
-import { getConfig } from '@/api/config'
+import { getEngineBaseUrl } from '@/api/config'
 import { Badge, Button, Input, Select } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
@@ -490,9 +490,7 @@ function TriggersPage() {
         }
       }
 
-      const { engineHost, enginePort } = getConfig()
-      const protocol = window.location.protocol
-      const fullUrl = `${protocol}//${engineHost}:${enginePort}/${path}${queryString}`
+      const fullUrl = `${getEngineBaseUrl()}/${path}${queryString}`
       const response = await fetch(fullUrl, fetchOptions)
       const duration = Date.now() - startTime
 
@@ -907,16 +905,13 @@ function TriggersPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <code className="flex-1 text-xs font-mono bg-black/40 text-cyan-400 px-3 py-2 rounded border border-cyan-500/20">
-                            {httpMethod} {window.location.protocol}
-                            {'//'}
-                            {getConfig().engineHost}:{getConfig().enginePort}/{apiPath}
+                            {httpMethod} {getEngineBaseUrl()}/{apiPath}
                           </code>
                           <button
                             type="button"
                             onClick={() => {
-                              const { engineHost, enginePort } = getConfig()
                               copyToClipboard(
-                                `${window.location.protocol}//${engineHost}:${enginePort}/${apiPath}`,
+                                `${getEngineBaseUrl()}/${apiPath}`,
                                 'endpoint',
                               )
                             }}

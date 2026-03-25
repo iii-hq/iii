@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { StreamMessage } from '@/api'
-import { getConnectionInfo, streamsQuery } from '@/api'
+import { getStreamsWs, streamsQuery } from '@/api'
 import { useConfig } from '@/api/config-provider'
 import { Button, Input } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -252,7 +252,7 @@ function StreamsPage() {
   const currentStream = streams.find((s) => s.id === newStreamName)
   const availableGroups = currentStream?.groups || []
 
-  const { streamsWs } = getConnectionInfo()
+  const streamsWs = getStreamsWs()
 
   useEffect(() => {
     isPausedRef.current = isPaused

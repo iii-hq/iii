@@ -71,14 +71,14 @@ function ConfigPage() {
   const consoleConfig = useConfig()
   const [endpoints, setEndpoints] = useState<EndpointStatus[]>([
     {
-      url: `http://${consoleConfig.engineHost}:${consoleConfig.enginePort}`,
+      url: '',
       name: 'iii Engine',
       icon: <Terminal className="w-4 h-4" />,
       status: 'checking',
       description: 'REST API & DevTools',
     },
     {
-      url: `ws://${consoleConfig.engineHost}:${consoleConfig.wsPort}`,
+      url: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/streams`,
       name: 'Streams',
       icon: <Activity className="w-4 h-4" />,
       status: 'checking',
@@ -120,12 +120,13 @@ function ConfigPage() {
   const checkEndpoints = async () => {
     const results = await Promise.all(
       endpoints.map(async (ep) => {
-        if (ep.url.startsWith('ws://')) {
+        if (ep.url.startsWith('ws://') || ep.url.startsWith('wss://')) {
           return { ...ep, status: 'online' as const }
         }
         const start = Date.now()
         try {
-          const response = await fetch(`${ep.url}/_console/health`, {
+          const healthUrl = '/api/engine/_console/health'
+          const response = await fetch(healthUrl, {
             signal: AbortSignal.timeout(3000),
           })
           return {

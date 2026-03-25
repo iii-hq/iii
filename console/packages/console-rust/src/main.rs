@@ -4,6 +4,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod bridge;
+mod proxy;
 mod server;
 
 #[derive(Parser, Debug)]
@@ -46,6 +47,7 @@ struct Args {
     /// Enable the experimental flow visualization page
     #[arg(long, env = "III_ENABLE_FLOW")]
     enable_flow: bool,
+
 }
 
 async fn shutdown_signal() {
