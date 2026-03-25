@@ -42,7 +42,7 @@ iii = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
 
 
 iii.register_function(
-    {"id": "payments::charge"},
+    "payments::charge",
     HttpInvocationConfig(
         url="https://api.payments.example.com/charge",
         method="POST",

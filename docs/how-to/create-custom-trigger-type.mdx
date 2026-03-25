@@ -211,7 +211,7 @@ def handle_push(payload):
     return {"ok": True}
 
 
-iii.register_function({"id": "github::push"}, handle_push)
+iii.register_function("github::push", handle_push)
 
 iii.register_trigger({
     "type": "webhook",

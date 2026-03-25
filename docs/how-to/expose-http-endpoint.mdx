@@ -70,7 +70,7 @@ def create_user(req):
     return {"status_code": 201, "body": user}
 
 
-iii.register_function({"id": "users::create"}, create_user)
+iii.register_function("users::create", create_user)
 ```
 </Tab>
 <Tab title="Rust">

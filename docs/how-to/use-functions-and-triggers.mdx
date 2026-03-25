@@ -53,7 +53,7 @@ def add(data):
     return {"id": id, "result": result}
 
 
-iii.register_function({"id": "math::add"}, add)
+iii.register_function("math::add", add)
 
 # Triggerable from any other function or worker
 iii.trigger({"function_id": "math::add", "payload": {"a": 2, "b": 3}})
@@ -146,7 +146,7 @@ iii = register_worker("ws://localhost:49134")
 
 
 iii.register_function(
-    {"id": "notifications::send", "description": "POST notification to Service Provider webhook"},
+    "notifications::send",
     HttpInvocationConfig(
         url="https://hooks.provider.example.com/notify",
         method="POST",
@@ -154,6 +154,7 @@ iii.register_function(
         headers={"X-Service": "iii-worker"},
         auth=HttpAuthBearer(token_key="PROVIDER_API_TOKEN"),
     ),
+    description="POST notification to Service Provider webhook",
 )
 
 iii.trigger({"function_id": "notifications::send", "payload": {"channel": "#alerts", "text": "Deploy succeeded"}})
@@ -240,7 +241,7 @@ def calculate(data):
     return result
 
 
-iii.register_function({"id": "math::calculate"}, calculate)
+iii.register_function("math::calculate", calculate)
 ```
 </Tab>
 <Tab title="Rust">
@@ -283,7 +284,7 @@ def calculate_async(data):
     iii.trigger({"function_id": "math::add", "payload": {"a": data["a"], "b": data["b"]}, "action": TriggerAction.Void()})
 
 
-iii.register_function({"id": "math::calculate-async"}, calculate_async)
+iii.register_function("math::calculate-async", calculate_async)
 ```
 </Tab>
 <Tab title="Rust">
@@ -346,7 +347,7 @@ def create_order(input):
     return {"orderId": order["id"], "messageReceiptId": result["messageReceiptId"]}
 
 
-iii.register_function({"id": "orders::create"}, create_order)
+iii.register_function("orders::create", create_order)
 ```
 </Tab>
 <Tab title="Rust">
@@ -423,7 +424,7 @@ def multiply(req):
     }
 
 
-iii.register_function({"id": "math::multiply"}, multiply)
+iii.register_function("math::multiply", multiply)
 
 iii.register_trigger({
     "type": "http",
@@ -496,7 +497,7 @@ def aggregation(_):
     return agg
 
 
-iii.register_function({"id": "math::aggregation"}, aggregation)
+iii.register_function("math::aggregation", aggregation)
 
 iii.register_trigger({
     "type": "cron",
@@ -567,7 +568,7 @@ iii.registerTrigger({
 from iii import HttpInvocationConfig
 
 iii.register_function(
-    {"id": "orders::webhook"},
+    "orders::webhook",
     HttpInvocationConfig(url=os.environ["WEBHOOK_URL"], method="POST", timeout_ms=5000),
 )
 
@@ -661,7 +662,7 @@ def double(data):
     return result
 
 
-iii.register_function({"id": "math::double"}, double)
+iii.register_function("math::double", double)
 ```
 </Tab>
 <Tab title="Rust">
@@ -717,7 +718,7 @@ def create_order(data):
     return {"status_code": 201, "body": {"id": "123", "item": data["body"]["item"]}}
 
 
-fn_ref = iii.register_function({"id": "orders::create"}, create_order)
+fn_ref = iii.register_function("orders::create", create_order)
 
 trigger = iii.register_trigger({
     "type": "http",

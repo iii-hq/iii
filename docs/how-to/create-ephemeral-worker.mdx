@@ -63,7 +63,7 @@ def generate_report(req):
     return {"status_code": 200, "body": {"success": True, "reportId": report_id}}
 
 
-iii.register_function({"id": "reports::generate"}, generate_report)
+iii.register_function("reports::generate", generate_report)
 ```
 </Tab>
 <Tab title="Rust">

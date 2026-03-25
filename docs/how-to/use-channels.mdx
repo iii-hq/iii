@@ -263,7 +263,7 @@ async def download_file(req: HttpRequest, response: HttpResponse):
         await response.writer.write(f.read())
         await response.writer.close_async()
 
-iii.register_function({"id": "files::download"}, download_file)
+iii.register_function("files::download", download_file)
 
 iii.register_trigger({
     "type": "http",
@@ -428,8 +428,8 @@ def producer_handler(input_data):
     return result
 
 
-iii_client.register_function({"id": "pipeline::consumer"}, consumer_handler)
-iii_client.register_function({"id": "pipeline::producer"}, producer_handler)
+iii_client.register_function("pipeline::consumer", consumer_handler)
+iii_client.register_function("pipeline::producer", producer_handler)
 ```
 </Tab>
 <Tab title="Rust">

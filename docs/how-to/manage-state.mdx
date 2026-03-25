@@ -77,7 +77,7 @@ def create_user(input):
     return {"userId": user_id}
 
 
-iii.register_function({"id": "users::create"}, create_user)
+iii.register_function("users::create", create_user)
 
 # Then call from another function or worker
 result = iii.trigger({
@@ -181,7 +181,7 @@ def get_user(input):
     return user
 
 
-iii.register_function({"id": "users::get"}, get_user)
+iii.register_function("users::get", get_user)
 
 # Then call from another function or worker
 user = iii.trigger({
@@ -291,7 +291,7 @@ def record_login(input):
     return {"updated": True}
 
 
-iii.register_function({"id": "users::record-login"}, record_login)
+iii.register_function("users::record-login", record_login)
 
 # Then call from another function or worker
 iii.trigger({

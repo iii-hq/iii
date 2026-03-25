@@ -90,7 +90,7 @@ def send_message(input):
     return {"messageId": message_id}
 
 
-iii.register_function({"id": "chat::send"}, send_message)
+iii.register_function("chat::send", send_message)
 
 # Then call from another function or worker
 result = iii.trigger({
@@ -197,7 +197,7 @@ def list_messages(input):
     return messages
 
 
-iii.register_function({"id": "chat::list"}, list_messages)
+iii.register_function("chat::list", list_messages)
 
 # Then call from another function or worker
 messages = iii.trigger({

@@ -505,7 +505,7 @@ def create_order(req):
     return {"status_code": 201, "body": {"orderId": order["id"]}}
 
 
-fn = iii.register_function({"id": "orders::create"}, create_order)
+fn = iii.register_function("orders::create", create_order)
 
 iii.register_trigger({
     "type": "http",
@@ -606,7 +606,7 @@ def process_order(order):
     return {"processed": True}
 
 
-iii.register_function({"id": "orders::process-order"}, process_order)
+iii.register_function("orders::process-order", process_order)
 ```
 </Tab>
 <Tab title="Rust">
@@ -806,8 +806,8 @@ def send_email(email):
     return {"sent": True}
 
 
-iii.register_function({"id": "campaigns::launch"}, launch_campaign)
-iii.register_function({"id": "emails::send"}, send_email)
+iii.register_function("campaigns::launch", launch_campaign)
+iii.register_function("emails::send", send_email)
 ```
 </Tab>
 <Tab title="Rust">
@@ -965,8 +965,8 @@ def apply_transaction(txn):
     return {"applied": True}
 
 
-iii.register_function({"id": "transactions::submit"}, submit_transaction)
-iii.register_function({"id": "ledger::apply"}, apply_transaction)
+iii.register_function("transactions::submit", submit_transaction)
+iii.register_function("ledger::apply", apply_transaction)
 ```
 </Tab>
 <Tab title="Rust">

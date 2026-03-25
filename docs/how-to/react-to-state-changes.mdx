@@ -57,7 +57,7 @@ def on_status_change(event):
     return {"handled": True}
 
 
-iii.register_function({"id": "orders::on-status-change"}, on_status_change)
+iii.register_function("orders::on-status-change", on_status_change)
 ```
 </Tab>
 <Tab title="Rust">

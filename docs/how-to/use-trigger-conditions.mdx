@@ -60,8 +60,8 @@ def process_high_value(event):
     return {"status_code": 200, "body": {"processed": True, "amount": amount}}
 
 
-iii.register_function({"id": "conditions::is-high-value"}, is_high_value)
-iii.register_function({"id": "orders::process-high-value"}, process_high_value)
+iii.register_function("conditions::is-high-value", is_high_value)
+iii.register_function("orders::process-high-value", process_high_value)
 ```
 </Tab>
 <Tab title="Rust">
