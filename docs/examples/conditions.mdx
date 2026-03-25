@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "condition_function_id": "conditions::is_premium",
     }) })?;
 
-    loop { tokio::time::sleep(std::time::Duration::from_secs(60)).await; }
+    Ok(())
 }
 ```
 

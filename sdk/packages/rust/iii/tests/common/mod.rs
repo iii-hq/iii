@@ -11,10 +11,7 @@ static SHARED_III: OnceLock<III> = OnceLock::new();
 #[ctor::dtor]
 fn shutdown() {
     let iii = shared_iii();
-
-    if let Some(rt) = SHARED_RT.get() {
-        rt.block_on(iii.shutdown_async());
-    }
+    iii.shutdown();
 }
 
 pub fn engine_ws_url() -> String {

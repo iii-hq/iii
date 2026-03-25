@@ -21,8 +21,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { StreamMessage } from '@/api'
-import { getConnectionInfo, streamsQuery } from '@/api'
-import { useConfig } from '@/api/config-provider'
+import { getStreamsWs, streamsQuery } from '@/api'
 import { Button, Input } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JsonViewer } from '@/components/ui/json-viewer'
@@ -245,14 +244,11 @@ function StreamsPage() {
 
   const { data: streamsData } = useQuery(streamsQuery)
   const streams = streamsData?.streams || []
-  const config = useConfig()
-  const websocketPort = streamsData?.websocket_port || config.wsPort
-
   // Computed values for group selection
   const currentStream = streams.find((s) => s.id === newStreamName)
   const availableGroups = currentStream?.groups || []
 
-  const { streamsWs } = getConnectionInfo()
+  const streamsWs = getStreamsWs()
 
   useEffect(() => {
     isPausedRef.current = isPaused
@@ -569,7 +565,7 @@ function StreamsPage() {
           <span className="font-mono tabular-nums">{formatBytes(stats.totalBytes)}</span>
         </div>
         <div className="flex-1" />
-        <div className="text-muted font-mono">ws://localhost:{websocketPort}</div>
+        <div className="text-muted font-mono">{streamsWs}</div>
       </div>
 
       {/* Subscriptions Bar */}

@@ -99,7 +99,7 @@ class III:
 
         # Background event loop thread
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=False)
         self._thread.start()
 
         # Auto-connect (non-blocking, matches Node.js constructor behavior)
@@ -213,6 +213,10 @@ class III:
             await shutdown_otel_async()
         except ImportError:
             log.debug("OpenTelemetry not available")
+
+        # Schedule the event loop to stop on the next iteration so the
+        # non-daemon background thread exits and the process can terminate.
+        self._loop.call_soon(self._loop.stop)
 
     async def _do_connect(self) -> None:
         try:

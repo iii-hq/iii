@@ -19,7 +19,7 @@ const DEFAULT_CONFIG: NodeConfig = { x: 0, y: 0 }
 
 const NODE_TYPES = {
   event: EventFlowNode,
-  api: ApiFlowNode,
+  http: ApiFlowNode,
   noop: NoopFlowNode,
   cron: CronFlowNode,
   queue: QueueFlowNode,

@@ -524,6 +524,7 @@ struct IIIInner {
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
+    connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
     functions_available_callback_counter: AtomicUsize,
     functions_available_function_id: Mutex<Option<String>>,
@@ -586,6 +587,7 @@ impl III {
             services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
+            connection_thread: Mutex::new(None),
             functions_available_callbacks: Mutex::new(HashMap::new()),
             functions_available_callback_counter: AtomicUsize::new(0),
             functions_available_function_id: Mutex::new(None),
@@ -625,60 +627,78 @@ impl III {
         self.inner.running.store(true, Ordering::SeqCst);
 
         let iii = self.clone();
-        tokio::spawn(async move {
-            iii.run_connection(rx).await;
-        });
 
         #[cfg(feature = "otel")]
-        {
-            let config = self.inner.otel_config.lock_or_recover().take();
-            if let Some(mut config) = config {
-                if config.engine_ws_url.is_none() {
-                    config.engine_ws_url = Some(self.inner.address.clone());
+        let otel_config = {
+            let mut config = self.inner.otel_config.lock_or_recover().take();
+            if let Some(ref mut cfg) = config {
+                if cfg.engine_ws_url.is_none() {
+                    cfg.engine_ws_url = Some(self.inner.address.clone());
                 }
-                tokio::spawn(async move {
-                    telemetry::init_otel(config).await;
-                });
             }
-        }
+            config
+        };
+
+        // Spawn a dedicated OS thread with its own tokio runtime so
+        // the connection loop is independent of the caller's runtime.
+        // In Rust, a spawned thread does not keep the process alive on its own;
+        // call shutdown() to signal the thread and join connection_thread so
+        // run_connection() can exit cleanly before main() returns.
+        let handle = std::thread::Builder::new()
+            .name("iii-connection".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create iii connection runtime");
+
+                rt.block_on(async move {
+                    #[cfg(feature = "otel")]
+                    if let Some(cfg) = otel_config {
+                        telemetry::init_otel(cfg).await;
+                    }
+
+                    iii.run_connection(rx).await;
+
+                    #[cfg(feature = "otel")]
+                    telemetry::shutdown_otel().await;
+                });
+            })
+            .expect("failed to spawn iii connection thread");
+
+        *self.inner.connection_thread.lock_or_recover() = Some(handle);
     }
 
-    /// Shutdown the III client.
+    /// Shutdown the III client and wait for the connection thread to finish.
     ///
-    /// This stops the connection loop and sends a shutdown signal.
-    /// If the `otel` feature is enabled, this will spawn a background task
-    /// to flush telemetry data, but does NOT wait for it to complete.
-    /// For guaranteed telemetry flush, use `shutdown_async()` instead.
-    #[deprecated(note = "Use shutdown_async() for guaranteed telemetry flush")]
+    /// This stops the connection loop, sends a shutdown signal, and joins
+    /// the background connection thread. When the `otel` feature is enabled,
+    /// telemetry is flushed inside the connection thread before it exits.
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
 
-        #[cfg(feature = "otel")]
-        {
-            tracing::warn!(
-                "shutdown() does not await telemetry flush; use shutdown_async() instead"
-            );
-            tokio::spawn(async {
-                telemetry::shutdown_otel().await;
-            });
+        if let Some(handle) = self.inner.connection_thread.lock_or_recover().take() {
+            let _ = handle.join();
         }
     }
 
-    /// Shutdown the III client and flush all pending telemetry data.
+    /// Shutdown the III client.
     ///
-    /// This method stops the connection loop and sends a shutdown signal.
-    /// When the `otel` feature is enabled, it additionally awaits the
-    /// OpenTelemetry flush, ensuring all spans, metrics, and logs are
-    /// exported before returning.
+    /// This stops the connection loop and sends a shutdown signal, but it
+    /// does not join `connection_thread`.
+    ///
+    /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
+    /// to wait for `run_connection()` to finish, making it safe to call from
+    /// an async context without stalling the executor. When the `otel`
+    /// feature is enabled, `telemetry::shutdown_otel()` still runs inside the
+    /// connection thread after `run_connection()` returns, so it may not
+    /// complete unless [`shutdown`](Self::shutdown) is used to join the thread.
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
-
-        #[cfg(feature = "otel")]
-        telemetry::shutdown_otel().await;
     }
 
     fn register_function_inner(

@@ -10,7 +10,6 @@ export { fetchSamplingRules } from './alerts/sampling'
 export type { ConsoleConfig } from './config'
 export {
   getConfig,
-  getConnectionInfo,
   getDevtoolsApi,
   getManagementApi,
   getStreamsWs,

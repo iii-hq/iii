@@ -51,20 +51,27 @@ pub struct InitOptions {
 }
 
 /// Create and return a connected SDK instance. The WebSocket connection is
-/// established automatically in a background Tokio task.
+/// established automatically in a dedicated background thread with its own
+/// tokio runtime.
+///
+/// Call [`III::shutdown`] before the end of `main` to cleanly stop the
+/// connection and join the background thread. In Rust the process exits
+/// when `main` returns, terminating all threads — so `shutdown()` must be
+/// called while `main` is still running.
 ///
 /// # Arguments
 /// * `address` - WebSocket URL of the III engine (e.g. `ws://localhost:49134`).
 /// * `options` - Configuration for worker metadata and OTel.
 ///
-/// # Errors
-/// Returns [`IIIError::Runtime`] if no active Tokio runtime is found.
-///
 /// # Examples
 /// ```rust,no_run
 /// use iii_sdk::{register_worker, InitOptions};
 ///
-/// let iii = register_worker("ws://localhost:49134", InitOptions::default());
+/// fn main() {
+///     let iii = register_worker("ws://localhost:49134", InitOptions::default());
+///     // register functions, handle events, etc.
+///     iii.shutdown(); // cleanly stops the connection thread
+/// }
 /// ```
 pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {
@@ -82,13 +89,6 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
     #[cfg(feature = "otel")]
     if let Some(cfg) = otel {
         iii.set_otel_config(cfg);
-    }
-
-    if let Err(err) = tokio::runtime::Handle::try_current() {
-        panic!(
-            "iii_sdk::register_worker requires an active Tokio runtime: {}",
-            err
-        );
     }
 
     iii.connect();
