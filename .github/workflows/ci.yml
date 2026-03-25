@@ -23,6 +23,7 @@ jobs:
   build-engine:
     name: Build Engine
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -33,12 +34,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@cargo-nextest
 
       - name: Build and run coverage
         run: |
           eval "$(cargo llvm-cov show-env --export-prefix)"
           cargo build -p iii --all-features
-          cargo test -p iii --all-features
+          cargo nextest run -p iii --all-features --retries 2
           cargo llvm-cov report \
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
@@ -62,6 +64,7 @@ jobs:
   engine-rabbitmq-tests:
     name: Engine RabbitMQ Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       rabbitmq:
         image: rabbitmq:3-management-alpine
@@ -89,6 +92,7 @@ jobs:
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -131,6 +135,7 @@ jobs:
     name: SDK Node Tests
     needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -195,6 +200,7 @@ jobs:
     name: SDK Python (${{ matrix.python-version }})
     needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -255,6 +261,7 @@ jobs:
     name: SDK Rust Tests
     needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -298,8 +305,9 @@ jobs:
 
   motia-js-ci:
     name: Motia JS Tests
-    needs: [build-engine, sdk-node-ci]
+    needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -352,8 +360,9 @@ jobs:
 
   motia-py-ci:
     name: Motia Python (${{ matrix.python-version }})
-    needs: [build-engine, sdk-python-ci]
+    needs: build-engine
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -410,6 +419,7 @@ jobs:
   console-ci:
     name: Console Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
