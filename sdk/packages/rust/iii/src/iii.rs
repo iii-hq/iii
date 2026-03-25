@@ -958,7 +958,7 @@ impl III {
     /// );
     ///
     /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-    /// my_trigger.register_function("my::handler", |req: MyRequest| {
+    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, String> {
     ///     Ok(serde_json::json!({ "data": req.data }))
     /// });
     /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });

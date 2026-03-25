@@ -600,7 +600,7 @@ class III:
         self,
         trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
         handler: TriggerHandler[Any],
-    ) -> TriggerTypeRef:
+    ) -> "TriggerTypeRef[Any, Any]":
         """Register a custom trigger type with the engine.
 
         Returns a :class:`TriggerTypeRef` handle with ``register_trigger``

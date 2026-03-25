@@ -95,7 +95,7 @@ class TriggerTypeRef(Generic[C, R]):
         If the config is a Pydantic model it is serialized automatically.
         """
         if hasattr(config, "model_dump"):
-            config_value = config.model_dump()  # type: ignore[union-attr]
+            config_value = config.model_dump()
         else:
             config_value = config
 

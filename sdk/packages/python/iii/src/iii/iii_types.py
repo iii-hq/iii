@@ -79,8 +79,8 @@ class RegisterTriggerTypeMessage(BaseModel):
 
     id: str
     description: str
-    configuration_format: Any | None = Field(default=None, exclude_none=True)
-    call_request_format: Any | None = Field(default=None, exclude_none=True)
+    configuration_format: Any | None = Field(default=None)
+    call_request_format: Any | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER_TYPE, alias="type")
 
 
