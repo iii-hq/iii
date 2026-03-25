@@ -89,6 +89,8 @@ default = ["rabbitmq"]
 rabbitmq = ["lapin"]
 
 [dependencies]
+oci-client = "0.16"
+oci-spec = "0.9"
 function-macros = { path = "function-macros" }
 iii-sdk = { workspace = true }
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
@@ -147,10 +149,12 @@ indicatif = "0.17"
 semver = { version = "1", features = ["serde"] }
 flate2 = "1"
 tar = "0.4"
+data-encoding = "2"
 zip = "2"
 serde_yml = "0.0.12"
 thiserror = "2"
 tokio-tungstenite = "0.28"
+which = "6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
