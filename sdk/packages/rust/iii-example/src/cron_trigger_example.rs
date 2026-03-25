@@ -1,8 +1,8 @@
 use iii_sdk::builtin_triggers::*;
-use iii_sdk::{BuiltinTrigger, III, RegisterFunction};
+use iii_sdk::{III, IIITrigger, RegisterFunction};
 use serde_json::json;
 
-/// Examples using built-in trigger types with the typed `BuiltinTrigger` enum.
+/// Examples using built-in trigger types with the typed `IIITrigger` enum.
 pub fn setup(iii: &III) {
     // ── Cron trigger ────────────────────────────────────────────────
     iii.register_function(
@@ -11,7 +11,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::Cron(CronTriggerConfig::new("0 * * * * *"))
+        IIITrigger::Cron(CronTriggerConfig::new("0 * * * * *"))
             .for_function("example::scheduled_cleanup"),
     )
     .expect("failed to register cron trigger");
@@ -23,7 +23,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::State(StateTriggerConfig::new().scope("users"))
+        IIITrigger::State(StateTriggerConfig::new().scope("users"))
             .for_function("example::on_user_updated"),
     )
     .expect("failed to register state trigger");
@@ -35,7 +35,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::Http(HttpTriggerConfig::new("health").method("GET"))
+        IIITrigger::Http(HttpTriggerConfig::new("health").method("GET"))
             .for_function("example::health_check"),
     )
     .expect("failed to register http trigger");
@@ -47,7 +47,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::Subscribe(SubscribeTriggerConfig::new("orders.created"))
+        IIITrigger::Subscribe(SubscribeTriggerConfig::new("orders.created"))
             .for_function("example::on_order_created"),
     )
     .expect("failed to register subscribe trigger");
@@ -59,8 +59,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::Queue(QueueTriggerConfig::new("emails"))
-            .for_function("example::process_email"),
+        IIITrigger::Queue(QueueTriggerConfig::new("emails")).for_function("example::process_email"),
     )
     .expect("failed to register queue trigger");
 
@@ -71,7 +70,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::Log(LogTriggerConfig::new().level("error"))
+        IIITrigger::Log(LogTriggerConfig::new().level("error"))
             .for_function("example::on_error_log"),
     )
     .expect("failed to register log trigger");
@@ -83,7 +82,7 @@ pub fn setup(iii: &III) {
     );
 
     iii.register_trigger(
-        BuiltinTrigger::Stream(StreamTriggerConfig::new().stream_name("chat"))
+        IIITrigger::Stream(StreamTriggerConfig::new().stream_name("chat"))
             .for_function("example::on_chat_message"),
     )
     .expect("failed to register stream trigger");

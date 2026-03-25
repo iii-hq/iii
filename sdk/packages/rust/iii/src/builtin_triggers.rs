@@ -308,19 +308,19 @@ pub struct LogCallRequest {
     pub instrumentation_scope_version: String,
 }
 
-// ── BuiltinTrigger enum ────────────────────────────────────────────────
+// ── IIITrigger enum ────────────────────────────────────────────────────
 
 /// Enum of all built-in trigger types with typed configuration.
 ///
 /// Use `.for_function()` to create a [`RegisterTriggerInput`]:
 /// ```rust,no_run
 /// # use iii_sdk::builtin_triggers::*;
-/// let input = BuiltinTrigger::Cron(CronTriggerConfig::new("0 * * * * *"))
+/// let input = IIITrigger::Cron(CronTriggerConfig::new("0 * * * * *"))
 ///     .for_function("my::handler");
 /// ```
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
-pub enum BuiltinTrigger {
+pub enum IIITrigger {
     Http(HttpTriggerConfig),
     Cron(CronTriggerConfig),
     Queue(QueueTriggerConfig),
@@ -332,7 +332,7 @@ pub enum BuiltinTrigger {
     Log(LogTriggerConfig),
 }
 
-impl BuiltinTrigger {
+impl IIITrigger {
     fn trigger_type_id(&self) -> &'static str {
         match self {
             Self::Http(_) => "http",
