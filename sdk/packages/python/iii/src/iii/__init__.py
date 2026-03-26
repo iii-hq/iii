@@ -23,12 +23,11 @@ from .iii_types import (
     TriggerActionVoid,
     TriggerInfo,
     TriggerRequest,
-    TriggerTypeInfo,
 )
 from .logger import Logger
 from .stream import IStream, StreamContext
 from .telemetry_types import OtelConfig
-from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
+from .triggers import Trigger, TriggerConfig, TriggerHandler
 from .types import (
     ApiRequest,
     ApiResponse,
@@ -72,14 +71,12 @@ __all__ = [
     "TriggerActionVoid",
     "TriggerInfo",
     "TriggerRequest",
-    "TriggerTypeInfo",
     # Logger
     "Logger",
     # Triggers
     "Trigger",
     "TriggerConfig",
     "TriggerHandler",
-    "TriggerTypeRef",
     # Types
     "ApiRequest",
     "ApiResponse",

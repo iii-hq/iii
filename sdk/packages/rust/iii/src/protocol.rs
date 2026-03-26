@@ -111,10 +111,6 @@ pub enum Message {
     RegisterTriggerType {
         id: String,
         description: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger_request_format: Option<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        call_request_format: Option<Value>,
     },
     RegisterTrigger {
         id: String,
@@ -195,10 +191,6 @@ pub enum Message {
 pub struct RegisterTriggerTypeMessage {
     pub id: String,
     pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
 }
 
 impl RegisterTriggerTypeMessage {
@@ -206,8 +198,6 @@ impl RegisterTriggerTypeMessage {
         Message::RegisterTriggerType {
             id: self.id.clone(),
             description: self.description.clone(),
-            trigger_request_format: self.trigger_request_format.clone(),
-            call_request_format: self.call_request_format.clone(),
         }
     }
 }

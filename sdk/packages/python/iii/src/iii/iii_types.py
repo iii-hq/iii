@@ -79,8 +79,6 @@ class RegisterTriggerTypeMessage(BaseModel):
 
     id: str
     description: str
-    trigger_request_format: Any | None = Field(default=None)
-    call_request_format: Any | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER_TYPE, alias="type")
 
 
@@ -111,23 +109,15 @@ class TriggerRegistrationResultMessage(BaseModel):
 
 
 class RegisterTriggerTypeInput(BaseModel):
-    """Input for registering a trigger type.
+    """Input for registering a trigger type (matches Node SDK's RegisterTriggerTypeInput).
 
     Attributes:
         id: Unique identifier for the trigger type.
         description: Human-readable description of the trigger type.
-        trigger_request_format: JSON Schema describing the expected trigger config.
-        call_request_format: JSON Schema describing the payload sent to functions.
     """
 
     id: str = Field(description="Unique identifier for the trigger type.")
     description: str = Field(description="Human-readable description of the trigger type.")
-    trigger_request_format: Any | None = Field(
-        default=None, description="JSON Schema for trigger configuration."
-    )
-    call_request_format: Any | None = Field(
-        default=None, description="JSON Schema for the call request payload."
-    )
 
 
 class RegisterTriggerInput(BaseModel):
@@ -378,26 +368,6 @@ class TriggerInfo(BaseModel):
     trigger_type: str = Field(description="Type of trigger (e.g. ``http``, ``queue``, ``cron``).")
     function_id: str = Field(description="ID of the function this trigger invokes.")
     config: Any = Field(default=None, description="Trigger-type-specific configuration.")
-
-
-class TriggerTypeInfo(BaseModel):
-    """Information about a registered trigger type.
-
-    Attributes:
-        id: Trigger type identifier (e.g. ``http``, ``cron``, ``queue``).
-        description: Human-readable description of the trigger type.
-        trigger_request_format: JSON Schema for the trigger configuration.
-        call_request_format: JSON Schema for the call request payload.
-    """
-
-    id: str = Field(description="Trigger type identifier.")
-    description: str = Field(description="Human-readable description.")
-    trigger_request_format: Any | None = Field(
-        default=None, description="JSON Schema for trigger configuration."
-    )
-    call_request_format: Any | None = Field(
-        default=None, description="JSON Schema for the call request payload."
-    )
 
 
 WorkerStatus = Literal["connected", "available", "busy", "disconnected"]

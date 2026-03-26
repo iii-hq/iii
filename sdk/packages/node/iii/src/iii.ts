@@ -27,7 +27,6 @@ import {
   type TriggerInfo,
   type TriggerRegistrationResultMessage,
   type TriggerRequest,
-  type TriggerTypeInfo,
   type WorkerInfo,
   type WorkerRegisteredMessage,
 } from './iii-types'
@@ -57,7 +56,6 @@ import type {
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
   Trigger,
-  TriggerTypeRef,
 } from './types'
 import { isChannelRef } from './utils'
 
@@ -177,35 +175,12 @@ class Sdk implements ISdk {
   registerTriggerType = <TConfig>(
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
-  ): TriggerTypeRef<TConfig> => {
+  ): void => {
     this.sendMessage(MessageType.RegisterTriggerType, triggerType, true)
     this.triggerTypes.set(triggerType.id, {
       message: { ...triggerType, message_type: MessageType.RegisterTriggerType },
       handler,
     })
-
-    return {
-      id: triggerType.id,
-      registerTrigger: (functionId: string, config: TConfig) => {
-        return this.registerTrigger({
-          type: triggerType.id,
-          function_id: functionId,
-          config,
-        })
-      },
-      registerFunction: (func, handler, config) => {
-        const ref = this.registerFunction(func, handler)
-        this.registerTrigger({
-          type: triggerType.id,
-          function_id: func.id,
-          config,
-        })
-        return ref
-      },
-      unregister: () => {
-        this.unregisterTriggerType(triggerType)
-      },
-    }
   }
 
   /**
@@ -513,26 +488,6 @@ class Sdk implements ISdk {
       payload: { include_internal: includeInternal },
     })
     return result.triggers
-  }
-
-  /**
-   * Lists all trigger types registered with the engine.
-   *
-   * @param includeInternal - Whether to include internal trigger types (default: false).
-   * @returns An array of {@link TriggerTypeInfo} objects.
-   *
-   * @example
-   * ```typescript
-   * const triggerTypes = await iii.listTriggerTypes()
-   * triggerTypes.forEach(tt => console.log(`${tt.id}: ${tt.description}`))
-   * ```
-   */
-  listTriggerTypes = async (includeInternal = false): Promise<TriggerTypeInfo[]> => {
-    const result = await this.trigger<{ include_internal: boolean }, { trigger_types: TriggerTypeInfo[] }>({
-      function_id: EngineFunctions.LIST_TRIGGER_TYPES,
-      payload: { include_internal: includeInternal },
-    })
-    return result.trigger_types
   }
 
   private registerWorkerMetadata(): void {
