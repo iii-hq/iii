@@ -8,7 +8,7 @@ For complete documentation on iii please visit [iii.dev/docs](https://iii.dev/do
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-This installs both the iii engine and iii-cli.
+This installs the iii engine (which includes all CLI commands).
 
 <details>
 <summary>Override install directory or pin a version</summary>
