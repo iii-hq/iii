@@ -1,6 +1,8 @@
 import { motion } from 'motion/react';
 import { AnimationShape, ShapeType } from './AnimationShape';
 
+const CENTER_COLOR = 'var(--color-accent)';
+
 const SHAPES: {
   id: number;
   color: string;
@@ -13,12 +15,7 @@ const SHAPES: {
   { id: 2, color: '#ef2e61', type: 'diamond', x: 40, y: 0 }, // Red
 ];
 
-function gradientFrame(
-  angle: number,
-  from: string,
-  to: string,
-  split: number,
-) {
+function gradientFrame(angle: number, from: string, to: string, split: number) {
   return `linear-gradient(${angle}deg, ${from} ${split}%, ${to} ${split}%)`;
 }
 
@@ -76,7 +73,14 @@ export function ExecutionModelAnimation() {
   return (
     <div className="relative w-24 h-24 flex items-center justify-center">
       {/* Central Box */}
-      <div className="absolute w-8 h-8 bg-white border border-black z-20 rounded-sm" />
+      <div
+        className="absolute w-7 h-7 sm:w-8 sm:h-8 border border-black z-20 rounded-sm"
+        style={{
+          backgroundColor: CENTER_COLOR,
+          filter: 'blur(0.2px)',
+          boxShadow: '0 0 4px rgba(0, 0, 0, 0.2)',
+        }}
+      />
 
       {/* Shapes */}
       {SHAPES.map((shape) => (

@@ -2,6 +2,8 @@ import { motion } from 'motion/react';
 import { useEffect, useState } from 'react';
 import { AnimationShape, ShapeType } from './AnimationShape';
 
+const CENTER_COLOR = 'var(--color-accent)';
+
 const SHAPES: {
   id: number;
   color: string;
@@ -17,7 +19,7 @@ const SHAPES: {
 ];
 
 function getBackground(colors: string[]) {
-  if (colors.length === 0) return '#ffffff';
+  if (colors.length === 0) return CENTER_COLOR;
   if (colors.length === 1) return colors[0];
   if (colors.length === 2) {
     return `linear-gradient(90deg, ${colors[0]} 50%, ${colors[1]} 50%)`;
@@ -25,17 +27,35 @@ function getBackground(colors: string[]) {
   if (colors.length === 3) {
     return `linear-gradient(90deg, ${colors[0]} 33.33%, ${colors[1]} 33.33% 66.66%, ${colors[2]} 66.66%)`;
   }
-  return '#ffffff';
+  return CENTER_COLOR;
 }
 
 export function LiveSystemAnimation() {
   const [step, setStep] = useState(0);
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setStep((s) => (s + 1) % 6);
     }, 1500);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 639px)');
+    const handleMediaChange = (event: MediaQueryListEvent) => {
+      setIsMobile(event.matches);
+    };
+
+    setIsMobile(mediaQuery.matches);
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handleMediaChange);
+      return () => mediaQuery.removeEventListener('change', handleMediaChange);
+    }
+
+    mediaQuery.addListener(handleMediaChange);
+    return () => mediaQuery.removeListener(handleMediaChange);
   }, []);
 
   // Determine connected shapes based on step
@@ -50,12 +70,14 @@ export function LiveSystemAnimation() {
 
   const connectedColors = connected.map((id) => SHAPES[id].color);
   const activeBackground = getBackground(connectedColors);
+  const connectedOffset = isMobile ? 20 : 23;
 
   return (
     <div className="relative w-24 h-24 flex items-center justify-center">
       {/* Central Box */}
       <motion.div
-        className="absolute w-8 h-8 bg-white border border-black z-10 rounded-sm"
+        className="absolute w-7 h-7 sm:w-8 sm:h-8 border border-black z-10 rounded-sm"
+        style={{ backgroundColor: CENTER_COLOR }}
         animate={{ background: activeBackground }}
         transition={{ duration: 0.3 }}
       />
@@ -64,8 +86,20 @@ export function LiveSystemAnimation() {
       {SHAPES.map((shape) => {
         const isConnected = connected.includes(shape.id);
         const background = isConnected ? activeBackground : shape.color;
-        const x = isConnected ? shape.cx : shape.dx;
-        const y = isConnected ? shape.cy : shape.dy;
+        const x = isConnected
+          ? shape.cx === 0
+            ? 0
+            : shape.cx > 0
+              ? connectedOffset
+              : -connectedOffset
+          : shape.dx;
+        const y = isConnected
+          ? shape.cy === 0
+            ? 0
+            : shape.cy > 0
+              ? connectedOffset
+              : -connectedOffset
+          : shape.dy;
 
         return (
           <AnimationShape
