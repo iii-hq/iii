@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { ArrowNarrowRightIcon, CheckedIcon } from '../icons';
+import React, { useEffect, useRef, useState } from 'react';
 import { InstallShButton } from '../InstallShButton';
+import { EmailSignupForm } from '../EmailSignupForm';
 import { useRotatingText } from '../../lib/useRotatingText';
 // AUTHENTIC SVG LOGOS - Official & Community Verified Paths
 // Sources: Official branding pages, vectorlogo.zone, svgl.app, simpleicons.org
@@ -282,15 +282,14 @@ export const cloudLogos = [
   },
 ];
 
-const rotatingWords = ['create', 'connect', 'share', 'observe', 'use', 'build'];
-
-const rotatingContexts = [
-  'any language',
-  'any domain',
-  'any runtime',
-  'any service',
-  'any queue',
-  'any function',
+const rotatingDescriptors = [
+  'simple',
+  'extensible',
+  'fast',
+  'composable',
+  'observable',
+  'reliable',
+  'interoperable',
 ];
 
 interface HeroSectionProps {
@@ -298,74 +297,61 @@ interface HeroSectionProps {
 }
 
 export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
-  // Use shared rotating text hook for words
-  const { currentItem: currentWord, isAnimating } = useRotatingText({
-    items: rotatingWords,
+  const { currentItem: currentDescriptor, isAnimating } = useRotatingText({
+    items: rotatingDescriptors,
     intervalMs: 3000,
   });
+  const headlineRef = useRef<HTMLHeadingElement>(null);
+  const descriptorMeasureRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const secondLineMeasureRef = useRef<HTMLSpanElement>(null);
+  const [headlineScale, setHeadlineScale] = useState(1);
 
-  // Use shared rotating text hook for contexts
-  const { currentItem: currentContext, isAnimating: isContextAnimating } =
-    useRotatingText({
-      items: rotatingContexts,
-      intervalMs: 4200,
-    });
-
-  // Email form state
-  const [email, setEmail] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(() => {
-    if (typeof window === 'undefined') {
-      return false;
-    }
-    try {
-      return window.localStorage.getItem('iii_access_requested') === 'true';
-    } catch {
-      return false;
-    }
-  });
-
-  const persistAccessRequest = (requestedEmail: string) => {
+  useEffect(() => {
     if (typeof window === 'undefined') {
       return;
     }
-    try {
-      window.localStorage.setItem('iii_access_requested', 'true');
-      window.localStorage.setItem('iii_access_email', requestedEmail);
-    } catch {
-      // Ignore storage failures (private mode, blocked storage, etc).
-    }
-  };
 
-  const handleEmailSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email) return;
-
-    setIsSubmitting(true);
-
-    try {
-      const formUrl = import.meta.env.VITE_MAILMODO_FORM_URL;
-      if (formUrl) {
-        const res = await fetch(formUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email }),
-        });
-        if (!res.ok && res.status !== 409) {
-          throw new Error('Submission failed');
-        }
+    const updateHeadlineScale = () => {
+      const headlineEl = headlineRef.current;
+      if (!headlineEl) {
+        return;
       }
-      setIsSubmitted(true);
-      persistAccessRequest(email);
-      setEmail('');
-    } catch {
-      setIsSubmitted(true);
-      persistAccessRequest(email);
-      setEmail('');
-    } finally {
-      setIsSubmitting(false);
+
+      const availableWidth = headlineEl.clientWidth;
+      if (!availableWidth) {
+        setHeadlineScale(1);
+        return;
+      }
+
+      const widestDescriptorLine = descriptorMeasureRefs.current.reduce(
+        (maxWidth, lineEl) => Math.max(maxWidth, lineEl?.scrollWidth ?? 0),
+        0,
+      );
+      const secondLineWidth = secondLineMeasureRef.current?.scrollWidth ?? 0;
+      const longestLineWidth = Math.max(widestDescriptorLine, secondLineWidth);
+      const nextScale =
+        longestLineWidth > availableWidth
+          ? availableWidth / longestLineWidth
+          : 1;
+
+      setHeadlineScale((prevScale) =>
+        Math.abs(prevScale - nextScale) < 0.001 ? prevScale : nextScale,
+      );
+    };
+
+    updateHeadlineScale();
+
+    const resizeObserver = new ResizeObserver(updateHeadlineScale);
+    if (headlineRef.current) {
+      resizeObserver.observe(headlineRef.current);
     }
-  };
+    window.addEventListener('resize', updateHeadlineScale);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateHeadlineScale);
+    };
+  }, []);
 
   return (
     <section
@@ -379,41 +365,68 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
           <div className="space-y-4 sm:space-y-6 md:space-y-8 max-w-4xl w-full">
             {/* Main headline */}
             <div className="space-y-2">
-              <h1 className="text-[clamp(1.125rem,6vw,4.5rem)] font-bold leading-[1.05] tracking-tighter font-chivo overflow-hidden">
+              <h1
+                ref={headlineRef}
+                className="relative text-[clamp(1.125rem,6vw,4.5rem)] font-bold leading-[1.05] tracking-tighter font-chivo overflow-hidden"
+              >
                 <span
-                  className={`block ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
+                  aria-hidden="true"
+                  className="absolute -z-10 pointer-events-none invisible select-none"
                 >
-                  Unreasonably simple to
+                  {rotatingDescriptors.map((descriptor, idx) => (
+                    <span
+                      key={descriptor}
+                      ref={(el) => {
+                        descriptorMeasureRefs.current[idx] = el;
+                      }}
+                      className="block w-max whitespace-nowrap"
+                    >
+                      Unreasonably {descriptor}
+                    </span>
+                  ))}
+                  <span
+                    ref={secondLineMeasureRef}
+                    className="block w-max whitespace-nowrap"
+                  >
+                    backend engineering
+                  </span>
                 </span>
-                <span className="block whitespace-nowrap">
+
+                <span
+                  className="block"
+                  style={
+                    headlineScale < 1
+                      ? { fontSize: `${headlineScale}em` }
+                      : undefined
+                  }
+                >
                   <span
-                    className={`inline-block transition-all duration-500 ease-in-out ${
-                      isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
-                    } ${
-                      isAnimating
-                        ? 'opacity-0 translate-y-5 scale-80'
-                        : 'opacity-100 translate-y-0 scale-100'
-                    }`}
+                    className={`block whitespace-nowrap ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
                   >
-                    {currentWord}
-                  </span>{' '}
+                    <span className="inline-block">Unreasonably</span>{' '}
+                    <span
+                      className={`inline-block transition-all duration-500 ease-in-out ${
+                        isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
+                      } ${
+                        isAnimating
+                          ? 'opacity-0 translate-y-5 scale-80'
+                          : 'opacity-100 translate-y-0 scale-100'
+                      }`}
+                    >
+                      {currentDescriptor}
+                    </span>{' '}
+                  </span>
                   <span
-                    className={`inline-block transition-all duration-500 ease-in-out ${
-                      isDarkMode ? 'text-iii-light' : 'text-iii-black'
-                    } ${
-                      isContextAnimating
-                        ? 'opacity-0 -translate-y-3 scale-90'
-                        : 'opacity-100 translate-y-0 scale-100'
-                    }`}
+                    className={`block whitespace-nowrap ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
                   >
-                    {currentContext}
+                    backend engineering
                   </span>
                 </span>
               </h1>
             </div>
 
             <p
-              className={`mx-auto max-w-3xl text-sm md:text-base lg:text-lg leading-relaxed ${
+              className={`mx-auto max-w-[64ch] text-sm md:text-base lg:text-lg leading-relaxed [text-wrap:pretty] ${
                 isDarkMode ? 'text-iii-light/75' : 'text-iii-black/75'
               }`}
             >
@@ -426,67 +439,8 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
             {/* Install Command & Email Form */}
             <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-center justify-center pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
               <InstallShButton isDarkMode={isDarkMode} />
-
-              <div className="w-full sm:w-auto relative">
-                <form
-                  onSubmit={handleEmailSubmit}
-                  className="flex items-center w-full"
-                >
-                  {isSubmitted ? (
-                    <div
-                      className={`flex items-center gap-2 text-xs md:text-sm px-3 py-2.5 md:px-4 md:py-3 border rounded w-full justify-center ${
-                        isDarkMode
-                          ? 'text-iii-accent bg-iii-accent/10 border-iii-accent/20'
-                          : 'text-iii-accent-light bg-iii-accent-light/10 border-iii-accent-light/20'
-                      }`}
-                    >
-                      <CheckedIcon size={16} />
-                      <span className="font-mono tracking-tight text-xs sm:text-sm">
-                        SUBSCRIBED — STAY UPDATED
-                      </span>
-                    </div>
-                  ) : (
-                    <div
-                      className={`flex w-full border-b transition-colors relative ${
-                        isDarkMode
-                          ? 'border-iii-light focus-within:border-iii-accent'
-                          : 'border-iii-dark focus-within:border-iii-accent-light'
-                      }`}
-                    >
-                      <input
-                        type="email"
-                        placeholder="your@email.here"
-                        className={`bg-transparent outline-none text-xs md:text-sm py-2.5 md:py-3 px-1 w-full sm:w-48 md:w-64 placeholder-iii-medium/50 font-mono ${
-                          isDarkMode ? 'text-iii-light' : 'text-iii-black'
-                        }`}
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        required
-                      />
-                      <button
-                        type="submit"
-                        disabled={isSubmitting}
-                        className={`absolute right-0 top-1/2 -translate-y-1/2 disabled:opacity-50 transition-colors p-1.5 md:p-2 ${
-                          isDarkMode
-                            ? 'text-iii-light hover:text-iii-accent'
-                            : 'text-iii-black hover:text-iii-accent-light'
-                        }`}
-                      >
-                        {isSubmitting ? (
-                          '...'
-                        ) : (
-                          <ArrowNarrowRightIcon size={20} />
-                        )}
-                      </button>
-                    </div>
-                  )}
-                </form>
-                <p className="absolute left-0 top-full mt-1 text-[10px] sm:text-xs text-iii-medium">
-                  Follow our development
-                </p>
-              </div>
+              <EmailSignupForm isDarkMode={isDarkMode} />
             </div>
-
           </div>
         </div>
       </div>

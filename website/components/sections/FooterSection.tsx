@@ -2,12 +2,11 @@ import { useState, useEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import {
   GithubIcon,
-  TerminalIcon,
-  CopyIcon,
-  CheckedIcon,
   UsersIcon,
   ArrowNarrowRightIcon,
 } from "../icons";
+import { InstallShButton } from "../InstallShButton";
+import { EmailSignupForm } from "../EmailSignupForm";
 import { Logo } from "../Logo";
 import { TextParticle, drawIiiLogo } from "../ui/text-particle";
 
@@ -121,10 +120,7 @@ interface FooterSectionProps {
 
 export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
   const [openFaqId, setOpenFaqId] = useState<number | null>(null);
-  const [copySuccess, setCopySuccess] = useState(false);
   const discord = useDiscordWidget();
-  const installCmd =
-    "curl -fsSL https://install.iii.dev/iii/main/install.sh | sh";
 
   const textPrimary = isDarkMode ? "text-iii-light" : "text-iii-black";
   const textSecondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
@@ -136,16 +132,6 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
   const accentBorder = isDarkMode
     ? "border-iii-accent"
     : "border-iii-accent-light";
-
-  const copyToClipboard = () => {
-    navigator.clipboard
-      .writeText(installCmd)
-      .then(() => {
-        setCopySuccess(true);
-        setTimeout(() => setCopySuccess(false), 2000);
-      })
-      .catch(() => {});
-  };
 
   return (
     <footer
@@ -163,43 +149,10 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
             </p>
           </div>
 
-          {/* Install command */}
-          <button
-            type="button"
-            aria-label="Copy install command"
-            className={`group relative flex items-center gap-3 px-4 py-2.5 md:px-5 md:py-3 border-2 rounded-lg mb-4 max-w-lg mx-auto cursor-pointer transition-all ${
-              isDarkMode
-                ? "bg-iii-dark/50 border-iii-light/20 hover:border-iii-light/40"
-                : "bg-white/50 border-iii-black/20 hover:border-iii-black/40"
-            }`}
-            onClick={copyToClipboard}
-          >
-            {copySuccess ? (
-              <>
-                <CheckedIcon
-                  size={20}
-                  className={`flex-shrink-0 ${accentColor}`}
-                />
-                <code className={`text-xs md:text-sm flex-1 ${textPrimary}`}>
-                  copied!
-                </code>
-              </>
-            ) : (
-              <>
-                <TerminalIcon
-                  size={20}
-                  className={`flex-shrink-0 ${textSecondary}`}
-                />
-                <code className={`text-xs md:text-sm flex-1 ${textPrimary}`}>
-                  install.sh
-                </code>
-                <CopyIcon
-                  size={20}
-                  className={`flex-shrink-0 transition-all ${textSecondary} ${isDarkMode ? "group-hover:text-iii-accent group-hover:drop-shadow-[0_0_6px_rgba(243,247,36,0.4)]" : "group-hover:text-iii-accent-light group-hover:drop-shadow-[0_0_6px_rgba(47,127,255,0.4)]"}`}
-                />
-              </>
-            )}
-          </button>
+          <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-center justify-center mb-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
+            <InstallShButton isDarkMode={isDarkMode} />
+            <EmailSignupForm isDarkMode={isDarkMode} showHelperText={false} />
+          </div>
 
           {/* CTA Buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
