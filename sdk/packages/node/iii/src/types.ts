@@ -397,8 +397,12 @@ export type FunctionRef = {
  * // Register a trigger — type is inferred as CronConfig
  * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
  *
- * // Register a function scoped to this trigger type
- * cron.registerFunction('my-fn', async (data) => { ... })
+ * // Register a function and bind a trigger in one call
+ * cron.registerFunction(
+ *   { id: 'my-fn', description: 'Cron-triggered function' },
+ *   async (data) => { return { ok: true } },
+ *   { schedule: '* * * * *' },
+ * )
  * ```
  */
 export type TriggerTypeRef<TConfig = unknown> = {
