@@ -16,9 +16,75 @@ use uuid::Uuid;
 pub struct TriggerType {
     pub id: String,
     pub _description: String,
-    // pub config_schema: Schema,
+    pub trigger_request_format: Option<Value>,
+    pub call_request_format: Option<Value>,
     pub registrator: Box<dyn TriggerRegistrator>,
     pub worker_id: Option<Uuid>,
+}
+
+impl TriggerType {
+    pub fn new(
+        id: impl Into<String>,
+        description: impl Into<String>,
+        registrator: Box<dyn TriggerRegistrator>,
+        worker_id: Option<Uuid>,
+    ) -> Self {
+        let id = id.into();
+        let trigger_request_format = Self::trigger_request_format_for(&id);
+        let call_request_format = Self::call_request_format_for(&id);
+        Self {
+            id,
+            _description: description.into(),
+            trigger_request_format,
+            call_request_format,
+            registrator,
+            worker_id,
+        }
+    }
+
+    pub fn with_trigger_request_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.trigger_request_format = Self::schema_for::<T>();
+        self
+    }
+
+    pub fn with_call_request_format<T: schemars::JsonSchema>(mut self) -> Self {
+        self.call_request_format = Self::schema_for::<T>();
+        self
+    }
+
+    fn schema_for<T: schemars::JsonSchema>() -> Option<Value> {
+        serde_json::to_value(schemars::schema_for!(T)).ok()
+    }
+
+    fn trigger_request_format_for(id: &str) -> Option<Value> {
+        use crate::trigger_formats::*;
+
+        match id {
+            "http" => Self::schema_for::<HttpTriggerConfig>(),
+            "cron" => Self::schema_for::<CronTriggerConfig>(),
+            "queue" => Self::schema_for::<QueueTriggerConfig>(),
+            "subscribe" => Self::schema_for::<SubscribeTriggerConfig>(),
+            "state" => Self::schema_for::<StateTriggerConfig>(),
+            "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
+            "stream" => Self::schema_for::<StreamTriggerConfig>(),
+            "log" => Self::schema_for::<LogTriggerConfig>(),
+            _ => None,
+        }
+    }
+
+    fn call_request_format_for(id: &str) -> Option<Value> {
+        use crate::trigger_formats::*;
+
+        match id {
+            "http" => Self::schema_for::<HttpCallRequest>(),
+            "cron" => Self::schema_for::<CronCallRequest>(),
+            "state" => Self::schema_for::<StateCallRequest>(),
+            "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveCallRequest>(),
+            "stream" => Self::schema_for::<StreamCallRequest>(),
+            "log" => Self::schema_for::<LogCallRequest>(),
+            _ => None,
+        }
+    }
 }
 
 pub trait TriggerRegistrator: Send + Sync {
@@ -304,12 +370,12 @@ mod tests {
     }
 
     fn make_trigger_type(id: &str) -> TriggerType {
-        TriggerType {
-            id: id.to_string(),
-            _description: format!("Test trigger type {}", id),
-            registrator: Box::new(MockRegistrator::new()),
-            worker_id: None,
-        }
+        TriggerType::new(
+            id,
+            format!("Test trigger type {}", id),
+            Box::new(MockRegistrator::new()),
+            None,
+        )
     }
 
     #[test]
@@ -419,12 +485,12 @@ mod tests {
         registry.triggers.insert(trigger.id.clone(), trigger);
 
         let registrator = Arc::new(MockRegistrator::new());
-        let tt = TriggerType {
-            id: "webhook".to_string(),
-            _description: "Webhook type".to_string(),
-            registrator: Box::new(MockRegistrator::new()),
-            worker_id: None,
-        };
+        let tt = TriggerType::new(
+            "webhook",
+            "Webhook type",
+            Box::new(MockRegistrator::new()),
+            None,
+        );
 
         // We cannot easily inspect the boxed registrator, but the call should
         // succeed and not panic.
@@ -444,12 +510,12 @@ mod tests {
         let worker_id = Uuid::new_v4();
 
         // Register a trigger type owned by the worker.
-        let tt = TriggerType {
-            id: "cron".to_string(),
-            _description: "Cron".to_string(),
-            registrator: Box::new(MockRegistrator::new()),
-            worker_id: Some(worker_id),
-        };
+        let tt = TriggerType::new(
+            "cron",
+            "Cron",
+            Box::new(MockRegistrator::new()),
+            Some(worker_id),
+        );
         registry.register_trigger_type(tt).await.unwrap();
 
         // Register a trigger owned by the worker.
@@ -472,12 +538,12 @@ mod tests {
         let worker_a = Uuid::new_v4();
         let worker_b = Uuid::new_v4();
 
-        let tt = TriggerType {
-            id: "cron".to_string(),
-            _description: "Cron".to_string(),
-            registrator: Box::new(MockRegistrator::new()),
-            worker_id: Some(worker_a),
-        };
+        let tt = TriggerType::new(
+            "cron",
+            "Cron",
+            Box::new(MockRegistrator::new()),
+            Some(worker_a),
+        );
         registry.register_trigger_type(tt).await.unwrap();
 
         let mut trigger_a = make_trigger("ta", "cron");
@@ -504,12 +570,12 @@ mod tests {
         registry.triggers.insert(trigger.id.clone(), trigger);
 
         let registrator = Arc::new(ControlledRegistrator::new(true, false));
-        let trigger_type = TriggerType {
-            id: "webhook".to_string(),
-            _description: "Webhook".to_string(),
-            registrator: Box::new(Arc::clone(&registrator)),
-            worker_id: None,
-        };
+        let trigger_type = TriggerType::new(
+            "webhook",
+            "Webhook",
+            Box::new(Arc::clone(&registrator)),
+            None,
+        );
 
         registry.register_trigger_type(trigger_type).await.unwrap();
 
@@ -521,12 +587,8 @@ mod tests {
     async fn test_register_trigger_propagates_registrator_error() {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(true, false));
-        let trigger_type = TriggerType {
-            id: "queue".to_string(),
-            _description: "Queue".to_string(),
-            registrator: Box::new(Arc::clone(&registrator)),
-            worker_id: None,
-        };
+        let trigger_type =
+            TriggerType::new("queue", "Queue", Box::new(Arc::clone(&registrator)), None);
         registry.register_trigger_type(trigger_type).await.unwrap();
 
         let err = registry
@@ -543,12 +605,8 @@ mod tests {
     async fn test_unregister_trigger_propagates_registrator_error() {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(false, true));
-        let trigger_type = TriggerType {
-            id: "queue".to_string(),
-            _description: "Queue".to_string(),
-            registrator: Box::new(Arc::clone(&registrator)),
-            worker_id: None,
-        };
+        let trigger_type =
+            TriggerType::new("queue", "Queue", Box::new(Arc::clone(&registrator)), None);
         registry.register_trigger_type(trigger_type).await.unwrap();
         registry
             .register_trigger(make_trigger("t-unregister", "queue"))
@@ -570,12 +628,12 @@ mod tests {
         let registry = TriggerRegistry::new();
         let worker_id = Uuid::new_v4();
         let registrator = Arc::new(ControlledRegistrator::new(false, true));
-        let trigger_type = TriggerType {
-            id: "queue".to_string(),
-            _description: "Queue".to_string(),
-            registrator: Box::new(Arc::clone(&registrator)),
-            worker_id: Some(worker_id),
-        };
+        let trigger_type = TriggerType::new(
+            "queue",
+            "Queue",
+            Box::new(Arc::clone(&registrator)),
+            Some(worker_id),
+        );
         registry.register_trigger_type(trigger_type).await.unwrap();
 
         let mut trigger = make_trigger("t-owned", "queue");

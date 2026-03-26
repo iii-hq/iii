@@ -1,3 +1,4 @@
+pub mod builtin_triggers;
 pub mod channels;
 pub mod error;
 pub mod iii;
@@ -9,6 +10,7 @@ pub mod telemetry;
 pub mod triggers;
 pub mod types;
 
+pub use builtin_triggers::IIITrigger;
 pub use channels::{
     ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
     extract_channel_refs, is_channel_ref,
@@ -16,8 +18,8 @@ pub use channels::{
 pub use error::IIIError;
 pub use iii::{
     FunctionInfo, FunctionRef, FunctionsAvailableGuard, III, IIIAsyncFn, IIIConnectionState, IIIFn,
-    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, TriggerInfo, WorkerInfo,
-    WorkerMetadata, iii_async_fn, iii_fn,
+    IntoFunctionHandler, IntoFunctionRegistration, RegisterFunction, RegisterTriggerType,
+    TriggerInfo, TriggerTypeInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata, iii_async_fn, iii_fn,
 };
 pub use logger::Logger;
 pub use protocol::{

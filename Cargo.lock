@@ -2178,6 +2178,7 @@ dependencies = [
 name = "iii-example"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "iii-sdk",
  "reqwest",
  "schemars 0.8.22",

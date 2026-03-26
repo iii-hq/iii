@@ -9,6 +9,7 @@ import type {
   StreamChannelRef,
   TriggerInfo,
   TriggerRequest,
+  TriggerTypeInfo,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
@@ -212,6 +213,20 @@ export interface ISdk {
   listTriggers(includeInternal?: boolean): Promise<TriggerInfo[]>
 
   /**
+   * Lists all trigger types registered with the engine.
+   * @param includeInternal - Whether to include internal trigger types (default: false)
+   *
+   * @example
+   * ```typescript
+   * const triggerTypes = await iii.listTriggerTypes()
+   * for (const tt of triggerTypes) {
+   *   console.log(`${tt.id}: ${tt.description}`)
+   * }
+   * ```
+   */
+  listTriggerTypes(includeInternal?: boolean): Promise<TriggerTypeInfo[]>
+
+  /**
    * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
    * @param triggerType - The trigger type to register
    * @param handler - The handler for the trigger type
@@ -236,7 +251,7 @@ export interface ISdk {
    * )
    * ```
    */
-  registerTriggerType<TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>): void
+  registerTriggerType<TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>): TriggerTypeRef<TConfig>
 
   /**
    * Unregisters a trigger type.
@@ -360,6 +375,60 @@ export type FunctionRef = {
   id: string
   /** Removes this function from the engine. */
   unregister: () => void
+}
+
+/**
+ * Typed handle returned by {@link ISdk.registerTriggerType}.
+ *
+ * Provides convenience methods to register triggers and functions scoped
+ * to this trigger type, so callers don't need to repeat the `type` field.
+ *
+ * @typeParam TConfig - Trigger-specific configuration type.
+ *
+ * @example
+ * ```typescript
+ * type CronConfig = { schedule: string }
+ *
+ * const cron = iii.registerTriggerType<CronConfig>(
+ *   { id: 'cron', description: 'Fires on a cron schedule' },
+ *   cronHandler,
+ * )
+ *
+ * // Register a trigger — type is inferred as CronConfig
+ * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
+ *
+ * // Register a function and bind a trigger in one call
+ * cron.registerFunction(
+ *   { id: 'my-fn', description: 'Cron-triggered function' },
+ *   async (data) => { return { ok: true } },
+ *   { schedule: '* * * * *' },
+ * )
+ * ```
+ */
+export type TriggerTypeRef<TConfig = unknown> = {
+  /** The trigger type identifier. */
+  id: string
+  /**
+   * Register a trigger bound to this trigger type.
+   *
+   * @param functionId - The function to invoke when the trigger fires.
+   * @param config - Trigger-specific configuration.
+   * @returns A {@link Trigger} handle with an `unregister()` method.
+   */
+  registerTrigger(functionId: string, config: TConfig): Trigger
+  /**
+   * Register a function and immediately bind it to this trigger type.
+   *
+   * @param func - Function registration input.
+   * @param handler - Local function handler.
+   * @param config - Trigger-specific configuration.
+   * @returns A {@link FunctionRef} handle.
+   */
+  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler, config: TConfig): FunctionRef
+  /**
+   * Unregister this trigger type from the engine.
+   */
+  unregister(): void
 }
 
 /**

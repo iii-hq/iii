@@ -402,19 +402,31 @@ impl Engine {
                 tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
                 Ok(())
             }
-            Message::RegisterTriggerType { id, description } => {
+            Message::RegisterTriggerType {
+                id,
+                description,
+                trigger_request_format,
+                call_request_format,
+            } => {
                 tracing::debug!(
                     worker_id = %worker.id,
                     trigger_type_id = %id,
                     description = %description,
                     "RegisterTriggerType"
                 );
-                let trigger_type = TriggerType {
-                    id: id.clone(),
-                    _description: description.clone(),
-                    registrator: Box::new(worker.clone()),
-                    worker_id: Some(worker.id),
-                };
+                let mut trigger_type = TriggerType::new(
+                    id.clone(),
+                    description.clone(),
+                    Box::new(worker.clone()),
+                    Some(worker.id),
+                );
+                // Allow SDK workers to override formats from the protocol message
+                if let Some(fmt) = trigger_request_format {
+                    trigger_type.trigger_request_format = Some(fmt.clone());
+                }
+                if let Some(fmt) = call_request_format {
+                    trigger_type.call_request_format = Some(fmt.clone());
+                }
 
                 let _ = self
                     .trigger_registry
@@ -1348,6 +1360,8 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "my_trigger_type".to_string(),
             description: "A test trigger type".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -1395,6 +1409,8 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "unreg_type".to_string(),
             description: "Trigger type for unregister test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -1784,20 +1800,20 @@ mod tests {
         let worker = Worker::new(tx);
 
         engine
-            .register_trigger_type(crate::trigger::TriggerType {
-                id: "duplicate".to_string(),
-                _description: "first".to_string(),
-                registrator: Box::new(worker.clone()),
-                worker_id: Some(worker.id),
-            })
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "duplicate",
+                "first",
+                Box::new(worker.clone()),
+                Some(worker.id),
+            ))
             .await;
         engine
-            .register_trigger_type(crate::trigger::TriggerType {
-                id: "duplicate".to_string(),
-                _description: "second".to_string(),
-                registrator: Box::new(worker.clone()),
-                worker_id: Some(worker.id),
-            })
+            .register_trigger_type(crate::trigger::TriggerType::new(
+                "duplicate",
+                "second",
+                Box::new(worker.clone()),
+                Some(worker.id),
+            ))
             .await;
 
         assert_eq!(engine.trigger_registry.trigger_types.len(), 1);
@@ -2058,6 +2074,8 @@ mod tests {
         let register_type_msg = Message::RegisterTriggerType {
             id: "cleanup_trigger_type".to_string(),
             description: "Trigger type for cleanup test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &register_type_msg)
@@ -2473,6 +2491,8 @@ mod tests {
         let tt_msg = Message::RegisterTriggerType {
             id: "cleanup_trigger_type".to_string(),
             description: "Test trigger type for cleanup".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
         };
         engine
             .router_msg(&worker, &tt_msg)

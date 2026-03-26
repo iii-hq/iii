@@ -38,6 +38,7 @@ from .iii_types import (
     TriggerActionVoid,
     TriggerInfo,
     TriggerRequest,
+    TriggerTypeInfo,
     UnregisterFunctionMessage,
     UnregisterTriggerMessage,
     UnregisterTriggerTypeMessage,
@@ -45,13 +46,23 @@ from .iii_types import (
 )
 from .stream import IStream, StreamDeleteInput, StreamGetInput, StreamListGroupsInput, StreamListInput, StreamSetInput
 from .telemetry_types import OtelConfig
-from .triggers import Trigger, TriggerConfig, TriggerHandler
+from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
 
 RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
 TResult = TypeVar("TResult")
 
 log = logging.getLogger("iii.iii")
+
+
+def _resolve_format(fmt: Any) -> Any | None:
+    """Resolve a format value: if it's a type (e.g. Pydantic model), convert to JSON Schema."""
+    if fmt is None:
+        return None
+    if isinstance(fmt, type):
+        from .format_utils import python_type_to_format
+        return python_type_to_format(fmt)
+    return fmt
 
 
 class _TraceContextError(Exception):
@@ -589,30 +600,60 @@ class III:
         self,
         trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
         handler: TriggerHandler[Any],
-    ) -> None:
+    ) -> "TriggerTypeRef[Any, Any]":
         """Register a custom trigger type with the engine.
+
+        Returns a :class:`TriggerTypeRef` handle with ``register_trigger``
+        and ``register_function`` methods.
 
         Args:
             trigger_type: A ``RegisterTriggerTypeInput`` or dict with
-                ``id`` and ``description``.
-            handler: A ``TriggerHandler`` instance.  Must implement both
-                ``register_trigger(config)`` and
-                ``unregister_trigger(trigger)`` async methods.
-                ``register_trigger`` is called when a trigger of this
-                type is bound to a function, and ``unregister_trigger``
-                is called when the binding is removed.
+                ``id``, ``description``, and optional ``trigger_request_format``
+                / ``call_request_format`` (Pydantic class or dict).
+            handler: A ``TriggerHandler`` instance.
+
+        Returns:
+            A ``TriggerTypeRef`` with typed ``register_trigger`` and
+            ``register_function`` methods.
 
         Examples:
-            >>> iii.register_trigger_type({"id": "webhook", "description": "Webhook trigger"}, handler)
-            >>> iii.register_trigger_type(
-            ...     RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"), handler
+            >>> webhook = iii.register_trigger_type(
+            ...     RegisterTriggerTypeInput(
+            ...         id="webhook",
+            ...         description="Webhook trigger",
+            ...         trigger_request_format=WebhookConfig,
+            ...         call_request_format=WebhookCallRequest,
+            ...     ),
+            ...     WebhookHandler(),
             ... )
+            >>> webhook.register_function("handler", handle_webhook)
+            >>> webhook.register_trigger("handler", WebhookConfig(url="/hook"))
         """
         if isinstance(trigger_type, dict):
             trigger_type = RegisterTriggerTypeInput(**trigger_type)
-        msg = RegisterTriggerTypeMessage(id=trigger_type.id, description=trigger_type.description)
+
+        config_cls = (
+            trigger_type.trigger_request_format
+            if isinstance(trigger_type.trigger_request_format, type)
+            else None
+        )
+        request_cls = trigger_type.call_request_format if isinstance(trigger_type.call_request_format, type) else None
+
+        msg = RegisterTriggerTypeMessage(
+            id=trigger_type.id,
+            description=trigger_type.description,
+            trigger_request_format=_resolve_format(trigger_type.trigger_request_format),
+            call_request_format=_resolve_format(trigger_type.call_request_format),
+        )
         self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(message=msg, handler=handler)
         self._send_if_connected(msg)
+
+        return TriggerTypeRef(
+            iii=self,
+            trigger_type_id=trigger_type.id,
+            config_cls=config_cls,
+            request_cls=request_cls,
+        )
 
     def unregister_trigger_type(self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]") -> None:
         """Unregister a previously registered trigger type.
@@ -1036,6 +1077,47 @@ class III:
         )
         triggers_data = result.get("triggers", [])
         return [TriggerInfo(**t) for t in triggers_data]
+
+    def list_trigger_types(self, include_internal: bool = False) -> list[TriggerTypeInfo]:
+        """List all trigger types registered with the engine.
+
+        Args:
+            include_internal: If ``True``, include engine-internal trigger
+                types (e.g. ``engine::functions-available``). Defaults to ``False``.
+
+        Returns:
+            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
+            and ``call_request_format`` schemas.
+
+        Examples:
+            >>> trigger_types = iii.list_trigger_types()
+            >>> for tt in trigger_types:
+            ...     print(tt.id, tt.trigger_request_format)
+        """
+        return self._run_on_loop(self.list_trigger_types_async(include_internal))
+
+    async def list_trigger_types_async(self, include_internal: bool = False) -> list[TriggerTypeInfo]:
+        """List all trigger types registered with the engine.
+
+        Args:
+            include_internal: If ``True``, include engine-internal trigger
+                types (e.g. ``engine::functions-available``). Defaults to ``False``.
+
+        Returns:
+            A list of ``TriggerTypeInfo`` objects with ``trigger_request_format``
+            and ``call_request_format`` schemas.
+
+        Examples:
+            >>> trigger_types = await iii.list_trigger_types_async()
+        """
+        result = await self.trigger_async(
+            {
+                "function_id": "engine::trigger-types::list",
+                "payload": {"include_internal": include_internal},
+            }
+        )
+        types_data = result.get("trigger_types", [])
+        return [TriggerTypeInfo(**t) for t in types_data]
 
     def create_channel(self, buffer_size: int | None = None) -> Channel:
         """Create a streaming channel pair for worker-to-worker data transfer.

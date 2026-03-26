@@ -97,12 +97,12 @@ impl Module for RestApiCoreModule {
 
         self.engine
             .clone()
-            .register_trigger_type(TriggerType {
-                id: "http".to_string(),
-                _description: "HTTP API trigger".to_string(),
-                registrator: Box::new(self.clone()),
-                worker_id: None,
-            })
+            .register_trigger_type(TriggerType::new(
+                "http",
+                "HTTP API trigger",
+                Box::new(self.clone()),
+                None,
+            ))
             .await;
 
         let addr = format!("{}:{}", self.config.host, self.config.port);
