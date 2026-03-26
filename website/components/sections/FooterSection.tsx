@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { GithubIcon, UsersIcon, ArrowNarrowRightIcon } from '../icons';
+import { GithubIcon } from '../icons';
 import { InstallShButton } from '../InstallShButton';
 import { EmailSignupForm } from '../EmailSignupForm';
 import { Logo } from '../Logo';
@@ -174,40 +174,96 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               <GithubIcon size={16} />
               GitHub
             </a>
-            <button
-              onClick={() =>
-                window.open(
-                  discord.inviteUrl || DISCORD_INVITE_URL,
-                  '_blank',
-                  'noopener,noreferrer',
-                )
-              }
-              className={`${ctaButtonBase} bg-[#5865F2] border-[#5865F2] hover:bg-[#4752C4] hover:border-[#4752C4] text-white`}
-            >
-              <svg
-                className="w-4 h-4"
-                fill="currentColor"
-                viewBox="0 0 127.14 96.36"
+            <div className="relative">
+              <button
+                onClick={() =>
+                  window.open(
+                    discord.inviteUrl || DISCORD_INVITE_URL,
+                    '_blank',
+                    'noopener,noreferrer',
+                  )
+                }
+                className={`${ctaButtonBase} bg-[#5865F2] border-[#5865F2] hover:bg-[#4752C4] hover:border-[#4752C4] text-white`}
               >
-                <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" />
-              </svg>
-              <span>Discord</span>
-              {!discord.error && !discord.isLoading && (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
-                  <span className="font-normal opacity-80">
-                    {discord.onlineCount} online
-                  </span>
-                </>
+                <svg
+                  className="w-4 h-4"
+                  fill="currentColor"
+                  viewBox="0 0 127.14 96.36"
+                >
+                  <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" />
+                </svg>
+                <span>Discord</span>
+                {!discord.error && !discord.isLoading && (
+                  <>
+                    <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
+                    <span className="font-normal opacity-80">
+                      {discord.onlineCount} online
+                    </span>
+                  </>
+                )}
+              </button>
+              {!discord.error && (
+                <div className="absolute left-0 right-0 flex items-center justify-center gap-1 mt-2">
+                  {(discord.members.length > 0
+                    ? discord.members
+                    : fallbackAvatars.map((emoji, i) => ({
+                        id: `fb-${i}`,
+                        username: '',
+                        avatar_url: '',
+                        status: 'online',
+                        emoji,
+                      }))
+                  )
+                    .slice(0, 6)
+                    .map((member, index) => (
+                      <div
+                        key={member.id}
+                        className="relative"
+                        style={{
+                          marginLeft: index > 0 ? '-6px' : '0',
+                          zIndex: 10 - index,
+                        }}
+                      >
+                        {member.avatar_url ? (
+                          <img
+                            src={member.avatar_url}
+                            alt={member.username}
+                            className="w-7 h-7 rounded-full border-2 border-iii-dark object-cover"
+                          />
+                        ) : (
+                          <div
+                            className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs ${isDarkMode ? 'border-iii-dark bg-iii-dark/50' : 'border-white bg-gray-100'}`}
+                          >
+                            {(member as { emoji?: string }).emoji || '👤'}
+                          </div>
+                        )}
+                        <span
+                          className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 ${isDarkMode ? 'border-iii-dark' : 'border-white'} ${
+                            member.status === 'online'
+                              ? 'bg-iii-success'
+                              : member.status === 'idle'
+                                ? 'bg-yellow-500'
+                                : member.status === 'dnd'
+                                  ? 'bg-red-500'
+                                  : 'bg-gray-500'
+                          }`}
+                        />
+                      </div>
+                    ))}
+                  {discord.onlineCount > 6 && (
+                    <span className={`text-xs ml-2 ${textSecondary}`}>
+                      +{discord.onlineCount - 6} more
+                    </span>
+                  )}
+                </div>
               )}
-            </button>
+            </div>
           </div>
         </div>
 
-        {/* FAQ + Discord Row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 mb-6 md:mb-8">
-          {/* Collapsible FAQ */}
-          <div className="lg:col-span-2">
+        {/* FAQ */}
+        <div className="mb-6 md:mb-8">
+          <div>
             <h4
               className={`text-xs font-semibold uppercase tracking-wider mb-4 ${accentColor}`}
             >
@@ -264,114 +320,6 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Discord Widget with Member Avatars */}
-          <div className={`p-5 rounded-lg border-2 ${borderColor} ${bgCard}`}>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-lg bg-[#5865F2] flex items-center justify-center">
-                <svg
-                  className="w-5 h-5 text-white"
-                  fill="currentColor"
-                  viewBox="0 0 127.14 96.36"
-                >
-                  <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" />
-                </svg>
-              </div>
-              <div>
-                <h4 className={`text-sm font-bold ${textPrimary}`}>
-                  {discord.serverName}
-                </h4>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`w-2 h-2 rounded-full ${discord.error ? 'bg-iii-alert' : 'bg-iii-success'} ${discord.isLoading ? 'animate-pulse' : ''}`}
-                  />
-                  <span className={`text-xs ${textSecondary}`}>
-                    {discord.isLoading
-                      ? 'Connecting...'
-                      : discord.error
-                        ? 'Widget unavailable'
-                        : `${discord.onlineCount} online`}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Member Avatars */}
-            {!discord.error && (
-              <div className="flex items-center gap-1 mb-4">
-                {(discord.members.length > 0
-                  ? discord.members
-                  : fallbackAvatars.map((emoji, i) => ({
-                      id: `fb-${i}`,
-                      username: '',
-                      avatar_url: '',
-                      status: 'online',
-                      emoji,
-                    }))
-                )
-                  .slice(0, 6)
-                  .map((member, index) => (
-                    <div
-                      key={member.id}
-                      className="relative"
-                      style={{
-                        marginLeft: index > 0 ? '-6px' : '0',
-                        zIndex: 10 - index,
-                      }}
-                    >
-                      {member.avatar_url ? (
-                        <img
-                          src={member.avatar_url}
-                          alt={member.username}
-                          className="w-7 h-7 rounded-full border-2 border-iii-dark object-cover"
-                        />
-                      ) : (
-                        <div
-                          className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs ${isDarkMode ? 'border-iii-dark bg-iii-dark/50' : 'border-white bg-gray-100'}`}
-                        >
-                          {(member as { emoji?: string }).emoji || '👤'}
-                        </div>
-                      )}
-                      <span
-                        className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 ${isDarkMode ? 'border-iii-dark' : 'border-white'} ${
-                          member.status === 'online'
-                            ? 'bg-iii-success'
-                            : member.status === 'idle'
-                              ? 'bg-yellow-500'
-                              : member.status === 'dnd'
-                                ? 'bg-red-500'
-                                : 'bg-gray-500'
-                        }`}
-                      />
-                    </div>
-                  ))}
-                {discord.onlineCount > 6 && (
-                  <span className={`text-xs ml-2 ${textSecondary}`}>
-                    +{discord.onlineCount - 6} more
-                  </span>
-                )}
-              </div>
-            )}
-
-            <button
-              onClick={() =>
-                window.open(
-                  discord.inviteUrl || DISCORD_INVITE_URL,
-                  '_blank',
-                  'noopener,noreferrer',
-                )
-              }
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
-                bg-[#5865F2] text-white font-bold text-sm
-                hover:bg-[#4752C4] transition-all duration-300"
-            >
-              <UsersIcon size={16} />
-              Join Community
-              <ArrowNarrowRightIcon size={12} />
-            </button>
-
-            <div className={`mt-4 pt-4 border-t ${borderColor}`} />
           </div>
         </div>
 
