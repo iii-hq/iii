@@ -72,7 +72,7 @@ export function LiveSystemAnimation() {
             key={shape.id}
             type={shape.type}
             color={background}
-            className="w-4 h-4 z-20"
+            className="w-5 h-5 z-20"
             animate={{ x, y }}
             transition={{ duration: 0.5, type: 'spring', bounce: 0.4 }}
           />
