@@ -11,9 +11,9 @@ const SHAPES: {
   cx: number;
   cy: number;
 }[] = [
-  { id: 0, color: '#42e7e7', type: 'circle', dx: -35, dy: 0, cx: -20, cy: 0 }, // Blue
-  { id: 1, color: '#f3943d', type: 'square', dx: 0, dy: -35, cx: 0, cy: -20 }, // Orange
-  { id: 2, color: '#ef2e61', type: 'diamond', dx: 35, dy: 0, cx: 20, cy: 0 }, // Red
+  { id: 0, color: '#42e7e7', type: 'circle', dx: -40, dy: 0, cx: -23, cy: 0 }, // Blue
+  { id: 1, color: '#f3943d', type: 'square', dx: 0, dy: -40, cx: 0, cy: -23 }, // Orange
+  { id: 2, color: '#ef2e61', type: 'diamond', dx: 40, dy: 0, cx: 23, cy: 0 }, // Red
 ];
 
 function getBackground(colors: string[]) {
@@ -72,7 +72,7 @@ export function LiveSystemAnimation() {
             key={shape.id}
             type={shape.type}
             color={background}
-            className="w-5 h-5 z-20"
+            className="w-4 h-4 sm:w-[22px] sm:h-[22px] z-20"
             animate={{ x, y }}
             transition={{ duration: 0.5, type: 'spring', bounce: 0.4 }}
           />

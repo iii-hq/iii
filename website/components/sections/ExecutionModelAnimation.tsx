@@ -8,9 +8,9 @@ const SHAPES: {
   x: number;
   y: number;
 }[] = [
-  { id: 0, color: '#42e7e7', type: 'circle', x: -35, y: 0 }, // Blue
-  { id: 1, color: '#f3943d', type: 'square', x: 0, y: -35 }, // Orange
-  { id: 2, color: '#ef2e61', type: 'diamond', x: 35, y: 0 }, // Red
+  { id: 0, color: '#42e7e7', type: 'circle', x: -40, y: 0 }, // Blue
+  { id: 1, color: '#f3943d', type: 'square', x: 0, y: -40 }, // Orange
+  { id: 2, color: '#ef2e61', type: 'diamond', x: 40, y: 0 }, // Red
 ];
 
 function gradientFrame(
@@ -48,11 +48,11 @@ export function ExecutionModelAnimation() {
   const diamondColor = SHAPES[2].color;
 
   const xFrames = [
-    -35, -35, 0, 0, 0, 0, 0, 0, -35, -35, 0, 0, 0, 0, 35, 35, 0, 0, 0, 0, 35,
-    35, 0, 0, -35, -35, 0, 0, 35, 35,
+    -40, -40, 0, 0, 0, 0, 0, 0, -40, -40, 0, 0, 0, 0, 40, 40, 0, 0, 0, 0, 40,
+    40, 0, 0, -40, -40, 0, 0, 40, 40,
   ];
   const yFrames = [
-    0, 0, 0, 0, -35, -35, 0, 0, 0, 0, -35, -35, 0, 0, 0, 0, 0, 0, -35, -35, 0,
+    0, 0, 0, 0, -40, -40, 0, 0, 0, 0, -40, -40, 0, 0, 0, 0, 0, 0, -40, -40, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0,
   ];
   const bgFrames = [
@@ -84,7 +84,7 @@ export function ExecutionModelAnimation() {
           key={`shape-${shape.id}`}
           type={shape.type}
           color={shape.color}
-          className="w-5 h-5 z-20 border border-black"
+          className="w-4 h-4 sm:w-[22px] sm:h-[22px] z-20 border border-black"
           animate={{ x: shape.x, y: shape.y }}
         />
       ))}

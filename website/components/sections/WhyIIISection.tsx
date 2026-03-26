@@ -137,12 +137,12 @@ export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
                     {GROUP_LABELS[groupIdx]}
                   </p>
                   {GROUP_LABELS[groupIdx] === 'Live system traits' && (
-                    <div className="absolute top-2 right-2 sm:top-4 sm:right-4 pointer-events-none opacity-80">
+                    <div className="absolute top-3 right-3 sm:top-5 sm:right-5 pointer-events-none opacity-80">
                       <LiveSystemAnimation />
                     </div>
                   )}
                   {GROUP_LABELS[groupIdx] === 'Execution model' && (
-                    <div className="absolute top-2 right-2 sm:top-4 sm:right-4 pointer-events-none opacity-80">
+                    <div className="absolute top-3 right-3 sm:top-5 sm:right-5 pointer-events-none opacity-80">
                       <ExecutionModelAnimation />
                     </div>
                   )}
