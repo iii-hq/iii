@@ -9,6 +9,7 @@ import './queue-ecommerce'
 import './queue-bulk-email'
 import './queue-financial'
 import './queue-dlq'
+import './trigger-types'
 
 useApi(
   {
