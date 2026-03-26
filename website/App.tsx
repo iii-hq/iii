@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Terminal } from './components/Terminal';
 import { ExampleCodeSection } from './components/sections/ExampleCodeSection';
 import { HeroSection } from './components/sections/HeroSection';
@@ -35,9 +35,6 @@ const App: React.FC = () => {
   const [showTerminal, setShowTerminal] = useState(false);
   const [isGodMode, setIsGodMode] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
-  const [logoClickCount, setLogoClickCount] = useState(0);
-  const [isLogoHovered, setIsLogoHovered] = useState(false);
-  const [hoverAnimIndex, setHoverAnimIndex] = useState(-1);
   const [showGodModeUnlock, setShowGodModeUnlock] = useState(false);
 
   // URL-based mode detection: /ai = machine mode, / = human mode
@@ -68,39 +65,6 @@ const App: React.FC = () => {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
-
-  // Hover animation - sequential highlight
-  useEffect(() => {
-    if (!isLogoHovered || logoClickCount > 0) {
-      setHoverAnimIndex(-1);
-      return;
-    }
-
-    let index = 0;
-    const interval = setInterval(() => {
-      setHoverAnimIndex(index % 3);
-      index++;
-    }, 200);
-
-    return () => clearInterval(interval);
-  }, [isLogoHovered, logoClickCount]);
-
-  // Click handler - each click locks another "i"
-  const handleLogoClick = useCallback(() => {
-    const newCount = logoClickCount + 1;
-
-    if (newCount >= 3) {
-      // Three clicks - all lit, open terminal
-      setLogoClickCount(3);
-      setTimeout(() => {
-        setShowTerminal(true);
-        setLogoClickCount(0); // Reset after opening
-      }, 300);
-    } else {
-      setLogoClickCount(newCount);
-      // Clicks now hold forever until terminal opens
-    }
-  }, [logoClickCount]);
 
   useEffect(() => {
     let keyBuffer: string[] = [];
@@ -141,7 +105,6 @@ const App: React.FC = () => {
           onToggleTheme={toggleTheme}
           isGodMode={isGodMode}
           isDarkMode={isDarkMode}
-          onLogoClick={handleLogoClick}
         />
         {showTerminal && (
           <Terminal
@@ -185,12 +148,6 @@ const App: React.FC = () => {
         isHumanMode={isHumanMode}
         onToggleTheme={toggleTheme}
         onToggleMode={toggleMode}
-        onLogoClick={handleLogoClick}
-        logoClickCount={logoClickCount}
-        isLogoHovered={isLogoHovered}
-        hoverAnimIndex={hoverAnimIndex}
-        onLogoMouseEnter={() => setIsLogoHovered(true)}
-        onLogoMouseLeave={() => setIsLogoHovered(false)}
       />
 
       <main className="flex-1 relative z-10 flex flex-col items-center w-full pt-16 md:pt-20">
@@ -199,15 +156,15 @@ const App: React.FC = () => {
           <HeroSection isDarkMode={isDarkMode} />
         </div>
 
+        <div className="w-full">
+          <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
+        </div>
+
         <div
           className="w-full min-w-0 self-stretch"
           data-machine-section="why-iii"
         >
           <WhyIIISection isDarkMode={isDarkMode} />
-        </div>
-
-        <div className="w-full">
-          <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
         {/* Section 3: Architecture (formerly Engine) - Trigger → Function → Workers */}
         <div

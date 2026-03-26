@@ -35,7 +35,7 @@
 }
 
 html {
-  zoom: 120%;
+  zoom: 100%;
 }
 
 /* Prevent horizontal scroll on mobile. Use clip (not hidden) so position:sticky

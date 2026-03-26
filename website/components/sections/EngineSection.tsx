@@ -68,7 +68,7 @@ const concepts = [
   {
     id: 'function',
     icon: GitBranch,
-    name: 'Function',
+    name: 'Functions',
     tagline: 'Anything that does work.',
     description:
       'A Function receives input and optionally returns output. It can live anywhere — locally, on cloud, on serverless, or as a third-party HTTP endpoint. All Functions are treated the same within iii.',
@@ -106,7 +106,7 @@ iii.register_function("users::create", create_user)`,
   {
     id: 'trigger',
     icon: Zap,
-    name: 'Trigger',
+    name: 'Triggers',
     tagline: 'What makes a Function run.',
     description:
       'A Trigger causes a Function to execute — either explicitly from code via trigger(), or automatically from an event source like an HTTP request, cron schedule, queue message, or state change.',
@@ -153,7 +153,7 @@ iii.register_trigger(Trigger {
   {
     id: 'worker',
     icon: Share2,
-    name: 'Worker',
+    name: 'Workers',
     tagline: 'Any process that registers functions.',
     description:
       'A Worker is any process that registers Functions and Triggers. Long-running services, ephemeral scripts, agentic workers, or legacy systems via middleware — all connect, register, and communicate seamlessly.',
@@ -809,29 +809,8 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
           <p
             className={`text-sm md:text-base lg:text-lg max-w-2xl mx-auto leading-relaxed ${textSecondary}`}
           >
-            iii unifies your entire backend with{' '}
-            <strong className={textPrimary}>Function</strong>,{' '}
-            <strong className={textPrimary}>Trigger</strong>, and{' '}
-            <strong className={textPrimary}>Worker</strong>. One mental model
-            for every backend system.
+            It really is as simple as Functions, Triggers, and Workers
           </p>
-          <div className="flex flex-wrap justify-center gap-2 sm:gap-3 pt-2">
-            <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? 'border-white/10 text-white/60' : 'border-black/10 text-black/60'}`}
-            >
-              <GlobeIcon size={12} /> TypeScript &middot; Python &middot; Rust
-            </div>
-            <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? 'border-white/10 text-white/60' : 'border-black/10 text-black/60'}`}
-            >
-              <CloudIcon size={12} /> Self-host / BYOC
-            </div>
-            <div
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-mono border ${isDarkMode ? 'border-white/10 text-white/60' : 'border-black/10 text-black/60'}`}
-            >
-              <EyeIcon size={12} /> Built-in observability
-            </div>
-          </div>
         </div>
 
         {/* Concepts — Tabbed IDE Component */}
