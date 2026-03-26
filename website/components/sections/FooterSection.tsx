@@ -1,19 +1,15 @@
-import { useState, useEffect } from "react";
-import { ChevronDown } from "lucide-react";
-import {
-  GithubIcon,
-  UsersIcon,
-  ArrowNarrowRightIcon,
-} from "../icons";
-import { InstallShButton } from "../InstallShButton";
-import { EmailSignupForm } from "../EmailSignupForm";
-import { Logo } from "../Logo";
-import { TextParticle, drawIiiLogo } from "../ui/text-particle";
+import { useState, useEffect } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { GithubIcon, UsersIcon, ArrowNarrowRightIcon } from '../icons';
+import { InstallShButton } from '../InstallShButton';
+import { EmailSignupForm } from '../EmailSignupForm';
+import { Logo } from '../Logo';
+import { TextParticle, drawIiiLogo } from '../ui/text-particle';
 
 // Discord integration
-const DISCORD_GUILD_ID = "1322278831184281721";
+const DISCORD_GUILD_ID = '1322278831184281721';
 const DISCORD_WIDGET_URL = `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/widget.json`;
-const DISCORD_INVITE_URL = "https://discord.gg/motia";
+const DISCORD_INVITE_URL = 'https://discord.gg/motia';
 
 interface DiscordMember {
   id: string;
@@ -31,12 +27,12 @@ interface DiscordStats {
   inviteUrl: string | null;
 }
 
-const fallbackAvatars = ["👨‍💻", "👩‍💼", "👨‍🔬", "👩‍💻", "👨‍💼", "👩‍🔬"];
+const fallbackAvatars = ['👨‍💻', '👩‍💼', '👨‍🔬', '👩‍💻', '👨‍💼', '👩‍🔬'];
 
 function useDiscordWidget(): DiscordStats {
   const [stats, setStats] = useState<DiscordStats>({
     onlineCount: 0,
-    serverName: "iii Community",
+    serverName: 'iii Community',
     members: [],
     isLoading: true,
     error: null,
@@ -50,7 +46,7 @@ function useDiscordWidget(): DiscordStats {
         if (!response.ok) {
           throw new Error(
             response.status === 403
-              ? "Widget is disabled for this server"
+              ? 'Widget is disabled for this server'
               : `Failed to fetch: ${response.status}`,
           );
         }
@@ -67,7 +63,7 @@ function useDiscordWidget(): DiscordStats {
         setStats((prev) => ({
           ...prev,
           isLoading: false,
-          error: err instanceof Error ? err.message : "Offline",
+          error: err instanceof Error ? err.message : 'Offline',
           inviteUrl: DISCORD_INVITE_URL,
         }));
       }
@@ -84,33 +80,33 @@ function useDiscordWidget(): DiscordStats {
 const faqItems = [
   {
     id: 1,
-    question: "How is iii different from gRPC?",
+    question: 'How is iii different from gRPC?',
     answer:
-      "gRPC needs compile-time IDL and codegen. iii uses runtime registration — functions available the moment a worker connects.",
+      'gRPC needs compile-time IDL and codegen. iii uses runtime registration — functions available the moment a worker connects.',
   },
   {
     id: 2,
-    question: "How is iii different from a service mesh?",
+    question: 'How is iii different from a service mesh?',
     answer:
-      "Service meshes need sidecars and complex networking. iii is one binary — workers connect via WebSocket, nothing else.",
+      'Service meshes need sidecars and complex networking. iii is one binary — workers connect via WebSocket, nothing else.',
   },
   {
     id: 3,
-    question: "Can I use iii with my existing Express/Flask/Spring app?",
+    question: 'Can I use iii with my existing Express/Flask/Spring app?',
     answer:
-      "Yes. Add the SDK, register routes as functions. They join the distributed architecture instantly. Incremental adoption.",
+      'Yes. Add the SDK, register routes as functions. They join the distributed architecture instantly. Incremental adoption.',
   },
   {
     id: 4,
-    question: "What about AI agents and LLMs?",
+    question: 'What about AI agents and LLMs?',
     answer:
-      "Functions self-describe with schemas. Agents discover and trigger them autonomously. Everything is auto-generated.",
+      'Functions self-describe with schemas. Agents discover and trigger them autonomously. Everything is auto-generated.',
   },
   {
     id: 5,
-    question: "Is iii production-ready?",
+    question: 'Is iii production-ready?',
     answer:
-      "Active development. Join Discord for early access and to shape what ships next.",
+      'Active development. Join Discord for early access and to shape what ships next.',
   },
 ];
 
@@ -122,16 +118,20 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
   const [openFaqId, setOpenFaqId] = useState<number | null>(null);
   const discord = useDiscordWidget();
 
-  const textPrimary = isDarkMode ? "text-iii-light" : "text-iii-black";
-  const textSecondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
+  const textPrimary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
+  const textSecondary = isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70';
   const borderColor = isDarkMode
-    ? "border-iii-light/10"
-    : "border-iii-black/10";
-  const bgCard = isDarkMode ? "bg-iii-dark/20" : "bg-white/40";
-  const accentColor = isDarkMode ? "text-iii-accent" : "text-iii-accent-light";
+    ? 'border-iii-light/10'
+    : 'border-iii-black/10';
+  const bgCard = isDarkMode ? 'bg-iii-dark/20' : 'bg-white/40';
+  const accentColor = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
   const accentBorder = isDarkMode
-    ? "border-iii-accent"
-    : "border-iii-accent-light";
+    ? 'border-iii-accent'
+    : 'border-iii-accent-light';
+  const ctaButtonBase =
+    'group relative flex items-center justify-center gap-2 px-2.5 py-2 sm:px-3 sm:py-2.5 md:px-4 md:py-3 border rounded transition-colors cursor-pointer w-full text-[10px] sm:text-xs md:text-sm font-bold';
+  const ctaGrid =
+    'grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 md:gap-6 w-full max-w-2xl mx-auto px-2 sm:px-0';
 
   return (
     <footer
@@ -142,34 +142,34 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
         <div className="text-center mb-6 md:mb-8">
           <div className="mb-4">
             <h3 className={`text-xl md:text-2xl font-bold mb-2 ${textPrimary}`}>
-              Get started in seconds
+              Get started!
             </h3>
             <p className={`text-sm ${textSecondary}`}>
-              Install the engine and start building
+              Install the engine, join the community, check out our code, or
+              subscribe for updates
             </p>
           </div>
 
-          <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-center justify-center mb-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
-            <InstallShButton isDarkMode={isDarkMode} />
-            <EmailSignupForm isDarkMode={isDarkMode} showHelperText={false} />
+          <div className={`${ctaGrid} mb-4`}>
+            <InstallShButton isDarkMode={isDarkMode} className="sm:w-full" />
+            <EmailSignupForm
+              isDarkMode={isDarkMode}
+              showHelperText={false}
+              className="sm:w-full"
+            />
           </div>
 
           {/* CTA Buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+          <div className={ctaGrid}>
             <a
               href="https://github.com/iii-hq/iii"
               target="_blank"
               rel="noopener noreferrer"
-              className={`
-                w-full sm:w-auto inline-flex items-center justify-center gap-2.5
-                px-5 py-2.5 rounded-lg border-2 transition-all duration-300
-                font-bold text-sm
-                ${
-                  isDarkMode
-                    ? `${accentBorder} ${accentColor} hover:bg-iii-accent/10`
-                    : `border-iii-accent-light ${accentColor} hover:bg-iii-accent-light/10`
-                }
-              `}
+              className={`${ctaButtonBase} ${
+                isDarkMode
+                  ? 'bg-iii-dark/50 border-iii-light hover:border-iii-light text-iii-light'
+                  : 'bg-white/50 border-iii-dark hover:border-iii-dark text-iii-black'
+              }`}
             >
               <GithubIcon size={16} />
               GitHub
@@ -178,13 +178,11 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               onClick={() =>
                 window.open(
                   discord.inviteUrl || DISCORD_INVITE_URL,
-                  "_blank",
-                  "noopener,noreferrer",
+                  '_blank',
+                  'noopener,noreferrer',
                 )
               }
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5
-                px-5 py-2.5 rounded-lg bg-[#5865F2] text-white font-bold text-sm
-                hover:bg-[#4752C4] transition-all duration-300"
+              className={`${ctaButtonBase} bg-[#5865F2] border-[#5865F2] hover:bg-[#4752C4] hover:border-[#4752C4] text-white`}
             >
               <svg
                 className="w-4 h-4"
@@ -193,7 +191,15 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               >
                 <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z" />
               </svg>
-              Discord
+              <span>Discord</span>
+              {!discord.error && !discord.isLoading && (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-iii-success" />
+                  <span className="font-normal opacity-80">
+                    {discord.onlineCount} online
+                  </span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -215,7 +221,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                     rounded-lg transition-all duration-300 overflow-hidden
                     ${
                       openFaqId === item.id
-                        ? `border-2 ${accentBorder} ${isDarkMode ? "bg-iii-accent/5" : "bg-iii-accent-light/5"}`
+                        ? `border-2 ${accentBorder} ${isDarkMode ? 'bg-iii-accent/5' : 'bg-iii-accent-light/5'}`
                         : `border ${borderColor} ${bgCard} hover:pl-5`
                     }
                   `}
@@ -229,7 +235,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                     <span
                       className={`text-xs font-bold ${openFaqId === item.id ? accentColor : textSecondary}`}
                     >
-                      {String(item.id).padStart(2, "0")}
+                      {String(item.id).padStart(2, '0')}
                     </span>
                     <span
                       className={`flex-1 text-sm font-medium ${textPrimary}`}
@@ -246,7 +252,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                   <div
                     className={`
                     overflow-hidden transition-all duration-300
-                    ${openFaqId === item.id ? "max-h-40 opacity-100" : "max-h-0 opacity-0"}
+                    ${openFaqId === item.id ? 'max-h-40 opacity-100' : 'max-h-0 opacity-0'}
                   `}
                   >
                     <p
@@ -278,13 +284,13 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                 </h4>
                 <div className="flex items-center gap-1.5">
                   <span
-                    className={`w-2 h-2 rounded-full ${discord.error ? "bg-iii-alert" : "bg-iii-success"} ${discord.isLoading ? "animate-pulse" : ""}`}
+                    className={`w-2 h-2 rounded-full ${discord.error ? 'bg-iii-alert' : 'bg-iii-success'} ${discord.isLoading ? 'animate-pulse' : ''}`}
                   />
                   <span className={`text-xs ${textSecondary}`}>
                     {discord.isLoading
-                      ? "Connecting..."
+                      ? 'Connecting...'
                       : discord.error
-                        ? "Widget unavailable"
+                        ? 'Widget unavailable'
                         : `${discord.onlineCount} online`}
                   </span>
                 </div>
@@ -298,9 +304,9 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                   ? discord.members
                   : fallbackAvatars.map((emoji, i) => ({
                       id: `fb-${i}`,
-                      username: "",
-                      avatar_url: "",
-                      status: "online",
+                      username: '',
+                      avatar_url: '',
+                      status: 'online',
                       emoji,
                     }))
                 )
@@ -310,7 +316,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                       key={member.id}
                       className="relative"
                       style={{
-                        marginLeft: index > 0 ? "-6px" : "0",
+                        marginLeft: index > 0 ? '-6px' : '0',
                         zIndex: 10 - index,
                       }}
                     >
@@ -322,20 +328,20 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
                         />
                       ) : (
                         <div
-                          className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs ${isDarkMode ? "border-iii-dark bg-iii-dark/50" : "border-white bg-gray-100"}`}
+                          className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs ${isDarkMode ? 'border-iii-dark bg-iii-dark/50' : 'border-white bg-gray-100'}`}
                         >
-                          {(member as { emoji?: string }).emoji || "👤"}
+                          {(member as { emoji?: string }).emoji || '👤'}
                         </div>
                       )}
                       <span
-                        className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 ${isDarkMode ? "border-iii-dark" : "border-white"} ${
-                          member.status === "online"
-                            ? "bg-iii-success"
-                            : member.status === "idle"
-                              ? "bg-yellow-500"
-                              : member.status === "dnd"
-                                ? "bg-red-500"
-                                : "bg-gray-500"
+                        className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 ${isDarkMode ? 'border-iii-dark' : 'border-white'} ${
+                          member.status === 'online'
+                            ? 'bg-iii-success'
+                            : member.status === 'idle'
+                              ? 'bg-yellow-500'
+                              : member.status === 'dnd'
+                                ? 'bg-red-500'
+                                : 'bg-gray-500'
                         }`}
                       />
                     </div>
@@ -352,8 +358,8 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               onClick={() =>
                 window.open(
                   discord.inviteUrl || DISCORD_INVITE_URL,
-                  "_blank",
-                  "noopener,noreferrer",
+                  '_blank',
+                  'noopener,noreferrer',
                 )
               }
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
@@ -374,8 +380,8 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
           <div className="h-52 sm:h-72 md:h-96 lg:h-[28rem] w-full overflow-hidden mb-8">
             <TextParticle
               renderSource={drawIiiLogo}
-              particleColor={isDarkMode ? "#f4f4f4" : "#000000"}
-              hoverColor={isDarkMode ? "#f3f724" : "#2f7fff"}
+              particleColor={isDarkMode ? '#f4f4f4' : '#000000'}
+              hoverColor={isDarkMode ? '#f3f724' : '#2f7fff'}
               hoverRadius={150}
               particleSize={2.5}
               particleDensity={4}
@@ -385,7 +391,7 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <Logo
-                className={`h-4 ${isDarkMode ? "text-iii-light" : "text-iii-black"}`}
+                className={`h-4 ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
               />
               <span className={`text-sm font-bold ${textPrimary}`}>
                 Interoperable Invocation Interface
