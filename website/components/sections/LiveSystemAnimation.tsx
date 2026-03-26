@@ -1,7 +1,8 @@
 import { motion } from 'motion/react';
 import { useEffect, useState } from 'react';
+import { AnimationShape, ShapeType } from './AnimationShape';
 
-const SHAPES = [
+const SHAPES: { id: number; color: string; type: ShapeType; dx: number; dy: number; cx: number; cy: number }[] = [
   { id: 0, color: '#3b82f6', type: 'circle', dx: -35, dy: 0, cx: -20, cy: 0 },
   { id: 1, color: '#ef4444', type: 'square', dx: 0, dy: -35, cx: 0, cy: -20 },
   { id: 2, color: '#10b981', type: 'diamond', dx: 35, dy: 0, cx: 20, cy: 0 },
@@ -42,7 +43,7 @@ export function LiveSystemAnimation() {
     <div className="relative w-24 h-24 flex items-center justify-center">
       {/* Central Box */}
       <motion.div
-        className="absolute w-8 h-8 bg-white border border-neutral-200 dark:border-neutral-700 z-10 rounded-sm"
+        className="absolute w-8 h-8 bg-white border border-black z-10 rounded-sm"
         animate={{ backgroundColor: activeColor }}
         transition={{ duration: 0.3 }}
       />
@@ -54,22 +55,13 @@ export function LiveSystemAnimation() {
         const x = isConnected ? shape.cx : shape.dx;
         const y = isConnected ? shape.cy : shape.dy;
 
-        let shapeClasses = "absolute w-4 h-4 z-20 border border-neutral-200 dark:border-neutral-700 ";
-        if (shape.type === 'circle') shapeClasses += "rounded-full";
-        else if (shape.type === 'diamond') shapeClasses += "rotate-45 rounded-sm";
-        else if (shape.type === 'square') shapeClasses += "rounded-sm";
-
         return (
-          <motion.div
+          <AnimationShape
             key={shape.id}
-            className={shapeClasses}
-            animate={{
-              x,
-              y,
-              backgroundColor: color,
-              rotate: shape.type === 'diamond' ? 45 : 0,
-              borderRadius: shape.type === 'circle' ? '50%' : '2px'
-            }}
+            type={shape.type}
+            color={color}
+            className="w-4 h-4 z-20"
+            animate={{ x, y }}
             transition={{ duration: 0.5, type: 'spring', bounce: 0.4 }}
           />
         );

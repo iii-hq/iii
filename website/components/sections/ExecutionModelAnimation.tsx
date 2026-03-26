@@ -1,5 +1,12 @@
 import { motion } from 'motion/react';
 import { useEffect, useState } from 'react';
+import { AnimationShape, ShapeType } from './AnimationShape';
+
+const WORKERS: { id: number; type: ShapeType; color: string; x: number; y: number }[] = [
+  { id: 0, type: 'circle', color: '#3b82f6', x: 0, y: -28 },
+  { id: 1, type: 'square', color: '#ef4444', x: -24, y: 14 },
+  { id: 2, type: 'diamond', color: '#10b981', x: 24, y: 14 },
+];
 
 export function ExecutionModelAnimation() {
   const [step, setStep] = useState(0);
@@ -11,22 +18,17 @@ export function ExecutionModelAnimation() {
     return () => clearInterval(interval);
   }, []);
 
-  // Workers positions
-  const w1 = { x: 0, y: -25 };
-  const w2 = { x: -25, y: 20 };
-  const w3 = { x: 25, y: 20 };
-
   let dotState = { x: 0, y: 0, opacity: 0, color: '#000000' };
   
   switch (step) {
-    case 0: dotState = { x: 0, y: 0, opacity: 0, color: '#3b82f6' }; break;
-    case 1: dotState = { x: w1.x, y: w1.y, opacity: 1, color: '#3b82f6' }; break; // Success W1
-    case 2: dotState = { x: 0, y: 0, opacity: 0, color: '#ef4444' }; break;
-    case 3: dotState = { x: w2.x, y: w2.y, opacity: 1, color: '#ef4444' }; break; // Fail W2
-    case 4: dotState = { x: 0, y: 0, opacity: 1, color: '#ef4444' }; break; // Bounce back
-    case 5: dotState = { x: w2.x, y: w2.y, opacity: 1, color: '#10b981' }; break; // Success W2
-    case 6: dotState = { x: 0, y: 0, opacity: 0, color: '#3b82f6' }; break;
-    case 7: dotState = { x: w3.x, y: w3.y, opacity: 1, color: '#3b82f6' }; break; // Success W3
+    case 0: dotState = { x: 0, y: 0, opacity: 0, color: WORKERS[0].color }; break;
+    case 1: dotState = { x: WORKERS[0].x, y: WORKERS[0].y, opacity: 1, color: WORKERS[0].color }; break; // Success W1
+    case 2: dotState = { x: 0, y: 0, opacity: 0, color: '#a3a3a3' }; break;
+    case 3: dotState = { x: WORKERS[1].x, y: WORKERS[1].y, opacity: 1, color: '#a3a3a3' }; break; // Fail W2
+    case 4: dotState = { x: 0, y: 0, opacity: 1, color: '#a3a3a3' }; break; // Bounce back
+    case 5: dotState = { x: WORKERS[1].x, y: WORKERS[1].y, opacity: 1, color: WORKERS[1].color }; break; // Success W2
+    case 6: dotState = { x: 0, y: 0, opacity: 0, color: WORKERS[2].color }; break;
+    case 7: dotState = { x: WORKERS[2].x, y: WORKERS[2].y, opacity: 1, color: WORKERS[2].color }; break; // Success W3
   }
 
   return (
@@ -35,9 +37,15 @@ export function ExecutionModelAnimation() {
       <div className="absolute w-6 h-6 bg-white border border-black z-10 rounded-full" />
       
       {/* Workers */}
-      <div className="absolute w-4 h-4 bg-white border border-black z-10 rounded-sm" style={{ transform: `translate(${w1.x}px, ${w1.y}px)` }} />
-      <div className="absolute w-4 h-4 bg-white border border-black z-10 rounded-sm" style={{ transform: `translate(${w2.x}px, ${w2.y}px)` }} />
-      <div className="absolute w-4 h-4 bg-white border border-black z-10 rounded-sm" style={{ transform: `translate(${w3.x}px, ${w3.y}px)` }} />
+      {WORKERS.map((worker) => (
+        <AnimationShape
+          key={worker.id}
+          type={worker.type}
+          color={worker.color}
+          className="w-4 h-4 z-10"
+          animate={{ x: worker.x, y: worker.y }}
+        />
+      ))}
 
       {/* Task Dot */}
       <motion.div
