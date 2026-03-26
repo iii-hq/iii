@@ -45,6 +45,7 @@ fn default_port() -> u16 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     #[serde(default = "default_port")]
     pub port: u16,
@@ -191,6 +192,7 @@ async fn shutdown_signal() -> anyhow::Result<()> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModuleEntry {
     pub class: String,
     #[serde(default)]

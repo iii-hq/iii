@@ -36,6 +36,7 @@ fn default_poll_interval_ms() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionQueueConfig {
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
@@ -70,6 +71,7 @@ impl Default for FunctionQueueConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct QueueModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
@@ -141,6 +143,26 @@ mod tests {
         let json = r#"{"adapter": null, "queue_configs": {}}"#;
         let result: Result<QueueModuleConfig, _> = serde_json::from_str(json);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn queue_module_config_deny_unknown_fields() {
+        let json = r#"{"fake_key": true}"#;
+        let result: Result<QueueModuleConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in QueueModuleConfig"
+        );
+    }
+
+    #[test]
+    fn function_queue_config_deny_unknown_fields() {
+        let json = r#"{"max_retries": 3, "fake_key": true}"#;
+        let result: Result<FunctionQueueConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in FunctionQueueConfig"
+        );
     }
 
     #[test]

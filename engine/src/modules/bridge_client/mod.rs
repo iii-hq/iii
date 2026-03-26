@@ -22,6 +22,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct BridgeClientConfig {
     #[serde(default)]
     pub url: Option<String>,
@@ -36,6 +37,7 @@ pub struct BridgeClientConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExposeFunctionConfig {
     pub local_function: String,
     #[serde(default)]
@@ -43,6 +45,7 @@ pub struct ExposeFunctionConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForwardFunctionConfig {
     pub local_function: String,
     pub remote_function: String,

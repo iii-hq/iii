@@ -28,6 +28,7 @@ use self::environment::EnvironmentInfo;
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
