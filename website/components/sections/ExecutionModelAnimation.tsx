@@ -13,18 +13,32 @@ const SHAPES: {
   { id: 2, color: '#ef2e61', type: 'diamond', x: 35, y: 0 }, // Red
 ];
 
-function pairFrames(from: string, to: string) {
+function gradientFrame(
+  angle: number,
+  from: string,
+  to: string,
+  split: number,
+) {
+  return `linear-gradient(${angle}deg, ${from} ${split}%, ${to} ${split}%)`;
+}
+
+function pairFrames(
+  from: string,
+  to: string,
+  outboundAngle: number,
+  returnAngle: number,
+) {
   return [
-    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
-    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
-    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
-    `linear-gradient(90deg, ${from} 50%, ${to} 50%)`,
-    `linear-gradient(90deg, ${from} 0%, ${to} 0%)`,
-    `linear-gradient(90deg, ${from} 0%, ${to} 0%)`,
-    `linear-gradient(90deg, ${from} 0%, ${to} 0%)`,
-    `linear-gradient(90deg, ${from} 50%, ${to} 50%)`,
-    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
-    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
+    gradientFrame(outboundAngle, from, to, 100),
+    gradientFrame(outboundAngle, from, to, 100),
+    gradientFrame(outboundAngle, from, to, 100),
+    gradientFrame(outboundAngle, from, to, 50),
+    gradientFrame(outboundAngle, from, to, 0),
+    gradientFrame(outboundAngle, from, to, 0),
+    gradientFrame(outboundAngle, from, to, 0),
+    gradientFrame(returnAngle, to, from, 50),
+    gradientFrame(returnAngle, from, to, 100),
+    gradientFrame(returnAngle, from, to, 100),
   ];
 }
 
@@ -42,9 +56,12 @@ export function ExecutionModelAnimation() {
     0, 0, 0, 0, 0, 0, 0, 0, 0,
   ];
   const bgFrames = [
-    ...pairFrames(circleColor, squareColor),
-    ...pairFrames(squareColor, diamondColor),
-    ...pairFrames(diamondColor, circleColor),
+    // Circle <-> Square: outbound to top, return to left
+    ...pairFrames(circleColor, squareColor, 0, 270),
+    // Square <-> Diamond: outbound to right, return to top
+    ...pairFrames(squareColor, diamondColor, 90, 0),
+    // Diamond <-> Circle: outbound to left, return to right
+    ...pairFrames(diamondColor, circleColor, 270, 90),
   ];
   const opacityFrames = [
     0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1,
@@ -67,7 +84,7 @@ export function ExecutionModelAnimation() {
           key={`shape-${shape.id}`}
           type={shape.type}
           color={shape.color}
-          className="w-5 h-5 z-20"
+          className="w-5 h-5 z-20 border border-black"
           animate={{ x: shape.x, y: shape.y }}
         />
       ))}
