@@ -95,12 +95,29 @@ async fn fetch_latest_release_by_prefix(
     spec: &BinarySpec,
     prefix: &str,
 ) -> Result<Release, IiiGithubError> {
-    let url = format!(
+    // Try /releases/latest first — single API call, GitHub guarantees non-prerelease
+    let latest_url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        spec.repo
+    );
+
+    if let Ok(response) = client.get(&latest_url).send().await {
+        if response.status().is_success() {
+            if let Ok(release) = response.json::<Release>().await {
+                if tag_matches_prefix(&release.tag_name, prefix) && !release.prerelease {
+                    return Ok(release);
+                }
+            }
+        }
+    }
+
+    // Fallback: list releases and filter by prefix (monorepo edge case)
+    let list_url = format!(
         "https://api.github.com/repos/{}/releases?per_page=30",
         spec.repo
     );
 
-    let response = client.get(&url).send().await?;
+    let response = client.get(&list_url).send().await?;
 
     match response.status() {
         status if status.is_success() => {
@@ -180,6 +197,11 @@ pub fn parse_release_version(tag: &str) -> Result<Version, semver::Error> {
     Version::parse(cleaned)
 }
 
+/// Check if a release tag matches the expected prefix pattern (`{prefix}/v*`).
+fn tag_matches_prefix(tag: &str, prefix: &str) -> bool {
+    tag.starts_with(&format!("{}/v", prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +262,35 @@ mod tests {
         // In test environment, token is typically not set
         // This just exercises the function
         let _ = github_token();
+    }
+
+    #[test]
+    fn test_tag_matches_prefix() {
+        assert!(tag_matches_prefix("iii/v0.10.0", "iii"));
+        assert!(tag_matches_prefix("iii/v1.0.0", "iii"));
+        assert!(!tag_matches_prefix("v0.10.0", "iii"));
+        assert!(!tag_matches_prefix("console/v1.0.0", "iii"));
+        assert!(!tag_matches_prefix("iii/0.10.0", "iii")); // missing 'v'
+        assert!(!tag_matches_prefix("", "iii"));
+    }
+
+    #[test]
+    fn test_latest_release_tag_validation_accepts_matching_prefix() {
+        let release = Release {
+            tag_name: "iii/v0.10.0".to_string(),
+            prerelease: false,
+            assets: vec![],
+        };
+        assert!(tag_matches_prefix(&release.tag_name, "iii"));
+    }
+
+    #[test]
+    fn test_latest_release_tag_validation_rejects_wrong_prefix() {
+        let release = Release {
+            tag_name: "sdk/v1.0.0".to_string(),
+            prerelease: false,
+            assets: vec![],
+        };
+        assert!(!tag_matches_prefix(&release.tag_name, "iii"));
     }
 }
