@@ -495,42 +495,43 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
           <div className="space-y-4 sm:space-y-6 md:space-y-8 max-w-4xl w-full">
             {/* Main headline */}
             <div className="space-y-2">
-              <h1 className="text-2xl sm:text-3xl md:text-5xl lg:text-7xl font-bold leading-tight tracking-tighter font-chivo">
+              <h1 className="text-[clamp(1.125rem,6vw,4.5rem)] font-bold leading-[1.05] tracking-tighter font-chivo overflow-hidden">
                 <span
-                  className={isDarkMode ? 'text-iii-light' : 'text-iii-black'}
+                  className={`block ${isDarkMode ? 'text-iii-light' : 'text-iii-black'}`}
                 >
                   Unreasonably simple to
                 </span>
-                <br />
-                <span
-                  className={`inline-block transition-all duration-500 ease-in-out ${
-                    isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
-                  } ${
-                    isAnimating
-                      ? 'opacity-0 translate-y-5 scale-80'
-                      : 'opacity-100 translate-y-0 scale-100'
-                  }`}
-                >
-                  {currentWord}
-                </span>{' '}
-                <span
-                  className={`inline-block transition-all duration-500 ease-in-out ${
-                    isDarkMode ? 'text-iii-light' : 'text-iii-black'
-                  } ${
-                    isContextAnimating
-                      ? 'opacity-0 -translate-y-3 scale-90'
-                      : 'opacity-100 translate-y-0 scale-100'
-                  }`}
-                >
-                  {currentContext}
+                <span className="block whitespace-nowrap">
+                  <span
+                    className={`inline-block transition-all duration-500 ease-in-out ${
+                      isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light'
+                    } ${
+                      isAnimating
+                        ? 'opacity-0 translate-y-5 scale-80'
+                        : 'opacity-100 translate-y-0 scale-100'
+                    }`}
+                  >
+                    {currentWord}
+                  </span>{' '}
+                  <span
+                    className={`inline-block transition-all duration-500 ease-in-out ${
+                      isDarkMode ? 'text-iii-light' : 'text-iii-black'
+                    } ${
+                      isContextAnimating
+                        ? 'opacity-0 -translate-y-3 scale-90'
+                        : 'opacity-100 translate-y-0 scale-100'
+                    }`}
+                  >
+                    {currentContext}
+                  </span>
                 </span>
               </h1>
             </div>
 
             {/* Feature checklist */}
-            <ul className="grid grid-cols-2 gap-x-4 gap-y-2 sm:gap-x-6 sm:gap-y-3 text-left px-2 sm:px-0">
+            <ul className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-2 sm:gap-x-6 sm:gap-y-3 text-left px-2 sm:px-0 w-full max-w-3xl mx-auto justify-items-center">
               {features.map((feature, index) => (
-                <li key={index} className="flex items-start gap-2 sm:gap-3">
+                <li key={index} className="flex items-start gap-2 sm:gap-3 w-full max-w-md">
                   <span
                     className={`flex-shrink-0 w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center mt-0.5 ${
                       isDarkMode ? 'bg-iii-accent/20' : 'bg-iii-accent-light/20'
@@ -564,7 +565,7 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
             </ul>
 
             {/* Install Command & Email Form */}
-            <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-stretch sm:items-start pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
+            <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-center justify-center pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
               <InstallShButton isDarkMode={isDarkMode} />
 
               <div className="w-full sm:w-auto relative">
