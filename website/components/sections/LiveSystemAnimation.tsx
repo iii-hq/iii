@@ -2,10 +2,18 @@ import { motion } from 'motion/react';
 import { useEffect, useState } from 'react';
 import { AnimationShape, ShapeType } from './AnimationShape';
 
-const SHAPES: { id: number; color: string; type: ShapeType; dx: number; dy: number; cx: number; cy: number }[] = [
-  { id: 0, color: '#009246', type: 'circle', dx: -35, dy: 0, cx: -20, cy: 0 }, // Green
-  { id: 1, color: '#ffffff', type: 'square', dx: 0, dy: -35, cx: 0, cy: -20 }, // White
-  { id: 2, color: '#ce2b37', type: 'diamond', dx: 35, dy: 0, cx: 20, cy: 0 },  // Red
+const SHAPES: {
+  id: number;
+  color: string;
+  type: ShapeType;
+  dx: number;
+  dy: number;
+  cx: number;
+  cy: number;
+}[] = [
+  { id: 0, color: '#42e7e7', type: 'circle', dx: -35, dy: 0, cx: -20, cy: 0 }, // Blue
+  { id: 1, color: '#f3943d', type: 'square', dx: 0, dy: -35, cx: 0, cy: -20 }, // Orange
+  { id: 2, color: '#ef2e61', type: 'diamond', dx: 35, dy: 0, cx: 20, cy: 0 }, // Red
 ];
 
 function getBackground(colors: string[]) {

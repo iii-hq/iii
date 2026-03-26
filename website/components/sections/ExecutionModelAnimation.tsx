@@ -8,12 +8,31 @@ const SHAPES: {
   x: number;
   y: number;
 }[] = [
-  { id: 0, color: '#2f7fff', type: 'circle', x: -35, y: 0 }, // Blue
-  { id: 1, color: '#009246', type: 'square', x: 0, y: -35 }, // Green
-  { id: 2, color: '#ce2b37', type: 'diamond', x: 35, y: 0 }, // Red
+  { id: 0, color: '#42e7e7', type: 'circle', x: -35, y: 0 }, // Blue
+  { id: 1, color: '#f3943d', type: 'square', x: 0, y: -35 }, // Orange
+  { id: 2, color: '#ef2e61', type: 'diamond', x: 35, y: 0 }, // Red
 ];
 
+function pairFrames(from: string, to: string) {
+  return [
+    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
+    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
+    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
+    `linear-gradient(90deg, ${from} 50%, ${to} 50%)`,
+    `linear-gradient(90deg, ${from} 0%, ${to} 0%)`,
+    `linear-gradient(90deg, ${from} 0%, ${to} 0%)`,
+    `linear-gradient(90deg, ${from} 0%, ${to} 0%)`,
+    `linear-gradient(90deg, ${from} 50%, ${to} 50%)`,
+    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
+    `linear-gradient(90deg, ${from} 100%, ${to} 100%)`,
+  ];
+}
+
 export function ExecutionModelAnimation() {
+  const circleColor = SHAPES[0].color;
+  const squareColor = SHAPES[1].color;
+  const diamondColor = SHAPES[2].color;
+
   const xFrames = [
     -35, -35, 0, 0, 0, 0, 0, 0, -35, -35, 0, 0, 0, 0, 35, 35, 0, 0, 0, 0, 35,
     35, 0, 0, -35, -35, 0, 0, 35, 35,
@@ -23,36 +42,9 @@ export function ExecutionModelAnimation() {
     0, 0, 0, 0, 0, 0, 0, 0, 0,
   ];
   const bgFrames = [
-    'linear-gradient(90deg, #2f7fff 100%, #009246 100%)',
-    'linear-gradient(90deg, #2f7fff 100%, #009246 100%)',
-    'linear-gradient(90deg, #2f7fff 100%, #009246 100%)',
-    'linear-gradient(90deg, #2f7fff 50%, #009246 50%)',
-    'linear-gradient(90deg, #2f7fff 0%, #009246 0%)',
-    'linear-gradient(90deg, #2f7fff 0%, #009246 0%)',
-    'linear-gradient(90deg, #2f7fff 0%, #009246 0%)',
-    'linear-gradient(90deg, #2f7fff 50%, #009246 50%)',
-    'linear-gradient(90deg, #2f7fff 100%, #009246 100%)',
-    'linear-gradient(90deg, #2f7fff 100%, #009246 100%)',
-    'linear-gradient(90deg, #009246 100%, #ce2b37 100%)',
-    'linear-gradient(90deg, #009246 100%, #ce2b37 100%)',
-    'linear-gradient(90deg, #009246 100%, #ce2b37 100%)',
-    'linear-gradient(90deg, #009246 50%, #ce2b37 50%)',
-    'linear-gradient(90deg, #009246 0%, #ce2b37 0%)',
-    'linear-gradient(90deg, #009246 0%, #ce2b37 0%)',
-    'linear-gradient(90deg, #009246 0%, #ce2b37 0%)',
-    'linear-gradient(90deg, #009246 50%, #ce2b37 50%)',
-    'linear-gradient(90deg, #009246 100%, #ce2b37 100%)',
-    'linear-gradient(90deg, #009246 100%, #ce2b37 100%)',
-    'linear-gradient(90deg, #ce2b37 100%, #2f7fff 100%)',
-    'linear-gradient(90deg, #ce2b37 100%, #2f7fff 100%)',
-    'linear-gradient(90deg, #ce2b37 100%, #2f7fff 100%)',
-    'linear-gradient(90deg, #ce2b37 50%, #2f7fff 50%)',
-    'linear-gradient(90deg, #ce2b37 0%, #2f7fff 0%)',
-    'linear-gradient(90deg, #ce2b37 0%, #2f7fff 0%)',
-    'linear-gradient(90deg, #ce2b37 0%, #2f7fff 0%)',
-    'linear-gradient(90deg, #ce2b37 50%, #2f7fff 50%)',
-    'linear-gradient(90deg, #ce2b37 100%, #2f7fff 100%)',
-    'linear-gradient(90deg, #ce2b37 100%, #2f7fff 100%)',
+    ...pairFrames(circleColor, squareColor),
+    ...pairFrames(squareColor, diamondColor),
+    ...pairFrames(diamondColor, circleColor),
   ];
   const opacityFrames = [
     0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1,
