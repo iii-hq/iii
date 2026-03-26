@@ -412,6 +412,17 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
               </h1>
             </div>
 
+            <p
+              className={`mx-auto max-w-3xl text-sm md:text-base lg:text-lg leading-relaxed ${
+                isDarkMode ? 'text-iii-light/75' : 'text-iii-black/75'
+              }`}
+            >
+              iii turns distributed backend complexity into a simple set of
+              real-time, interoperable primitives called Functions, Triggers,
+              and Workers. The result is coordinated execution that behaves as
+              if it were a single runtime.
+            </p>
+
             {/* Install Command & Email Form */}
             <div className="flex flex-col gap-3 sm:gap-4 md:gap-6 sm:flex-row items-center justify-center pt-2 md:pt-4 w-full max-w-2xl mx-auto px-2 sm:px-0">
               <InstallShButton isDarkMode={isDarkMode} />
@@ -476,129 +487,6 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
               </div>
             </div>
 
-            {/* Tech logos section */}
-            <div className="pt-8 space-y-6 w-full max-w-3xl mx-auto">
-              {/* Languages & Integrations row - stacks on mobile */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-8">
-                {/* Languages - Left on desktop, top on mobile */}
-                <div className="space-y-3">
-                  <span
-                    className={`text-[10px] sm:text-xs tracking-wider block text-center uppercase ${
-                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
-                    }`}
-                  >
-                    Any language
-                  </span>
-                  <div className="flex items-center justify-center gap-2 sm:gap-3 flex-wrap">
-                    {languageLogos.map((logo, index) => (
-                      <div
-                        key={index}
-                        className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
-                          isDarkMode
-                            ? 'bg-iii-dark border-iii-light hover:border-iii-light'
-                            : 'bg-white border-iii-dark hover:border-iii-dark'
-                        }`}
-                        title={logo.name}
-                      >
-                        <div
-                          className={`${
-                            isDarkMode
-                              ? 'text-iii-light/60'
-                              : 'text-iii-black/60'
-                          } transition-colors ${
-                            logo.hoverColor
-                          } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
-                        >
-                          <logo.Icon />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Integrations - Right on desktop, bottom on mobile */}
-                <div className="space-y-3">
-                  <span
-                    className={`text-[10px] sm:text-xs tracking-wider block text-center uppercase ${
-                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
-                    }`}
-                  >
-                    Every integration
-                  </span>
-                  <div className="flex items-center justify-center gap-2 sm:gap-3 flex-wrap">
-                    {integrationLogos.map((logo, index) => (
-                      <div
-                        key={index}
-                        className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
-                          isDarkMode
-                            ? 'bg-iii-dark border-iii-light hover:border-iii-light'
-                            : 'bg-white border-iii-dark hover:border-iii-dark'
-                        }`}
-                        title={logo.name}
-                      >
-                        <div
-                          className={`${
-                            isDarkMode
-                              ? 'text-iii-light/60'
-                              : 'text-iii-black/60'
-                          } transition-colors ${
-                            logo.hoverColor
-                          } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
-                        >
-                          <logo.Icon />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cloud providers - Center */}
-              <div className="space-y-3 pt-4">
-                <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
-                  <div
-                    className={`hidden sm:block flex-1 h-px ${
-                      isDarkMode ? 'bg-iii-light/20' : 'bg-iii-black/20'
-                    }`}
-                  />
-                  <span
-                    className={`text-[10px] sm:text-xs tracking-wider max-w-xs sm:max-w-md text-center px-4 ${
-                      isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70'
-                    }`}
-                  >
-                    EVERY SERVICE
-                  </span>
-                  <div
-                    className={`hidden sm:block flex-1 h-px ${
-                      isDarkMode ? 'bg-iii-light/20' : 'bg-iii-black/20'
-                    }`}
-                  />
-                </div>
-                <div className="flex items-center justify-center gap-2 sm:gap-4 flex-wrap">
-                  {cloudLogos.map((logo, index) => (
-                    <div
-                      key={index}
-                      className={`flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg border transition-colors group ${
-                        isDarkMode
-                          ? 'bg-iii-dark border-iii-light hover:border-iii-light'
-                          : 'bg-white border-iii-dark hover:border-iii-dark'
-                      }`}
-                      title={logo.name}
-                    >
-                      <div
-                        className={`${
-                          isDarkMode ? 'text-iii-light/60' : 'text-iii-black/60'
-                        } transition-colors ${
-                          logo.hoverColor
-                        } [&_svg]:w-5 [&_svg]:h-5 sm:[&_svg]:w-6 sm:[&_svg]:h-6`}
-                      >
-                        <logo.Icon />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
