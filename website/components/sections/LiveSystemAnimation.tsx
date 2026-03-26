@@ -3,19 +3,19 @@ import { useEffect, useState } from 'react';
 import { AnimationShape, ShapeType } from './AnimationShape';
 
 const SHAPES: { id: number; color: string; type: ShapeType; dx: number; dy: number; cx: number; cy: number }[] = [
-  { id: 0, color: '#3b82f6', type: 'circle', dx: -35, dy: 0, cx: -20, cy: 0 },
-  { id: 1, color: '#ef4444', type: 'square', dx: 0, dy: -35, cx: 0, cy: -20 },
-  { id: 2, color: '#10b981', type: 'diamond', dx: 35, dy: 0, cx: 20, cy: 0 },
+  { id: 0, color: '#009246', type: 'circle', dx: -35, dy: 0, cx: -20, cy: 0 }, // Green
+  { id: 1, color: '#ffffff', type: 'square', dx: 0, dy: -35, cx: 0, cy: -20 }, // White
+  { id: 2, color: '#ce2b37', type: 'diamond', dx: 35, dy: 0, cx: 20, cy: 0 },  // Red
 ];
 
 function getBackground(colors: string[]) {
   if (colors.length === 0) return '#ffffff';
   if (colors.length === 1) return colors[0];
   if (colors.length === 2) {
-    return `linear-gradient(135deg, ${colors[0]} 50%, ${colors[1]} 50%)`;
+    return `linear-gradient(90deg, ${colors[0]} 50%, ${colors[1]} 50%)`;
   }
   if (colors.length === 3) {
-    return `linear-gradient(135deg, ${colors[0]} 33.33%, ${colors[1]} 33.33% 66.66%, ${colors[2]} 66.66%)`;
+    return `linear-gradient(90deg, ${colors[0]} 33.33%, ${colors[1]} 33.33% 66.66%, ${colors[2]} 66.66%)`;
   }
   return '#ffffff';
 }

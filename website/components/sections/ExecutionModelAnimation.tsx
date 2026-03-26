@@ -2,9 +2,9 @@ import { motion } from 'motion/react';
 import { AnimationShape, ShapeType } from './AnimationShape';
 
 const SHAPES: { id: number; color: string; type: ShapeType; x: number; y: number }[] = [
-  { id: 0, color: '#3b82f6', type: 'circle', x: -35, y: 0 },
-  { id: 1, color: '#ef4444', type: 'square', x: 0, y: -35 },
-  { id: 2, color: '#10b981', type: 'diamond', x: 35, y: 0 },
+  { id: 0, color: '#009246', type: 'circle', x: -35, y: 0 }, // Green
+  { id: 1, color: '#ffffff', type: 'square', x: 0, y: -35 }, // White
+  { id: 2, color: '#ce2b37', type: 'diamond', x: 35, y: 0 },  // Red
 ];
 
 const DOTS = [
