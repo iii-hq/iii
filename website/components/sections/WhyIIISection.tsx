@@ -8,30 +8,30 @@ type Point = { title: string; body: string };
 const GROUPS: Point[][] = [
   [
     {
-      title: "Durable orchestration",
-      body: "Coordinate long-running, failure-tolerant execution across workers, and triggers.",
+      title: 'Durable orchestration',
+      body: 'Coordinate long-running, failure-tolerant execution across workers, and triggers.',
     },
     {
-      title: "Interoperable execution",
-      body: "Execute across languages natively as if it were one runtime.",
+      title: 'Interoperable execution',
+      body: 'Execute across languages natively as if it were one runtime.',
     },
     {
-      title: "Minimal primitives",
-      body: "Collapse distributed backend design into a minimal primitive surface area that humans and agents can reason about.",
+      title: 'Minimal primitives',
+      body: 'Collapse distributed backend design into a minimal primitive surface area that humans and agents can reason about.',
     },
   ],
   [
     {
-      title: "Live discovery",
-      body: "Functions and triggers exposed by one worker become visible and usable across the system in real time.",
+      title: 'Live discovery',
+      body: 'Functions and triggers exposed by one worker become visible and usable across the system in real time.',
     },
     {
-      title: "Live extensibility",
-      body: "Add new workers and capabilities to a live iii system without redesigning the architecture.",
+      title: 'Live extensibility',
+      body: 'Add new workers and capabilities to a live iii system without redesigning the architecture.',
     },
     {
-      title: "Live observability",
-      body: "Observe operations, traces, and system behavior across the entire connected stack in real time.",
+      title: 'Live observability',
+      body: 'Observe operations, traces, and system behavior across the entire connected stack in real time.',
     },
   ],
 ];
@@ -43,15 +43,15 @@ function StandinFigure({
   index: number;
   isDarkMode: boolean;
 }) {
-  const stroke = isDarkMode ? "rgba(243,247,36,0.35)" : "rgba(47,127,255,0.4)";
-  const grid = isDarkMode ? "rgba(244,244,244,0.06)" : "rgba(0,0,0,0.06)";
-  const border = isDarkMode ? "border-iii-light/15" : "border-iii-black/15";
-  const label = isDarkMode ? "text-iii-light/35" : "text-iii-black/40";
+  const stroke = isDarkMode ? 'rgba(243,247,36,0.35)' : 'rgba(47,127,255,0.4)';
+  const grid = isDarkMode ? 'rgba(244,244,244,0.06)' : 'rgba(0,0,0,0.06)';
+  const border = isDarkMode ? 'border-iii-light/15' : 'border-iii-black/15';
+  const label = isDarkMode ? 'text-iii-light/35' : 'text-iii-black/40';
 
   return (
     <div
       className={`relative w-full aspect-[16/10] max-h-[min(280px,40vw)] mx-auto lg:mx-0 lg:max-h-none lg:aspect-[4/3] rounded-lg border ${border} bg-[length:24px_24px] overflow-hidden ${
-        isDarkMode ? "bg-iii-dark/40" : "bg-white/50"
+        isDarkMode ? 'bg-iii-dark/40' : 'bg-white/50'
       }`}
       style={{
         backgroundImage: `linear-gradient(${grid} 1px, transparent 1px), linear-gradient(90deg, ${grid} 1px, transparent 1px)`,
@@ -85,12 +85,19 @@ function StandinFigure({
           strokeWidth="1.2"
           opacity="0.6"
         />
-        <circle cx="200" cy="115" r="8" stroke={stroke} strokeWidth="1.2" fill="none" />
+        <circle
+          cx="200"
+          cy="115"
+          r="8"
+          stroke={stroke}
+          strokeWidth="1.2"
+          fill="none"
+        />
       </svg>
       <span
         className={`absolute bottom-3 right-3 font-mono text-[10px] uppercase tracking-widest ${label}`}
       >
-        Fig. {String(index + 1).padStart(2, "0")}
+        Fig. {String(index + 1).padStart(2, '0')}
       </span>
     </div>
   );
@@ -98,13 +105,13 @@ function StandinFigure({
 
 /** Closing beat: same visual language as figures, centered — not a second intro block. */
 function PatternsClosure({ isDarkMode }: { isDarkMode: boolean }) {
-  const accent = isDarkMode ? "text-iii-accent" : "text-iii-accent-light";
-  const primary = isDarkMode ? "text-iii-light" : "text-iii-black";
-  const secondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
-  const muted = isDarkMode ? "text-iii-light/45" : "text-iii-black/45";
-  const grid = isDarkMode ? "rgba(244,244,244,0.05)" : "rgba(0,0,0,0.05)";
-  const border = isDarkMode ? "border-iii-light/15" : "border-iii-black/15";
-  const panel = isDarkMode ? "bg-iii-dark/25" : "bg-white/55";
+  const accent = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
+  const primary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
+  const secondary = isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70';
+  const muted = isDarkMode ? 'text-iii-light/45' : 'text-iii-black/45';
+  const grid = isDarkMode ? 'rgba(244,244,244,0.05)' : 'rgba(0,0,0,0.05)';
+  const border = isDarkMode ? 'border-iii-light/15' : 'border-iii-black/15';
+  const panel = isDarkMode ? 'bg-iii-dark/25' : 'bg-white/55';
 
   return (
     <aside className="mx-auto max-w-7xl px-4 sm:px-6 pt-4 md:pt-6 pb-16 md:pb-20">
@@ -116,7 +123,7 @@ function PatternsClosure({ isDarkMode }: { isDarkMode: boolean }) {
       >
         <div
           className={`mx-auto mb-6 h-px w-10 ${
-            isDarkMode ? "bg-iii-accent/55" : "bg-iii-accent-light/55"
+            isDarkMode ? 'bg-iii-accent/55' : 'bg-iii-accent-light/55'
           }`}
           aria-hidden
         />
@@ -130,9 +137,7 @@ function PatternsClosure({ isDarkMode }: { isDarkMode: boolean }) {
         >
           <span className={accent}>Capabilities</span> become patterns
         </p>
-        <p
-          className={`mt-5 text-xs sm:text-sm leading-relaxed ${secondary}`}
-        >
+        <p className={`mt-5 text-xs sm:text-sm leading-relaxed ${secondary}`}>
           Agents, frameworks, tools, and higher-level abstractions can all be
           built on top of the same core system.
         </p>
@@ -142,15 +147,19 @@ function PatternsClosure({ isDarkMode }: { isDarkMode: boolean }) {
 }
 
 export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
-  const accent = isDarkMode ? "text-iii-accent" : "text-iii-accent-light";
-  const primary = isDarkMode ? "text-iii-light" : "text-iii-black";
-  const secondary = isDarkMode ? "text-iii-light/75" : "text-iii-black/75";
-  const muted = isDarkMode ? "text-iii-light/50" : "text-iii-black/50";
-  const rule = isDarkMode ? "border-iii-light/[0.08]" : "border-iii-black/[0.08]";
-  const sectionBg = isDarkMode ? "bg-iii-black" : "bg-iii-light";
+  const accent = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
+  const primary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
+  const secondary = isDarkMode ? 'text-iii-light/75' : 'text-iii-black/75';
+  const muted = isDarkMode ? 'text-iii-light/50' : 'text-iii-black/50';
+  const rule = isDarkMode
+    ? 'border-iii-light/[0.08]'
+    : 'border-iii-black/[0.08]';
+  const sectionBg = isDarkMode ? 'bg-iii-black' : 'bg-iii-light';
 
   return (
-    <section className={`w-full min-w-0 border-t font-mono ${rule} ${sectionBg}`}>
+    <section
+      className={`w-full min-w-0 border-t font-mono ${rule} ${sectionBg}`}
+    >
       <div className="mx-auto max-w-7xl px-4 sm:px-6 pt-16 md:pt-24 lg:pt-28 pb-4 md:pb-6">
         <div className="max-w-2xl">
           <h2
@@ -171,47 +180,50 @@ export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
 
       <div className="mx-auto max-w-7xl px-4 sm:px-6">
         {GROUPS.map((points, groupIdx) => {
-          const indexBase = GROUPS.slice(0, groupIdx).reduce((acc, g) => acc + g.length, 0);
+          const indexBase = GROUPS.slice(0, groupIdx).reduce(
+            (acc, g) => acc + g.length,
+            0,
+          );
           return (
-          <article
-            key={groupIdx}
-            className={`grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-start py-10 md:py-14 border-t ${rule}`}
-          >
-            <div className="min-w-0">
-              {points.map((item, j) => {
-                const n = indexBase + j + 1;
-                return (
-                  <div
-                    key={item.title}
-                    className={
-                      j > 0
-                        ? `pt-8 border-t ${isDarkMode ? "border-iii-light/10" : "border-iii-black/10"}`
-                        : ""
-                    }
-                  >
-                    <p
-                      className={`font-mono text-[10px] uppercase tracking-[0.3em] mb-2 ${muted}`}
+            <article
+              key={groupIdx}
+              className={`grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-start py-10 md:py-14 border-t ${rule}`}
+            >
+              <div className="min-w-0">
+                {points.map((item, j) => {
+                  const n = indexBase + j + 1;
+                  return (
+                    <div
+                      key={item.title}
+                      className={
+                        j > 0
+                          ? `pt-8 border-t ${isDarkMode ? 'border-iii-light/10' : 'border-iii-black/10'}`
+                          : ''
+                      }
                     >
-                      {String(n).padStart(2, "0")}
-                    </p>
-                    <h3
-                      className={`text-base sm:text-lg font-bold tracking-tight ${primary}`}
-                    >
-                      {item.title}
-                    </h3>
-                    <p
-                      className={`mt-2 text-sm leading-relaxed ${secondary} max-w-xl`}
-                    >
-                      {item.body}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="min-w-0 lg:pt-1">
-              <StandinFigure index={groupIdx} isDarkMode={isDarkMode} />
-            </div>
-          </article>
+                      <p
+                        className={`font-mono text-[10px] uppercase tracking-[0.3em] mb-2 ${muted}`}
+                      >
+                        {String(n).padStart(2, '0')}
+                      </p>
+                      <h3
+                        className={`text-base sm:text-lg font-bold tracking-tight ${primary}`}
+                      >
+                        {item.title}
+                      </h3>
+                      <p
+                        className={`mt-2 text-sm leading-relaxed ${secondary} max-w-xl`}
+                      >
+                        {item.body}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="min-w-0 lg:pt-1">
+                <StandinFigure index={groupIdx} isDarkMode={isDarkMode} />
+              </div>
+            </article>
           );
         })}
       </div>
