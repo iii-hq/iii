@@ -75,6 +75,10 @@ export function ExecutionModelAnimation() {
       {/* Task Dot */}
       <motion.div
         className="absolute w-3 h-3 z-30 rounded-full"
+        style={{
+          filter: 'blur(0.4px)',
+          boxShadow: '0 0 6px rgba(255, 255, 255, 0.35)',
+        }}
         animate={{
           x: xFrames,
           y: yFrames,
