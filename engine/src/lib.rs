@@ -15,7 +15,6 @@ pub mod protocol;
 pub mod services;
 pub mod telemetry;
 pub mod trigger;
-pub mod trigger_formats;
 pub mod workers;
 
 pub mod modules {

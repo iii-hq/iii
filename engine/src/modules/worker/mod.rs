@@ -80,16 +80,6 @@ pub struct TriggerInfo {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerTypeInfo {
-    pub id: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct WorkerInfo {
     pub id: String,
     pub name: Option<String>,
@@ -121,18 +111,6 @@ pub struct WorkersListResult {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TriggersListResult {
     pub triggers: Vec<TriggerInfo>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
-pub struct TriggerTypesListInput {
-    /// Include internal engine trigger types (engine::* prefix). Defaults to false.
-    #[serde(default)]
-    pub include_internal: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerTypesListResult {
-    pub trigger_types: Vec<TriggerTypeInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -214,23 +192,6 @@ impl WorkerModule {
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
                     config: t.config.clone(),
-                }
-            })
-            .collect()
-    }
-
-    fn list_trigger_type_infos(&self) -> Vec<TriggerTypeInfo> {
-        self.engine
-            .trigger_registry
-            .trigger_types
-            .iter()
-            .map(|entry| {
-                let tt = entry.value();
-                TriggerTypeInfo {
-                    id: tt.id.clone(),
-                    description: tt._description.clone(),
-                    trigger_request_format: tt.trigger_request_format.clone(),
-                    call_request_format: tt.call_request_format.clone(),
                 }
             })
             .collect()
@@ -351,20 +312,20 @@ impl Module for WorkerModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing WorkerModule");
 
-        let functions_trigger = TriggerType::new(
-            TRIGGER_FUNCTIONS_AVAILABLE,
-            "Triggered when functions are registered/unregistered",
-            Box::new(self.clone()),
-            None,
-        );
+        let functions_trigger = TriggerType {
+            id: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
+            _description: "Triggered when functions are registered/unregistered".to_string(),
+            registrator: Box::new(self.clone()),
+            worker_id: None,
+        };
         let _ = self.engine.register_trigger_type(functions_trigger).await;
 
-        let workers_trigger = TriggerType::new(
-            TRIGGER_WORKERS_AVAILABLE,
-            "Triggered when workers connect/disconnect",
-            Box::new(self.clone()),
-            None,
-        );
+        let workers_trigger = TriggerType {
+            id: TRIGGER_WORKERS_AVAILABLE.to_string(),
+            _description: "Triggered when workers connect/disconnect".to_string(),
+            registrator: Box::new(self.clone()),
+            worker_id: None,
+        };
         let _ = self.engine.register_trigger_type(workers_trigger).await;
 
         Ok(())
@@ -499,23 +460,6 @@ impl WorkerModule {
         }
 
         FunctionResult::Success(TriggersListResult { triggers })
-    }
-
-    #[function(
-        id = "engine::trigger-types::list",
-        description = "List all trigger types with their configuration and call request formats"
-    )]
-    pub async fn get_trigger_types(
-        &self,
-        input: TriggerTypesListInput,
-    ) -> FunctionResult<TriggerTypesListResult, ErrorBody> {
-        let mut trigger_types = self.list_trigger_type_infos();
-
-        if !input.include_internal.unwrap_or(false) {
-            trigger_types.retain(|tt| !tt.id.starts_with("engine::"));
-        }
-
-        FunctionResult::Success(TriggerTypesListResult { trigger_types })
     }
 
     #[function(
