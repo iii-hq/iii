@@ -18,7 +18,7 @@ export function AnimationShape({ type, color, className = '', animate, ...props 
     <motion.div
       className={shapeClasses}
       animate={{
-        backgroundColor: color,
+        background: color,
         rotate: type === 'diamond' ? 45 : 0,
         borderRadius: type === 'circle' ? '50%' : '2px',
         ...animate
