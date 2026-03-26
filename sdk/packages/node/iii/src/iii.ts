@@ -57,6 +57,7 @@ import type {
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
   Trigger,
+  TriggerTypeRef,
 } from './types'
 import { isChannelRef } from './utils'
 
@@ -176,12 +177,35 @@ class Sdk implements ISdk {
   registerTriggerType = <TConfig>(
     triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
     handler: TriggerHandler<TConfig>,
-  ): void => {
+  ): TriggerTypeRef<TConfig> => {
     this.sendMessage(MessageType.RegisterTriggerType, triggerType, true)
     this.triggerTypes.set(triggerType.id, {
       message: { ...triggerType, message_type: MessageType.RegisterTriggerType },
       handler,
     })
+
+    return {
+      id: triggerType.id,
+      registerTrigger: (functionId: string, config: TConfig) => {
+        return this.registerTrigger({
+          type: triggerType.id,
+          function_id: functionId,
+          config,
+        })
+      },
+      registerFunction: (func, handler, config) => {
+        const ref = this.registerFunction(func, handler)
+        this.registerTrigger({
+          type: triggerType.id,
+          function_id: func.id,
+          config,
+        })
+        return ref
+      },
+      unregister: () => {
+        this.unregisterTriggerType(triggerType)
+      },
+    }
   }
 
   /**

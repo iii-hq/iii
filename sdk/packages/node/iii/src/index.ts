@@ -36,6 +36,7 @@ export type {
   RegisterTriggerTypeInput,
   RemoteFunctionHandler,
   Trigger,
+  TriggerTypeRef,
 } from './types'
 
 export { http } from './utils'

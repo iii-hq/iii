@@ -251,7 +251,7 @@ export interface ISdk {
    * )
    * ```
    */
-  registerTriggerType<TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>): void
+  registerTriggerType<TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>): TriggerTypeRef<TConfig>
 
   /**
    * Unregisters a trigger type.
@@ -375,6 +375,56 @@ export type FunctionRef = {
   id: string
   /** Removes this function from the engine. */
   unregister: () => void
+}
+
+/**
+ * Typed handle returned by {@link ISdk.registerTriggerType}.
+ *
+ * Provides convenience methods to register triggers and functions scoped
+ * to this trigger type, so callers don't need to repeat the `type` field.
+ *
+ * @typeParam TConfig - Trigger-specific configuration type.
+ *
+ * @example
+ * ```typescript
+ * type CronConfig = { schedule: string }
+ *
+ * const cron = iii.registerTriggerType<CronConfig>(
+ *   { id: 'cron', description: 'Fires on a cron schedule' },
+ *   cronHandler,
+ * )
+ *
+ * // Register a trigger — type is inferred as CronConfig
+ * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
+ *
+ * // Register a function scoped to this trigger type
+ * cron.registerFunction('my-fn', async (data) => { ... })
+ * ```
+ */
+export type TriggerTypeRef<TConfig = unknown> = {
+  /** The trigger type identifier. */
+  id: string
+  /**
+   * Register a trigger bound to this trigger type.
+   *
+   * @param functionId - The function to invoke when the trigger fires.
+   * @param config - Trigger-specific configuration.
+   * @returns A {@link Trigger} handle with an `unregister()` method.
+   */
+  registerTrigger(functionId: string, config: TConfig): Trigger
+  /**
+   * Register a function and immediately bind it to this trigger type.
+   *
+   * @param func - Function registration input.
+   * @param handler - Local function handler.
+   * @param config - Trigger-specific configuration.
+   * @returns A {@link FunctionRef} handle.
+   */
+  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler, config: TConfig): FunctionRef
+  /**
+   * Unregister this trigger type from the engine.
+   */
+  unregister(): void
 }
 
 /**
