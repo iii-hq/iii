@@ -15,7 +15,7 @@ For implementation details and source examples, visit:
 - [Skills Repository](https://github.com/iii-hq/skills)
 
 ## Overview
-### Unreasonably simpleUnreasonably extensibleUnreasonably fastUnreasonably composableUnreasonably observableUnreasonably reliableUnreasonably interoperablebackend engineeringUnreasonably simple backend engineering
+### Unreasonably simple backend engineering
 iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Functions, Triggers, and Workers. The result is coordinated execution that behaves as if it were a single runtime.
 Follow our development
 

@@ -40,48 +40,6 @@ const GROUPS: Point[][] = [
 
 const GROUP_LABELS = ['Execution model', 'Live system traits'];
 
-function PatternsClosure({ isDarkMode }: { isDarkMode: boolean }) {
-  const accent = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
-  const primary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
-  const secondary = isDarkMode ? 'text-iii-light/70' : 'text-iii-black/70';
-  const muted = isDarkMode ? 'text-iii-light/45' : 'text-iii-black/45';
-  const grid = isDarkMode ? 'rgba(244,244,244,0.05)' : 'rgba(0,0,0,0.05)';
-  const border = isDarkMode ? 'border-iii-light/15' : 'border-iii-black/15';
-  const panel = isDarkMode ? 'bg-iii-dark/25' : 'bg-white/55';
-
-  return (
-    <aside className="mx-auto max-w-7xl px-4 sm:px-6 pt-8 md:pt-10 pb-16 md:pb-20">
-      <div
-        className={`relative mx-auto max-w-xl rounded-lg border ${border} ${panel} px-8 py-10 sm:px-10 sm:py-11 text-center bg-[length:20px_20px]`}
-        style={{
-          backgroundImage: `linear-gradient(${grid} 1px, transparent 1px), linear-gradient(90deg, ${grid} 1px, transparent 1px)`,
-        }}
-      >
-        <div
-          className={`mx-auto mb-6 h-px w-10 ${
-            isDarkMode ? 'bg-iii-accent/55' : 'bg-iii-accent-light/55'
-          }`}
-          aria-hidden
-        />
-        <p
-          className={`font-mono text-[10px] uppercase tracking-[0.35em] ${muted} mb-4`}
-        >
-          Composition
-        </p>
-        <p
-          className={`font-chivo text-lg sm:text-xl md:text-2xl font-bold tracking-tight leading-snug ${primary}`}
-        >
-          <span className={accent}>Capabilities</span> become patterns
-        </p>
-        <p className={`mt-5 text-xs sm:text-sm leading-relaxed ${secondary}`}>
-          Agents, frameworks, tools, and higher-level abstractions can all be
-          built on top of the same core system.
-        </p>
-      </div>
-    </aside>
-  );
-}
-
 export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
   const accent = isDarkMode ? 'text-iii-accent' : 'text-iii-accent-light';
   const primary = isDarkMode ? 'text-iii-light' : 'text-iii-black';
