@@ -617,11 +617,11 @@ function ConceptsIDE({
           {renderLangToggle('hidden md:flex mr-4')}
         </div>
 
-        {/* Content: Description left + Code right — fixed height to prevent layout shift on tab change */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] lg:h-[340px]">
+        {/* Content: Description left + Code right */}
+        <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] lg:min-h-[340px]">
           {/* Left: Description panel */}
           <div
-            className={`p-6 sm:p-8 border-b lg:border-b-0 lg:border-r flex flex-col justify-center overflow-y-auto ${borderColor}`}
+            className={`p-6 sm:p-8 border-b lg:border-b-0 lg:border-r flex flex-col justify-center ${borderColor}`}
           >
             <div className="flex items-center gap-3 mb-4">
               <div

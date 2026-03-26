@@ -168,7 +168,7 @@ const App: React.FC = () => {
         </div>
         {/* Section 3: Architecture (formerly Engine) - Trigger → Function → Workers */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
           data-machine-section="architecture"
         >
           <EngineSection isDarkMode={isDarkMode} />
@@ -176,7 +176,7 @@ const App: React.FC = () => {
 
         {/* Section 2: Hello World - Polyglot proof with IPC */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
           data-machine-section="hello-world"
         >
           <HelloWorldSection isDarkMode={isDarkMode} />
@@ -193,7 +193,7 @@ const App: React.FC = () => {
 
         {/* Section 5: Observability - Trace-level visibility with OpenTelemetry */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
           data-machine-section="observability"
         >
           <ObservabilitySection isDarkMode={isDarkMode} />
@@ -209,7 +209,7 @@ const App: React.FC = () => {
 
         {/* Section 7: Footer + CTA - FAQ, Discord, Links */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24 pb-8 md:pb-12 lg:pb-24"
           data-machine-section="footer"
         >
           <FooterSection isDarkMode={isDarkMode} />

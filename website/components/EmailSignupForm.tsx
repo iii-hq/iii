@@ -80,7 +80,7 @@ export function EmailSignupForm({
           >
             <CheckedIcon size={16} />
             <span className="font-mono tracking-tight text-xs sm:text-sm">
-              SUBSCRIBED — STAY UPDATED
+              Thanks for subscribing!
             </span>
           </div>
         ) : (
