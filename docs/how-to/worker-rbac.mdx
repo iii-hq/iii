@@ -308,16 +308,6 @@ let result = worker.trigger(TriggerRequest {
 </Tab>
 </Tabs>
 
-You can also test with `wscat`:
-
-```bash
-wscat -c "ws://localhost:49135?api_key=my-secret-key"
-> {"type":"ping"}
-< {"type":"pong"}
-> {"type":"invokefunction","invocation_id":null,"function_id":"api::users::list","data":{"limit":10}}
-< {"type":"invocationresult","invocation_id":"...","function_id":"api::users::list","result":[...]}
-```
-
 ## 5. Use Channels Through the RBAC Port
 
 Channels work on the RBAC port exactly as they do on the main engine port. The SDK's `createChannel()` works without changes:
@@ -365,6 +355,7 @@ modules:
         auth_function_id: my-project::auth-function
         on_trigger_registration_function_id: my-project::on-trigger-reg
         on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+        on_function_registration_function_id: my-project::on-function-reg
         expose_functions:
           - match("api::*")
 ```
@@ -374,59 +365,92 @@ Each hook receives the registration details and the auth context, and must retur
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({ id: 'my-project::on-trigger-reg' }, async (input) => {
-  const { trigger_id, trigger_type, function_id, config, context } = input
+import type {
+  OnTriggerRegistrationInput,
+  OnTriggerTypeRegistrationInput,
+  OnFunctionRegistrationInput,
+} from 'iii-sdk'
 
-  if (!function_id.startsWith(`${context.role}::`)) {
-    return false
-  }
+iii.registerFunction(
+  { id: 'my-project::on-trigger-reg' },
+  async (input: OnTriggerRegistrationInput) => {
+    if (!input.function_id.startsWith(`${input.context.role}::`)) {
+      return false
+    }
+    return true
+  },
+)
 
-  return true
-})
+iii.registerFunction(
+  { id: 'my-project::on-trigger-type-reg' },
+  async (input: OnTriggerTypeRegistrationInput) => {
+    return input.context.role === 'admin'
+  },
+)
 
-iii.registerFunction({ id: 'my-project::on-trigger-type-reg' }, async (input) => {
-  const { trigger_type_id, description, context } = input
-  return context.role === 'admin'
-})
+iii.registerFunction(
+  { id: 'my-project::on-function-reg' },
+  async (input: OnFunctionRegistrationInput) => {
+    return !input.function_id.startsWith('internal::')
+  },
+)
 ```
 </Tab>
 <Tab title="Python">
 ```python
-async def on_trigger_reg(input):
-    function_id = input['function_id']
-    context = input['context']
+from iii import (
+    OnTriggerRegistrationInput,
+    OnTriggerTypeRegistrationInput,
+    OnFunctionRegistrationInput,
+)
 
-    if not function_id.startswith(f"{context['role']}::"):
+async def on_trigger_reg(data: dict) -> bool:
+    input = OnTriggerRegistrationInput(**data)
+    if not input.function_id.startswith(f"{input.context['role']}::"):
         return False
-
     return True
 
-async def on_trigger_type_reg(input):
-    context = input['context']
-    return context['role'] == 'admin'
+async def on_trigger_type_reg(data: dict) -> bool:
+    input = OnTriggerTypeRegistrationInput(**data)
+    return input.context['role'] == 'admin'
+
+async def on_function_reg(data: dict) -> bool:
+    input = OnFunctionRegistrationInput(**data)
+    return not input.function_id.startswith('internal::')
 
 iii.register_function({'id': 'my-project::on-trigger-reg'}, on_trigger_reg)
 iii.register_function({'id': 'my-project::on-trigger-type-reg'}, on_trigger_type_reg)
+iii.register_function({'id': 'my-project::on-function-reg'}, on_function_reg)
 ```
 </Tab>
 <Tab title="Rust">
 ```rust
-iii.register_function((
-    RegisterFunctionMessage::with_id("my-project::on-trigger-reg".to_string()),
-    |input: Value| async move {
-        let function_id = input["function_id"].as_str().unwrap_or("");
-        let role = input["context"]["role"].as_str().unwrap_or("");
+use iii_sdk::{
+    OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
+    OnFunctionRegistrationInput, RegisterFunction,
+};
 
+iii.register_function(RegisterFunction::new_async(
+    "my-project::on-trigger-reg",
+    |input: OnTriggerRegistrationInput| async move {
+        let role = input.context.get("role").and_then(|v| v.as_str()).unwrap_or("");
         let prefix = format!("{role}::");
-        Ok(json!(function_id.starts_with(&prefix)))
+        Ok::<_, iii_sdk::IIIError>(input.function_id.starts_with(&prefix))
     },
 ));
 
-iii.register_function((
-    RegisterFunctionMessage::with_id("my-project::on-trigger-type-reg".to_string()),
-    |input: Value| async move {
-        let role = input["context"]["role"].as_str().unwrap_or("");
-        Ok(json!(role == "admin"))
+iii.register_function(RegisterFunction::new_async(
+    "my-project::on-trigger-type-reg",
+    |input: OnTriggerTypeRegistrationInput| async move {
+        let role = input.context.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        Ok::<_, iii_sdk::IIIError>(role == "admin")
+    },
+));
+
+iii.register_function(RegisterFunction::new_async(
+    "my-project::on-function-reg",
+    |input: OnFunctionRegistrationInput| async move {
+        Ok::<_, iii_sdk::IIIError>(!input.function_id.starts_with("internal::"))
     },
 ));
 ```
@@ -504,6 +528,7 @@ Return value from the auth function. Controls access and passes context to middl
 | `forbidden_functions` | `string[]` | `[]` | Function IDs to deny even if they match `expose_functions`. Takes precedence. |
 | `allowed_trigger_types` | `string[]` or omitted | omitted (permissive) | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
 | `allow_trigger_type_registration` | `boolean` | `false` | Whether the worker may register new trigger types. |
+| `allow_function_registration` | `boolean` | `true` | Whether the worker may register new functions. |
 | `context` | `Record<string, unknown>` | `{}` | Arbitrary context forwarded to the middleware function on every invocation. |
 
 ### MiddlewareFunctionInput
@@ -516,6 +541,39 @@ Input passed to the middleware function on every invocation through the RBAC por
 | `payload` | `Record<string, unknown>` | Payload sent by the caller. |
 | `action` | `TriggerAction` or omitted | Routing action (enqueue, void), if any. |
 | `context` | `Record<string, unknown>` | Auth context from `AuthResult.context` for this session. |
+
+### OnTriggerTypeRegistrationInput
+
+Input passed to the `on_trigger_type_registration_function_id` hook. Return `true` to allow.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_type_id` | `string` | ID of the trigger type being registered. |
+| `description` | `string` | Human-readable description of the trigger type. |
+| `context` | `Record<string, unknown>` | Auth context from `AuthResult.context`. |
+
+### OnTriggerRegistrationInput
+
+Input passed to the `on_trigger_registration_function_id` hook. Return `true` to allow.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `trigger_id` | `string` | ID of the trigger being registered. |
+| `trigger_type` | `string` | Trigger type identifier. |
+| `function_id` | `string` | ID of the function this trigger is bound to. |
+| `config` | `unknown` | Trigger-specific configuration. |
+| `context` | `Record<string, unknown>` | Auth context from `AuthResult.context`. |
+
+### OnFunctionRegistrationInput
+
+Input passed to the `on_function_registration_function_id` hook. Return `true` to allow.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `function_id` | `string` | ID of the function being registered. |
+| `description` | `string` or omitted | Human-readable description of the function. |
+| `metadata` | `Record<string, unknown>` or omitted | Arbitrary metadata attached to the function. |
+| `context` | `Record<string, unknown>` | Auth context from `AuthResult.context`. |
 
 ## Full Example Config
 
@@ -538,6 +596,7 @@ modules:
         auth_function_id: my-project::auth-function
         on_trigger_registration_function_id: my-project::on-trigger-reg
         on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+        on_function_registration_function_id: my-project::on-function-reg
         expose_functions:
           - match("api::*")
           - match("*::public")

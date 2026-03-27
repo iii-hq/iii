@@ -172,6 +172,8 @@ export type AuthResult = {
   allowed_trigger_types?: string[]
   /** Whether the worker may register new trigger types. */
   allow_trigger_type_registration: boolean
+  /** Whether the worker may register new functions. Defaults to `true` if omitted. */
+  allow_function_registration?: boolean
   /** Arbitrary context forwarded to the middleware function on every invocation. */
   context: Record<string, unknown>
 }
@@ -189,6 +191,54 @@ export type MiddlewareFunctionInput = {
   /** Routing action, if any. */
   action?: TriggerAction
   /** Auth context returned by the auth function for this session. */
+  context: Record<string, unknown>
+}
+
+/**
+ * Input passed to the `on_trigger_type_registration_function_id` hook
+ * when a worker attempts to register a new trigger type through the RBAC port.
+ * Return `true` to allow the registration.
+ */
+export type OnTriggerTypeRegistrationInput = {
+  /** ID of the trigger type being registered. */
+  trigger_type_id: string
+  /** Human-readable description of the trigger type. */
+  description: string
+  /** Auth context from `AuthResult.context` for this session. */
+  context: Record<string, unknown>
+}
+
+/**
+ * Input passed to the `on_trigger_registration_function_id` hook
+ * when a worker attempts to register a trigger through the RBAC port.
+ * Return `true` to allow the registration.
+ */
+export type OnTriggerRegistrationInput = {
+  /** ID of the trigger being registered. */
+  trigger_id: string
+  /** Trigger type identifier. */
+  trigger_type: string
+  /** ID of the function this trigger is bound to. */
+  function_id: string
+  /** Trigger-specific configuration. */
+  config: unknown
+  /** Auth context from `AuthResult.context` for this session. */
+  context: Record<string, unknown>
+}
+
+/**
+ * Input passed to the `on_function_registration_function_id` hook
+ * when a worker attempts to register a function through the RBAC port.
+ * Return `true` to allow the registration.
+ */
+export type OnFunctionRegistrationInput = {
+  /** ID of the function being registered. */
+  function_id: string
+  /** Human-readable description of the function. */
+  description?: string
+  /** Arbitrary metadata attached to the function. */
+  metadata?: Record<string, unknown>
+  /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
 

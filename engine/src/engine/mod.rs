@@ -845,6 +845,43 @@ impl Engine {
                     "RegisterFunction"
                 );
 
+                if let Some(session) = &worker.session {
+                    if !session.allow_function_registration {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %id,
+                            "function registration not allowed for this session"
+                        );
+                        return Ok(());
+                    }
+
+                    if let Some(hook_fn_id) = session
+                        .config
+                        .rbac
+                        .as_ref()
+                        .and_then(|c| c.on_function_registration_function_id.as_ref())
+                    {
+                        let hook_input = serde_json::json!({
+                            "function_id": id,
+                            "description": description,
+                            "metadata": metadata,
+                            "context": session.context,
+                        });
+                        let allowed = match self.call(hook_fn_id, hook_input).await {
+                            Ok(Some(v)) => v.as_bool() == Some(true),
+                            _ => false,
+                        };
+                        if !allowed {
+                            tracing::warn!(
+                                worker_id = %worker.id,
+                                function_id = %id,
+                                "function registration denied by hook"
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+
                 self.service_registry.register_service_from_function_id(id);
 
                 if let Some(invocation) = invocation {

@@ -29,7 +29,10 @@ pub use protocol::{
     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
 pub use stream::{Streams, UpdateBuilder};
-pub use structs::{AuthInput, AuthResult, MiddlewareFunctionInput};
+pub use structs::{
+    AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
+    OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
+};
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
     ApiRequest, ApiResponse, Channel, FieldPath, StreamUpdateInput, UpdateOp, UpdateResult,

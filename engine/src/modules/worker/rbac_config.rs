@@ -22,6 +22,8 @@ pub struct RbacConfig {
     pub on_trigger_registration_function_id: Option<String>,
     #[serde(default)]
     pub on_trigger_type_registration_function_id: Option<String>,
+    #[serde(default)]
+    pub on_function_registration_function_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,6 +397,7 @@ mod tests {
             expose_functions: vec![FunctionFilter::Match(WildcardPattern::new("*"))],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
         };
         let allowed = vec!["test::fn".to_string()];
         let forbidden = vec!["test::fn".to_string()];
@@ -414,6 +417,7 @@ mod tests {
             expose_functions: vec![],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
         };
         let allowed = vec!["test::fn".to_string()];
         assert!(is_function_allowed(
@@ -432,6 +436,7 @@ mod tests {
             expose_functions: vec![],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
         };
         assert!(is_function_allowed(
             "engine::channels::create",
@@ -449,6 +454,7 @@ mod tests {
             expose_functions: vec![FunctionFilter::Match(WildcardPattern::new("api::*"))],
             on_trigger_registration_function_id: None,
             on_trigger_type_registration_function_id: None,
+            on_function_registration_function_id: None,
         };
         assert!(!is_function_allowed(
             "internal::fn",

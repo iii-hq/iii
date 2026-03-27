@@ -31,6 +31,7 @@ pub struct Session {
     pub forbidden_functions: Vec<String>,
     pub allowed_trigger_types: Option<Vec<String>>,
     pub allow_trigger_type_registration: bool,
+    pub allow_function_registration: bool,
     pub context: Value,
 }
 
@@ -39,6 +40,7 @@ pub(crate) struct AuthResult {
     forbidden_functions: Vec<String>,
     allowed_trigger_types: Option<Vec<String>>,
     allow_trigger_type_registration: bool,
+    allow_function_registration: bool,
     context: Value,
 }
 
@@ -58,6 +60,7 @@ impl Session {
                 forbidden_functions: vec![],
                 allowed_trigger_types: None,
                 allow_trigger_type_registration: true,
+                allow_function_registration: true,
                 context: json!({}),
             });
         };
@@ -114,6 +117,11 @@ impl Session {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        let allow_function_registration = value
+            .get("allow_function_registration")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         let context = value.get("context").cloned().unwrap_or(json!({}));
 
         Ok(AuthResult {
@@ -121,6 +129,7 @@ impl Session {
             forbidden_functions,
             allowed_trigger_types,
             allow_trigger_type_registration,
+            allow_function_registration,
             context,
         })
     }
@@ -156,6 +165,7 @@ pub async fn handle_session(
         forbidden_functions: auth.forbidden_functions,
         allowed_trigger_types: auth.allowed_trigger_types,
         allow_trigger_type_registration: auth.allow_trigger_type_registration,
+        allow_function_registration: auth.allow_function_registration,
         context: auth.context,
     })
 }
