@@ -14,15 +14,13 @@ use serial_test::serial;
 use iii_sdk::{
     AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
     OnFunctionRegistrationInput, OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
-    RegisterFunction, RegisterFunctionMessage, TriggerRequest,
-    register_worker,
+    RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
 };
 
 static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<AuthInput>>>> = OnceLock::new();
 static RBAC_TT_REG_CALLS: OnceLock<Arc<Mutex<Vec<OnTriggerTypeRegistrationInput>>>> =
     OnceLock::new();
-static RBAC_TRIG_REG_CALLS: OnceLock<Arc<Mutex<Vec<OnTriggerRegistrationInput>>>> =
-    OnceLock::new();
+static RBAC_TRIG_REG_CALLS: OnceLock<Arc<Mutex<Vec<OnTriggerRegistrationInput>>>> = OnceLock::new();
 static RBAC_FUNCS_REGISTERED: OnceLock<()> = OnceLock::new();
 
 fn auth_calls() -> &'static Arc<Mutex<Vec<AuthInput>>> {
@@ -354,10 +352,7 @@ async fn should_deny_function_registration_via_hook() {
         })
         .await;
 
-    assert!(
-        result.is_err(),
-        "triggering a denied function should fail"
-    );
+    assert!(result.is_err(), "triggering a denied function should fail");
 
     iii_client.shutdown_async().await;
 }
