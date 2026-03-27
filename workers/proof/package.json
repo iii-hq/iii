@@ -1,0 +1,27 @@
+{
+  "name": "proof",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI-powered browser testing worker for iii — scans code changes, generates test plans, runs them in a real browser",
+  "scripts": {
+    "dev": "npx tsx --watch src/worker.ts",
+    "build": "tsc",
+    "test": "vitest run",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "iii-sdk": "^0.10.0",
+    "playwright": "^1.52.0",
+    "simple-git": "^3.27.0"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.52.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.0"
+  },
+  "license": "Apache-2.0"
+}
