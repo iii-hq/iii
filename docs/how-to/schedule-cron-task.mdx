@@ -52,13 +52,13 @@ def cleanup_sessions(_):
     return {"deleted": 0}
 
 
-iii.register_function({"id": "cleanup::expired-sessions"}, cleanup_sessions)
+iii.register_function("cleanup::expired-sessions", cleanup_sessions)
 ```
 </Tab>
 <Tab title="Rust">
 ```rust title="cron_task.rs"
-use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunctionMessage, RegisterTriggerInput};
-use serde_json::json;
+use iii_sdk::{register_worker, InitOptions, Logger, RegisterFunction, RegisterTriggerInput};
+use serde_json::{json, Value};
 use tokio::signal;
 
 #[tokio::main]
@@ -66,15 +66,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://127.0.0.1:49134".to_string());
     let iii = register_worker(&url, InitOptions::default());
 
-    iii.register_function(
-        RegisterFunctionMessage::with_id("cleanup::expired-sessions".into()),
-        |_| async move {
-            let logger = Logger::new();
-            // ...cleanup logic here...
-            logger.info("Cleanup ran", None);
-            Ok(json!({ "deleted": 0 }))
-        },
-    );
+    let reg = RegisterFunction::new_async("cleanup::expired-sessions", |_: Value| async move {
+        let logger = Logger::new();
+        // ...cleanup logic here...
+        logger.info("Cleanup ran", None);
+        Ok(json!({ "deleted": 0 }))
+    });
+    iii.register_function(reg);
 
     signal::ctrl_c().await?;
     Ok(())

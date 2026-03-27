@@ -38,6 +38,10 @@ export default defineConfig(({ mode }) => ({
     port: 3114,
     proxy: {
       '/api': 'http://localhost:3113',
+      '/ws': {
+        target: 'http://localhost:3113',
+        ws: true,
+      },
     },
   },
 }))

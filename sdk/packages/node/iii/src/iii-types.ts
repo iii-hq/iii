@@ -248,6 +248,20 @@ export type TriggerInfo = {
   config?: unknown
 }
 
+/**
+ * Information about a registered trigger type, returned by `ISdk.listTriggerTypes`.
+ */
+export type TriggerTypeInfo = {
+  /** Trigger type identifier (e.g. `http`, `cron`, `queue`). */
+  id: string
+  /** Human-readable description of the trigger type. */
+  description: string
+  /** JSON Schema for the trigger configuration. */
+  trigger_request_format?: unknown
+  /** JSON Schema for the call request payload. */
+  call_request_format?: unknown
+}
+
 /** Worker connection status. */
 export type WorkerStatus = 'connected' | 'available' | 'busy' | 'disconnected'
 

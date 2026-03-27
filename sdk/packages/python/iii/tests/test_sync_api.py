@@ -53,13 +53,13 @@ def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
 
 
 def test_iii_creates_background_thread(monkeypatch: pytest.MonkeyPatch) -> None:
-    """III.__init__ should start a daemon background thread with an event loop."""
+    """III.__init__ should start a non-daemon background thread with an event loop."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     assert hasattr(client, "_loop")
     assert hasattr(client, "_thread")
     assert client._thread.is_alive()
-    assert client._thread.daemon is True
+    assert client._thread.daemon is False
     client.shutdown()
 
 

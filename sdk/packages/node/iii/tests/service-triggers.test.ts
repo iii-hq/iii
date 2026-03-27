@@ -114,6 +114,118 @@ describe('List Triggers', () => {
   })
 })
 
+describe('List Trigger Types', () => {
+  it('should list registered trigger types', async () => {
+    const triggerTypes = await iii.listTriggerTypes()
+    expect(Array.isArray(triggerTypes)).toBe(true)
+
+    // The engine always registers the built-in 'http' trigger type
+    const httpType = triggerTypes.find((tt) => tt.id === 'http')
+    expect(httpType).toBeDefined()
+    expect(httpType?.description).toBeDefined()
+  })
+
+  it('should return an array even when called with no custom trigger types', async () => {
+    const triggerTypes = await iii.listTriggerTypes()
+    expect(Array.isArray(triggerTypes)).toBe(true)
+  })
+
+  it('should accept includeInternal parameter', async () => {
+    const triggerTypes = await iii.listTriggerTypes(false)
+    expect(Array.isArray(triggerTypes)).toBe(true)
+
+    const triggerTypesWithInternal = await iii.listTriggerTypes(true)
+    expect(Array.isArray(triggerTypesWithInternal)).toBe(true)
+    expect(triggerTypesWithInternal.length).toBeGreaterThanOrEqual(triggerTypes.length)
+  })
+})
+
+describe('TriggerTypeRef', () => {
+  it('should return a TriggerTypeRef from registerTriggerType', async () => {
+    const ref = iii.registerTriggerType(
+      { id: 'test.trigger-type-ref', description: 'Test trigger type ref' },
+      {
+        async registerTrigger() {},
+        async unregisterTrigger() {},
+      },
+    )
+
+    expect(ref).toBeDefined()
+    expect(ref.id).toBe('test.trigger-type-ref')
+    expect(typeof ref.registerTrigger).toBe('function')
+    expect(typeof ref.registerFunction).toBe('function')
+    expect(typeof ref.unregister).toBe('function')
+
+    ref.unregister()
+  })
+
+  it('should register a trigger via TriggerTypeRef', async () => {
+    const ref = iii.registerTriggerType(
+      { id: 'test.tt-ref-trigger', description: 'Test ref trigger' },
+      {
+        async registerTrigger() {},
+        async unregisterTrigger() {},
+      },
+    )
+
+    const fn = iii.registerFunction({ id: 'test.tt-ref-trigger.fn' }, async () => ({ ok: true }))
+
+    await sleep(300)
+
+    const trigger = ref.registerTrigger('test.tt-ref-trigger.fn', { some: 'config' })
+    expect(trigger).toBeDefined()
+    expect(typeof trigger.unregister).toBe('function')
+
+    trigger.unregister()
+    fn.unregister()
+    ref.unregister()
+  })
+
+  it('should register a function with trigger via TriggerTypeRef', async () => {
+    const ref = iii.registerTriggerType(
+      { id: 'test.tt-ref-fn', description: 'Test ref function' },
+      {
+        async registerTrigger() {},
+        async unregisterTrigger() {},
+      },
+    )
+
+    const fnRef = ref.registerFunction(
+      { id: 'test.tt-ref-fn.handler' },
+      async () => ({ ok: true }),
+      { path: '/test' },
+    )
+
+    expect(fnRef).toBeDefined()
+    expect(fnRef.id).toBe('test.tt-ref-fn.handler')
+    expect(typeof fnRef.unregister).toBe('function')
+
+    await sleep(300)
+
+    const result = await iii.trigger<Record<string, never>, { ok: boolean }>({
+      function_id: 'test.tt-ref-fn.handler',
+      payload: {},
+    })
+    expect(result.ok).toBe(true)
+
+    fnRef.unregister()
+    ref.unregister()
+  })
+
+  it('should unregister the trigger type via TriggerTypeRef', () => {
+    const ref = iii.registerTriggerType(
+      { id: 'test.tt-ref-unreg', description: 'Test ref unregister' },
+      {
+        async registerTrigger() {},
+        async unregisterTrigger() {},
+      },
+    )
+
+    // Should not throw
+    expect(() => ref.unregister()).not.toThrow()
+  })
+})
+
 describe('Channel readAll', () => {
   it('should read all data from a channel using readAll', async () => {
     const processor = iii.registerFunction(

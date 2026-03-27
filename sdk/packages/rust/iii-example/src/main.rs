@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use iii_sdk::{
     InitOptions, OtelConfig, RegisterFunction, Streams, TriggerRequest, UpdateBuilder, UpdateOp,
@@ -36,7 +36,10 @@ async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, String> 
     )
 }
 
+mod cron_trigger_example;
+mod custom_trigger_example;
 mod http_example;
+mod trigger_type_example;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,6 +54,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
+
+    // Custom webhook trigger type with typed config (compile-time safe)
+    trigger_type_example::setup(&iii);
+
+    // Built-in trigger types: cron and state (untyped config)
+    cron_trigger_example::setup(&iii);
+
+    // More custom triggers: schedule, file-watch (typed), custom-event (untyped fallback)
+    custom_trigger_example::setup(&iii);
+
+    // List all registered trigger types with their schemas
+    trigger_type_example::list_trigger_types_example(&iii).await;
 
     // Create a Streams instance for atomic updates
     let streams = Streams::new(iii.clone());
@@ -191,8 +206,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_result.new_value["counter"]
     );
 
-    println!("\n--- All examples completed! Waiting... ---");
-    loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
+    println!("\n--- All examples completed! Process stays alive via connection thread. ---");
+
+    sleep(Duration::from_secs(10));
+    println!("Finishing III");
+    iii.shutdown();
+    sleep(Duration::from_secs(10));
+
+    Ok(())
 }

@@ -43,6 +43,10 @@ pub enum Message {
     RegisterTriggerType {
         id: String,
         description: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger_request_format: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        call_request_format: Option<Value>,
     },
     RegisterTrigger {
         id: String,

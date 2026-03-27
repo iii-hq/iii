@@ -147,12 +147,12 @@ impl Module for PubSubCoreModule {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing PubSubModule");
 
-        let trigger_type = TriggerType {
-            id: "subscribe".to_string(),
-            _description: "Subscribe to a topic".to_string(),
-            registrator: Box::new(self.clone()),
-            worker_id: None,
-        };
+        let trigger_type = TriggerType::new(
+            "subscribe",
+            "Subscribe to a topic",
+            Box::new(self.clone()),
+            None,
+        );
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 

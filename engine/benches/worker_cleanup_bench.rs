@@ -236,12 +236,12 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async {
                                 trigger_registry
-                                    .register_trigger_type(TriggerType {
-                                        id: "bench.cleanup".to_string(),
-                                        _description: "cleanup benchmark trigger".to_string(),
-                                        registrator: Box::new(NoopRegistrator),
-                                        worker_id: Some(worker.id),
-                                    })
+                                    .register_trigger_type(TriggerType::new(
+                                        "bench.cleanup",
+                                        "cleanup benchmark trigger",
+                                        Box::new(NoopRegistrator),
+                                        Some(worker.id),
+                                    ))
                                     .await
                                     .expect("register trigger type");
 

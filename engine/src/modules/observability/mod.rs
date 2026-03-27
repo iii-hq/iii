@@ -1459,12 +1459,12 @@ impl Module for OtelModule {
         }
 
         // Register log trigger type
-        let log_trigger_type = TriggerType {
-            id: LOG_TRIGGER_TYPE.to_string(),
-            _description: "Log event trigger".to_string(),
-            registrator: Box::new(self.clone()),
-            worker_id: None,
-        };
+        let log_trigger_type = TriggerType::new(
+            LOG_TRIGGER_TYPE,
+            "Log event trigger",
+            Box::new(self.clone()),
+            None,
+        );
 
         let _ = self.engine.register_trigger_type(log_trigger_type).await;
 

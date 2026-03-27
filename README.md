@@ -1,4 +1,4 @@
-![iii - One Engine, Three Primitives](engine/assets/banner.jpg)
+![iii banner image](website/public/og-image.png)
 
 [![Engine License](https://img.shields.io/badge/engine-ELv2-blue.svg)](engine/LICENSE)
 [![SDK License](https://img.shields.io/badge/sdk-Apache--2.0-green.svg)](sdk/LICENSE)

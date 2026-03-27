@@ -50,8 +50,10 @@ use serde_json::json;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
-    // ... register functions
-    loop { tokio::time::sleep(std::time::Duration::from_secs(60)).await; }
+    // ... register functions and triggers ...
+    // The connection thread keeps the process alive.
+    // Call iii.shutdown() when you're ready to stop.
+    Ok(())
 }
 ```
 
@@ -329,40 +331,9 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), functi
 
 ## Connect and run
 
-<Info title="Node.js connects automatically">
-  The Node SDK establishes the WebSocket connection when you call `registerWorker()`. There is no separate `connect()` method. Keep the process alive so the worker stays registered.
+<Info title="All SDKs connect automatically">
+  Every SDK establishes the WebSocket connection when you call `registerWorker()`. The process stays alive automatically while connected. Call `shutdown()` when you want to stop the worker.
 </Info>
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-
-```typescript
-// Node SDK connects on registerWorker() — keep the process alive
-await new Promise(() => {})
-```
-
-  </Tab>
-  <Tab title="Python">
-
-```python
-import time
-def main() -> None:
-    while True:
-        time.sleep(60)
-```
-
-  </Tab>
-  <Tab title="Rust">
-
-```rust
-// Already in the main() above — register_worker auto-connects
-loop {
-    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-}
-```
-
-  </Tab>
-</Tabs>
 
 ## Test it
 

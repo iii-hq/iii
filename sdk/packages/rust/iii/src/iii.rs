@@ -85,6 +85,137 @@ pub struct TriggerInfo {
     pub config: Value,
 }
 
+/// Trigger type information returned by `engine::trigger-types::list`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerTypeInfo {
+    pub id: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger_request_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_request_format: Option<Value>,
+}
+
+/// Builder for registering a custom trigger type with optional format schemas.
+///
+/// Type parameters:
+/// - `C` tracks the trigger registration type (set via `.trigger_request_format::<T>()`)
+/// - `R` tracks the call request type (set via `.call_request_format::<T>()`)
+///
+/// Both default to `Value` (untyped) and change when the respective builder
+/// method is called. This allows [`III::register_trigger_type`] to return a
+/// [`TriggerTypeRef<C, R>`] with compile-time safety for both config and
+/// function input types.
+pub struct RegisterTriggerType<H, C = Value, R = Value> {
+    id: String,
+    description: String,
+    handler: H,
+    trigger_request_format: Option<Value>,
+    call_request_format: Option<Value>,
+    _phantom: std::marker::PhantomData<(C, R)>,
+}
+
+impl<H: TriggerHandler> RegisterTriggerType<H> {
+    pub fn new(id: impl Into<String>, description: impl Into<String>, handler: H) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+            handler,
+            trigger_request_format: None,
+            call_request_format: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
+    /// Set the trigger request format schema from a type.
+    /// Changes `C`, enabling compile-time validation on
+    /// [`TriggerTypeRef::register_trigger`].
+    pub fn trigger_request_format<T: schemars::JsonSchema + Serialize>(
+        self,
+    ) -> RegisterTriggerType<H, T, R> {
+        RegisterTriggerType {
+            id: self.id,
+            description: self.description,
+            handler: self.handler,
+            trigger_request_format: json_schema_for::<T>(),
+            call_request_format: self.call_request_format,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Set the call request format schema from a type.
+    /// Changes `R`, enabling compile-time validation on
+    /// [`TriggerTypeRef::register_function`].
+    pub fn call_request_format<T: schemars::JsonSchema>(self) -> RegisterTriggerType<H, C, T> {
+        RegisterTriggerType {
+            id: self.id,
+            description: self.description,
+            handler: self.handler,
+            trigger_request_format: self.trigger_request_format,
+            call_request_format: json_schema_for::<T>(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Typed handle returned by [`III::register_trigger_type`].
+///
+/// Type parameters:
+/// - `C` — trigger registration type for [`register_trigger`](Self::register_trigger)
+/// - `R` — call request type for [`register_function`](Self::register_function)
+#[derive(Clone)]
+pub struct TriggerTypeRef<C = Value, R = Value> {
+    iii: III,
+    trigger_type_id: String,
+    _phantom: std::marker::PhantomData<(C, R)>,
+}
+
+impl<C: Serialize, R> TriggerTypeRef<C, R> {
+    /// Register a trigger with compile-time validated trigger config.
+    pub fn register_trigger(
+        &self,
+        function_id: impl Into<String>,
+        config: C,
+    ) -> Result<Trigger, IIIError> {
+        self.iii.register_trigger(RegisterTriggerInput {
+            trigger_type: self.trigger_type_id.clone(),
+            function_id: function_id.into(),
+            config: serde_json::to_value(config).map_err(|e| IIIError::Handler(e.to_string()))?,
+        })
+    }
+}
+
+impl<C, R> TriggerTypeRef<C, R>
+where
+    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
+{
+    /// Register a sync function whose input type must match
+    /// the call request format `R`.
+    pub fn register_function<O, E, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
+    where
+        O: Serialize + schemars::JsonSchema + Send + 'static,
+        E: std::fmt::Display + Send + 'static,
+        F: Fn(R) -> Result<O, E> + Send + Sync + 'static,
+    {
+        self.iii.register_function(RegisterFunction::new(id, f))
+    }
+
+    /// Register an async function whose input type must match
+    /// the call request format `R`.
+    pub fn register_function_async<O, E, F, Fut>(&self, id: impl Into<String>, f: F) -> FunctionRef
+    where
+        O: Serialize + schemars::JsonSchema + Send + 'static,
+        E: std::fmt::Display + Send + 'static,
+        F: Fn(R) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<O, E>> + Send + 'static,
+    {
+        self.iii
+            .register_function(RegisterFunction::new_async(id, f))
+    }
+}
+
 /// Telemetry metadata provided by the SDK to the engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkerTelemetryMeta {
@@ -524,6 +655,7 @@ struct IIIInner {
     services: Mutex<HashMap<String, RegisterServiceMessage>>,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
+    connection_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     functions_available_callbacks: Mutex<HashMap<usize, FunctionsAvailableCallback>>,
     functions_available_callback_counter: AtomicUsize,
     functions_available_function_id: Mutex<Option<String>>,
@@ -586,6 +718,7 @@ impl III {
             services: Mutex::new(HashMap::new()),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
+            connection_thread: Mutex::new(None),
             functions_available_callbacks: Mutex::new(HashMap::new()),
             functions_available_callback_counter: AtomicUsize::new(0),
             functions_available_function_id: Mutex::new(None),
@@ -625,60 +758,78 @@ impl III {
         self.inner.running.store(true, Ordering::SeqCst);
 
         let iii = self.clone();
-        tokio::spawn(async move {
-            iii.run_connection(rx).await;
-        });
 
         #[cfg(feature = "otel")]
-        {
-            let config = self.inner.otel_config.lock_or_recover().take();
-            if let Some(mut config) = config {
-                if config.engine_ws_url.is_none() {
-                    config.engine_ws_url = Some(self.inner.address.clone());
+        let otel_config = {
+            let mut config = self.inner.otel_config.lock_or_recover().take();
+            if let Some(ref mut cfg) = config {
+                if cfg.engine_ws_url.is_none() {
+                    cfg.engine_ws_url = Some(self.inner.address.clone());
                 }
-                tokio::spawn(async move {
-                    telemetry::init_otel(config).await;
-                });
             }
-        }
+            config
+        };
+
+        // Spawn a dedicated OS thread with its own tokio runtime so
+        // the connection loop is independent of the caller's runtime.
+        // In Rust, a spawned thread does not keep the process alive on its own;
+        // call shutdown() to signal the thread and join connection_thread so
+        // run_connection() can exit cleanly before main() returns.
+        let handle = std::thread::Builder::new()
+            .name("iii-connection".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create iii connection runtime");
+
+                rt.block_on(async move {
+                    #[cfg(feature = "otel")]
+                    if let Some(cfg) = otel_config {
+                        telemetry::init_otel(cfg).await;
+                    }
+
+                    iii.run_connection(rx).await;
+
+                    #[cfg(feature = "otel")]
+                    telemetry::shutdown_otel().await;
+                });
+            })
+            .expect("failed to spawn iii connection thread");
+
+        *self.inner.connection_thread.lock_or_recover() = Some(handle);
     }
 
-    /// Shutdown the III client.
+    /// Shutdown the III client and wait for the connection thread to finish.
     ///
-    /// This stops the connection loop and sends a shutdown signal.
-    /// If the `otel` feature is enabled, this will spawn a background task
-    /// to flush telemetry data, but does NOT wait for it to complete.
-    /// For guaranteed telemetry flush, use `shutdown_async()` instead.
-    #[deprecated(note = "Use shutdown_async() for guaranteed telemetry flush")]
+    /// This stops the connection loop, sends a shutdown signal, and joins
+    /// the background connection thread. When the `otel` feature is enabled,
+    /// telemetry is flushed inside the connection thread before it exits.
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
 
-        #[cfg(feature = "otel")]
-        {
-            tracing::warn!(
-                "shutdown() does not await telemetry flush; use shutdown_async() instead"
-            );
-            tokio::spawn(async {
-                telemetry::shutdown_otel().await;
-            });
+        if let Some(handle) = self.inner.connection_thread.lock_or_recover().take() {
+            let _ = handle.join();
         }
     }
 
-    /// Shutdown the III client and flush all pending telemetry data.
+    /// Shutdown the III client.
     ///
-    /// This method stops the connection loop and sends a shutdown signal.
-    /// When the `otel` feature is enabled, it additionally awaits the
-    /// OpenTelemetry flush, ensuring all spans, metrics, and logs are
-    /// exported before returning.
+    /// This stops the connection loop and sends a shutdown signal, but it
+    /// does not join `connection_thread`.
+    ///
+    /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
+    /// to wait for `run_connection()` to finish, making it safe to call from
+    /// an async context without stalling the executor. When the `otel`
+    /// feature is enabled, `telemetry::shutdown_otel()` still runs inside the
+    /// connection thread after `run_connection()` returns, so it may not
+    /// complete unless [`shutdown`](Self::shutdown) is used to join the thread.
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
-
-        #[cfg(feature = "otel")]
-        telemetry::shutdown_otel().await;
     }
 
     fn register_function_inner(
@@ -785,32 +936,64 @@ impl III {
 
     /// Register a custom trigger type with the engine.
     ///
-    /// # Arguments
-    /// * `id` - Unique trigger type identifier.
-    /// * `description` - Human-readable description.
-    /// * `handler` - Handler implementing [`TriggerHandler`].
-    pub fn register_trigger_type<H>(
+    /// Returns a [`TriggerTypeRef`] handle that can register triggers and
+    /// functions with compile-time validated types.
+    ///
+    /// # Examples
+    /// ```rust,no_run
+    /// # use iii_sdk::{III, RegisterTriggerType};
+    /// # struct MyHandler;
+    /// # #[async_trait::async_trait]
+    /// # impl iii_sdk::TriggerHandler for MyHandler {
+    /// #     async fn register_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+    /// #     async fn unregister_trigger(&self, _: iii_sdk::TriggerConfig) -> Result<(), iii_sdk::IIIError> { Ok(()) }
+    /// # }
+    /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
+    /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
+    /// # let iii = III::new("ws://localhost:49134");
+    /// let my_trigger = iii.register_trigger_type(
+    ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
+    ///         .trigger_request_format::<MyConfig>()
+    ///         .call_request_format::<MyRequest>(),
+    /// );
+    ///
+    /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
+    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, String> {
+    ///     Ok(serde_json::json!({ "data": req.data }))
+    /// });
+    /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
+    /// ```
+    pub fn register_trigger_type<H, C, R>(
         &self,
-        id: impl Into<String>,
-        description: impl Into<String>,
-        handler: H,
-    ) where
+        registration: RegisterTriggerType<H, C, R>,
+    ) -> TriggerTypeRef<C, R>
+    where
         H: TriggerHandler + 'static,
     {
         let message = RegisterTriggerTypeMessage {
-            id: id.into(),
-            description: description.into(),
+            id: registration.id,
+            description: registration.description,
+            trigger_request_format: registration.trigger_request_format,
+            call_request_format: registration.call_request_format,
         };
+
+        let trigger_type_id = message.id.clone();
 
         self.inner.trigger_types.lock_or_recover().insert(
             message.id.clone(),
             RemoteTriggerTypeData {
                 message: message.clone(),
-                handler: Arc::new(handler),
+                handler: Arc::new(registration.handler),
             },
         );
 
         let _ = self.send_message(message.to_message());
+
+        TriggerTypeRef {
+            iii: self.clone(),
+            trigger_type_id,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Unregister a previously registered trigger type.
@@ -1119,6 +1302,29 @@ impl III {
             .unwrap_or_default();
 
         Ok(triggers)
+    }
+
+    /// List all registered trigger types from the engine with their
+    /// `trigger_request_format` and `call_request_format` schemas.
+    pub async fn list_trigger_types(
+        &self,
+        include_internal: bool,
+    ) -> Result<Vec<TriggerTypeInfo>, IIIError> {
+        let result = self
+            .trigger(TriggerRequest {
+                function_id: "engine::trigger-types::list".to_string(),
+                payload: serde_json::json!({ "include_internal": include_internal }),
+                action: None,
+                timeout_ms: None,
+            })
+            .await?;
+
+        let trigger_types = result
+            .get("trigger_types")
+            .and_then(|v| serde_json::from_value::<Vec<TriggerTypeInfo>>(v.clone()).ok())
+            .unwrap_or_default();
+
+        Ok(trigger_types)
     }
 
     /// Create a streaming channel pair for worker-to-worker data transfer.

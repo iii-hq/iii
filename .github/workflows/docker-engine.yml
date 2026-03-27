@@ -136,7 +136,7 @@ jobs:
 
       - name: Run Trivy vulnerability scanner
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ env.DOCKERHUB_REPO }}:${{ needs.setup.outputs.version }}
           format: 'sarif'
@@ -152,7 +152,7 @@ jobs:
 
       - name: Check for critical vulnerabilities
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ env.DOCKERHUB_REPO }}:${{ needs.setup.outputs.version }}
           format: 'table'

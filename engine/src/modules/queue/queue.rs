@@ -757,12 +757,8 @@ impl Module for QueueCoreModule {
             );
         }
 
-        let trigger_type = TriggerType {
-            id: "queue".to_string(),
-            _description: "Queue core module".to_string(),
-            registrator: Box::new(self.clone()),
-            worker_id: None,
-        };
+        let trigger_type =
+            TriggerType::new("queue", "Queue core module", Box::new(self.clone()), None);
 
         let _ = self.engine.register_trigger_type(trigger_type).await;
 

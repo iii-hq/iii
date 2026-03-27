@@ -4,6 +4,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod bridge;
+mod proxy;
 mod server;
 
 #[derive(Parser, Debug)]
