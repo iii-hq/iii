@@ -284,6 +284,8 @@ export const cloudLogos = [
 
 const rotatingDescriptors = [
   'simple',
+  'scalable',
+  'durable',
   'extensible',
   'fast',
   'composable',
