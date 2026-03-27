@@ -16,12 +16,6 @@ interface NavbarProps {
   isHumanMode: boolean;
   onToggleTheme: () => void;
   onToggleMode: () => void;
-  onLogoClick?: () => void;
-  logoClickCount?: number;
-  isLogoHovered?: boolean;
-  hoverAnimIndex?: number;
-  onLogoMouseEnter?: () => void;
-  onLogoMouseLeave?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -30,12 +24,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   isHumanMode,
   onToggleTheme,
   onToggleMode,
-  onLogoClick,
-  logoClickCount = 0,
-  isLogoHovered = false,
-  hoverAnimIndex = -1,
-  onLogoMouseEnter,
-  onLogoMouseLeave,
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [installCopied, setInstallCopied] = useState(false);
@@ -96,68 +84,26 @@ export const Navbar: React.FC<NavbarProps> = ({
         }`}
       >
         <div className="flex items-center gap-4">
-          {window.location.pathname === "/" ||
-          window.location.pathname === "/ai" ? (
-            <div
-              className="cursor-pointer"
-              onClick={onLogoClick}
-              onMouseEnter={onLogoMouseEnter}
-              onMouseLeave={onLogoMouseLeave}
-            >
-              <Logo
-                className={`transition-all duration-300 ${
-                  isScrolled ? "h-5 md:h-7" : "h-6 md:h-10"
-                } ${
-                  isGodMode
-                    ? "text-red-500"
-                    : isDarkMode
-                      ? "text-iii-light"
-                      : "text-iii-black"
-                }`}
-                highlightCount={logoClickCount > 0 ? logoClickCount : undefined}
-                highlightIndex={
-                  logoClickCount === 0 ? hoverAnimIndex : undefined
-                }
-                accentColor={
-                  isGodMode
-                    ? "fill-red-500"
-                    : isDarkMode
-                      ? "fill-iii-accent"
-                      : "fill-iii-accent-light"
-                }
-              />
-            </div>
-          ) : (
-            <a
-              href="/"
-              className="cursor-pointer"
-              onMouseEnter={onLogoMouseEnter}
-              onMouseLeave={onLogoMouseLeave}
-            >
-              <Logo
-                className={`transition-all duration-300 ${
-                  isScrolled ? "h-5 md:h-7" : "h-6 md:h-10"
-                } ${
-                  isGodMode
-                    ? "text-red-500"
-                    : isDarkMode
-                      ? "text-iii-light"
-                      : "text-iii-black"
-                }`}
-                highlightCount={logoClickCount > 0 ? logoClickCount : undefined}
-                highlightIndex={
-                  logoClickCount === 0 ? hoverAnimIndex : undefined
-                }
-                accentColor={
-                  isGodMode
-                    ? "fill-red-500"
-                    : isDarkMode
-                      ? "fill-iii-accent"
-                      : "fill-iii-accent-light"
-                }
-              />
-            </a>
-          )}
+          <a href="/" className="cursor-pointer">
+            <Logo
+              className={`transition-all duration-300 ${
+                isScrolled ? "h-5 md:h-7" : "h-6 md:h-10"
+              } ${
+                isGodMode
+                  ? "text-red-500"
+                  : isDarkMode
+                    ? "text-iii-light"
+                    : "text-iii-black"
+              }`}
+              accentColor={
+                isGodMode
+                  ? "fill-red-500"
+                  : isDarkMode
+                    ? "fill-iii-accent"
+                    : "fill-iii-accent-light"
+              }
+            />
+          </a>
           <div className="hidden sm:block">
             <ModeToggle
               isHumanMode={isHumanMode}

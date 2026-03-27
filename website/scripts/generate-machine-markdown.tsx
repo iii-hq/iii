@@ -4,6 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
 import { HeroSection } from "../components/sections/HeroSection";
+import { WhyIIISection } from "../components/sections/WhyIIISection";
 import { EngineSection } from "../components/sections/EngineSection";
 import { HelloWorldSection } from "../components/sections/HelloWorldSection";
 import { ObservabilitySection } from "../components/sections/ObservabilitySection";
@@ -14,6 +15,9 @@ function HomepageSectionsSnapshot() {
     <main>
       <div data-machine-section="hero">
         <HeroSection isDarkMode />
+      </div>
+      <div data-machine-section="why-iii">
+        <WhyIIISection isDarkMode />
       </div>
       <div data-machine-section="architecture">
         <EngineSection isDarkMode />

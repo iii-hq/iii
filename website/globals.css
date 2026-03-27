@@ -35,13 +35,14 @@
 }
 
 html {
-  zoom: 120%;
+  zoom: 100%;
 }
 
-/* Prevent horizontal scroll on mobile */
+/* Prevent horizontal scroll on mobile. Use clip (not hidden) so position:sticky
+   still works site-wide — overflow-x:hidden breaks vertical sticky in WebKit/Blink. */
 html,
 body {
-  overflow-x: hidden;
+  overflow-x: clip;
   max-width: 100vw;
 }
 

@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Terminal } from './components/Terminal';
 import { ExampleCodeSection } from './components/sections/ExampleCodeSection';
 import { HeroSection } from './components/sections/HeroSection';
+import { WhyIIISection } from './components/sections/WhyIIISection';
 import { InteractiveDemoFlowSection } from './components/sections/InteractiveDemoFlowSection';
 import { HelloWorldSection } from './components/sections/HelloWorldSection';
 import { EngineSection } from './components/sections/EngineSection';
@@ -34,9 +35,6 @@ const App: React.FC = () => {
   const [showTerminal, setShowTerminal] = useState(false);
   const [isGodMode, setIsGodMode] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
-  const [logoClickCount, setLogoClickCount] = useState(0);
-  const [isLogoHovered, setIsLogoHovered] = useState(false);
-  const [hoverAnimIndex, setHoverAnimIndex] = useState(-1);
   const [showGodModeUnlock, setShowGodModeUnlock] = useState(false);
 
   // URL-based mode detection: /ai = machine mode, / = human mode
@@ -67,39 +65,6 @@ const App: React.FC = () => {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
-
-  // Hover animation - sequential highlight
-  useEffect(() => {
-    if (!isLogoHovered || logoClickCount > 0) {
-      setHoverAnimIndex(-1);
-      return;
-    }
-
-    let index = 0;
-    const interval = setInterval(() => {
-      setHoverAnimIndex(index % 3);
-      index++;
-    }, 200);
-
-    return () => clearInterval(interval);
-  }, [isLogoHovered, logoClickCount]);
-
-  // Click handler - each click locks another "i"
-  const handleLogoClick = useCallback(() => {
-    const newCount = logoClickCount + 1;
-
-    if (newCount >= 3) {
-      // Three clicks - all lit, open terminal
-      setLogoClickCount(3);
-      setTimeout(() => {
-        setShowTerminal(true);
-        setLogoClickCount(0); // Reset after opening
-      }, 300);
-    } else {
-      setLogoClickCount(newCount);
-      // Clicks now hold forever until terminal opens
-    }
-  }, [logoClickCount]);
 
   useEffect(() => {
     let keyBuffer: string[] = [];
@@ -140,7 +105,6 @@ const App: React.FC = () => {
           onToggleTheme={toggleTheme}
           isGodMode={isGodMode}
           isDarkMode={isDarkMode}
-          onLogoClick={handleLogoClick}
         />
         {showTerminal && (
           <Terminal
@@ -184,12 +148,6 @@ const App: React.FC = () => {
         isHumanMode={isHumanMode}
         onToggleTheme={toggleTheme}
         onToggleMode={toggleMode}
-        onLogoClick={handleLogoClick}
-        logoClickCount={logoClickCount}
-        isLogoHovered={isLogoHovered}
-        hoverAnimIndex={hoverAnimIndex}
-        onLogoMouseEnter={() => setIsLogoHovered(true)}
-        onLogoMouseLeave={() => setIsLogoHovered(false)}
       />
 
       <main className="flex-1 relative z-10 flex flex-col items-center w-full pt-16 md:pt-20">
@@ -201,9 +159,16 @@ const App: React.FC = () => {
         <div className="w-full">
           <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
+
+        <div
+          className="w-full min-w-0 self-stretch"
+          data-machine-section="why-iii"
+        >
+          <WhyIIISection isDarkMode={isDarkMode} />
+        </div>
         {/* Section 3: Architecture (formerly Engine) - Trigger → Function → Workers */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
           data-machine-section="architecture"
         >
           <EngineSection isDarkMode={isDarkMode} />
@@ -211,7 +176,7 @@ const App: React.FC = () => {
 
         {/* Section 2: Hello World - Polyglot proof with IPC */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
           data-machine-section="hello-world"
         >
           <HelloWorldSection isDarkMode={isDarkMode} />
@@ -228,7 +193,7 @@ const App: React.FC = () => {
 
         {/* Section 5: Observability - Trace-level visibility with OpenTelemetry */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
           data-machine-section="observability"
         >
           <ObservabilitySection isDarkMode={isDarkMode} />
@@ -244,7 +209,7 @@ const App: React.FC = () => {
 
         {/* Section 7: Footer + CTA - FAQ, Discord, Links */}
         <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
+          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24 pb-8 md:pb-12 lg:pb-24"
           data-machine-section="footer"
         >
           <FooterSection isDarkMode={isDarkMode} />
