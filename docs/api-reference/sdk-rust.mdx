@@ -115,30 +115,27 @@ iii.register(
 
 ### register_function
 
-Register a function with the engine (low-level API).
+Register a function with the engine. Accepts any type implementing `IntoFunctionRegistration`:
+a [`RegisterFunction`](#register) builder (preferred), or a `(RegisterFunctionMessage, Handler)` tuple.
 
-Pass a closure/async fn for local execution, or an [`HttpInvocationConfig`]
-for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
-
-For a simpler API with auto-generated schemas, use [`register`](#register) instead.
+For the simplest API with auto-generated schemas, use [`RegisterFunction::new`](#register) / [`RegisterFunction::new_async`](#register).
 
 **Signature**
 
 ```rust
-register_function(message: RegisterFunctionMessage, handler: H) -> FunctionRef
+register_function<R: IntoFunctionRegistration>(registration: R) -> FunctionRef
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `message` | [`RegisterFunctionMessage`](#registerfunctionmessage) | Yes | Function registration message with id and optional metadata. |
-| `handler` | `H` | Yes | Async handler, [`iii_fn`](#iii_fn)/[`iii_async_fn`](#iii_async_fn) wrapper, or HTTP invocation config. |
+| `registration` | `R: IntoFunctionRegistration` | Yes | A `RegisterFunction` builder, or a `(RegisterFunctionMessage, H)` tuple where `H` is a handler or `HttpInvocationConfig`. |
 
 #### Example
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, RegisterFunctionMessage, iii_fn};
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterFunctionMessage, iii_fn};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -151,13 +148,13 @@ fn greet(input: Input) -> Result<String, String> {
 
 let iii = register_worker("ws://localhost:49134", InitOptions::default());
 
-// Using iii_fn wrapper (auto-fills request_format/response_format)
-iii.register_function((
-    RegisterFunctionMessage::with_id("greet".to_string()),
-    iii_fn(greet),
-));
+// Preferred: RegisterFunction builder (auto-generates request/response schemas)
+iii.register_function(
+    RegisterFunction::new("greet", greet)
+        .description("Greet someone by name"),
+);
 
-// Using raw closure (still supported via tuple)
+// Alternative: tuple form with RegisterFunctionMessage (lower-level)
 iii.register_function((
     RegisterFunctionMessage::with_id("echo".to_string()),
     |input: Value| async move {
