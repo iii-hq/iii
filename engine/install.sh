@@ -223,10 +223,10 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --cli-version)
-      if [ $# -ge 2 ]; then shift 2; else shift; fi
+      if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
     --cli-dir)
-      if [ $# -ge 2 ]; then shift 2; else shift; fi
+      if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
     -h|--help)
       cat <<'USAGE'
