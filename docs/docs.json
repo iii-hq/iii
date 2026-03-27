@@ -76,7 +76,7 @@
                   "modules/module-pubsub",
                   "modules/module-exec",
                   "modules/module-bridge",
-                  "modules/module-worker-rbac"
+                  "modules/module-worker"
                 ]
               },
               {
