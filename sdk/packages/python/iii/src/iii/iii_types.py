@@ -268,6 +268,80 @@ TriggerAction = TriggerActionEnqueue | TriggerActionVoid
 """Routing action for trigger requests."""
 
 
+class AuthInput(BaseModel):
+    """Input passed to the RBAC auth function during WebSocket upgrade.
+
+    Contains the HTTP headers, query parameters, and client IP from the
+    connecting worker's upgrade request.
+
+    Attributes:
+        headers: HTTP headers from the WebSocket upgrade request.
+        query_params: Query parameters from the upgrade URL. Each key maps to
+            a list of values to support repeated keys.
+        ip_address: IP address of the connecting client.
+    """
+
+    headers: dict[str, str] = Field(description="HTTP headers from the WebSocket upgrade request.")
+    query_params: dict[str, list[str]] = Field(
+        description="Query parameters from the upgrade URL. Each key maps to a list of values.",
+    )
+    ip_address: str = Field(description="IP address of the connecting client.")
+
+
+class AuthResult(BaseModel):
+    """Return value from the RBAC auth function.
+
+    Controls which functions the authenticated worker can invoke and what
+    context is forwarded to the middleware.
+
+    Attributes:
+        allowed_functions: Additional function IDs to allow beyond ``expose_functions``.
+        forbidden_functions: Function IDs to deny even if they match ``expose_functions``.
+        allowed_trigger_types: Trigger type IDs the worker may register triggers for.
+            When ``None``, all types are allowed.
+        allow_trigger_type_registration: Whether the worker may register new trigger types.
+        context: Arbitrary context forwarded to the middleware function on every invocation.
+    """
+
+    allowed_functions: list[str] = Field(
+        description="Additional function IDs to allow beyond ``expose_functions``.",
+    )
+    forbidden_functions: list[str] = Field(
+        description="Function IDs to deny even if they match ``expose_functions``.",
+    )
+    allowed_trigger_types: list[str] | None = Field(
+        default=None,
+        description="Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed.",
+    )
+    allow_trigger_type_registration: bool = Field(
+        description="Whether the worker may register new trigger types.",
+    )
+    context: dict[str, Any] = Field(
+        description="Arbitrary context forwarded to the middleware function on every invocation.",
+    )
+
+
+class MiddlewareFunctionInput(BaseModel):
+    """Input passed to the RBAC middleware function on every function invocation
+    through the RBAC port.
+
+    Attributes:
+        function_id: ID of the function being invoked.
+        payload: Payload sent by the caller.
+        action: Routing action, if any.
+        context: Auth context returned by the auth function for this session.
+    """
+
+    function_id: str = Field(description="ID of the function being invoked.")
+    payload: dict[str, Any] = Field(description="Payload sent by the caller.")
+    action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
+        default=None, description="Routing action, if any.",
+    )
+    context: dict[str, Any] = Field(
+        description="Auth context returned by the auth function for this session.",
+    )
+
+
 class EnqueueResult(BaseModel):
     """Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 

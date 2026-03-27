@@ -1,5 +1,5 @@
 ---
-title: 'III Workers Role based access control'
+title: 'Worker RBAC'
 description: 'Configure the WorkerModule to enable role-based access control for workers connecting over WebSocket.'
 ---
 
@@ -7,7 +7,7 @@ This guide walks you through enabling RBAC on your iii instance using the **Work
 
 ## 1. Add RBAC Config to the WorkerModule
 
-Add a `modules::worker::WorkerModule` entry with RBAC config to your engine config file. At minimum you need a port:
+Add a `modules::worker::WorkerModule` entry with RBAC config to your engine config file. At minimum you need a port and an `expose_functions` list inside `rbac`:
 
 ```yaml title="iii-config.yaml"
 modules:
@@ -16,83 +16,126 @@ modules:
   - class: modules::worker::WorkerModule
     config:
       port: 49135
-      expose_functions:
-        - match("api::*")
+      rbac:
+        expose_functions:
+          - match("api::*")
 ```
 
 This exposes all functions whose ID starts with `api::` on port 49135 with no authentication.
 
 ## 2. Write an Auth Function
 
-For production, you should authenticate workers. Register a function that validates credentials from the WebSocket upgrade request:
+For production, authenticate workers by registering a function that validates credentials from the WebSocket upgrade request. The function receives an `AuthInput` and must return an `AuthResult`.
 
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
+import type { AuthInput, AuthResult } from 'iii-sdk'
 import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-iii.registerFunction({ id: 'my-project::auth-function' }, async (input) => {
-  const token = input.headers?.['authorization']?.replace(/^Bearer\s+/i, '')
-  const apiKey = input.query_params?.['api_key']?.[0]
+iii.registerFunction(
+  { id: 'my-project::auth-function' },
+  async (input: AuthInput): Promise<AuthResult> => {
+    const token = input.headers?.['authorization']?.replace(/^Bearer\s+/i, '')
+    const apiKey = input.query_params?.['api_key']?.[0]
 
-  if (!token && !apiKey) {
-    throw new Error('Missing credentials')
-  }
+    if (!token && !apiKey) {
+      throw new Error('Missing credentials')
+    }
 
-  // Validate the token/key against your auth system
-  const user = await validateCredentials(token || apiKey)
+    const user = await validateCredentials(token || apiKey)
 
-  return {
-    allowed_functions: [],
-    forbidden_functions: user.role === 'readonly'
-      ? ['api::users::delete', 'api::users::update']
-      : [],
-    allowed_trigger_types: user.role === 'admin'
-      ? ['cron', 'webhook']
-      : [],
-    allow_trigger_type_registration: user.role === 'admin',
-    context: {
-      user_id: user.id,
-      role: user.role,
-    },
-  }
-})
+    return {
+      allowed_functions: [],
+      forbidden_functions: user.role === 'readonly'
+        ? ['api::users::delete', 'api::users::update']
+        : [],
+      allowed_trigger_types: user.role === 'admin'
+        ? ['cron', 'webhook']
+        : undefined,
+      allow_trigger_type_registration: user.role === 'admin',
+      context: {
+        user_id: user.id,
+        role: user.role,
+      },
+    }
+  },
+)
 ```
 </Tab>
 <Tab title="Python">
 ```python
-from iii import register_worker
+from iii import AuthInput, AuthResult, register_worker
 
 iii = register_worker('ws://localhost:49134')
 
-async def auth_function(input):
-    headers = input.get('headers', {})
-    query_params = input.get('query_params', {})
+async def auth_function(data: dict) -> dict:
+    auth_input = AuthInput(**data)
 
-    token = headers.get('authorization', '').replace('Bearer ', '', 1)
-    api_key = (query_params.get('api_key') or [None])[0]
+    token = auth_input.headers.get('authorization', '').replace('Bearer ', '', 1)
+    api_key = (auth_input.query_params.get('api_key') or [None])[0]
 
     if not token and not api_key:
         raise Exception('Missing credentials')
 
     user = await validate_credentials(token or api_key)
 
-    return {
-        'allowed_functions': [],
-        'forbidden_functions': ['api::users::delete', 'api::users::update']
+    return AuthResult(
+        allowed_functions=[],
+        forbidden_functions=['api::users::delete', 'api::users::update']
             if user['role'] == 'readonly' else [],
-        'allowed_trigger_types': ['cron', 'webhook']
-            if user['role'] == 'admin' else [],
-        'allow_trigger_type_registration': user['role'] == 'admin',
-        'context': {
+        allowed_trigger_types=['cron', 'webhook']
+            if user['role'] == 'admin' else None,
+        allow_trigger_type_registration=user['role'] == 'admin',
+        context={
             'user_id': user['id'],
             'role': user['role'],
         },
-    }
+    ).model_dump()
 
 iii.register_function({'id': 'my-project::auth-function'}, auth_function)
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{AuthInput, AuthResult, RegisterFunction, register_worker, InitOptions};
+use serde_json::json;
+
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+iii.register_function(RegisterFunction::new_async(
+    "my-project::auth-function",
+    |auth_input: AuthInput| async move {
+        let token = auth_input.headers.get("authorization")
+            .map(|v| v.trim_start_matches("Bearer ").to_string());
+        let api_key = auth_input.query_params.get("api_key")
+            .and_then(|v| v.first())
+            .cloned();
+
+        let credential = token.or(api_key)
+            .ok_or_else(|| iii_sdk::IIIError::Handler("Missing credentials".into()))?;
+
+        let user = validate_credentials(&credential).await?;
+
+        Ok(AuthResult {
+            allowed_functions: vec![],
+            forbidden_functions: if user.role == "readonly" {
+                vec!["api::users::delete".into(), "api::users::update".into()]
+            } else {
+                vec![]
+            },
+            allowed_trigger_types: if user.role == "admin" {
+                Some(vec!["cron".into(), "webhook".into()])
+            } else {
+                None
+            },
+            allow_trigger_type_registration: user.role == "admin",
+            context: json!({ "user_id": user.id, "role": user.role }),
+        })
+    },
+));
 ```
 </Tab>
 </Tabs>
@@ -104,89 +147,116 @@ modules:
   - class: modules::worker::WorkerModule
     config:
       port: 49135
-      auth_function_id: my-project::auth-function
-      expose_functions:
-        - match("api::*")
+      rbac:
+        auth_function_id: my-project::auth-function
+        expose_functions:
+          - match("api::*")
 ```
 
-## 3. Write an Interceptor Function (Optional)
+## 3. Write a Middleware Function (Optional)
 
-An interceptor sits between the worker and the target function. Use it for validation, rate limiting, audit logging, or enriching the payload with auth context:
+A middleware sits between the worker and the target function. Use it for validation, rate limiting, audit logging, or enriching the payload with auth context. The function receives a `MiddlewareFunctionInput`.
 
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({ id: 'my-project::interceptor-function' }, async (input) => {
-  const { function_id, payload, context } = input
+import type { MiddlewareFunctionInput } from 'iii-sdk'
 
-  console.log(`[audit] user=${context.user_id} invoking ${function_id}`)
+iii.registerFunction(
+  { id: 'my-project::middleware-function' },
+  async (input: MiddlewareFunctionInput) => {
+    console.log(`[audit] user=${input.context.user_id} invoking ${input.function_id}`)
 
-  // Enrich payload with auth context
-  const enrichedPayload = {
-    ...payload,
-    _caller_id: context.user_id,
-    _caller_role: context.role,
-  }
+    const enrichedPayload = {
+      ...input.payload,
+      _caller_id: input.context.user_id,
+      _caller_role: input.context.role,
+    }
 
-  // Call the target function
-  const result = await iii.trigger({
-    function_id,
-    payload: enrichedPayload,
-  })
-
-  return result
-})
+    return iii.trigger({
+      function_id: input.function_id,
+      payload: enrichedPayload,
+    })
+  },
+)
 ```
 </Tab>
 <Tab title="Python">
 ```python
-async def interceptor_function(input):
-    function_id = input['function_id']
-    payload = input['payload']
-    context = input['context']
+from iii import MiddlewareFunctionInput
 
-    print(f"[audit] user={context['user_id']} invoking {function_id}")
+async def middleware_function(data: dict) -> dict:
+    mid = MiddlewareFunctionInput(**data)
+
+    print(f"[audit] user={mid.context['user_id']} invoking {mid.function_id}")
 
     enriched_payload = {
-        **payload,
-        '_caller_id': context['user_id'],
-        '_caller_role': context['role'],
+        **mid.payload,
+        '_caller_id': mid.context['user_id'],
+        '_caller_role': mid.context['role'],
     }
 
-    result = await iii.trigger({
-        'function_id': function_id,
+    return await iii.trigger_async({
+        'function_id': mid.function_id,
         'payload': enriched_payload,
     })
 
-    return result
+iii.register_function({'id': 'my-project::middleware-function'}, middleware_function)
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{MiddlewareFunctionInput, RegisterFunction, TriggerRequest};
+use serde_json::json;
 
-iii.register_function({'id': 'my-project::interceptor-function'}, interceptor_function)
+let iii_clone = iii.clone();
+iii.register_function(RegisterFunction::new_async(
+    "my-project::middleware-function",
+    move |input: MiddlewareFunctionInput| {
+        let iii = iii_clone.clone();
+        async move {
+            let mut enriched = input.payload.as_object().cloned().unwrap_or_default();
+            enriched.insert("_caller_id".into(), json!(input.context.get("user_id")));
+            enriched.insert("_caller_role".into(), json!(input.context.get("role")));
+
+            iii.trigger(TriggerRequest {
+                function_id: input.function_id,
+                payload: json!(enriched),
+                action: None,
+                timeout_ms: None,
+            }).await
+        }
+    },
+));
 ```
 </Tab>
 </Tabs>
 
-Add it to your config:
+Add it to your config. Note that `middleware_function_id` sits at the `config` level, not inside `rbac`:
 
 ```yaml title="iii-config.yaml"
 modules:
   - class: modules::worker::WorkerModule
     config:
       port: 49135
-      auth_function_id: my-project::auth-function
-      interceptor_function_id: my-project::interceptor-function
-      expose_functions:
-        - match("api::*")
+      middleware_function_id: my-project::middleware-function
+      rbac:
+        auth_function_id: my-project::auth-function
+        expose_functions:
+          - match("api::*")
 ```
 
 ## 4. Connect a Worker
 
-The RBAC port speaks the standard iii engine protocol. The easiest way to connect is using the SDK:
+The RBAC port speaks the standard iii engine protocol. Connect using the SDK:
 
+<Tabs>
+<Tab title="Node / TypeScript">
 ```typescript
 import { registerWorker } from 'iii-sdk'
 
 const worker = registerWorker('ws://localhost:49135', {
-  headers: { 'authorization': 'Bearer my-token' },
+  headers: { authorization: 'Bearer my-token' },
 })
 
 const result = await worker.trigger({
@@ -196,7 +266,47 @@ const result = await worker.trigger({
 
 console.log(result)
 ```
+</Tab>
+<Tab title="Python">
+```python
+from iii import InitOptions, register_worker
 
+worker = register_worker(
+    'ws://localhost:49135',
+    InitOptions(headers={'authorization': 'Bearer my-token'}),
+)
+
+result = worker.trigger({
+    'function_id': 'api::users::list',
+    'payload': {'limit': 10},
+})
+
+print(result)
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerRequest};
+use serde_json::json;
+use std::collections::HashMap;
+
+let mut headers = HashMap::new();
+headers.insert("authorization".into(), "Bearer my-token".into());
+
+let worker = register_worker("ws://localhost:49135", InitOptions {
+    headers: Some(headers),
+    ..Default::default()
+});
+
+let result = worker.trigger(TriggerRequest {
+    function_id: "api::users::list".into(),
+    payload: json!({ "limit": 10 }),
+    action: None,
+    timeout_ms: None,
+}).await.expect("trigger failed");
+```
+</Tab>
+</Tabs>
 
 You can also test with `wscat`:
 
@@ -214,18 +324,16 @@ Channels work on the RBAC port exactly as they do on the main engine port. The S
 
 ```typescript
 const worker = registerWorker('ws://localhost:49135', {
-  headers: { 'authorization': 'Bearer my-token' },
+  headers: { authorization: 'Bearer my-token' },
 })
 
 const channel = await worker.createChannel()
 
-// Pass channel refs to other functions via trigger
 const result = await worker.trigger({
   function_id: 'api::files::process',
   payload: { reader: channel.readerRef },
 })
 
-// Write data to the channel
 channel.writer.stream.write(Buffer.from('hello'))
 channel.writer.stream.end()
 ```
@@ -238,10 +346,10 @@ Workers connecting through the RBAC port can register trigger types and triggers
 
 ### Auth Result Fields
 
-The auth function controls trigger access via two fields:
+The auth function controls trigger access via two fields in `AuthResult`:
 
-- **`allowed_trigger_types`** — List of trigger type IDs this worker can register triggers for.
-- **`allow_trigger_type_registration`** — Whether this worker can register new trigger types.
+- **`allowed_trigger_types`** -- List of trigger type IDs this worker can register triggers for. When omitted, all types are allowed.
+- **`allow_trigger_type_registration`** -- Whether this worker can register new trigger types.
 
 ### Registration Hook Functions
 
@@ -252,11 +360,13 @@ modules:
   - class: modules::worker::WorkerModule
     config:
       port: 49135
-      auth_function_id: my-project::auth-function
-      on_trigger_registration_function_id: my-project::on-trigger-reg
-      on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
-      expose_functions:
-        - match("api::*")
+      middleware_function_id: my-project::middleware-function
+      rbac:
+        auth_function_id: my-project::auth-function
+        on_trigger_registration_function_id: my-project::on-trigger-reg
+        on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+        expose_functions:
+          - match("api::*")
 ```
 
 Each hook receives the registration details and the auth context, and must return `true` to allow the registration:
@@ -267,7 +377,6 @@ Each hook receives the registration details and the auth context, and must retur
 iii.registerFunction({ id: 'my-project::on-trigger-reg' }, async (input) => {
   const { trigger_id, trigger_type, function_id, config, context } = input
 
-  // Only allow triggers for functions the worker owns
   if (!function_id.startsWith(`${context.role}::`)) {
     return false
   }
@@ -300,6 +409,28 @@ iii.register_function({'id': 'my-project::on-trigger-reg'}, on_trigger_reg)
 iii.register_function({'id': 'my-project::on-trigger-type-reg'}, on_trigger_type_reg)
 ```
 </Tab>
+<Tab title="Rust">
+```rust
+iii.register_function((
+    RegisterFunctionMessage::with_id("my-project::on-trigger-reg".to_string()),
+    |input: Value| async move {
+        let function_id = input["function_id"].as_str().unwrap_or("");
+        let role = input["context"]["role"].as_str().unwrap_or("");
+
+        let prefix = format!("{role}::");
+        Ok(json!(function_id.starts_with(&prefix)))
+    },
+));
+
+iii.register_function((
+    RegisterFunctionMessage::with_id("my-project::on-trigger-type-reg".to_string()),
+    |input: Value| async move {
+        let role = input["context"]["role"].as_str().unwrap_or("");
+        Ok(json!(role == "admin"))
+    },
+));
+```
+</Tab>
 </Tabs>
 
 ## Expose Functions by Metadata
@@ -325,17 +456,66 @@ iii.register_function({
 }, list_users)
 ```
 </Tab>
+<Tab title="Rust">
+```rust
+let mut msg = RegisterFunctionMessage::with_id("api::users::list".to_string());
+msg.metadata = Some(json!({ "public": true, "tier": "free" }));
+
+iii.register_function((msg, |input: Value| async move {
+    // ...
+    Ok(json!({}))
+}));
+```
+</Tab>
 </Tabs>
 
 Then filter by metadata in your config:
 
 ```yaml title="iii-config.yaml"
-expose_functions:
-  - metadata:
-      public: true
-  - metadata:
-      tier: "free"
+rbac:
+  expose_functions:
+    - metadata:
+        public: true
+    - metadata:
+        tier: "free"
 ```
+
+## Types Reference
+
+All three SDKs export the following types for RBAC functions.
+
+### AuthInput
+
+Input passed to the auth function during the WebSocket upgrade.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `headers` | `Record<string, string>` | HTTP headers from the upgrade request. |
+| `query_params` | `Record<string, string[]>` | Query parameters. Each key maps to an array of values to support repeated keys. |
+| `ip_address` | `string` | IP address of the connecting client. |
+
+### AuthResult
+
+Return value from the auth function. Controls access and passes context to middleware.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `allowed_functions` | `string[]` | `[]` | Additional function IDs to allow beyond `expose_functions`. |
+| `forbidden_functions` | `string[]` | `[]` | Function IDs to deny even if they match `expose_functions`. Takes precedence. |
+| `allowed_trigger_types` | `string[]` or omitted | omitted (permissive) | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
+| `allow_trigger_type_registration` | `boolean` | `false` | Whether the worker may register new trigger types. |
+| `context` | `Record<string, unknown>` | `{}` | Arbitrary context forwarded to the middleware function on every invocation. |
+
+### MiddlewareFunctionInput
+
+Input passed to the middleware function on every invocation through the RBAC port.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `function_id` | `string` | ID of the function being invoked. |
+| `payload` | `Record<string, unknown>` | Payload sent by the caller. |
+| `action` | `TriggerAction` or omitted | Routing action (enqueue, void), if any. |
+| `context` | `Record<string, unknown>` | Auth context from `AuthResult.context` for this session. |
 
 ## Full Example Config
 
@@ -353,15 +533,16 @@ modules:
     config:
       host: 0.0.0.0
       port: 49135
-      auth_function_id: my-project::auth-function
-      interceptor_function_id: my-project::interceptor-function
-      on_trigger_registration_function_id: my-project::on-trigger-reg
-      on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
-      expose_functions:
-        - match("api::*")
-        - match("*::public")
-        - metadata:
-            public: true
+      middleware_function_id: my-project::middleware-function
+      rbac:
+        auth_function_id: my-project::auth-function
+        on_trigger_registration_function_id: my-project::on-trigger-reg
+        on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+        expose_functions:
+          - match("api::*")
+          - match("*::public")
+          - metadata:
+              public: true
 ```
 
 <Info title="Port Security">

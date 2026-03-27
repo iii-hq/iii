@@ -48,6 +48,7 @@ impl Session {
         rbac_config: Option<RbacConfig>,
         uri: Uri,
         headers: HeaderMap,
+        ip_address: String,
     ) -> Result<AuthResult, ErrorBody> {
         let query_params = query_to_multi_map(uri.query());
         let headers = headers_to_map(&headers);
@@ -64,6 +65,7 @@ impl Session {
         let auth_input = json!({
             "headers": headers,
             "query_params": query_params,
+            "ip_address": ip_address,
         });
 
         let result = engine
@@ -135,12 +137,20 @@ pub async fn handle_session(
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Session, ErrorBody> {
-    let auth = Session::authenticate(&engine, config.rbac.clone(), uri, headers).await?;
+    let ip_address = addr.ip().to_string();
+    let auth = Session::authenticate(
+        &engine,
+        config.rbac.clone(),
+        uri,
+        headers,
+        ip_address.clone(),
+    )
+    .await?;
 
     Ok(Session {
         engine,
         config,
-        ip_address: addr.ip().to_string(),
+        ip_address,
         session_id: Uuid::new_v4(),
         allowed_functions: auth.allowed_functions,
         forbidden_functions: auth.forbidden_functions,

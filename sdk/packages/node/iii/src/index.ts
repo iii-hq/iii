@@ -3,10 +3,13 @@ export { ChannelReader, ChannelWriter } from './channels'
 export { type InitOptions, registerWorker, TriggerAction } from './iii'
 
 export type {
+  AuthInput,
+  AuthResult,
   EnqueueResult,
   HttpAuthConfig,
   HttpInvocationConfig,
   MessageType,
+  MiddlewareFunctionInput,
   RegisterFunctionMessage,
   RegisterTriggerMessage,
   RegisterTriggerTypeMessage,

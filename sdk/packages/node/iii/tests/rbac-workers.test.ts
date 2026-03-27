@@ -1,20 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import type { AuthInput, AuthResult, MiddlewareFunctionInput } from '../src/index'
 import { registerWorker } from '../src/index'
 import { iii, sleep } from './utils'
 
 const EW_URL = process.env.III_RBAC_WORKER_URL ?? 'ws://localhost:49135'
 
-type AuthInput = {
-  headers: Record<string, string>
-  query_params: Record<string, string[]>
-}
-
-// Invocation tracking
 let authCalls: AuthInput[] = []
 
 beforeAll(async () => {
-  // Auth function – delegates to the mutable authHandler
-  iii.registerFunction({ id: 'test::rbac-worker::auth' }, async (input: AuthInput) => {
+  iii.registerFunction({ id: 'test::rbac-worker::auth' }, async (input: AuthInput): Promise<AuthResult> => {
     authCalls.push(input)
     const token = input.headers?.['x-test-token']
 
@@ -22,6 +16,7 @@ beforeAll(async () => {
       return {
         allowed_functions: [],
         forbidden_functions: [],
+        allow_trigger_type_registration: false,
         context: { role: 'anonymous', user_id: 'anonymous' },
       }
     }
@@ -30,6 +25,7 @@ beforeAll(async () => {
       return {
         allowed_functions: ['test::ew::valid-token-echo'],
         forbidden_functions: [],
+        allow_trigger_type_registration: false,
         context: { role: 'admin', user_id: 'user-1' },
       }
     }
@@ -38,6 +34,7 @@ beforeAll(async () => {
       return {
         allowed_functions: [],
         forbidden_functions: ['test::ew::echo'],
+        allow_trigger_type_registration: false,
         context: { role: 'restricted', user_id: 'user-2' },
       }
     }
@@ -45,14 +42,9 @@ beforeAll(async () => {
     throw new Error('invalid token')
   })
 
-  // Middleware function – delegates to the mutable middlewareHandler
-  iii.registerFunction({ id: 'test::rbac-worker::middleware' }, async (input: Record<string, unknown>) => {
-    const functionId = input.function_id as string
-    const payload = input.payload as Record<string, unknown>
-    const context = input.context as Record<string, unknown>
-
-    const enrichedPayload = { ...payload, _intercepted: true, _caller: context.user_id }
-    return iii.trigger({ function_id: functionId, payload: enrichedPayload })
+  iii.registerFunction({ id: 'test::rbac-worker::middleware' }, async (input: MiddlewareFunctionInput) => {
+    const enrichedPayload = { ...input.payload, _intercepted: true, _caller: input.context.user_id }
+    return iii.trigger({ function_id: input.function_id, payload: enrichedPayload })
   })
 
   // Exposed via match("test::ew::*")

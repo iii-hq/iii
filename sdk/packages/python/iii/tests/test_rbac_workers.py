@@ -5,53 +5,54 @@ import time
 
 import pytest
 
-from iii import InitOptions, register_worker
+from iii import AuthInput, AuthResult, InitOptions, MiddlewareFunctionInput, register_worker
 
 ENGINE_WS_URL = os.environ.get("III_URL", "ws://localhost:49199")
 EW_URL = os.environ.get("III_RBAC_WORKER_URL", "ws://localhost:49135")
 
-auth_calls: list[dict] = []
+auth_calls: list[AuthInput] = []
 
 
 @pytest.fixture(scope="module")
 def iii_server():
-    """Server-side III client that registers auth, interceptor, and echo functions."""
+    """Server-side III client that registers auth, middleware, and echo functions."""
     client = register_worker(ENGINE_WS_URL)
 
-    def auth_handler(data):
-        auth_calls.append(data)
-        headers = data.get("headers", {})
-        token = headers.get("x-test-token")
+    def auth_handler(data: dict) -> dict:
+        auth_input = AuthInput(**data)
+        auth_calls.append(auth_input)
+        token = auth_input.headers.get("x-test-token")
 
         if not token:
-            return {
-                "allowed_functions": [],
-                "forbidden_functions": [],
-                "context": {"role": "anonymous", "user_id": "anonymous"},
-            }
+            return AuthResult(
+                allowed_functions=[],
+                forbidden_functions=[],
+                allow_trigger_type_registration=False,
+                context={"role": "anonymous", "user_id": "anonymous"},
+            ).model_dump()
 
         if token == "valid-token":
-            return {
-                "allowed_functions": ["test::ew::valid-token-echo"],
-                "forbidden_functions": [],
-                "context": {"role": "admin", "user_id": "user-1"},
-            }
+            return AuthResult(
+                allowed_functions=["test::ew::valid-token-echo"],
+                forbidden_functions=[],
+                allow_trigger_type_registration=False,
+                context={"role": "admin", "user_id": "user-1"},
+            ).model_dump()
 
         if token == "restricted-token":
-            return {
-                "allowed_functions": [],
-                "forbidden_functions": ["test::ew::echo"],
-                "context": {"role": "restricted", "user_id": "user-2"},
-            }
+            return AuthResult(
+                allowed_functions=[],
+                forbidden_functions=["test::ew::echo"],
+                allow_trigger_type_registration=False,
+                context={"role": "restricted", "user_id": "user-2"},
+            ).model_dump()
 
         raise Exception("invalid token")
 
-    def interceptor_handler(data):
-        function_id = data["function_id"]
-        payload = data["payload"]
-        context = data["context"]
-        enriched = {**payload, "_intercepted": True, "_caller": context.get("user_id")}
-        return client.trigger({"function_id": function_id, "payload": enriched})
+    def middlware_handler(data: dict) -> dict:
+        mid = MiddlewareFunctionInput(**data)
+        enriched = {**mid.payload, "_intercepted": True, "_caller": mid.context.get("user_id")}
+        return client.trigger({"function_id": mid.function_id, "payload": enriched})
 
     def echo_handler(data):
         return {"echoed": data}
@@ -66,7 +67,7 @@ def iii_server():
         return {"private": True}
 
     client.register_function({"id": "test::rbac-worker::auth"}, auth_handler)
-    client.register_function({"id": "test::rbac-worker::middleware"}, interceptor_handler)
+    client.register_function({"id": "test::rbac-worker::middleware"}, middlware_handler)
     client.register_function({"id": "test::ew::public::echo"}, echo_handler)
     client.register_function({"id": "test::ew::valid-token-echo"}, valid_token_echo_handler)
     client.register_function(
@@ -105,7 +106,7 @@ class TestRbacWorkers:
             assert result["echoed"]["_caller"] == "user-1"
 
             assert len(auth_calls) == 1
-            assert auth_calls[0]["headers"]["x-test-token"] == "valid-token"
+            assert auth_calls[0].headers["x-test-token"] == "valid-token"
         finally:
             iii_client.shutdown()
 

@@ -11,113 +11,114 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use serial_test::serial;
 
-use iii_sdk::{InitOptions, RegisterFunctionMessage, TriggerRequest, register_worker};
+use iii_sdk::{
+    AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
+    RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
+};
+
+static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<AuthInput>>>> = OnceLock::new();
+static RBAC_FUNCS_REGISTERED: OnceLock<()> = OnceLock::new();
+
+fn auth_calls() -> &'static Arc<Mutex<Vec<AuthInput>>> {
+    RBAC_AUTH_CALLS.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+}
 
 fn ew_url() -> String {
     std::env::var("III_RBAC_WORKER_URL").unwrap_or_else(|_| "ws://localhost:49135".to_string())
 }
 
-static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<Value>>>> = OnceLock::new();
-static RBAC_FUNCS_REGISTERED: OnceLock<()> = OnceLock::new();
-
-fn auth_calls() -> &'static Arc<Mutex<Vec<Value>>> {
-    RBAC_AUTH_CALLS.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-}
-
 fn ensure_functions_registered() {
     RBAC_FUNCS_REGISTERED.get_or_init(|| {
         let iii = common::shared_iii();
+        let mut refs = Vec::new();
         let auth_calls = auth_calls().clone();
 
-        iii.register_function((
-            RegisterFunctionMessage::with_id("test::rbac-worker::auth".to_string()),
-            move |input: Value| {
+        refs.push(iii.register_function(RegisterFunction::new_async(
+            "test::rbac-worker::auth",
+            move |auth_input: AuthInput| {
                 let auth_calls = auth_calls.clone();
+
                 async move {
-                    auth_calls.lock().unwrap().push(input.clone());
+                    let token = auth_input.headers.get("x-test-token").cloned();
+                    auth_calls.lock().unwrap().push(auth_input);
 
-                    let token = input
-                        .get("headers")
-                        .and_then(|h| h.get("x-test-token"))
-                        .and_then(|v| v.as_str());
-
-                    match token {
-                        None => Ok(json!({
-                            "allowed_functions": [],
-                            "forbidden_functions": [],
-                            "context": { "role": "anonymous", "user_id": "anonymous" }
-                        })),
-                        Some("valid-token") => Ok(json!({
-                            "allowed_functions": ["test::ew::valid-token-echo"],
-                            "forbidden_functions": [],
-                            "context": { "role": "admin", "user_id": "user-1" }
-                        })),
-                        Some("restricted-token") => Ok(json!({
-                            "allowed_functions": [],
-                            "forbidden_functions": ["test::ew::echo"],
-                            "context": { "role": "restricted", "user_id": "user-2" }
-                        })),
+                    match token.as_deref() {
+                        None => Ok(AuthResult {
+                            allowed_functions: vec![],
+                            forbidden_functions: vec![],
+                            allowed_trigger_types: None,
+                            allow_trigger_type_registration: false,
+                            context: json!({ "role": "anonymous", "user_id": "anonymous" }),
+                        }),
+                        Some("valid-token") => Ok(AuthResult {
+                            allowed_functions: vec!["test::ew::valid-token-echo".to_string()],
+                            forbidden_functions: vec![],
+                            allowed_trigger_types: None,
+                            allow_trigger_type_registration: false,
+                            context: json!({ "role": "admin", "user_id": "user-1" }),
+                        }),
+                        Some("restricted-token") => Ok(AuthResult {
+                            allowed_functions: vec![],
+                            forbidden_functions: vec!["test::ew::echo".to_string()],
+                            allowed_trigger_types: None,
+                            allow_trigger_type_registration: false,
+                            context: json!({ "role": "restricted", "user_id": "user-2" }),
+                        }),
                         _ => Err(iii_sdk::IIIError::Handler("invalid token".to_string())),
                     }
                 }
             },
-        ));
+        )));
 
-        iii.register_function((
-            RegisterFunctionMessage::with_id("test::rbac-worker::middleware".to_string()),
-            move |input: Value| {
+        refs.push(iii.register_function(RegisterFunction::new_async(
+            "test::rbac-worker::middleware",
+            |input: MiddlewareFunctionInput| {
                 let iii = common::shared_iii().clone();
                 async move {
-                    let function_id = input["function_id"].as_str().unwrap().to_string();
-                    let payload = input["payload"].clone();
-                    let context = input["context"].clone();
-
-                    let mut enriched = payload.as_object().cloned().unwrap_or_default();
+                    let mut enriched = input.payload.as_object().cloned().unwrap_or_default();
                     enriched.insert("_intercepted".to_string(), json!(true));
                     enriched.insert(
                         "_caller".to_string(),
                         json!(
-                            context
+                            input
+                                .context
                                 .get("user_id")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                         ),
                     );
 
-                    let result = iii
-                        .trigger(TriggerRequest {
-                            function_id,
-                            payload: json!(enriched),
-                            action: None,
-                            timeout_ms: None,
-                        })
-                        .await?;
-
-                    Ok(result)
+                    iii.trigger(TriggerRequest {
+                        function_id: input.function_id,
+                        payload: json!(enriched),
+                        action: None,
+                        timeout_ms: None,
+                    })
+                    .await
                 }
             },
-        ));
+        )));
 
-        iii.register_function((
+        refs.push(iii.register_function((
             RegisterFunctionMessage::with_id("test::ew::public::echo".to_string()),
             |input: Value| async move { Ok(json!({ "echoed": input })) },
-        ));
+        )));
 
-        iii.register_function((
+        refs.push(iii.register_function((
             RegisterFunctionMessage::with_id("test::ew::valid-token-echo".to_string()),
             |input: Value| async move { Ok(json!({ "echoed": input, "valid_token": true })) },
-        ));
+        )));
 
         let mut meta_msg = RegisterFunctionMessage::with_id("test::ew::meta-public".to_string());
         meta_msg.metadata = Some(json!({ "ew_public": true }));
-        iii.register_function((meta_msg, |input: Value| async move {
+        refs.push(iii.register_function((meta_msg, |input: Value| async move {
             Ok(json!({ "meta_echoed": input }))
-        }));
+        })));
 
-        iii.register_function((
+        refs.push(iii.register_function((
             RegisterFunctionMessage::with_id("test::ew::private".to_string()),
             |_input: Value| async move { Ok(json!({ "private": true })) },
-        ));
+        )));
     });
 }
 
@@ -128,6 +129,7 @@ fn ensure_functions_registered() {
 async fn should_return_auth_result_for_valid_token() {
     ensure_functions_registered();
     auth_calls().lock().unwrap().clear();
+
     common::settle().await;
     tokio::time::sleep(Duration::from_millis(700)).await;
 
@@ -143,6 +145,10 @@ async fn should_return_auth_result_for_valid_token() {
     );
 
     tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        iii_client.get_connection_state(),
+        IIIConnectionState::Connected
+    );
 
     let result = iii_client
         .trigger(TriggerRequest {
@@ -161,7 +167,7 @@ async fn should_return_auth_result_for_valid_token() {
     {
         let calls = auth_calls().lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["headers"]["x-test-token"], "valid-token");
+        assert_eq!(calls[0].headers["x-test-token"], "valid-token");
     }
 
     iii_client.shutdown_async().await;

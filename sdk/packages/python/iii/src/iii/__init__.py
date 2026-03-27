@@ -5,11 +5,14 @@ from .format_utils import extract_request_format, extract_response_format, pytho
 from .iii import TriggerAction, register_worker
 from .iii_constants import FunctionRef, InitOptions, ReconnectionConfig, TelemetryOptions
 from .iii_types import (
+    AuthInput,
+    AuthResult,
     EnqueueResult,
     FunctionInfo,
     HttpAuthConfig,
     HttpInvocationConfig,
     MessageType,
+    MiddlewareFunctionInput,
     RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
@@ -53,6 +56,10 @@ __all__ = [
     "register_worker",
     "TelemetryOptions",
     "TriggerAction",
+    # RBAC types
+    "AuthInput",
+    "AuthResult",
+    "MiddlewareFunctionInput",
     # Message types
     "EnqueueResult",
     "FunctionInfo",
