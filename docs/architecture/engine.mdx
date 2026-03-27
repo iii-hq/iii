@@ -57,9 +57,11 @@ The Engine uses two separate ports:
 | HTTP API | `3111` | HTTP endpoints registered by the HTTP module |
 
 ```yaml
-port: 49134   # WebSocket bridge port — workers connect here
-
 modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49134  # WebSocket protocol port — workers connect here
+
   - class: modules::rest_api::RestApiModule
     config:
       port: 3111   # HTTP port for registered endpoints

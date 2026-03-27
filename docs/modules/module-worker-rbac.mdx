@@ -3,13 +3,17 @@ title: 'Worker RBAC'
 description: 'Enable role-based access control for workers connecting over a dedicated WebSocket port.'
 ---
 
-Enable RBAC for workers through a dedicated WebSocket port with authentication, authorization, trigger registration controls, and request interception.
+Enable RBAC for workers through a dedicated WebSocket port with authentication, authorization, trigger registration controls, and request middleware.
 
 ```
 modules::worker::WorkerModule
 ```
 
-The `WorkerModule` is mandatory and always loaded. When explicitly configured in the `modules:` section, the first entry's `port` sets the main engine WebSocket port. Additional entries with `auth_function_id` start dedicated RBAC listeners. Multiple `WorkerModule` entries are supported.
+The `WorkerModule` is mandatory and always loaded. When explicitly configured in the `modules:` section, the first entry's `port` sets the main engine WebSocket port. Additional entries with an `rbac` block start dedicated RBAC listeners. Multiple `WorkerModule` entries are supported.
+
+<Info title="How-to guidance">
+  For step-by-step instructions on enabling RBAC, writing auth and middleware functions, and connecting workers, see [Worker RBAC](../how-to/worker-rbac).
+</Info>
 
 ## Architecture
 
@@ -18,13 +22,13 @@ graph LR
     Worker[Worker] -->|WebSocket| RBAC[RBAC Port]
     RBAC -->|Auth| AuthFn[Auth Function]
     AuthFn -->|AuthResult| RBAC
-    RBAC -->|Invoke| Interceptor[Interceptor Function]
-    Interceptor -->|engine.call| Engine[Engine]
+    RBAC -->|Invoke| Middleware[Middleware Function]
+    Middleware -->|engine.call| Engine[Engine]
     Engine -->|Result| RBAC
     RBAC -->|Result| Worker
 ```
 
-Workers connect via WebSocket to the RBAC port. On connection, the optional auth function is called with the request headers and query parameters. Once authenticated, workers can invoke exposed functions and register triggers subject to RBAC rules. An optional interceptor function receives every invocation request before it reaches the engine.
+Workers connect via WebSocket to the RBAC port. On connection, the optional auth function is called with the request headers, query parameters, and client IP address. Once authenticated, workers can invoke exposed functions and register triggers subject to RBAC rules. An optional middleware function receives every invocation request before it reaches the engine.
 
 ## Sample Configuration
 
@@ -39,35 +43,44 @@ Workers connect via WebSocket to the RBAC port. On connection, the optional auth
   config:
     host: 0.0.0.0
     port: 49135
-    auth_function_id: my-project::auth-function
-    interceptor_function_id: my-project::interceptor-function
-    on_trigger_registration_function_id: my-project::on-trigger-reg
-    on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
-    expose_functions:
-      - match("engine::*")
-      - match("*::public")
-      - metadata:
-          public: true
-      - metadata:
-          name: match("*public*")
+    middleware_function_id: my-project::middleware-function
+    rbac:
+      auth_function_id: my-project::auth-function
+      on_trigger_registration_function_id: my-project::on-trigger-reg
+      on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+      expose_functions:
+        - match("engine::*")
+        - match("*::public")
+        - metadata:
+            public: true
+        - metadata:
+            name: match("*public*")
 ```
 
 ## Configuration
 
+Top-level fields on the `config` object:
+
 <ResponseField name="port" type="number" required>
-  The port to listen on. For the first `WorkerModule` entry, this sets the main engine WebSocket port. For entries with `auth_function_id`, this sets the RBAC listener port.
+  The port to listen on. For the first `WorkerModule` entry, this sets the main engine WebSocket port. For entries with an `rbac` block, this sets the RBAC listener port. Defaults to `49134`.
 </ResponseField>
 
 <ResponseField name="host" type="string">
   The host to bind to. Defaults to `0.0.0.0`.
 </ResponseField>
 
-<ResponseField name="auth_function_id" type="string">
-  Function ID to invoke for authentication when a worker connects. Receives headers and query parameters. Must return an `AuthResult` object. If the function fails or returns no result, the connection is rejected.
+<ResponseField name="middleware_function_id" type="string">
+  Function ID to invoke before every function call from a worker. Receives a `MiddlewareFunctionInput` with the target function ID, payload, action, and auth context. The middleware is responsible for calling the target function and returning the result.
 </ResponseField>
 
-<ResponseField name="interceptor_function_id" type="string">
-  Function ID to invoke before every function call from a worker. Receives a `TriggerRequest` with the target function ID, payload, and auth context. The interceptor is responsible for calling the target function and returning the result.
+<ResponseField name="rbac" type="RbacConfig">
+  RBAC configuration block. When present, this `WorkerModule` entry starts a dedicated RBAC listener. Contains the fields below.
+</ResponseField>
+
+### rbac
+
+<ResponseField name="auth_function_id" type="string">
+  Function ID to invoke for authentication when a worker connects. Receives an `AuthInput` with headers, query parameters, and IP address. Must return an `AuthResult` object. If the function fails or returns no result, the connection is rejected.
 </ResponseField>
 
 <ResponseField name="expose_functions" type="FunctionFilter[]">
@@ -126,7 +139,10 @@ The auth function receives:
     HTTP headers from the WebSocket upgrade request.
   </ResponseField>
   <ResponseField name="query_params" type="Record&lt;string, string[]&gt;" required>
-    Query parameters from the connection URL.
+    Query parameters from the connection URL. Each key maps to an array of values to support repeated keys.
+  </ResponseField>
+  <ResponseField name="ip_address" type="string" required>
+    IP address of the connecting client.
   </ResponseField>
 </Expandable>
 
@@ -142,13 +158,13 @@ The auth function must return:
     Function IDs to deny even if they match `expose_functions`. Takes precedence over `allowed_functions`. Defaults to empty.
   </ResponseField>
   <ResponseField name="allowed_trigger_types" type="string[]">
-    Trigger type IDs this worker is allowed to register triggers for. Defaults to empty.
+    Trigger type IDs this worker is allowed to register triggers for. When omitted, all types are allowed.
   </ResponseField>
   <ResponseField name="allow_trigger_type_registration" type="boolean">
     Whether this worker can register new trigger types. Defaults to `false`.
   </ResponseField>
   <ResponseField name="context" type="Record&lt;string, unknown&gt;">
-    Arbitrary context object passed to the interceptor function on every invocation. Defaults to empty object.
+    Arbitrary context object passed to the middleware function on every invocation. Defaults to empty object.
   </ResponseField>
 </Expandable>
 
@@ -156,30 +172,34 @@ The auth function must return:
 
 1. If the function is in `forbidden_functions` -- **denied**
 2. If the function is in `allowed_functions` -- **allowed**
-3. If any `expose_functions` filter matches -- **allowed**
-4. Otherwise -- **denied**
+3. If the function is `engine::channels::create` -- **allowed** (always whitelisted for channel support)
+4. If any `expose_functions` filter matches -- **allowed**
+5. Otherwise -- **denied**
 
-## Interceptor
+## Middleware
 
-When `interceptor_function_id` is configured, every worker invocation is routed through the interceptor instead of calling the target function directly.
+When `middleware_function_id` is configured, every worker invocation is routed through the middleware instead of calling the target function directly.
 
-### TriggerRequest
+### MiddlewareFunctionInput
 
-The interceptor function receives:
+The middleware function receives:
 
-<Expandable title="TriggerRequest">
+<Expandable title="MiddlewareFunctionInput">
   <ResponseField name="function_id" type="string" required>
     The function the worker wants to invoke.
   </ResponseField>
   <ResponseField name="payload" type="Record&lt;string, unknown&gt;" required>
     The payload sent by the worker.
   </ResponseField>
+  <ResponseField name="action" type="TriggerAction">
+    Routing action (enqueue, void), if any.
+  </ResponseField>
   <ResponseField name="context" type="Record&lt;string, unknown&gt;" required>
     The context from the auth result for this connection.
   </ResponseField>
 </Expandable>
 
-The interceptor is responsible for calling the target function (e.g. via `trigger()`) and returning the result. This gives you full control to modify, validate, or audit requests.
+The middleware is responsible for calling the target function (e.g. via `trigger()`) and returning the result. This gives you full control to modify, validate, or audit requests.
 
 ## Trigger Registration
 
@@ -238,6 +258,6 @@ Channel data transfer uses the standard channel WebSocket endpoint, which valida
 - The RBAC port should be the **only** port exposed to external networks. The main engine port should remain internal.
 - Always configure `auth_function_id` in production to prevent unauthenticated access.
 - Use `expose_functions` to limit the blast radius. Prefer explicit patterns over broad wildcards like `match("*")`.
-- The interceptor function is the right place for request validation, rate limiting, and audit logging.
+- The middleware function is the right place for request validation, rate limiting, and audit logging.
 - `forbidden_functions` from the auth result takes precedence over all other allow rules, providing a hard deny mechanism per worker.
 - Trigger registrations are scoped to the session and cleaned up on disconnect.

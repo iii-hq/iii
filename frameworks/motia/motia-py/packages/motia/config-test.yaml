@@ -1,5 +1,8 @@
-port: 49199
 modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49199
+
   - class: modules::stream::StreamModule
     config:
       port: 3112
