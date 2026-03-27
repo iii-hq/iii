@@ -2,6 +2,35 @@
 # Default: 49134
 port: 49134
 
+# External binary workers managed via `iii worker add/remove`.
+# Each entry maps to a binary in the iii_workers/ directory.
+# Config blocks between BEGIN/END markers are auto-managed by the CLI.
+# workers:
+#   # === iii:pdfkit BEGIN ===
+#   - class: workers::pdfkit::PdfKitWorker
+#     config:
+#       output_dir: ./output
+#       format: pdf
+#   # === iii:pdfkit END ===
+#   # === iii:image-processor BEGIN ===
+#   - class: workers::image_processor::ImageProcessorWorker
+#     config:
+#       max_width: 2048
+#       output_format: webp
+#   # === iii:image-processor END ===
+#
+# Workers are also tracked in iii.toml:
+#   [workers]
+#   pdfkit = "1.0.0"
+#   image-processor = "2.3.1"
+#
+# CLI commands:
+#   iii worker add pdfkit@1.0.0    # Install from registry
+#   iii worker add                  # Install all from iii.toml
+#   iii worker remove pdfkit        # Remove binary, manifest, and config
+#   iii worker list                 # Show installed workers
+#   iii worker info pdfkit          # Show registry details
+
 modules:
   # REST API module - exposes HTTP endpoints for triggers and the core API surface.
   # Functions with HTTP triggers are served through this module.
