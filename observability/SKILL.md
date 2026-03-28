@@ -18,7 +18,7 @@ Use the concepts below when they fit the task. Not every worker needs custom spa
 - The engine exports traces, metrics, and logs via **OTLP** to any compatible collector
 - Workers propagate **W3C trace context** automatically across function invocations
 - **Prometheus** metrics are exposed on port 9464
-- SDK init with `otel` config enables telemetry per worker
+- `registerWorker()` with `otel` config enables telemetry per worker
 - **Custom spans** via `withSpan(name, opts, fn)` wrap async work with trace context
 - **Custom metrics** via `getMeter()` create counters and histograms
 
@@ -30,7 +30,7 @@ The worker SDK generates spans, metrics, and logs during function execution. The
 
 | Primitive                    | Purpose                                       |
 | ---------------------------- | --------------------------------------------- |
-| `init(url, { otel })`        | Connect worker with telemetry config          |
+| `registerWorker(url, { otel })`        | Connect worker with telemetry config          |
 | `withSpan(name, opts, fn)`   | Create a custom trace span                    |
 | `getTracer()`                | Access OpenTelemetry Tracer directly          |
 | `getMeter()`                 | Access OpenTelemetry Meter for custom metrics |
@@ -48,20 +48,20 @@ metrics counters, trace propagation, and log subscriptions connected to an OTel 
 
 Code using this pattern commonly includes, when relevant:
 
-- `init('ws://localhost:49134', { otel: { enabled: true, serviceName: 'my-svc' } })` — enable telemetry
+- `registerWorker('ws://localhost:49134', { otel: { enabled: true, serviceName: 'my-svc' } })` — enable telemetry
 - `withSpan('validate-order', {}, async (span) => { span.setAttribute('order.id', id); ... })` — custom span
 - `getMeter().createCounter('orders.processed')` — custom counter metric
 - `getMeter().createHistogram('request.duration')` — custom histogram metric
 - `onLog((log) => { ... }, { level: 'warn' })` — subscribe to warnings and above
 - `currentTraceId()` — get active trace ID for correlation with external systems
 - `injectTraceparent()` — propagate trace context to outbound HTTP calls
-- Disable telemetry: `init(url, { otel: { enabled: false } })` or `OTEL_ENABLED=false`
+- Disable telemetry: `registerWorker(url, { otel: { enabled: false } })` or `OTEL_ENABLED=false`
 
 ## Adapting This Pattern
 
 Use the adaptations below when they apply to the task.
 
-- Enable `otel` in init config to start collecting traces automatically
+- Enable `otel` in `registerWorker()` config to start collecting traces automatically
 - Add custom spans around expensive operations (DB queries, LLM calls, external APIs)
 - Create domain-specific metrics (orders processed, payment failures, queue depth)
 - Use `currentTraceId()` to correlate iii traces with external system logs

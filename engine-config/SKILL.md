@@ -14,16 +14,17 @@ Comparable to: Infrastructure as code, Docker Compose configs
 
 Use the concepts below when they fit the task. Not every deployment needs all modules or adapters.
 
-- **iii-config.yaml** defines the engine port, modules, adapters, and queue configs
+- **iii-config.yaml** defines the engine port, modules, workers, adapters, and queue configs
 - **Environment variables** use `${VAR:default}` syntax (default is optional)
 - **Modules** are the building blocks — each enables a capability (API, state, queue, cron, etc.)
+- **Workers** are external binary modules managed via `iii.toml` and the `iii worker` CLI commands
 - **Adapters** swap storage backends per module: in_memory, file_based, Redis, RabbitMQ
 - **Queue configs** control retry count, concurrency, ordering, and backoff per named queue
 - The engine listens on port **49134** (WebSocket) for SDK/worker connections
 
 ## Architecture
 
-The iii-config.yaml file is loaded by the iii engine binary at startup. Modules are initialized in order, adapters connect to their backends, and the engine begins accepting worker connections over WebSocket on port 49134.
+The iii-config.yaml file is loaded by the iii engine binary at startup. Modules are initialized in order, adapters connect to their backends, and the engine begins accepting worker connections over WebSocket on port 49134. External workers defined in the `workers` section are spawned as child processes automatically.
 
 ## iii Primitives Used
 
@@ -40,6 +41,12 @@ The iii-config.yaml file is loaded by the iii engine binary at startup. Modules 
 | `modules::shell::ExecModule`                   | Spawn external processes               |
 | `modules::bridge_client::BridgeClientModule`   | Distributed cross-engine invocation    |
 | `modules::telemetry::TelemetryModule`          | Anonymous product analytics            |
+| `workers` section in iii-config.yaml               | External binary workers (worker modules)|
+| `iii.toml`                                     | Worker manifest (name → version)       |
+| `iii worker add NAME[@VERSION]`                | Install a worker from the registry     |
+| `iii worker remove NAME`                       | Uninstall a worker                     |
+| `iii worker list`                              | List installed workers                 |
+| `iii worker info NAME`                         | Show registry info for a worker        |
 
 ## Reference Implementation
 
@@ -60,6 +67,34 @@ Code using this pattern commonly includes, when relevant:
 - Health check: `curl http://localhost:3111/health`
 - Ports: 3111 (API), 3112 (streams), 49134 (engine WS), 9464 (Prometheus)
 
+### Worker Module System
+
+External workers are installed via the CLI and configured in `iii-config.yaml`:
+
+- `iii worker add pdfkit@1.0.0` — install a worker binary from the registry
+- `iii worker add` (no name) — install all workers listed in `iii.toml`
+- `iii worker remove pdfkit` — remove binary, manifest entry, and config block
+- `iii worker list` — show installed workers and versions from `iii.toml`
+
+Workers appear in `iii.toml` as a version manifest:
+```toml
+[workers]
+pdfkit = "1.0.0"
+image-processor = "2.3.1"
+```
+
+Worker config blocks in `iii-config.yaml` use marker comments for automatic management:
+```yaml
+workers:
+  # === iii:pdfkit BEGIN ===
+  - class: workers::pdfkit::PdfKitWorker
+    config:
+      output_dir: ./output
+  # === iii:pdfkit END ===
+```
+
+At startup, the engine resolves each worker class, finds the binary in `iii_workers/`, and spawns it as a child process. Worker binaries are stored in the `iii_workers/` directory.
+
 ## Adapting This Pattern
 
 Use the adaptations below when they apply to the task.
@@ -68,6 +103,7 @@ Use the adaptations below when they apply to the task.
 - Define queue configs per workload: high-concurrency for parallel jobs, FIFO for ordered processing
 - Use environment variables with defaults for all deployment-sensitive values (URLs, ports, credentials)
 - Enable only the modules you need — unused modules can be omitted from the config
+- Use `iii worker add` to install external workers and auto-generate their config blocks
 - Set `max_retries` and `backoff_ms` based on your failure tolerance and SLA requirements
 - Configure `OtelModule` with your collector endpoint and sampling ratio for observability
 

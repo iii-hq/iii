@@ -31,7 +31,8 @@ A queue consumer fails processing a job. The engine retries with exponential bac
 | ------------------------------------------------------------------------------ | ---------------------------------------- |
 | `trigger({ function_id: 'iii::queue::redrive', payload: { queue } })`          | Redrive all DLQ jobs for a named queue   |
 | `trigger({ function_id: 'iii::queue::status', payload: { queue } })`           | Check queue and DLQ status               |
-| `iii trigger --function-id='iii::queue::redrive' --payload='{"queue":"name"}'` | CLI redrive command                      |
+| `iii trigger --function-id='iii::queue::redrive' --payload='{"queue":"name"}'` | CLI redrive command (part of the engine binary) |
+| `--timeout-ms`                                                                 | CLI flag to set trigger timeout (default 30s)   |
 | `queue_configs` in iii-config.yaml                                             | Configure `max_retries` and `backoff_ms` |
 
 ## Reference Implementation
@@ -45,6 +46,7 @@ Code using this pattern commonly includes, when relevant:
 
 - `await iii.trigger({ function_id: 'iii::queue::redrive', payload: { queue: 'payment' } })` — redrive via SDK
 - `iii trigger --function-id='iii::queue::redrive' --payload='{"queue": "payment"}'` — redrive via CLI
+- `iii trigger --function-id='iii::queue::redrive' --payload='{"queue": "payment"}' --timeout-ms=60000` — with custom timeout
 - Redrive returns `{ queue: 'payment', redriven: 12 }` indicating count of replayed jobs
 - Inspect in RabbitMQ UI at `http://localhost:15672`, find `iii.__fn_queue::{name}::dlq.queue`
 - Best practice: investigate failures, deploy fix, then redrive

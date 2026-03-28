@@ -21,8 +21,7 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-node>
 
 | Export                                           | Purpose                                     |
 | ------------------------------------------------ | ------------------------------------------- |
-| `init(url, options?)`                            | Connect to the engine and return the client |
-| `registerWorker(url, { workerName })`            | Alternative init with worker name           |
+| `registerWorker(url, { workerName })`            | Connect to the engine and return the client |
 | `registerFunction({ id }, handler)`              | Register an async function handler          |
 | `registerTrigger({ type, function_id, config })` | Bind a trigger to a function                |
 | `trigger({ function_id, payload, action? })`     | Invoke a function                           |

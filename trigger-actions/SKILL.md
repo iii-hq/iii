@@ -31,6 +31,8 @@ The caller invokes `trigger()` with an optional action parameter. Synchronous mo
 | `trigger({ function_id, payload })`                          | Synchronous invocation, blocks for result      |
 | `trigger({ ..., action: TriggerAction.Void() })`             | Fire-and-forget, returns immediately with null |
 | `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })` | Durable async via named queue, returns receipt |
+| `iii trigger --function-id=ID --payload=JSON`                | CLI trigger (part of the engine binary)        |
+| `--timeout-ms`                                               | CLI flag to set trigger timeout (default 30s)  |
 
 ## Reference Implementation
 
@@ -47,6 +49,8 @@ Code using this pattern commonly includes, when relevant:
 - Sync returns the function result directly
 - Void returns `null` / `None`
 - Enqueue returns `{ messageReceiptId: string }` for tracking
+- `iii trigger --function-id='users::get' --payload='{"id":"123"}'` — invoke via CLI
+- `iii trigger --function-id='users::get' --payload='{"id":"123"}' --timeout-ms=5000` — with custom timeout
 
 ## Adapting This Pattern
 

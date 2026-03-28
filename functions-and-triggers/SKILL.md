@@ -19,16 +19,17 @@ Use the concepts below when they fit the task. Not every worker needs all of the
 - Functions invoke other functions via `trigger()` regardless of language or worker location
 - The engine handles serialization, routing, and delivery automatically
 - HTTP-invoked functions wrap external endpoints as callable function IDs
+- Functions can declare **request/response formats** for documentation and discovery — auto-generated from types in Rust (via `schemars::JsonSchema`) and Python (via type hints / Pydantic), or manually provided in Node.js
 
 ## Architecture
 
-SDK init connects the worker to the engine, `registerFunction` defines handlers, `registerTrigger` binds event sources to those handlers, and the engine routes incoming events to the correct function. Functions can invoke other functions across workers and languages via `trigger()`.
+`registerWorker()` connects the worker to the engine, `registerFunction` defines handlers, `registerTrigger` binds event sources to those handlers, and the engine routes incoming events to the correct function. Functions can invoke other functions across workers and languages via `trigger()`.
 
 ## iii Primitives Used
 
 | Primitive                                                    | Purpose                            |
 | ------------------------------------------------------------ | ---------------------------------- |
-| `init(url)`                                                  | Connect worker to engine           |
+| `registerWorker(url, options?)`                              | Connect worker to engine           |
 | `registerFunction({ id }, handler)`                          | Define a function handler          |
 | `registerTrigger({ type, function_id, config })`             | Bind an event source to a function |
 | `trigger({ function_id, payload })`                          | Invoke a function synchronously    |
@@ -37,14 +38,17 @@ SDK init connects the worker to the engine, `registerFunction` defines handlers,
 
 ## Reference Implementation
 
-See [../references/functions-and-triggers.js](../references/functions-and-triggers.js) for the full working example — a multi-language worker setup
-showing function registration, trigger binding, and cross-function invocation patterns in TypeScript, Python, and Rust.
+- **TypeScript**: [../references/functions-and-triggers.js](../references/functions-and-triggers.js)
+- **Python**: [../references/functions-and-triggers.py](../references/functions-and-triggers.py)
+- **Rust**: [../references/functions-and-triggers.rs](../references/functions-and-triggers.rs)
+
+Each reference shows the same patterns (function registration, trigger binding, cross-function invocation) in its respective language.
 
 ## Common Patterns
 
 Code using this pattern commonly includes, when relevant:
 
-- `init('ws://localhost:49134')` — connect to the engine
+- `registerWorker('ws://localhost:49134', { workerName: 'my-worker' })` — connect to the engine
 - `registerFunction({ id: 'namespace::name' }, async (input) => { ... })` — register a handler
 - `registerTrigger({ type: 'http', function_id, config: { api_path, http_method } })` — HTTP trigger
 - `registerTrigger({ type: 'queue', function_id, config: { topic } })` — queue trigger
@@ -53,6 +57,14 @@ Code using this pattern commonly includes, when relevant:
 - `registerTrigger({ type: 'stream', function_id, config: { stream } })` — stream trigger
 - `registerTrigger({ type: 'subscribe', function_id, config: { topic } })` — pubsub subscriber
 - Cross-language invocation: a TypeScript function can trigger a Python or Rust function by ID
+
+### Request/Response Format (Auto-Registration)
+
+Functions can declare their input/output schemas for documentation and discovery:
+
+- **Rust**: Derive `schemars::JsonSchema` on handler input/output types — `RegisterFunction::new()` auto-generates JSON Schema (Draft 7) from the type
+- **Python**: Use type hints (Pydantic models or primitives) on handler parameters and return types — `register_function()` auto-extracts JSON Schema (Draft 2020-12)
+- **Node.js**: Pass `request_format` / `response_format` manually in the registration message (e.g., via Zod's `toJSONSchema()`)
 
 ## Adapting This Pattern
 

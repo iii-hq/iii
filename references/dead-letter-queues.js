@@ -100,8 +100,9 @@ iii.registerTrigger({
 })
 
 // ---------------------------------------------------------------------------
-// CLI alternative for redrive (run from terminal):
+// CLI alternative for redrive (run from terminal — iii trigger is part of the engine binary):
 //   iii trigger --function-id='iii::queue::redrive' --payload='{"queue": "payment"}'
+//   iii trigger --function-id='iii::queue::redrive' --payload='{"queue": "payment"}' --timeout-ms=60000
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

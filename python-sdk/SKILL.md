@@ -21,12 +21,12 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-python>
 
 | Export                                        | Purpose                                         |
 | --------------------------------------------- | ----------------------------------------------- |
-| `init(address, options?)`                     | Connect to the engine inside an async context   |
+| `register_worker(address, options?)`          | Connect to the engine, returns the client       |
 | `InitOptions(worker_name, otel?)`             | Connection configuration                        |
 | `register_function(id, handler)`              | Register an async function handler              |
 | `register_trigger(type, function_id, config)` | Bind a trigger to a function                    |
-| `trigger(function_id, payload)`               | Invoke a function (async)                       |
-| `trigger_void(function_id, payload)`          | Fire-and-forget invocation                      |
+| `trigger(request)`                            | Invoke a function synchronously                 |
+| `trigger_async(request)`                      | Invoke a function asynchronously                |
 | `get_context()`                               | Access logger and trace context inside handlers |
 | `ApiRequest` / `ApiResponse`                  | HTTP request/response types (pydantic)          |
 | `IStream`                                     | Interface for custom stream implementations     |
@@ -35,10 +35,27 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-python>
 
 ## Key Notes
 
-- `init()` must be called inside an `async def` — it requires a running event loop
+- `register_worker()` returns a synchronous client; handlers are async
 - `ApiResponse` uses camelCase `statusCode` (pydantic alias), not `status_code`
 - End workers with `while True: await asyncio.sleep(60)` to keep the event loop alive
 - Use `asyncio.to_thread()` for CPU-heavy sync work inside handlers
+- The SDK implements both `trigger_async(request)` and a synchronous `trigger(request)`. Use `trigger_async` inside async handlers, and `trigger` in synchronous scripts or threads where blocking behavior is desired.
+
+## Examples
+
+```python
+# Async invocation (non-blocking, typical inside handlers)
+result = await iii.trigger_async({
+    "function_id": "greet",
+    "payload": {"name": "World"}
+})
+
+# Sync invocation (blocks the current thread, useful in sync contexts)
+result = iii.trigger({
+    "function_id": "greet",
+    "payload": {"name": "World"}
+})
+```
 
 ## Pattern Boundaries
 
