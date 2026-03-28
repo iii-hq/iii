@@ -44,6 +44,7 @@ modules:
         auth_function_id: my-project::auth-function
         on_trigger_registration_function_id: my-project::on-trigger-reg
         on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+        on_function_registration_function_id: my-project::on-function-reg
         expose_functions:
           - match("engine::*")
           - match("*::public")
@@ -100,7 +101,7 @@ The middleware is responsible for calling the target function (e.g. via `trigger
 
 ## RBAC
 
-When the `rbac` block is present in a `WorkerModule` entry, that listener enforces role-based access control: authentication on connect, function-level authorization, and trigger registration controls.
+When the `rbac` block is present in a `WorkerModule` entry, that listener enforces role-based access control: authentication on connect, function invocation authorization, and gated function/trigger registration.
 
 <Info title="How-to guidance">
   For step-by-step instructions on enabling RBAC, writing auth and middleware functions, and connecting workers, see [Worker RBAC](../how-to/worker-rbac).
@@ -140,6 +141,10 @@ On connection to an RBAC port, the optional auth function is called with the req
 
 <ResponseField name="on_trigger_type_registration_function_id" type="string">
   Function ID to invoke when a worker attempts to register a trigger type. Receives the trigger type details and auth context. Must return `true` to allow the registration.
+</ResponseField>
+
+<ResponseField name="on_function_registration_function_id" type="string">
+  Function ID to invoke when a worker attempts to register a function. Receives the function details and auth context. Must return `true` to allow the registration. See [Function Registration](#function-registration).
 </ResponseField>
 
 ### Function Filters
@@ -207,6 +212,9 @@ The auth function must return:
   <ResponseField name="allow_trigger_type_registration" type="boolean">
     Whether this worker can register new trigger types. Defaults to `false`.
   </ResponseField>
+  <ResponseField name="allow_function_registration" type="boolean">
+    Whether this worker can register new functions. Defaults to `true`.
+  </ResponseField>
   <ResponseField name="context" type="Record&lt;string, unknown&gt;">
     Arbitrary context object passed to the middleware function on every invocation. Defaults to empty object.
   </ResponseField>
@@ -220,15 +228,44 @@ The auth function must return:
 4. If any `expose_functions` filter matches -- **allowed**
 5. Otherwise -- **denied**
 
-### Trigger Registration
+### Registration Gating
 
-Workers on an RBAC port can register trigger types and triggers when permitted by the auth result.
+Workers on an RBAC port can register functions, trigger types, and triggers when permitted by the auth result.
 
-**Trigger type registration** requires both conditions:
+#### Function Registration
+
+A worker can register a function if **both** conditions are met:
+1. `allow_function_registration` is `true` in the auth result (defaults to `true`)
+2. If `on_function_registration_function_id` is configured, the hook returns `true`
+
+The hook receives:
+
+<Expandable title="FunctionRegistrationHookInput">
+  <ResponseField name="function_id" type="string" required>
+    The function ID being registered.
+  </ResponseField>
+  <ResponseField name="description" type="string">
+    Optional description provided by the worker.
+  </ResponseField>
+  <ResponseField name="metadata" type="Record&lt;string, unknown&gt;">
+    Optional metadata provided by the worker.
+  </ResponseField>
+  <ResponseField name="context" type="Record&lt;string, unknown&gt;" required>
+    The context from the auth result for this session.
+  </ResponseField>
+</Expandable>
+
+If either check fails, the registration is silently dropped.
+
+#### Trigger Type Registration
+
+A worker can register a trigger type if **both** conditions are met:
 1. `allow_trigger_type_registration` is `true` in the auth result
 2. If `on_trigger_type_registration_function_id` is configured, the hook returns `true`
 
-**Trigger registration** requires both conditions:
+#### Trigger Registration
+
+A worker can register a trigger if **both** conditions are met:
 1. The trigger's `trigger_type` is in `allowed_trigger_types` from the auth result
 2. If `on_trigger_registration_function_id` is configured, the hook returns `true`
 
@@ -249,8 +286,8 @@ The Worker module uses the standard iii engine WebSocket protocol. SDK workers c
 | Type | Fields | Description |
 |------|--------|-------------|
 | `registerworker` | `runtime`, `version`, `name`, `os`, `telemetry`, `pid` | Register the worker and send metadata. |
-| `registerfunction` | `function_id`, `metadata` | Register a function. Not allowed on RBAC ports. |
-| `unregisterfunction` | `function_id` | Unregister a function. Not allowed on RBAC ports. |
+| `registerfunction` | `function_id`, `metadata` | Register a function. On RBAC ports, requires `allow_function_registration` and passes the optional `on_function_registration_function_id` hook. |
+| `unregisterfunction` | `function_id` | Unregister a function owned by this worker. |
 | `invokefunction` | `invocation_id`, `function_id`, `data` | Invoke a function. RBAC checks apply on RBAC ports. |
 | `registertriggertype` | `id`, `description` | Register a new trigger type. On RBAC ports, requires `allow_trigger_type_registration`. |
 | `registertrigger` | `id`, `trigger_type`, `function_id`, `config` | Register a trigger. On RBAC ports, requires the type to be in `allowed_trigger_types`. |
