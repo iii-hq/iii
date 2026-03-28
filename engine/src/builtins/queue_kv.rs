@@ -384,20 +384,20 @@ impl QueueKvStore {
         F: Fn(&str) -> bool,
     {
         let mut lists = self.lists.write().await;
-        if let Some(list) = lists.get_mut(key) {
-            if let Some(pos) = list.iter().position(|v| predicate(v)) {
-                let removed = list.remove(pos);
-                if list.is_empty() {
-                    lists.remove(key);
-                }
-                // Mark dirty for file persistence
-                if self.file_store_dir.is_some() {
-                    drop(lists);
-                    let mut dirty = self.dirty.write().await;
-                    dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
-                }
-                return removed;
+        if let Some(list) = lists.get_mut(key)
+            && let Some(pos) = list.iter().position(|v| predicate(v))
+        {
+            let removed = list.remove(pos);
+            if list.is_empty() {
+                lists.remove(key);
             }
+            // Mark dirty for file persistence
+            if self.file_store_dir.is_some() {
+                drop(lists);
+                let mut dirty = self.dirty.write().await;
+                dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+            }
+            return removed;
         }
         None
     }

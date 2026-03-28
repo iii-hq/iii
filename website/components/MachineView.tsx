@@ -7,7 +7,6 @@ interface MachineViewProps {
   onOpenTerminal?: () => void;
   isGodMode: boolean;
   isDarkMode?: boolean;
-  onLogoClick?: () => void;
 }
 
 export const MachineView: React.FC<MachineViewProps> = ({
@@ -15,9 +14,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
   onToggleTheme,
   isGodMode,
   isDarkMode = true,
-  onLogoClick,
 }) => {
-  const [isLogoHovered, setIsLogoHovered] = useState(false);
   const [machineMarkdown, setMachineMarkdown] = useState(
     "# iii Homepage for AI\n\nLoading static machine markdown...",
   );
@@ -72,9 +69,6 @@ For implementation details and source examples, visit:
         isHumanMode={false}
         onToggleTheme={onToggleTheme}
         onToggleMode={onToggleMode}
-        onLogoClick={onLogoClick}
-        onLogoMouseEnter={() => setIsLogoHovered(true)}
-        onLogoMouseLeave={() => setIsLogoHovered(false)}
       />
 
       <div className="flex-1 text-xs md:text-sm leading-relaxed px-4 md:px-8 lg:px-12 pt-24 md:pt-32 lg:pt-32 pb-8 overflow-x-hidden">

@@ -22,6 +22,7 @@ pub mod modules {
     pub mod bridge_client;
     pub mod config;
     pub mod cron;
+    pub mod engine_fn;
     pub mod external;
     pub mod http_functions;
     pub mod module;

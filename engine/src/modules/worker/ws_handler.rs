@@ -17,7 +17,7 @@ use axum::{
 use serde::Deserialize;
 
 use super::channels::{ChannelItem, ChannelManager};
-use crate::modules::config::AppState;
+use crate::modules::worker::AppState;
 use crate::protocol::ChannelDirection;
 
 #[derive(Deserialize)]
@@ -199,6 +199,7 @@ mod tests {
 
     use super::*;
     use crate::engine::Engine;
+    use crate::modules::worker::WorkerConfig;
 
     async fn spawn_app() -> (Arc<Engine>, String, watch::Sender<bool>) {
         let engine = Arc::new(Engine::new());
@@ -207,6 +208,7 @@ mod tests {
             .route("/channels/{id}", get(channel_ws_upgrade))
             .with_state(AppState {
                 engine: Arc::clone(&engine),
+                config: Arc::new(WorkerConfig::default()),
                 shutdown_rx,
             });
 

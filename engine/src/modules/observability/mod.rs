@@ -1477,13 +1477,14 @@ impl Module for OtelModule {
 
     async fn start_background_tasks(
         &self,
-        shutdown: tokio::sync::watch::Receiver<bool>,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         // Start log subscriber to invoke triggers for all logs
         {
             let triggers = self.triggers.clone();
             let engine = self.engine.clone();
-            let mut shutdown_rx = shutdown.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
                 // Wait a bit for log storage to be initialized
@@ -1534,7 +1535,7 @@ impl Module for OtelModule {
 
         // Spawn background task for metrics retention cleanup and rollup processing
         if let Some(storage) = metrics::get_metric_storage() {
-            let mut shutdown_rx = shutdown.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -1563,7 +1564,7 @@ impl Module for OtelModule {
 
         // Spawn background task for alert evaluation
         if !self._config.alerts.is_empty() {
-            let mut shutdown_rx = shutdown.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
 
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
@@ -1635,7 +1636,7 @@ impl Module for OtelModule {
                     .with_flush_interval(std::time::Duration::from_millis(flush_interval_ms));
             }
 
-            exporter.start_with_shutdown(rx, shutdown.clone());
+            exporter.start_with_shutdown(rx, shutdown_rx.clone());
 
             tracing::info!(
                 "{} OTLP logs exporter started (endpoint: {})",
@@ -1676,23 +1677,6 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::collections::HashMap;
-
-    fn with_env_var<T>(key: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let previous = std::env::var(key).ok();
-        match value {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-
-        let result = f();
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-
-        result
-    }
 
     // =========================================================================
     // Helper: create a StoredSpan with configurable fields
@@ -3984,7 +3968,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         module
-            .start_background_tasks(shutdown_rx)
+            .start_background_tasks(shutdown_rx, shutdown_tx.clone())
             .await
             .expect("start_background_tasks");
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;

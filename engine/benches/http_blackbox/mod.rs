@@ -45,13 +45,18 @@ impl BenchRuntime {
         let base_http_url = format!("http://127.0.0.1:{http_port}");
 
         let builder = EngineBuilder::new()
-            .address(&ws_addr)
             .add_module(
                 "modules::api::RestApiModule",
                 Some(json!({
                     "host": "127.0.0.1",
                     "port": http_port,
                     "default_timeout": 120000,
+                })),
+            )
+            .add_module(
+                "modules::worker::WorkerModule",
+                Some(json!({
+                    "port": ws_port,
                 })),
             )
             .build()

@@ -268,6 +268,138 @@ TriggerAction = TriggerActionEnqueue | TriggerActionVoid
 """Routing action for trigger requests."""
 
 
+class AuthInput(BaseModel):
+    """Input passed to the RBAC auth function during WebSocket upgrade.
+
+    Contains the HTTP headers, query parameters, and client IP from the
+    connecting worker's upgrade request.
+
+    Attributes:
+        headers: HTTP headers from the WebSocket upgrade request.
+        query_params: Query parameters from the upgrade URL. Each key maps to
+            a list of values to support repeated keys.
+        ip_address: IP address of the connecting client.
+    """
+
+    headers: dict[str, str] = Field(description="HTTP headers from the WebSocket upgrade request.")
+    query_params: dict[str, list[str]] = Field(
+        description="Query parameters from the upgrade URL. Each key maps to a list of values.",
+    )
+    ip_address: str = Field(description="IP address of the connecting client.")
+
+
+class AuthResult(BaseModel):
+    """Return value from the RBAC auth function.
+
+    Controls which functions the authenticated worker can invoke and what
+    context is forwarded to the middleware.
+
+    Attributes:
+        allowed_functions: Additional function IDs to allow beyond ``expose_functions``.
+        forbidden_functions: Function IDs to deny even if they match ``expose_functions``.
+        allowed_trigger_types: Trigger type IDs the worker may register triggers for.
+            When ``None``, all types are allowed.
+        allow_trigger_type_registration: Whether the worker may register new trigger types.
+        context: Arbitrary context forwarded to the middleware function on every invocation.
+    """
+
+    allowed_functions: list[str] = Field(
+        description="Additional function IDs to allow beyond ``expose_functions``.",
+    )
+    forbidden_functions: list[str] = Field(
+        description="Function IDs to deny even if they match ``expose_functions``.",
+    )
+    allowed_trigger_types: list[str] | None = Field(
+        default=None,
+        description="Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed.",
+    )
+    allow_trigger_type_registration: bool = Field(
+        description="Whether the worker may register new trigger types.",
+    )
+    allow_function_registration: bool = Field(
+        default=True,
+        description="Whether the worker may register new functions. Defaults to ``True``.",
+    )
+    context: dict[str, Any] = Field(
+        description="Arbitrary context forwarded to the middleware function on every invocation.",
+    )
+
+
+class MiddlewareFunctionInput(BaseModel):
+    """Input passed to the RBAC middleware function on every function invocation
+    through the RBAC port.
+
+    Attributes:
+        function_id: ID of the function being invoked.
+        payload: Payload sent by the caller.
+        action: Routing action, if any.
+        context: Auth context returned by the auth function for this session.
+    """
+
+    function_id: str = Field(description="ID of the function being invoked.")
+    payload: dict[str, Any] = Field(description="Payload sent by the caller.")
+    action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
+        default=None, description="Routing action, if any.",
+    )
+    context: dict[str, Any] = Field(
+        description="Auth context returned by the auth function for this session.",
+    )
+
+
+class OnTriggerTypeRegistrationInput(BaseModel):
+    """Input passed to the ``on_trigger_type_registration_function_id`` hook
+    when a worker attempts to register a new trigger type through the RBAC port.
+    Return ``True`` to allow the registration.
+
+    Attributes:
+        trigger_type_id: ID of the trigger type being registered.
+        description: Human-readable description of the trigger type.
+        context: Auth context from ``AuthResult.context`` for this session.
+    """
+
+    trigger_type_id: str = Field(description="ID of the trigger type being registered.")
+    description: str = Field(description="Human-readable description of the trigger type.")
+    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
+
+
+class OnTriggerRegistrationInput(BaseModel):
+    """Input passed to the ``on_trigger_registration_function_id`` hook
+    when a worker attempts to register a trigger through the RBAC port.
+    Return ``True`` to allow the registration.
+
+    Attributes:
+        trigger_id: ID of the trigger being registered.
+        trigger_type: Trigger type identifier.
+        function_id: ID of the function this trigger is bound to.
+        config: Trigger-specific configuration.
+        context: Auth context from ``AuthResult.context`` for this session.
+    """
+
+    trigger_id: str = Field(description="ID of the trigger being registered.")
+    trigger_type: str = Field(description="Trigger type identifier.")
+    function_id: str = Field(description="ID of the function this trigger is bound to.")
+    config: Any = Field(default=None, description="Trigger-specific configuration.")
+    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
+
+
+class OnFunctionRegistrationInput(BaseModel):
+    """Input passed to the ``on_function_registration_function_id`` hook
+    when a worker attempts to register a function through the RBAC port.
+    Return ``True`` to allow the registration.
+
+    Attributes:
+        function_id: ID of the function being registered.
+        description: Human-readable description of the function.
+        metadata: Arbitrary metadata attached to the function.
+        context: Auth context from ``AuthResult.context`` for this session.
+    """
+
+    function_id: str = Field(description="ID of the function being registered.")
+    description: str | None = Field(default=None, description="Human-readable description of the function.")
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
+
+
 class EnqueueResult(BaseModel):
     """Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 

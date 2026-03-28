@@ -2126,7 +2126,7 @@ async def handler(input_data: dict[str, Any], ctx: FlowContext[Any]) -> None:
 
 The Motia Workbench (the local visual flow editor, configured via `motia-workbench.json`) has been replaced by the **iii Console**. The console provides a richer experience for visualizing and managing your flows, traces, and infrastructure.
 
-> Refer to the [iii quickstart documentation](https://iii.dev/docs/tutorials/quickstart) for iii Console installation instructions.
+> Refer to the [iii quickstart documentation](https://iii.dev/docs/quickstart) for iii Console installation instructions.
 
 ### Workbench Plugins Sunset
 

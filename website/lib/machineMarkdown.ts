@@ -54,6 +54,14 @@ function getHeadingLevel(tagName: string): number {
   }
 }
 
+function extractCandidateText(candidate: HTMLElement): string {
+  const clone = candidate.cloneNode(true) as HTMLElement;
+  clone
+    .querySelectorAll("[aria-hidden='true'], [data-machine-exclude='true']")
+    .forEach((node) => node.remove());
+  return normalizeText(clone.textContent || "");
+}
+
 function extractSectionMarkdown(
   section: HTMLElement,
   globalSeen: Set<string>,
@@ -82,7 +90,7 @@ function extractSectionMarkdown(
       continue;
     }
 
-    const text = normalizeText(candidate.textContent || "");
+    const text = extractCandidateText(candidate);
     if (
       text.length < MIN_TEXT_LENGTH ||
       globalSeen.has(text) ||

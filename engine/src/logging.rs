@@ -312,54 +312,6 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
     otel_cfg
 }
 
-#[deprecated(since = "0.2.0", note = "Use `init_log_from_config()` instead")]
-#[allow(deprecated)]
-pub fn init_log(path: &str) {
-    println!("Initializing logging from config file: {}", path);
-    let cfg = EngineConfig::config_file_or_default(path);
-    if let Err(e) = cfg {
-        println!(
-            "Failed to parse config file: {}, using default local logging. Error: {}",
-            path, e
-        );
-        init_local_log("info", &OtelConfig::default());
-        return;
-    };
-
-    let cfg = cfg.expect("Failed to parse config file");
-
-    println!("Parsed config file: {}", path);
-
-    // Extract OTEL config from OtelModule (must be done before modules are loaded)
-    let otel_cfg = extract_otel_config(&cfg);
-
-    let otel_module_name = "modules::observability::OtelModule";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
-
-    let log_level = otel_module_cfg
-        .and_then(|m| m.config.as_ref())
-        .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "info".to_string());
-
-    let log_format = otel_module_cfg
-        .and_then(|m| m.config.as_ref())
-        .and_then(|c| c.get("format"))
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "default".to_string());
-
-    println!(
-        "Log level from config: {}, Log format: {}, OTel enabled: {}",
-        log_level, log_format, otel_cfg.enabled
-    );
-
-    if log_format.to_lowercase() == "json" {
-        init_prod_log(log_level.as_str(), &otel_cfg);
-    } else {
-        init_local_log(log_level.as_str(), &otel_cfg);
-    }
-}
-
 /// Initializes logging, strictly loading config from the given path.
 /// If `config_path` is `None`, initializes with default local logging.
 /// If the file is missing or unparseable, falls back to default local logging
@@ -894,7 +846,6 @@ mod tests {
     #[test]
     fn test_extract_otel_config_reads_observability_module_config() {
         let cfg = EngineConfig {
-            port: 3000,
             modules: vec![ModuleEntry {
                 class: "modules::observability::OtelModule".to_string(),
                 config: Some(serde_json::json!({
@@ -921,7 +872,6 @@ mod tests {
     #[test]
     fn test_extract_otel_config_defaults_when_module_missing() {
         let cfg = EngineConfig {
-            port: 3000,
             modules: vec![],
             workers: vec![],
         };
@@ -944,7 +894,6 @@ mod tests {
         ));
 
         let yaml = r#"
-port: 3000
 modules:
   - class: modules::observability::OtelModule
     config:
@@ -959,7 +908,6 @@ modules:
 "#;
 
         std::fs::write(&path, yaml).unwrap();
-        init_log(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
 
         assert!(TRACING.get().is_some());

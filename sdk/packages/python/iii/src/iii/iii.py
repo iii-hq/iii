@@ -232,7 +232,10 @@ class III:
     async def _do_connect(self) -> None:
         try:
             log.debug(f"Connecting to {self._address}")
-            self._ws = await websockets.connect(self._address)
+            self._ws = await websockets.connect(
+                self._address,
+                additional_headers=self._options.headers,
+            )
             log.info(f"Connected to {self._address}")
             await self._on_connected()
         except (ConnectionError, OSError, TimeoutError, asyncio.TimeoutError) as e:

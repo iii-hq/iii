@@ -9,7 +9,7 @@ pub fn write_minimal_config_file() -> NamedTempFile {
     let mut file = NamedTempFile::new().expect("create temp config file");
 
     // Empty modules list keeps startup deterministic and avoids optional adapters.
-    let yaml = "port: 49134\nmodules: []\n";
+    let yaml = "modules: []\n";
     file.write_all(yaml.as_bytes())
         .expect("write benchmark config");
     file.flush().expect("flush benchmark config");

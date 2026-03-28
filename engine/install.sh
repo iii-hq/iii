@@ -3,7 +3,6 @@ set -eu
 
 REPO="${REPO:-iii-hq/iii}"
 BIN_NAME="${BIN_NAME:-iii}"
-CLI_INSTALL_URL="${CLI_INSTALL_URL:-https://install.iii.dev/iii-cli/main/install.sh}"
 
 AMPLITUDE_ENDPOINT="https://api2.amplitude.com/2/httpapi"
 AMPLITUDE_API_KEY="${III_INSTALL_AMPLITUDE_API_KEY:-a7182ac460dde671c8f2e1318b517228}"
@@ -215,75 +214,27 @@ iii_export_host_user_id() {
   done
 }
 
-install_cli() {
-  echo ""
-  echo "installing iii cli..."
-
-  cli_tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t iii-cli-install)
-  cli_script="$cli_tmpdir/install-cli.sh"
-
-  if ! curl -fsSL "$CLI_INSTALL_URL" -o "$cli_script"; then
-    echo "warning: failed to download CLI installer, skipping" >&2
-    rm -rf "$cli_tmpdir"
-    return 1
-  fi
-
-  chmod +x "$cli_script"
-
-  cli_sh_args=""
-  if [ -n "$cli_version" ]; then
-    cli_sh_args="-v $cli_version"
-  fi
-
-  if [ -n "$cli_dir" ]; then
-    # shellcheck disable=SC2086
-    INSTALL_DIR="$cli_dir" sh "$cli_script" $cli_sh_args
-  else
-    # shellcheck disable=SC2086
-    sh "$cli_script" $cli_sh_args
-  fi
-
-  cli_exit=$?
-  rm -rf "$cli_tmpdir"
-  return $cli_exit
-}
-
 # --- Argument parsing ---
-no_cli=false
-cli_version=""
-cli_dir=""
 engine_version="${VERSION:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-cli)
-      no_cli=true
       shift
       ;;
     --cli-version)
-      if [ $# -lt 2 ]; then
-        err "args" "--cli-version requires a value"
-      fi
-      cli_version="$2"
-      shift 2
+      if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
     --cli-dir)
-      if [ $# -lt 2 ]; then
-        err "args" "--cli-dir requires a value"
-      fi
-      cli_dir="$2"
-      shift 2
+      if [ $# -ge 2 ] && case "$2" in -*) false;; *) true;; esac; then shift 2; else shift; fi
       ;;
     -h|--help)
       cat <<'USAGE'
 Usage: install.sh [OPTIONS] [VERSION]
 
-Install the iii engine and CLI.
+Install the iii engine (includes CLI commands).
 
 Options:
-  --no-cli              Skip CLI installation
-  --cli-version VER     Install specific CLI version
-  --cli-dir DIR         Install CLI to specific directory
   -h, --help            Show this help message
 
 Environment variables:
@@ -292,7 +243,6 @@ Environment variables:
   PREFIX                Installation prefix (used if BIN_DIR not set)
   TARGET                Override target triple
   III_USE_GLIBC         Use glibc build on Linux x86_64
-  CLI_INSTALL_URL       Override CLI install script URL
 USAGE
       exit 0
       ;;
@@ -520,13 +470,6 @@ fi
 
 iii_export_host_user_id
 
-# Install CLI unless --no-cli was passed
-if [ "$no_cli" = false ]; then
-  if ! install_cli; then
-    echo "warning: CLI installation failed, but engine was installed successfully" >&2
-  fi
-fi
-
 case ":$PATH:" in
   *":$bin_dir:"*)
     ;;
@@ -536,4 +479,4 @@ case ":$PATH:" in
  esac
 
 echo ""
-echo "If you're new to iii, get started quickly here: https://iii.dev/docs/tutorials/quickstart"
+echo "If you're new to iii, get started quickly here: https://iii.dev/docs/quickstart"

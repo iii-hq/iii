@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn test_add_inserts_in_workers_section_not_modules() {
         let dir = TempDir::new().unwrap();
-        let existing = "port: 49134\n\nworkers:\n  - class: workers::existing::Worker\n    config:\n      key: value\n\nmodules:\n  - class: modules::api::RestApiModule\n    config:\n      port: 3111\n";
+        let existing = "workers:\n  - class: workers::existing::Worker\n    config:\n      key: value\n\nmodules:\n  - class: modules::api::RestApiModule\n    config:\n      port: 3111\n";
         fs::write(dir.path().join("config.yaml"), existing).unwrap();
 
         let result = add_worker_config(dir.path(), "pdfkit", &sample_config()).unwrap();
@@ -470,7 +470,7 @@ mod tests {
     fn test_add_prepends_workers_header_when_missing() {
         let dir = TempDir::new().unwrap();
         // File exists but has no "workers:" line
-        let existing = "port: 49134\nmodules:\n  - class: modules::api::Mod\n";
+        let existing = "modules:\n  - class: modules::api::Mod\n";
         fs::write(dir.path().join("config.yaml"), existing).unwrap();
 
         let result = add_worker_config(dir.path(), "pdfkit", &sample_config()).unwrap();
@@ -486,7 +486,6 @@ mod tests {
             "Worker block should be present"
         );
         // Original content should still be intact
-        assert!(content.contains("port: 49134"));
         assert!(content.contains("modules::api::Mod"));
     }
 

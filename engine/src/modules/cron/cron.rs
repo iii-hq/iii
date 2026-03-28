@@ -65,12 +65,13 @@ impl Module for CronCoreModule {
 
     async fn start_background_tasks(
         &self,
-        mut shutdown: tokio::sync::watch::Receiver<bool>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+        _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         let adapter = Arc::clone(&self.adapter);
 
         tokio::spawn(async move {
-            let _ = shutdown.changed().await;
+            let _ = shutdown_rx.changed().await;
             tracing::info!("CronModule received shutdown signal, stopping cron jobs");
             adapter.shutdown().await;
         });
@@ -259,7 +260,7 @@ mod tests {
     async fn start_background_tasks_spawns_shutdown_listener() {
         let (_engine, module) = setup_cron_module();
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let result = module.start_background_tasks(rx).await;
+        let result = module.start_background_tasks(rx, tx.clone()).await;
         assert!(result.is_ok());
         // Send shutdown signal
         let _ = tx.send(true);

@@ -152,7 +152,7 @@ def _make_fake_ws_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         async def __anext__(self):
             raise StopAsyncIteration
 
-    async def fake_connect(_: str) -> FakeWs:
+    async def fake_connect(_: str, **kwargs: object) -> FakeWs:
         return FakeWs()
 
     monkeypatch.setattr(iii_module.websockets, "connect", fake_connect)

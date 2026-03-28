@@ -44,8 +44,11 @@ When doing development it is common to use built-in adapters with persistent `fi
 and non-persistent `in_memory` storage. 
 
 ```yaml title="iii-config.yaml"
-port: 49134
 modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49134
+
   - class: modules::api::RestApiModule
     config:
       port: 3111
