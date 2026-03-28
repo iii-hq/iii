@@ -84,9 +84,16 @@ impl WorkerManager {
             .await
             .map_err(|e| format!("Failed to write worker file: {}", e))?;
 
-        let child = self
+        let child = match self
             .spawn_worker(&params.language, &temp_dir, file_name)
-            .await?;
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+                return Err(e);
+            }
+        };
 
         let pid = child.id().unwrap_or(0);
 

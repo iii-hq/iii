@@ -308,6 +308,24 @@ async fn handle_send(iii: &III, id: Option<Value>, params: Option<Value>) -> A2A
     store_task(iii, &task).await;
 
     let (function_id, payload) = resolve_function(&params.message);
+    if function_id.is_empty() {
+        task.status = TaskStatus {
+            state: TaskState::Failed,
+            message: Some(Message {
+                message_id: msg_id(),
+                role: MessageRole::Agent,
+                parts: vec![text_part(
+                    "No function_id found. Send a data part with {\"function_id\": \"...\", \"payload\": {...}} or use :: notation in text.",
+                )],
+                task_id: None,
+                context_id: None,
+                metadata: None,
+            }),
+            timestamp: Some(iso_now()),
+        };
+        store_task(iii, &task).await;
+        return A2AResponse::success(id, json!({ "task": task }));
+    }
     let fn_name = function_id.clone();
 
     match iii
@@ -455,8 +473,5 @@ fn resolve_function(message: &Message) -> (String, Value) {
         return (text, json!({}));
     }
 
-    (
-        "state::get".to_string(),
-        json!({ "scope": "a2a:chat", "key": "unsupported", "error": "Provide function_id in a data part or use :: notation" }),
-    )
+    (String::new(), json!({}))
 }
