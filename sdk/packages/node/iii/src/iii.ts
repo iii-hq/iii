@@ -111,6 +111,8 @@ export type InitOptions = {
    * The `engineWsUrl` is set automatically from the III address.
    */
   otel?: Omit<OtelConfig, 'engineWsUrl'>
+  /** Custom HTTP headers sent during the WebSocket handshake. */
+  headers?: Record<string, string>
   /** @internal */
   telemetry?: TelemetryOptions
 }
@@ -688,7 +690,7 @@ class Sdk implements ISdk {
     }
 
     this.setConnectionState('connecting')
-    this.ws = new WebSocket(this.address)
+    this.ws = new WebSocket(this.address, { headers: this.options?.headers })
     this.ws.on('open', this.onSocketOpen.bind(this))
     this.ws.on('close', this.onSocketClose.bind(this))
     this.ws.on('error', this.onSocketError.bind(this))

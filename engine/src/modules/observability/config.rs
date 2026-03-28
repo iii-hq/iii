@@ -96,6 +96,7 @@ pub enum AlertAction {
 
 /// Single alert rule configuration
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlertRule {
     /// Name of the alert (for identification)
     pub name: String,
@@ -141,6 +142,7 @@ fn default_true() -> bool {
 
 /// Sampling rule for per-operation or per-service sampling
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SamplingRule {
     /// Operation name pattern (supports wildcards like "api.*")
     #[serde(default)]
@@ -156,6 +158,7 @@ pub struct SamplingRule {
 
 /// Advanced sampling configuration
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SamplingConfig {
     /// Default sampling ratio for traces not matching any rule
     #[serde(default)]
@@ -176,6 +179,7 @@ pub struct SamplingConfig {
 
 /// Rate limiting configuration for trace sampling
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Maximum traces per second
     pub max_traces_per_second: u32,
@@ -183,6 +187,7 @@ pub struct RateLimitConfig {
 
 /// OpenTelemetry module configuration (for YAML deserialization)
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct OtelModuleConfig {
     /// Whether OpenTelemetry export is enabled
     #[serde(default)]
@@ -342,5 +347,47 @@ mod tests {
             config.alerts[0].action,
             AlertAction::Function { ref path } if path == "alerts.notify"
         ));
+    }
+
+    #[test]
+    fn otel_config_deny_unknown_fields() {
+        let json = r#"{"enabled": true, "fake_key": "value"}"#;
+        let result: Result<OtelModuleConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in OtelModuleConfig"
+        );
+    }
+
+    #[test]
+    fn alert_rule_deny_unknown_fields() {
+        let json = serde_json::json!({
+            "name": "test",
+            "metric": "m",
+            "threshold": 1.0,
+            "fake_key": true
+        });
+        let result: Result<AlertRule, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "should reject unknown fields in AlertRule");
+    }
+
+    #[test]
+    fn sampling_config_deny_unknown_fields() {
+        let json = r#"{"default": 0.5, "fake_key": true}"#;
+        let result: Result<SamplingConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in SamplingConfig"
+        );
+    }
+
+    #[test]
+    fn rate_limit_config_deny_unknown_fields() {
+        let json = r#"{"max_traces_per_second": 100, "fake_key": true}"#;
+        let result: Result<RateLimitConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in RateLimitConfig"
+        );
     }
 }

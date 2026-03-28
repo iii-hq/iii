@@ -4,7 +4,7 @@ use std::{net::TcpListener as StdTcpListener, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use iii::{EngineBuilder, protocol::Message};
+use iii::{EngineBuilder, modules::config::EngineConfig, protocol::Message};
 use serde_json::json;
 use tempfile::NamedTempFile;
 use tokio::{runtime::Runtime, task::JoinHandle, time, time::sleep};
@@ -43,10 +43,12 @@ impl WsBenchRuntime {
         let config = write_ws_only_config();
         let ws_addr = format!("127.0.0.1:{ws_port}");
         let ws_url = format!("ws://{ws_addr}");
+        let config =
+            EngineConfig::config_file(&config.path().to_str().expect("config path")).unwrap();
 
         let builder = EngineBuilder::new()
-            .address(&ws_addr)
-            .config_file(config.path().to_str().expect("config path"))?
+            // .address(&ws_addr) // TODO before-merge: we need to add the port here
+            .with_config(config)
             .build()
             .await?;
 

@@ -1,7 +1,7 @@
 mod common;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use iii::EngineBuilder;
+use iii::{EngineBuilder, modules::config::EngineConfig};
 
 fn startup_benchmark(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
@@ -12,10 +12,10 @@ fn startup_benchmark(c: &mut Criterion) {
         |b| {
             b.to_async(&rt).iter(|| async {
                 let path = config.path().to_string_lossy().to_string();
+                let config = EngineConfig::config_file(&path).unwrap();
 
                 let builder = EngineBuilder::new()
-                    .config_file(&path)
-                    .expect("load benchmark config")
+                    .with_config(config)
                     .build()
                     .await
                     .expect("build engine during benchmark");

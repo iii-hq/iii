@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -59,7 +60,7 @@ fn default_http_method() -> HttpMethod {
 ///
 /// - `Enqueue` -- Routes through a named queue for async processing.
 /// - `Void` -- Fire-and-forget, no response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum TriggerAction {
     /// Routes the invocation through a named queue.
@@ -69,7 +70,7 @@ pub enum TriggerAction {
 }
 
 /// Result returned by the engine when a message is successfully enqueued.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EnqueueResult {
     #[serde(rename = "messageReceiptId")]
     pub message_receipt_id: String,

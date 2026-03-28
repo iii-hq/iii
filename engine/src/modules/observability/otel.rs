@@ -5300,7 +5300,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_span_event_preserves_exception_stacktrace() {
-        use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
+        use opentelemetry::trace::{Status, TraceContextExt, Tracer};
         use opentelemetry_sdk::trace::SdkTracerProvider;
 
         let storage = Arc::new(InMemorySpanStorage::new(100));
