@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
     let iii = register_worker(&args.engine_url, InitOptions::default());
 
-    handler::register_http(&iii);
+    handler::register_http(&iii, args.expose_all);
 
     if args.no_stdio {
         tracing::info!("MCP HTTP-only mode. POST /mcp on engine port. Ctrl+C to stop.");

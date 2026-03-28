@@ -65,9 +65,16 @@ pub fn register(iii: &III, expose_all: bool) {
                     input
                 };
 
-                let request: A2ARequest = serde_json::from_value(body).map_err(|e| {
-                    iii_sdk::IIIError::Runtime(format!("Invalid A2A request: {}", e))
-                })?;
+                let request: A2ARequest = match serde_json::from_value(body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(json!({
+                            "status_code": 200,
+                            "headers": { "content-type": "application/json" },
+                            "body": A2AResponse::error(None, -32600, format!("Invalid request: {}", e))
+                        }));
+                    }
+                };
 
                 let response = handle_a2a_request(&iii_inner, request).await;
 

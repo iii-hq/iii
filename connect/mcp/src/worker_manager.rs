@@ -144,7 +144,13 @@ impl WorkerManager {
         let description = params
             .description
             .as_deref()
-            .unwrap_or("Auto-generated function");
+            .unwrap_or("Auto-generated function")
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'");
+        let function_name = params
+            .function_name
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'");
 
         format!(
             r#"import {{ registerWorker, Logger }} from 'iii-sdk'
@@ -167,7 +173,7 @@ process.on('SIGINT', () => {{
   process.exit(0)
 }})
 "#,
-            self.engine_url, params.code, params.function_name, description, params.function_name
+            self.engine_url, params.code, function_name, description, function_name
         )
     }
 
@@ -175,7 +181,13 @@ process.on('SIGINT', () => {{
         let description = params
             .description
             .as_deref()
-            .unwrap_or("Auto-generated function");
+            .unwrap_or("Auto-generated function")
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'");
+        let function_name = params
+            .function_name
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'");
 
         format!(
             r#"import asyncio
@@ -203,7 +215,7 @@ async def main():
 
 asyncio.run(main())
 "#,
-            self.engine_url, params.code, params.function_name, description, params.function_name
+            self.engine_url, params.code, function_name, description, function_name
         )
     }
 

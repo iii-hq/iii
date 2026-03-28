@@ -364,7 +364,7 @@ impl McpHandler {
     }
 }
 
-pub fn register_http(iii: &III) {
+pub fn register_http(iii: &III, expose_all: bool) {
     let iii_fn = iii.clone();
     iii.register_function_with(
         RegisterFunctionMessage {
@@ -377,7 +377,7 @@ pub fn register_http(iii: &III) {
             let iii_inner = iii_fn.clone();
             async move {
                 let body = input.get("body").cloned().unwrap_or(input);
-                let response = dispatch_http(&iii_inner, &body).await;
+                let response = dispatch_http(&iii_inner, &body, expose_all).await;
                 Ok(json!({ "status_code": 200, "headers": { "content-type": "application/json" }, "body": response }))
             }
         },
@@ -403,7 +403,7 @@ fn initialize_result() -> Value {
     })
 }
 
-async fn dispatch_http(iii: &III, body: &Value) -> Value {
+async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
     let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let id = body.get("id").cloned();
     let params = body.get("params").cloned();
@@ -420,7 +420,7 @@ async fn dispatch_http(iii: &III, body: &Value) -> Value {
             if let Ok(fns) = iii.list_functions().await {
                 tools.extend(
                     fns.iter()
-                        .filter(|f| has_metadata_flag(f, "mcp.expose"))
+                        .filter(|f| expose_all || has_metadata_flag(f, "mcp.expose"))
                         .map(function_to_tool),
                 );
             }
