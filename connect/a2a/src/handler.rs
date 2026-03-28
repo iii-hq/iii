@@ -1,13 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use iii_sdk::{
     III, RegisterFunctionMessage, RegisterTriggerInput, TriggerAction, TriggerRequest, Value,
 };
 use serde_json::json;
 
 use crate::types::*;
-
-static EXPOSE_ALL: AtomicBool = AtomicBool::new(false);
 
 fn has_metadata_flag(f: &iii_sdk::FunctionInfo, key: &str) -> bool {
     f.metadata
@@ -18,9 +14,8 @@ fn has_metadata_flag(f: &iii_sdk::FunctionInfo, key: &str) -> bool {
 }
 
 pub fn register(iii: &III, expose_all: bool) {
-    EXPOSE_ALL.store(expose_all, Ordering::SeqCst);
-
     let iii_card = iii.clone();
+    let card_expose_all = expose_all;
     iii.register_function_with(
         RegisterFunctionMessage {
             id: "a2a::agent_card".to_string(),
@@ -33,7 +28,7 @@ pub fn register(iii: &III, expose_all: bool) {
         move |_input: Value| {
             let iii_inner = iii_card.clone();
             async move {
-                let card = build_agent_card(&iii_inner).await;
+                let card = build_agent_card(&iii_inner, card_expose_all).await;
                 Ok(json!({
                     "status_code": 200,
                     "headers": { "content-type": "application/json" },
@@ -106,8 +101,7 @@ pub fn register(iii: &III, expose_all: bool) {
     tracing::info!("A2A registered: GET /.well-known/agent-card.json, POST /a2a");
 }
 
-async fn build_agent_card(iii: &III) -> AgentCard {
-    let expose_all = EXPOSE_ALL.load(Ordering::SeqCst);
+async fn build_agent_card(iii: &III, expose_all: bool) -> AgentCard {
     let skills = match iii.list_functions().await {
         Ok(fns) => fns
             .iter()

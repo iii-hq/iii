@@ -38,7 +38,9 @@ pub async fn run_stdio(handler: Arc<McpHandler>) -> anyhow::Result<()> {
                         tracing::warn!(error = %err, "Parse error");
                         let r =
                             JsonRpcResponse::error(None, -32700, format!("Parse error: {}", err));
-                        write_json(&mut writer, &serde_json::to_value(&r).unwrap()).await;
+                        if let Ok(v) = serde_json::to_value(&r) {
+                            write_json(&mut writer, &v).await;
+                        }
                         continue;
                     }
                 };

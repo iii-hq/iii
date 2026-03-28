@@ -416,7 +416,7 @@ async fn dispatch_http(iii: &III, body: &Value, expose_all: bool) -> Value {
         "initialize" => Ok(initialize_result()),
         "ping" => Ok(json!({})),
         "tools/list" => {
-            let mut tools = builtin_tools();
+            let mut tools = Vec::new();
             if let Ok(fns) = iii.list_functions().await {
                 tools.extend(
                     fns.iter()
@@ -514,7 +514,7 @@ fn builtin_tools() -> Vec<McpTool> {
         McpTool {
             name: "iii_trigger_enqueue".into(),
             description: Some("Enqueue to named queue".into()),
-            input_schema: json!({ "type": "object", "properties": { "function_id": { "type": "string" }, "payload": { "type": "object" }, "queue": { "type": "string" } }, "required": ["function_id", "payload", "queue"] }),
+            input_schema: json!({ "type": "object", "properties": { "function_id": { "type": "string" }, "payload": { "type": "object" }, "queue": { "type": "string" } }, "required": ["function_id", "payload"] }),
         },
     ]
 }
