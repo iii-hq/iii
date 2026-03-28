@@ -62,6 +62,17 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Manage iii Cloud deployments
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
+    Cloud {
+        #[arg(num_args = 0..)]
+        args: Vec<String>,
+    },
+
     /// Manage SDKs powered by Motia
     #[command(subcommand)]
     Sdk(SdkCommands),
@@ -165,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Create { args }) => {
             let exit_code = cli::handle_dispatch("create", args, cli_args.no_update_check).await;
+            std::process::exit(exit_code);
+        }
+        Some(Commands::Cloud { args }) => {
+            let exit_code = cli::handle_dispatch("cloud", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Sdk(SdkCommands::Motia { args })) => {
@@ -310,6 +325,18 @@ mod tests {
                 assert!(args.is_empty());
             }
             _ => panic!("expected Create subcommand"),
+        }
+    }
+
+    #[test]
+    fn cloud_parses_with_passthrough_args() {
+        let cli = Cli::try_parse_from(["iii", "cloud", "deploy", "--project", "abc", "--tag", "v1"])
+            .expect("should parse cloud with args");
+        match cli.command {
+            Some(Commands::Cloud { args }) => {
+                assert_eq!(args, vec!["deploy", "--project", "abc", "--tag", "v1"]);
+            }
+            _ => panic!("expected Cloud subcommand"),
         }
     }
 
