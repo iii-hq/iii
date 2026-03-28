@@ -2154,6 +2154,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-a2a"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "iii-console"
 version = "0.10.0"
 dependencies = [
@@ -2185,6 +2200,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "iii-mcp"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "iii-sdk",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

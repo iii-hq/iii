@@ -1,0 +1,25 @@
+[package]
+name = "iii-a2a"
+version = "0.3.0"
+edition = "2024"
+description = "A2A protocol worker for iii-engine"
+license = "Apache-2.0"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version = "1.85"
+
+[[bin]]
+name = "iii-a2a"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = { path = "../../sdk/packages/rust/iii" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
