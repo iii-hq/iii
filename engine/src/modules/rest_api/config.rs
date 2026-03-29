@@ -39,6 +39,9 @@ pub struct RestApiConfig {
 
     #[serde(default = "default_concurrency_request_limit")]
     pub concurrency_request_limit: usize,
+
+    #[serde(default)]
+    pub middleware: Vec<MiddlewareConfig>,
 }
 
 impl Default for RestApiConfig {
@@ -49,8 +52,22 @@ impl Default for RestApiConfig {
             default_timeout: default_timeout(),
             cors: None,
             concurrency_request_limit: default_concurrency_request_limit(),
+            middleware: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MiddlewareConfig {
+    pub function_id: String,
+    #[serde(default = "default_phase")]
+    pub phase: String,
+    #[serde(default)]
+    pub priority: i64,
+}
+
+fn default_phase() -> String {
+    "preHandler".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -135,6 +152,7 @@ mod tests {
                 allowed_methods: vec!["GET".to_string()],
             }),
             concurrency_request_limit: 256,
+            middleware: Vec::new(),
         };
         let json_str = serde_json::to_string(&config).unwrap();
         let deserialized: RestApiConfig = serde_json::from_str(&json_str).unwrap();
@@ -240,5 +258,88 @@ cors:
         let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.port, 3111);
         assert_eq!(config.host, "0.0.0.0");
+    }
+
+    // =========================================================================
+    // MiddlewareConfig
+    // =========================================================================
+
+    #[test]
+    fn rest_api_config_with_middleware() {
+        let json = r#"{
+            "middleware": [
+                {
+                    "function_id": "fn::auth_middleware",
+                    "phase": "preHandler",
+                    "priority": 10
+                },
+                {
+                    "function_id": "fn::logging_middleware",
+                    "phase": "preHandler",
+                    "priority": 5
+                }
+            ]
+        }"#;
+        let config: RestApiConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.middleware.len(), 2);
+        assert_eq!(config.middleware[0].function_id, "fn::auth_middleware");
+        assert_eq!(config.middleware[0].phase, "preHandler");
+        assert_eq!(config.middleware[0].priority, 10);
+        assert_eq!(config.middleware[1].function_id, "fn::logging_middleware");
+        assert_eq!(config.middleware[1].phase, "preHandler");
+        assert_eq!(config.middleware[1].priority, 5);
+    }
+
+    #[test]
+    fn rest_api_config_without_middleware_defaults_empty() {
+        let config: RestApiConfig = serde_json::from_str("{}").unwrap();
+        assert!(
+            config.middleware.is_empty(),
+            "middleware should default to empty vec"
+        );
+    }
+
+    #[test]
+    fn rest_api_config_middleware_from_yaml() {
+        let yaml = r#"
+middleware:
+  - function_id: "fn::rate_limiter"
+    phase: "preHandler"
+    priority: 1
+  - function_id: "fn::jwt_validator"
+    phase: "preHandler"
+    priority: 2
+"#;
+        let config: RestApiConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.middleware.len(), 2);
+        assert_eq!(config.middleware[0].function_id, "fn::rate_limiter");
+        assert_eq!(config.middleware[0].priority, 1);
+        assert_eq!(config.middleware[1].function_id, "fn::jwt_validator");
+        assert_eq!(config.middleware[1].priority, 2);
+    }
+
+    #[test]
+    fn rest_api_config_middleware_pre_sorted() {
+        let json = r#"{
+            "middleware": [
+                {"function_id": "fn::c", "priority": 30},
+                {"function_id": "fn::a", "priority": 10},
+                {"function_id": "fn::b", "priority": 20}
+            ]
+        }"#;
+        let mut config: RestApiConfig = serde_json::from_str(json).unwrap();
+        config.middleware.sort_by_key(|m| m.priority);
+        assert_eq!(config.middleware[0].function_id, "fn::a");
+        assert_eq!(config.middleware[1].function_id, "fn::b");
+        assert_eq!(config.middleware[2].function_id, "fn::c");
+    }
+
+    #[test]
+    fn middleware_config_defaults_phase_and_priority() {
+        let json = r#"{"function_id": "fn::my_mw"}"#;
+        let mw: MiddlewareConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(mw.function_id, "fn::my_mw");
+        assert_eq!(mw.phase, "preHandler");
+        assert_eq!(mw.priority, 0);
     }
 }

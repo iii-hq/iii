@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, convert::Infallible, sync::Arc};
+use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     Json,
@@ -32,7 +32,7 @@ fn generate_error_id() -> String {
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
 }
 
-use super::{RestApiCoreModule, types::TriggerMetadata};
+use super::{RestApiCoreModule, api_core::RouterMatch, types::TriggerMetadata};
 use crate::engine::{Engine, EngineTrait};
 
 fn apply_control_message(
@@ -139,6 +139,108 @@ fn serialize_headers(headers: &HeaderMap) -> HashMap<String, String> {
         .collect()
 }
 
+fn build_middleware_input(
+    path_params: &HashMap<String, String>,
+    query_params: &HashMap<String, String>,
+    headers: &HeaderMap,
+    method: &str,
+) -> Value {
+    serde_json::json!({
+        "phase": "preHandler",
+        "request": {
+            "path_params": path_params,
+            "query_params": query_params,
+            "headers": serialize_headers(headers),
+            "method": method,
+        },
+        "context": {},
+    })
+}
+
+enum MiddlewareResult {
+    Continue,
+}
+
+async fn execute_middleware(
+    engine: &Arc<Engine>,
+    mw_fn_id: &str,
+    mw_input: Value,
+    timeout_ms: u64,
+) -> Result<MiddlewareResult, axum::response::Response> {
+    match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        engine.call(mw_fn_id, mw_input),
+    )
+    .await
+    {
+        Ok(Ok(Some(result))) => {
+            match result.get("action").and_then(|a| a.as_str()) {
+                Some("continue") => Ok(MiddlewareResult::Continue),
+                Some("respond") => {
+                    let response = result.get("response").unwrap_or(&Value::Null);
+                    let status = response
+                        .get("status_code")
+                        .and_then(|s| s.as_u64())
+                        .unwrap_or(200) as u16;
+                    let body = response.get("body").cloned().unwrap_or(Value::Null);
+                    let headers_map: HashMap<String, String> = response
+                        .get("headers")
+                        .and_then(|h| serde_json::from_value(h.clone()).ok())
+                        .unwrap_or_default();
+                    let mut resp = (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                        Json(body),
+                    )
+                        .into_response();
+                    for (k, v) in headers_map {
+                        if let (Ok(name), Ok(val)) = (
+                            k.parse::<axum::http::header::HeaderName>(),
+                            v.parse::<axum::http::header::HeaderValue>(),
+                        ) {
+                            resp.headers_mut().insert(name, val);
+                        }
+                    }
+                    Err(resp)
+                }
+                other => {
+                    tracing::warn!(
+                        middleware_fn = %mw_fn_id,
+                        action = ?other,
+                        "Middleware returned invalid action, treating as continue"
+                    );
+                    Ok(MiddlewareResult::Continue)
+                }
+            }
+        }
+        Ok(Ok(None)) => {
+            tracing::warn!(middleware_fn = %mw_fn_id, "Middleware returned no result");
+            Ok(MiddlewareResult::Continue)
+        }
+        Ok(Err(err)) => {
+            let error_id = generate_error_id();
+            tracing::error!(
+                middleware_fn = %mw_fn_id,
+                error = ?err,
+                error_id = %error_id,
+                "Middleware execution failed"
+            );
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": err.message, "error_id": error_id})),
+            )
+                .into_response())
+        }
+        Err(_) => {
+            tracing::error!(middleware_fn = %mw_fn_id, "Middleware timed out");
+            Err((
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(json!({"error": "Middleware timeout"})),
+            )
+                .into_response())
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[axum::debug_handler]
 pub async fn dynamic_handler(
@@ -221,15 +323,48 @@ pub async fn dynamic_handler(
         let path_parameters: HashMap<String, String> =
             extract_path_params(&registered_path, &actual_path);
 
-        if let Some((function_id, condition_function_id)) =
-            api_handler.get_router(method.as_str(), &registered_path)
-        {
+        if let Some(router_match) = api_handler.get_router(method.as_str(), &registered_path) {
+            let RouterMatch {
+                function_id,
+                condition_function_id,
+                middleware_function_ids,
+            } = router_match;
+
             let function_kind = if function_id.starts_with("engine::") {
                 "internal"
             } else {
                 "user"
             };
             tracing::Span::current().record("iii.function.kind", function_kind);
+
+            // Global middleware (from rest_api_config, sorted by priority at config load time)
+            // These run before channel creation, so on short-circuit we return directly.
+            let rest_api_config = &api_handler.config;
+            for mw_config in &rest_api_config.middleware {
+                if mw_config.phase != "preHandler" {
+                    continue;
+                }
+                let mw_input = build_middleware_input(
+                    &path_parameters,
+                    &query_params,
+                    &headers,
+                    method.as_str(),
+                );
+                match execute_middleware(
+                    &engine,
+                    &mw_config.function_id,
+                    mw_input,
+                    rest_api_config.default_timeout,
+                )
+                .await
+                {
+                    Ok(MiddlewareResult::Continue) => {}
+                    Err(response) => {
+                        // No channels to clean up (they haven't been created yet)
+                        return response;
+                    }
+                }
+            }
 
             let channel_mgr = &engine.channel_manager;
 
@@ -358,6 +493,32 @@ pub async fn dynamic_handler(
                             Json(json!({"error": err.message, "error_id": error_id})),
                         )
                             .into_response();
+                    }
+                }
+            }
+
+            // Per-route middleware (from trigger config, runs after condition check)
+            // Channels exist at this point, so on short-circuit we clean them up.
+            for mw_fn_id in &middleware_function_ids {
+                let mw_input = build_middleware_input(
+                    &api_request_value.path_params,
+                    &api_request_value.query_params,
+                    &headers,
+                    method.as_str(),
+                );
+                match execute_middleware(
+                    &engine,
+                    mw_fn_id,
+                    mw_input,
+                    rest_api_config.default_timeout,
+                )
+                .await
+                {
+                    Ok(MiddlewareResult::Continue) => {}
+                    Err(response) => {
+                        channel_mgr.remove_channel(&req_ch_id);
+                        channel_mgr.remove_channel(&res_ch_id);
+                        return response;
                     }
                 }
             }
@@ -1293,6 +1454,7 @@ mod tests {
                 method.to_string(),
                 function_id.to_string(),
                 None,
+                Vec::new(),
             ))
             .await
             .unwrap();
@@ -1311,6 +1473,7 @@ mod tests {
                 method.to_string(),
                 function_id.to_string(),
                 Some(condition_function_id.to_string()),
+                Vec::new(),
             ))
             .await
             .unwrap();

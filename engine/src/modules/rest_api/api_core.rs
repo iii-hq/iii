@@ -39,6 +39,7 @@ pub struct PathRouter {
     pub http_method: String,
     pub function_id: String,
     pub condition_function_id: Option<String>,
+    pub middleware_function_ids: Vec<String>,
 }
 
 impl PathRouter {
@@ -47,20 +48,29 @@ impl PathRouter {
         http_method: String,
         function_id: String,
         condition_function_id: Option<String>,
+        middleware_function_ids: Vec<String>,
     ) -> Self {
         Self {
             http_path,
             http_method,
             function_id,
             condition_function_id,
+            middleware_function_ids,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct RouterMatch {
+    pub function_id: String,
+    pub condition_function_id: Option<String>,
+    pub middleware_function_ids: Vec<String>,
 }
 
 #[derive(Clone)]
 pub struct RestApiCoreModule {
     engine: Arc<Engine>,
-    config: RestApiConfig,
+    pub config: RestApiConfig,
     pub routers_registry: Arc<DashMap<String, PathRouter>>,
     shared_routers: Arc<RwLock<Router>>,
 }
@@ -323,16 +333,14 @@ impl RestApiCoreModule {
         cors.allow_headers(HTTP_Any)
     }
 
-    pub fn get_router(
-        &self,
-        http_method: &str,
-        http_path: &str,
-    ) -> Option<(String, Option<String>)> {
+    pub fn get_router(&self, http_method: &str, http_path: &str) -> Option<RouterMatch> {
         let key = Self::build_router_key(http_method, http_path);
         tracing::debug!("Looking up router for key: {}", key);
-        self.routers_registry
-            .get(&key)
-            .map(|r| (r.function_id.clone(), r.condition_function_id.clone()))
+        self.routers_registry.get(&key).map(|r| RouterMatch {
+            function_id: r.function_id.clone(),
+            condition_function_id: r.condition_function_id.clone(),
+            middleware_function_ids: r.middleware_function_ids.clone(),
+        })
     }
 
     pub async fn register_router(&self, router: PathRouter) -> anyhow::Result<()> {
@@ -402,11 +410,23 @@ impl TriggerRegistrator for RestApiCoreModule {
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string());
 
+            let middleware_function_ids = trigger
+                .config
+                .get("middleware_function_ids")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
             let router = PathRouter::new(
                 api_path.to_string(),
                 http_method.to_string(),
                 trigger.function_id.clone(),
                 condition_function_id,
+                middleware_function_ids,
             );
 
             adapter.register_router(router).await?;
@@ -708,6 +728,7 @@ mod tests {
                 "GET".to_string(),
                 "fn::list_users".to_string(),
                 None,
+                Vec::new(),
             ),
         );
         registry.insert(
@@ -717,6 +738,7 @@ mod tests {
                 "POST".to_string(),
                 "fn::create_user".to_string(),
                 None,
+                Vec::new(),
             ),
         );
         registry.insert(
@@ -726,6 +748,7 @@ mod tests {
                 "PUT".to_string(),
                 "fn::update_user".to_string(),
                 None,
+                Vec::new(),
             ),
         );
         registry.insert(
@@ -735,6 +758,7 @@ mod tests {
                 "DELETE".to_string(),
                 "fn::delete_user".to_string(),
                 None,
+                Vec::new(),
             ),
         );
         registry.insert(
@@ -744,6 +768,7 @@ mod tests {
                 "PATCH".to_string(),
                 "fn::patch_user".to_string(),
                 None,
+                Vec::new(),
             ),
         );
         registry.insert(
@@ -753,6 +778,7 @@ mod tests {
                 "HEAD".to_string(),
                 "fn::health_check".to_string(),
                 None,
+                Vec::new(),
             ),
         );
         registry.insert(
@@ -762,6 +788,7 @@ mod tests {
                 "OPTIONS".to_string(),
                 "fn::cors_preflight".to_string(),
                 None,
+                Vec::new(),
             ),
         );
 
@@ -786,6 +813,7 @@ mod tests {
                 "TRACE".to_string(),
                 "fn::trace_handler".to_string(),
                 None,
+                Vec::new(),
             ),
         );
 
@@ -809,14 +837,18 @@ mod tests {
                 "GET".to_string(),
                 "fn::get_user".to_string(),
                 Some("fn::auth_check".to_string()),
+                Vec::new(),
             ),
         );
 
         let result = module.get_router("GET", "users/:id");
         assert!(result.is_some());
-        let (function_id, condition) = result.unwrap();
-        assert_eq!(function_id, "fn::get_user");
-        assert_eq!(condition.as_deref(), Some("fn::auth_check"));
+        let router_match = result.unwrap();
+        assert_eq!(router_match.function_id, "fn::get_user");
+        assert_eq!(
+            router_match.condition_function_id.as_deref(),
+            Some("fn::auth_check")
+        );
     }
 
     #[tokio::test]
@@ -837,14 +869,15 @@ mod tests {
                 "POST".to_string(),
                 "fn::create_item".to_string(),
                 None,
+                Vec::new(),
             ),
         );
 
         // Query with leading slash -- should be normalized
         let result = module.get_router("POST", "/items");
         assert!(result.is_some());
-        let (function_id, _) = result.unwrap();
-        assert_eq!(function_id, "fn::create_item");
+        let router_match = result.unwrap();
+        assert_eq!(router_match.function_id, "fn::create_item");
     }
 
     #[tokio::test]
@@ -857,6 +890,7 @@ mod tests {
                 "get".to_string(),
                 "fn::health".to_string(),
                 None,
+                Vec::new(),
             ))
             .await
             .expect("register should succeed");
@@ -879,6 +913,7 @@ mod tests {
             "GET".to_string(),
             "fn::handler".to_string(),
             Some("fn::condition".to_string()),
+            Vec::new(),
         );
         assert_eq!(router.http_path, "/api/test");
         assert_eq!(router.http_method, "GET");
@@ -887,6 +922,7 @@ mod tests {
             router.condition_function_id.as_deref(),
             Some("fn::condition")
         );
+        assert!(router.middleware_function_ids.is_empty());
     }
 
     #[test]
@@ -896,8 +932,10 @@ mod tests {
             "POST".to_string(),
             "fn::create".to_string(),
             None,
+            Vec::new(),
         );
         assert!(router.condition_function_id.is_none());
+        assert!(router.middleware_function_ids.is_empty());
     }
 
     #[tokio::test]
@@ -977,8 +1015,11 @@ mod tests {
         let registered = module
             .get_router("POST", "/users/:id")
             .expect("router should exist");
-        assert_eq!(registered.0, "fn::users");
-        assert_eq!(registered.1.as_deref(), Some("fn::condition"));
+        assert_eq!(registered.function_id, "fn::users");
+        assert_eq!(
+            registered.condition_function_id.as_deref(),
+            Some("fn::condition")
+        );
 
         module
             .unregister_trigger(trigger)
@@ -1016,5 +1057,65 @@ mod tests {
             .expect("unregister should succeed");
 
         assert!(!removed);
+    }
+
+    // ---- PathRouter middleware tests ----
+
+    #[test]
+    fn test_path_router_with_middleware() {
+        let middleware_ids = vec![
+            "fn::auth_mw".to_string(),
+            "fn::rate_limit_mw".to_string(),
+        ];
+        let router = PathRouter::new(
+            "/api/secure".to_string(),
+            "POST".to_string(),
+            "fn::secure_handler".to_string(),
+            None,
+            middleware_ids.clone(),
+        );
+        assert_eq!(router.middleware_function_ids, middleware_ids);
+        assert_eq!(router.middleware_function_ids.len(), 2);
+        assert_eq!(router.middleware_function_ids[0], "fn::auth_mw");
+        assert_eq!(router.middleware_function_ids[1], "fn::rate_limit_mw");
+    }
+
+    #[test]
+    fn test_path_router_without_middleware() {
+        let router = PathRouter::new(
+            "/api/open".to_string(),
+            "GET".to_string(),
+            "fn::open_handler".to_string(),
+            None,
+            Vec::new(),
+        );
+        assert!(router.middleware_function_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_router_returns_middleware_ids() {
+        let module = make_module_with_cors(None);
+        let middleware_ids = vec!["fn::jwt_mw".to_string(), "fn::log_mw".to_string()];
+
+        module.routers_registry.insert(
+            "GET:protected".to_string(),
+            PathRouter::new(
+                "protected".to_string(),
+                "GET".to_string(),
+                "fn::protected_handler".to_string(),
+                None,
+                middleware_ids.clone(),
+            ),
+        );
+
+        let result = module
+            .get_router("GET", "protected")
+            .expect("router should exist");
+
+        assert_eq!(result.function_id, "fn::protected_handler");
+        assert_eq!(result.middleware_function_ids, middleware_ids);
+        assert_eq!(result.middleware_function_ids.len(), 2);
+        assert_eq!(result.middleware_function_ids[0], "fn::jwt_mw");
+        assert_eq!(result.middleware_function_ids[1], "fn::log_mw");
     }
 }
