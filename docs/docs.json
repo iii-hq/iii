@@ -39,6 +39,7 @@
                   "how-to/use-queues",
                   "how-to/dead-letter-queues",
                   "how-to/expose-http-endpoint",
+                  "how-to/use-http-middleware",
                   "how-to/manage-state",
                   "how-to/use-channels",
                   "how-to/react-to-state-changes",

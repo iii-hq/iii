@@ -1,0 +1,257 @@
+---
+title: 'Use HTTP Middleware'
+description: 'How to run middleware functions before HTTP handlers for auth, logging, rate limiting, and more.'
+---
+
+## Goal
+
+Run one or more middleware functions before an HTTP handler executes. Middleware can inspect the request and either continue to the handler or short-circuit with a response.
+
+## How It Works
+
+Middleware in iii is just a regular function. The engine calls it before the handler. The function returns either `{ action: "continue" }` to proceed, or `{ action: "respond", response: {...} }` to short-circuit.
+
+There are two ways to attach middleware:
+
+| Type | Where to configure | Scope | Runs |
+|------|--------------------|-------|------|
+| **Per-route** | Trigger config (`middleware_function_ids`) | Specific endpoint | After condition check |
+| **Global** | `iii-config.yaml` (`rest_api.middleware`) | All HTTP endpoints | Before condition check |
+
+## Per-Route Middleware
+
+### 1. Register the middleware function
+
+Middleware functions receive a request object with `path_params`, `query_params`, `headers`, and `method` (no body).
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="auth-middleware.ts"
+import { registerWorker } from 'iii-sdk'
+
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+
+// Middleware: check for API key
+iii.registerFunction({ id: 'middleware::require-api-key' }, async (req) => {
+  const apiKey = req.request?.headers?.['x-api-key']
+  if (!apiKey || apiKey !== process.env.API_KEY) {
+    return {
+      action: 'respond',
+      response: {
+        status_code: 401,
+        body: { error: 'Invalid or missing API key' },
+      },
+    }
+  }
+  return { action: 'continue' }
+})
+
+// Handler: only runs if middleware continues
+iii.registerFunction({ id: 'api::secret-data' }, async (req) => ({
+  status_code: 200,
+  body: { secret: 'the answer is 42' },
+}))
+```
+</Tab>
+<Tab title="Python">
+```python title="auth_middleware.py"
+import os
+from iii import register_worker
+
+iii = register_worker(os.getenv("III_URL", "ws://localhost:49134"))
+
+
+def require_api_key(req):
+    headers = (req.get("request") or {}).get("headers") or {}
+    api_key = headers.get("x-api-key")
+    if not api_key or api_key != os.getenv("API_KEY"):
+        return {
+            "action": "respond",
+            "response": {"status_code": 401, "body": {"error": "Invalid or missing API key"}},
+        }
+    return {"action": "continue"}
+
+
+def get_secret_data(req):
+    return {"status_code": 200, "body": {"secret": "the answer is 42"}}
+
+
+iii.register_function({"id": "middleware::require-api-key"}, require_api_key)
+iii.register_function({"id": "api::secret-data"}, get_secret_data)
+```
+</Tab>
+</Tabs>
+
+### 2. Attach middleware to the trigger
+
+Include `middleware_function_ids` in the trigger config. Middleware runs in the order listed.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript title="auth-middleware.ts (continued)"
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'api::secret-data',
+  config: {
+    api_path: 'secret',
+    http_method: 'GET',
+    middleware_function_ids: ['middleware::require-api-key'],
+  },
+})
+```
+</Tab>
+<Tab title="Python">
+```python title="auth_middleware.py (continued)"
+iii.register_trigger({
+    "type": "http",
+    "function_id": "api::secret-data",
+    "config": {
+        "api_path": "secret",
+        "http_method": "GET",
+        "middleware_function_ids": ["middleware::require-api-key"],
+    },
+})
+```
+</Tab>
+</Tabs>
+
+### 3. Test it
+
+```bash
+# Without API key: 401
+curl http://localhost:3111/secret
+# {"error":"Invalid or missing API key"}
+
+# With API key: 200
+curl -H "x-api-key: my-secret-key" http://localhost:3111/secret
+# {"secret":"the answer is 42"}
+```
+
+## Chaining Multiple Middleware
+
+List multiple function IDs. They execute in order. If any short-circuits, the rest are skipped.
+
+```typescript
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'api::admin-dashboard',
+  config: {
+    api_path: 'admin/dashboard',
+    http_method: 'GET',
+    middleware_function_ids: [
+      'middleware::request-logger',    // runs first
+      'middleware::require-api-key',   // runs second (if first continues)
+      'middleware::require-admin-role', // runs third (if second continues)
+    ],
+  },
+})
+```
+
+## Global Middleware
+
+Global middleware runs on every HTTP request, before route-level conditions and per-route middleware. Configure it in `iii-config.yaml`:
+
+```yaml title="iii-config.yaml"
+- class: modules::api::RestApiModule
+  config:
+    port: 3111
+    middleware:
+      - function_id: "global::rate-limiter"
+        phase: preHandler
+        priority: 5           # lower number = runs first
+      - function_id: "global::request-logger"
+        phase: preHandler
+        priority: 10
+```
+
+Register the global middleware functions in a worker, just like any other function:
+
+```typescript
+iii.registerFunction({ id: 'global::rate-limiter' }, async (req) => {
+  // rate limiting logic...
+  return { action: 'continue' }
+})
+
+iii.registerFunction({ id: 'global::request-logger' }, async (req) => {
+  console.log(`${req.request.method} ${JSON.stringify(req.request.path_params)}`)
+  return { action: 'continue' }
+})
+```
+
+## Middleware Response Protocol
+
+Every middleware function must return one of:
+
+```typescript
+// Continue: pass control to the next middleware or handler
+{ action: "continue" }
+
+// Short-circuit: return a response immediately, skip remaining middleware and handler
+{
+  action: "respond",
+  response: {
+    status_code: 403,
+    body: { error: "Forbidden" },
+    headers: { "X-Rejected-By": "auth-middleware" }  // optional
+  }
+}
+```
+
+## Middleware Input
+
+Middleware receives a lightweight request object (no body, for performance):
+
+```typescript
+{
+  phase: "preHandler",
+  request: {
+    path_params: { id: "123" },
+    query_params: { page: "1" },
+    headers: { authorization: "Bearer ...", "content-type": "application/json" },
+    method: "GET"
+  },
+  context: {}
+}
+```
+
+<Info title="No request body in middleware">
+Middleware does not receive the request body. This is intentional: global middleware runs before body parsing, so auth checks and rate limiting skip the expensive JSON parse for rejected requests. Use [conditions](/how-to/use-trigger-conditions) for body-based validation.
+</Info>
+
+## Request Lifecycle
+
+```
+  Request arrives
+       │
+       ▼
+  Route match
+       │
+       ▼
+  Global middleware (from config, sorted by priority)
+       │ ── short-circuit? ──▶ Return response
+       ▼
+  Condition check (if configured)
+       │ ── fails? ──▶ Return 422
+       ▼
+  Per-route middleware (from trigger config, in order)
+       │ ── short-circuit? ──▶ Return response
+       ▼
+  Body parsing
+       │
+       ▼
+  Handler function
+       │
+       ▼
+  Return response
+```
+
+## Error Handling
+
+| Scenario | Engine behavior |
+|----------|----------------|
+| Middleware returns `{ action: "continue" }` | Proceeds to next middleware or handler |
+| Middleware returns `{ action: "respond", response }` | Returns the response, skips handler |
+| Middleware returns invalid action | Logs warning, treats as `continue` |
+| Middleware returns no result | Logs warning, treats as `continue` |
+| Middleware throws an error | Returns 500 with error ID for debugging |
+| Middleware exceeds timeout | Returns 504 Gateway Timeout |
