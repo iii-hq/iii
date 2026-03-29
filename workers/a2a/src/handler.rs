@@ -458,13 +458,14 @@ fn resolve_function(message: &Message) -> (String, Value) {
         }
     }
 
+    let text = text.trim();
     if text.contains("::") {
-        let parts: Vec<&str> = text.splitn(2, ' ').collect();
+        let parts: Vec<&str> = text.splitn(2, char::is_whitespace).collect();
         if parts.len() == 2 {
             let payload = serde_json::from_str(parts[1]).unwrap_or(json!({ "input": parts[1] }));
             return (parts[0].to_string(), payload);
         }
-        return (text, json!({}));
+        return (text.to_string(), json!({}));
     }
 
     (String::new(), json!({}))
