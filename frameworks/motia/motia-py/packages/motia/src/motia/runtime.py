@@ -350,7 +350,7 @@ class Motia:
         async def middleware_wrapper(engine_req: Any) -> Any:
             request_data = engine_req.get("request", {}) if isinstance(engine_req, dict) else {}
 
-            http_request = MotiaHttpRequest.model_construct(
+            http_request: MotiaHttpRequest[Any] = MotiaHttpRequest.model_construct(
                 path_params=request_data.get("path_params", {}),
                 query_params=request_data.get("query_params", {}),
                 body=None,
@@ -358,9 +358,9 @@ class Motia:
                 method=request_data.get("method", trigger.method),
                 request_body=None,
             )
-            motia_request = MotiaHttpArgs.model_construct(
+            motia_request: MotiaHttpArgs[Any] = MotiaHttpArgs.model_construct(
                 request=http_request,
-                response=None,
+                response=None,  # type: ignore[arg-type]
             )
             trigger_info = TriggerInfo(type="http")
             context = _flow_context(trigger_info, motia_request)
