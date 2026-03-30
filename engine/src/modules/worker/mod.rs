@@ -44,7 +44,7 @@ pub struct CreateChannelOutput {
     pub reader: StreamChannelRef,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     #[serde(default = "default_port")]
@@ -62,6 +62,17 @@ fn default_port() -> u16 {
 
 fn default_host() -> String {
     "0.0.0.0".to_string()
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            port: default_port(),
+            host: default_host(),
+            middleware_function_id: None,
+            rbac: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -187,3 +198,28 @@ async fn ws_handler(
 }
 
 crate::register_module!("modules::worker::WorkerModule", WorkerModule, mandatory);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_config_default_values() {
+        let config = WorkerConfig::default();
+
+        assert_eq!(config.port, DEFAULT_PORT);
+        assert_eq!(config.host, "0.0.0.0");
+        assert!(config.middleware_function_id.is_none());
+        assert!(config.rbac.is_none());
+    }
+
+    #[test]
+    fn worker_config_deserialize_empty_json_uses_defaults() {
+        let config: WorkerConfig = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(config.port, DEFAULT_PORT);
+        assert_eq!(config.host, "0.0.0.0");
+        assert!(config.middleware_function_id.is_none());
+        assert!(config.rbac.is_none());
+    }
+}
