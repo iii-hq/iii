@@ -46,7 +46,7 @@ jobs:
 
       # Step 1b: Extract Browser SDK docs (TypeDoc)
       - name: Extract Browser SDK docs
-        run: pnpm --filter iii-sdk-browser docs:json
+        run: pnpm --filter iii-browser-sdk docs:json
 
       # Step 2: Extract Python SDK docs (griffe)
       - name: Extract Python SDK docs

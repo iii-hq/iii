@@ -5,7 +5,7 @@ import { parseTypedoc } from './parsers/parse-typedoc.mjs'
 import { parseGriffe } from './parsers/parse-griffe.mjs'
 import { parseRustdoc } from './parsers/parse-rustdoc.mjs'
 import { renderSdkMdx } from './renderers/render-mdx.mjs'
-import type { SdkDoc, FunctionDoc, TypeDoc } from './types.mjs'
+import type { SdkDoc, FunctionDoc } from './types.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '../..')
@@ -107,6 +107,5 @@ for (const target of targets) {
 console.log('\n[generate-api-docs] Done.')
 
 if (hasErrors) {
-  /** @ts-expect-error process.env is not typed */
   process.exit(1)
 }

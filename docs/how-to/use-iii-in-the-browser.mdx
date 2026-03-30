@@ -16,19 +16,19 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 - **Persistent connection** — one WebSocket replaces many HTTP round-trips. No per-request handshake, no CORS preflight on every call.
 - **Bi-directional** — the engine can invoke functions registered in the browser. Backend workers push data to the frontend with `trigger()`, enabling real-time patterns without polling.
 - **Same API** — `registerFunction`, `trigger`, `registerTrigger`, `onFunctionsAvailable` — all the primitives you use server-side work identically in the browser.
-- **Type-safe** — the same TypeScript types (`ISdk`, `TriggerRequest`, `ApiRequest`) are shared between `iii-sdk` and `iii-sdk-browser`.
+- **Type-safe** — the same TypeScript types (`ISdk`, `TriggerRequest`, `ApiRequest`) are shared between `iii-sdk` and `iii-browser-sdk`.
 
 ## Prerequisites
 
 - A running iii engine with the **WorkerModule** enabled and RBAC configured (see [Worker RBAC](/how-to/worker-rbac)).
-- `iii-sdk-browser` installed in your frontend project.
+- `iii-browser-sdk` installed in your frontend project.
 
 ## Steps
 
 ### 1. Install the browser SDK
 
 ```bash
-npm install iii-sdk-browser
+npm install iii-browser-sdk
 ```
 
 ### 2. Enable the WorkerModule with RBAC
@@ -56,7 +56,7 @@ modules:
 ### 3. Connect from the browser
 
 ```typescript title="iii.ts"
-import { registerWorker } from 'iii-sdk-browser'
+import { registerWorker } from 'iii-browser-sdk'
 
 const iii = registerWorker('ws://localhost:49135', {
   workerName: 'browser-client',
@@ -121,7 +121,7 @@ iii.registerTrigger({
 **Browser worker** receives dashboard updates:
 
 ```typescript title="dashboard.tsx"
-import { registerWorker } from 'iii-sdk-browser'
+import { registerWorker } from 'iii-browser-sdk'
 
 const iii = registerWorker('ws://localhost:49135')
 
@@ -177,7 +177,7 @@ iii.registerFunction(
 **Browser worker** creates tasks and reacts to state changes:
 
 ```typescript title="task-board.tsx"
-import { registerWorker } from 'iii-sdk-browser'
+import { registerWorker } from 'iii-browser-sdk'
 
 const iii = registerWorker('ws://localhost:49135')
 

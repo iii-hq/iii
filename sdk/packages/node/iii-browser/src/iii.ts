@@ -361,7 +361,7 @@ class Sdk implements ISdk {
    *
    * @example
    * ```typescript
-   * import { TriggerAction } from 'iii-sdk-browser'
+   * import { TriggerAction } from 'iii-browser-sdk'
    *
    * // Synchronous
    * const result = await iii.trigger({ function_id: 'get-order', payload: { id: '123' } })
@@ -488,8 +488,7 @@ class Sdk implements ISdk {
 
   private registerWorkerMetadata(): void {
     const telemetryOpts = this.options?.telemetry
-    const language =
-      telemetryOpts?.language ?? (typeof navigator !== 'undefined' ? navigator.language : undefined)
+    const language = telemetryOpts?.language ?? (typeof navigator !== 'undefined' ? navigator.language : undefined)
 
     this.trigger({
       function_id: EngineFunctions.REGISTER_WORKER,
@@ -929,7 +928,7 @@ class Sdk implements ISdk {
  *
  * @example
  * ```typescript
- * import { TriggerAction } from 'iii-sdk-browser'
+ * import { TriggerAction } from 'iii-browser-sdk'
  *
  * // Enqueue to a named queue
  * iii.trigger({
@@ -973,7 +972,7 @@ export const TriggerAction = {
  *
  * @example
  * ```typescript
- * import { registerWorker } from 'iii-sdk-browser'
+ * import { registerWorker } from 'iii-browser-sdk'
  *
  * const iii = registerWorker('ws://localhost:49135', {
  *   workerName: 'my-browser-worker',
