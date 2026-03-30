@@ -96,10 +96,7 @@ async fn fetch_latest_release_by_prefix(
     prefix: &str,
 ) -> Result<Release, IiiGithubError> {
     // Try /releases/latest first — single API call, GitHub guarantees non-prerelease
-    let latest_url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        spec.repo
-    );
+    let latest_url = format!("https://api.github.com/repos/{}/releases/latest", spec.repo);
 
     if let Ok(response) = client.get(&latest_url).send().await {
         if response.status().is_success() {
