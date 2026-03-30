@@ -44,6 +44,7 @@ export type RegisterTriggerMessage = {
   type: string
   function_id: string
   config: unknown
+  metadata?: Record<string, unknown>
 }
 
 export type RegisterServiceMessage = {
@@ -391,6 +392,8 @@ export type TriggerInfo = {
   function_id: string
   /** Trigger-specific configuration. */
   config?: unknown
+  /** Arbitrary metadata attached to the trigger. */
+  metadata?: Record<string, unknown>
 }
 
 /**
