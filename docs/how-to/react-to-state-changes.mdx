@@ -139,6 +139,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "state".into(),
     function_id: "orders::on-status-change".into(),
     config: json!({ "scope": "orders", "key": "status" }),
+    metadata: None,
 })?;
 
 // Then run iii.trigger() from another function or worker to trigger the state change

@@ -43,7 +43,7 @@ use serde_json::json;
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "users.create".into(), config: json!({
     "api_path": "/users",
     "http_method": "POST"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -351,7 +351,7 @@ iii.register_function((RegisterFunctionMessage::with_id("api.download.pdf".into(
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "api.download.pdf".into(), config: json!({
     "api_path": "download/report",
     "http_method": "GET",
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -514,7 +514,7 @@ iii.register_function((RegisterFunctionMessage::with_id("api.events".into()), mo
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "api.events".into(), config: json!({
     "api_path": "events",
     "http_method": "GET",
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -823,7 +823,7 @@ use serde_json::json;
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "users.create".into(), config: json!({
     "api_path": "/users",
     "http_method": "POST"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -917,15 +917,15 @@ iii.register_function((RegisterFunctionMessage::with_id("users.notify".into()), 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "users.notify".into(), config: json!({
     "api_path": "/notify",
     "http_method": "POST"
-}) })?;
+}), metadata: None })?;
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "users.notify".into(), config: json!({
     "topic": "user.created"
-}) })?;
+}), metadata: None })?;
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "users.notify".into(), config: json!({
     "expression": "0 9 * * *"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -1012,7 +1012,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), functio
     "api_path": "/verified",
     "http_method": "POST",
     "condition_function_id": "conditions::requireVerified"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -1084,7 +1084,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders::processHighValu
 iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders::processHighValue".into(), config: json!({
     "topic": "order.placed",
     "condition_function_id": "conditions::highValue"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -1158,7 +1158,7 @@ iii.register_function((RegisterFunctionMessage::with_id("state::onProfileUpdate"
 iii.register_trigger(RegisterTriggerInput { trigger_type: "state".into(), function_id: "state::onProfileUpdate".into(), config: json!({
     "scope": "users",
     "condition_function_id": "conditions::profileChanged"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -1260,7 +1260,7 @@ iii.register_function((RegisterFunctionMessage::with_id("webhooks.github".into()
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "webhooks.github".into(), config: json!({
     "api_path": "/webhooks/github",
     "http_method": "POST"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -1357,7 +1357,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.process".into())
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders.process".into(), config: json!({
     "topic": "order.placed"
-}) })?;
+}), metadata: None })?;
 
 iii.register_function((RegisterFunctionMessage::with_id("orders.sendConfirmation".into()), |order: Value| async move {
     send_email(order["email"].as_str().unwrap_or(""), "Order confirmed").await;
@@ -1366,7 +1366,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.sendConfirmation
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders.sendConfirmation".into(), config: json!({
     "topic": "order.processed"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>
@@ -1420,7 +1420,7 @@ iii.register_function((RegisterFunctionMessage::with_id("maintenance.cleanup".in
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "maintenance.cleanup".into(), config: json!({
     "expression": "0 3 * * *"
-}) })?;
+}), metadata: None })?;
 ```
 </Tab>
 </Tabs>

@@ -154,6 +154,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "jobs::cleanupOldData".into(),
     config: json!({ "expression": "0 0 2 * * *" }),
+    metadata: None,
 })?;
 ```
 </Tab>

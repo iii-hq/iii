@@ -116,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "api_path": "orders/premium",
         "http_method": "POST",
         "condition_function_id": "conditions::is_premium",
-    }) })?;
+    }), metadata: None })?;
 
     Ok(())
 }
@@ -229,7 +229,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders::high_value".int
 iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders::high_value".into(), config: json!({
     "topic": "order.created",
     "condition_function_id": "conditions::is_high_value",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>
@@ -316,7 +316,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders::on_update".into
 iii.register_trigger(RegisterTriggerInput { trigger_type: "state".into(), function_id: "orders::on_update".into(), config: json!({
     "scope": "orders",
     "condition_function_id": "conditions::is_update",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>
