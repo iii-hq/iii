@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Activity, ArrowRight, Eye, Radio, Zap } from "lucide-react";
+import { ArrowRight, Eye, Radio, Zap } from "lucide-react";
 
 interface ObservabilitySectionProps {
   isDarkMode?: boolean;
@@ -92,27 +92,27 @@ export function ObservabilitySection({
   const border = isDarkMode ? "border-iii-medium/20" : "border-iii-medium/30";
   const textMuted = isDarkMode ? "text-iii-medium" : "text-iii-medium-dark";
   const textPrimary = isDarkMode ? "text-iii-light" : "text-iii-black";
+  const textSecondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
 
   return (
-    <section ref={sectionRef} className="w-full">
-      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 md:py-10">
-        <div className="mb-10 md:mb-16">
-          <div className="flex items-center gap-2 mb-3">
-            <Activity className="w-4 h-4 text-iii-accent" />
-            <span className="text-xs uppercase tracking-widest text-iii-accent font-semibold">
-              Observability
-            </span>
+    <section ref={sectionRef} className="w-full h-full flex items-start">
+      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-5 md:py-6">
+        <div className="mb-7 md:mb-10">
+          <div className="text-center space-y-3">
+            <h2
+              className={`text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1] ${textPrimary}`}
+            >
+              Trace-level visibility.{" "}
+              <span className="text-iii-accent">Built in.</span>
+            </h2>
+            <p
+              className={`text-sm md:text-base lg:text-lg max-w-3xl mx-auto leading-relaxed ${textSecondary}`}
+            >
+              Every function call, every span, every metric - captured
+              automatically with OpenTelemetry. Export to any backend or use the
+              built-in console.
+            </p>
           </div>
-          <h2
-            className={`text-2xl sm:text-3xl md:text-4xl font-bold tracking-tight ${textPrimary}`}
-          >
-            Trace-level visibility.{" "}
-            <span className="text-iii-accent">Built in.</span>
-          </h2>
-          <p className={`mt-3 text-sm sm:text-base max-w-2xl ${textMuted}`}>
-            Every function call, every span, every metric — captured automatically
-            with OpenTelemetry. Export to any backend or use the built-in console.
-          </p>
         </div>
 
         <div className={`rounded-lg border ${border} ${bg} p-4 sm:p-6 mb-6`}>
