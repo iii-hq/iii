@@ -316,6 +316,10 @@ class AuthResult(BaseModel):
     allow_trigger_type_registration: bool = Field(
         description="Whether the worker may register new trigger types.",
     )
+    allow_function_registration: bool = Field(
+        default=True,
+        description="Whether the worker may register new functions. Defaults to ``True``.",
+    )
     context: dict[str, Any] = Field(
         description="Arbitrary context forwarded to the middleware function on every invocation.",
     )
@@ -340,6 +344,60 @@ class MiddlewareFunctionInput(BaseModel):
     context: dict[str, Any] = Field(
         description="Auth context returned by the auth function for this session.",
     )
+
+
+class OnTriggerTypeRegistrationInput(BaseModel):
+    """Input passed to the ``on_trigger_type_registration_function_id`` hook
+    when a worker attempts to register a new trigger type through the RBAC port.
+    Return ``True`` to allow the registration.
+
+    Attributes:
+        trigger_type_id: ID of the trigger type being registered.
+        description: Human-readable description of the trigger type.
+        context: Auth context from ``AuthResult.context`` for this session.
+    """
+
+    trigger_type_id: str = Field(description="ID of the trigger type being registered.")
+    description: str = Field(description="Human-readable description of the trigger type.")
+    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
+
+
+class OnTriggerRegistrationInput(BaseModel):
+    """Input passed to the ``on_trigger_registration_function_id`` hook
+    when a worker attempts to register a trigger through the RBAC port.
+    Return ``True`` to allow the registration.
+
+    Attributes:
+        trigger_id: ID of the trigger being registered.
+        trigger_type: Trigger type identifier.
+        function_id: ID of the function this trigger is bound to.
+        config: Trigger-specific configuration.
+        context: Auth context from ``AuthResult.context`` for this session.
+    """
+
+    trigger_id: str = Field(description="ID of the trigger being registered.")
+    trigger_type: str = Field(description="Trigger type identifier.")
+    function_id: str = Field(description="ID of the function this trigger is bound to.")
+    config: Any = Field(default=None, description="Trigger-specific configuration.")
+    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
+
+
+class OnFunctionRegistrationInput(BaseModel):
+    """Input passed to the ``on_function_registration_function_id`` hook
+    when a worker attempts to register a function through the RBAC port.
+    Return ``True`` to allow the registration.
+
+    Attributes:
+        function_id: ID of the function being registered.
+        description: Human-readable description of the function.
+        metadata: Arbitrary metadata attached to the function.
+        context: Auth context from ``AuthResult.context`` for this session.
+    """
+
+    function_id: str = Field(description="ID of the function being registered.")
+    description: str | None = Field(default=None, description="Human-readable description of the function.")
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
+    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
 class EnqueueResult(BaseModel):

@@ -5,12 +5,25 @@ import time
 
 import pytest
 
-from iii import AuthInput, AuthResult, InitOptions, MiddlewareFunctionInput, register_worker
+from iii import (
+    AuthInput,
+    AuthResult,
+    InitOptions,
+    MiddlewareFunctionInput,
+    OnFunctionRegistrationInput,
+    OnTriggerRegistrationInput,
+    OnTriggerTypeRegistrationInput,
+    TriggerConfig,
+    TriggerHandler,
+    register_worker,
+)
 
 ENGINE_WS_URL = os.environ.get("III_URL", "ws://localhost:49199")
 EW_URL = os.environ.get("III_RBAC_WORKER_URL", "ws://localhost:49135")
 
 auth_calls: list[AuthInput] = []
+trigger_type_reg_calls: list[OnTriggerTypeRegistrationInput] = []
+trigger_reg_calls: list[OnTriggerRegistrationInput] = []
 
 
 @pytest.fixture(scope="module")
@@ -35,7 +48,7 @@ def iii_server():
             return AuthResult(
                 allowed_functions=["test::ew::valid-token-echo"],
                 forbidden_functions=[],
-                allow_trigger_type_registration=False,
+                allow_trigger_type_registration=True,
                 context={"role": "admin", "user_id": "user-1"},
             ).model_dump()
 
@@ -66,8 +79,36 @@ def iii_server():
     def private_handler(_data):
         return {"private": True}
 
+    def on_function_reg_handler(data: dict) -> bool:
+        reg_input = OnFunctionRegistrationInput(**data)
+        return not reg_input.function_id.startswith("denied::")
+
+    def on_trigger_type_reg_handler(data: dict) -> bool:
+        reg_input = OnTriggerTypeRegistrationInput(**data)
+        trigger_type_reg_calls.append(reg_input)
+        return not reg_input.trigger_type_id.startswith("denied-tt::")
+
+    def on_trigger_reg_handler(data: dict) -> bool:
+        reg_input = OnTriggerRegistrationInput(**data)
+        trigger_reg_calls.append(reg_input)
+        return not reg_input.function_id.startswith("denied-trig::")
+
     client.register_function({"id": "test::rbac-worker::auth"}, auth_handler)
     client.register_function({"id": "test::rbac-worker::middleware"}, middlware_handler)
+    client.register_function({"id": "test::rbac-worker::on-function-reg"}, on_function_reg_handler)
+    client.register_function({"id": "test::rbac-worker::on-trigger-type-reg"}, on_trigger_type_reg_handler)
+    client.register_function({"id": "test::rbac-worker::on-trigger-reg"}, on_trigger_reg_handler)
+    class NoopTriggerHandler(TriggerHandler):
+        async def register_trigger(self, config: TriggerConfig) -> None:
+            pass
+
+        async def unregister_trigger(self, config: TriggerConfig) -> None:
+            pass
+
+    client.register_trigger_type(
+        {"id": "test-rbac-trigger", "description": "Trigger type for RBAC tests"},
+        NoopTriggerHandler(),
+    )
     client.register_function({"id": "test::ew::public::echo"}, echo_handler)
     client.register_function({"id": "test::ew::valid-token-echo"}, valid_token_echo_handler)
     client.register_function(
@@ -82,8 +123,10 @@ def iii_server():
 
 
 @pytest.fixture(autouse=True)
-def _reset_auth_calls():
+def _reset_calls():
     auth_calls.clear()
+    trigger_type_reg_calls.clear()
+    trigger_reg_calls.clear()
 
 
 class TestRbacWorkers:
@@ -136,6 +179,78 @@ class TestRbacWorkers:
                 iii_client.trigger({
                     "function_id": "test::ew::echo",
                     "payload": {"msg": "hello"},
+                })
+        finally:
+            iii_client.shutdown()
+
+    def test_should_deny_trigger_type_registration_via_hook(self, iii_server):
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            class DeniedHandler(TriggerHandler):
+                async def register_trigger(self, config: TriggerConfig) -> None:
+                    pass
+
+                async def unregister_trigger(self, config: TriggerConfig) -> None:
+                    pass
+
+            iii_client.register_trigger_type(
+                {"id": "denied-tt::test", "description": "Should be denied"},
+                DeniedHandler(),
+            )
+
+            time.sleep(1.0)
+
+            assert len(trigger_type_reg_calls) == 1
+            assert trigger_type_reg_calls[0].trigger_type_id == "denied-tt::test"
+            assert trigger_type_reg_calls[0].description == "Should be denied"
+            assert trigger_type_reg_calls[0].context["user_id"] == "user-1"
+        finally:
+            iii_client.shutdown()
+
+    def test_should_deny_trigger_registration_via_hook(self, iii_server):
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            iii_client.register_trigger({
+                "type": "test-rbac-trigger",
+                "function_id": "denied-trig::my-fn",
+                "config": {"key": "value"},
+            })
+
+            time.sleep(1.0)
+
+            assert len(trigger_reg_calls) == 1
+            assert trigger_reg_calls[0].trigger_type == "test-rbac-trigger"
+            assert trigger_reg_calls[0].function_id == "denied-trig::my-fn"
+            assert trigger_reg_calls[0].context["user_id"] == "user-1"
+        finally:
+            iii_client.shutdown()
+
+    def test_should_deny_function_registration_via_hook(self, iii_server):
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "valid-token"}),
+        )
+
+        try:
+            iii_client.register_function(
+                {"id": "denied::blocked-fn"},
+                lambda _data: {"should": "not reach"},
+            )
+
+            time.sleep(1.0)
+
+            with pytest.raises(Exception):
+                iii_client.trigger({
+                    "function_id": "denied::blocked-fn",
+                    "payload": {},
                 })
         finally:
             iii_client.shutdown()

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::SecurityConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct HttpFunctionsConfig {
     #[serde(default)]
     pub security: SecurityConfig,
@@ -64,6 +65,16 @@ mod tests {
         assert_eq!(
             config.security.require_https,
             deserialized.security.require_https
+        );
+    }
+
+    #[test]
+    fn http_functions_config_deny_unknown_fields() {
+        let json = r#"{"fake_key": true}"#;
+        let result: Result<HttpFunctionsConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in HttpFunctionsConfig"
         );
     }
 }

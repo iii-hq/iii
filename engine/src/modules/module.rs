@@ -21,6 +21,7 @@ use crate::{
 
 // use across modules
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdapterEntry {
     pub class: String,
     #[serde(default)]

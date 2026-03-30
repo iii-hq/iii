@@ -10,6 +10,9 @@ modules:
       middleware_function_id: test::rbac-worker::middleware
       rbac:
         auth_function_id: test::rbac-worker::auth
+        on_function_registration_function_id: test::rbac-worker::on-function-reg
+        on_trigger_registration_function_id: test::rbac-worker::on-trigger-reg
+        on_trigger_type_registration_function_id: test::rbac-worker::on-trigger-type-reg
         expose_functions:
           - match("test::ew::public::*")
           - metadata:

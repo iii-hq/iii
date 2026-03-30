@@ -1,0 +1,52 @@
+{
+  "name": "iii-sdk-browser",
+  "version": "0.10.0",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "index.js",
+  "author": "III",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "III SDK for the browser — no OpenTelemetry, no Node.js dependencies",
+  "keywords": [
+    "iii",
+    "sdk",
+    "browser",
+    "websocket"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "docs:json": "typedoc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./stream": {
+      "types": "./dist/stream.d.ts",
+      "import": "./dist/stream.mjs",
+      "require": "./dist/stream.cjs"
+    },
+    "./state": {
+      "types": "./dist/state.d.ts",
+      "import": "./dist/state.mjs",
+      "require": "./dist/state.cjs"
+    }
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "happy-dom": "^17.4.4",
+    "tsdown": "^0.21.4",
+    "typedoc": "^0.28.17",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0",
+    "ws": "^8.18.3"
+  }
+}

@@ -24,6 +24,7 @@ use crate::engine::Engine;
 // =============================================================================
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
@@ -111,6 +112,7 @@ fn default_module_entries() -> Vec<ModuleEntry> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModuleEntry {
     pub class: String,
     #[serde(default)]

@@ -40,9 +40,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: dtolnay/rust-toolchain@nightly
 
-      # Step 1: Extract Node SDK docs (TypeDoc)
+      # Step 1a: Extract Node SDK docs (TypeDoc)
       - name: Extract Node SDK docs
         run: pnpm --filter iii-sdk docs:json
+
+      # Step 1b: Extract Browser SDK docs (TypeDoc)
+      - name: Extract Browser SDK docs
+        run: pnpm --filter iii-sdk-browser docs:json
 
       # Step 2: Extract Python SDK docs (griffe)
       - name: Extract Python SDK docs
@@ -67,6 +71,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/content/api-reference/sdk-node.mdx \
+                  docs/content/api-reference/sdk-browser.mdx \
                   docs/content/api-reference/sdk-python.mdx \
                   docs/content/api-reference/sdk-rust.mdx
           git diff --cached --quiet || git commit -m "docs: regenerate SDK API reference"

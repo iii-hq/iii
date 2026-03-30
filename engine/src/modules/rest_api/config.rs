@@ -54,6 +54,7 @@ impl Default for RestApiConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CorsConfig {
     #[serde(default)]
     pub allowed_origins: Vec<String>,
@@ -177,6 +178,31 @@ mod tests {
         let cors: CorsConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cors.allowed_origins, vec!["http://example.com"]);
         assert!(cors.allowed_methods.is_empty());
+    }
+
+    #[test]
+    fn cors_config_deny_unknown_fields() {
+        let json = r#"{"allowed_origins": [], "fake_key": true}"#;
+        let result: Result<CorsConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in CorsConfig"
+        );
+    }
+
+    #[test]
+    fn rest_api_config_deny_unknown_nested_cors_field() {
+        let json = r#"{
+            "cors": {
+                "allowed_origins": ["*"],
+                "allow_credentials": true
+            }
+        }"#;
+        let result: Result<RestApiConfig, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "should reject unknown fields in nested CorsConfig"
+        );
     }
 
     // =========================================================================

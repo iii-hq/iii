@@ -385,6 +385,7 @@ mod tests {
             allowed_functions: vec![],
             forbidden_functions: vec![],
             allowed_trigger_types: Some(vec![]),
+            allow_function_registration: false,
             allow_trigger_type_registration: false,
             context: serde_json::json!({}),
         };
