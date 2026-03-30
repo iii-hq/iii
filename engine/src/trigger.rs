@@ -730,7 +730,10 @@ mod tests {
         };
         let json = serde_json::to_string(&trigger).unwrap();
         let deserialized: Trigger = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.metadata, Some(serde_json::json!({"team": "platform", "priority": "high"})));
+        assert_eq!(
+            deserialized.metadata,
+            Some(serde_json::json!({"team": "platform", "priority": "high"}))
+        );
     }
 
     #[test]

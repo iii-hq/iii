@@ -2932,7 +2932,10 @@ mod tests {
             trigger_request_format: None,
             call_request_format: None,
         };
-        engine.router_msg(&worker, &register_type_msg).await.unwrap();
+        engine
+            .router_msg(&worker, &register_type_msg)
+            .await
+            .unwrap();
 
         let register_trigger_msg = Message::RegisterTrigger {
             id: "trigger_meta_1".to_string(),
@@ -2941,10 +2944,22 @@ mod tests {
             config: serde_json::json!({"key": "value"}),
             metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
         };
-        engine.router_msg(&worker, &register_trigger_msg).await.unwrap();
+        engine
+            .router_msg(&worker, &register_trigger_msg)
+            .await
+            .unwrap();
 
-        assert!(engine.trigger_registry.triggers.contains_key("trigger_meta_1"));
-        let trigger = engine.trigger_registry.triggers.get("trigger_meta_1").unwrap();
+        assert!(
+            engine
+                .trigger_registry
+                .triggers
+                .contains_key("trigger_meta_1")
+        );
+        let trigger = engine
+            .trigger_registry
+            .triggers
+            .get("trigger_meta_1")
+            .unwrap();
         assert_eq!(
             trigger.metadata,
             Some(serde_json::json!({"team": "platform", "env": "staging"}))
