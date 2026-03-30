@@ -823,11 +823,10 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
           accentColor={accentColor}
         />
 
-        {/* Capability Map Diagram — Interactive SVG Particle Flow */}
+        {/* Capability Map Diagram — commented out
         <div
           className={`relative p-4 sm:p-6 md:p-8 lg:p-10 rounded-lg ${bgCard} overflow-hidden`}
         >
-          {/* Subtle Grid Background */}
           <div
             className="absolute inset-0 opacity-[0.03] pointer-events-none"
             style={{
@@ -852,9 +851,7 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
               </p>
             </div>
 
-            {/* Mobile/Tablet: Vertical flow — Inputs → Engine → Outputs */}
             <div className="lg:hidden flex flex-col items-center gap-0">
-              {/* Input nodes */}
               <div className="grid grid-cols-2 gap-2 sm:gap-3 w-full max-w-md">
                 {leftNodes.map((node: any) => {
                   const Icon = node.icon;
@@ -905,7 +902,6 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
                 })}
               </div>
 
-              {/* Connector: Inputs → Engine */}
               <div className="flex flex-col items-center py-1">
                 <AnimatedConnector
                   isDarkMode={isDarkMode}
@@ -916,7 +912,6 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
                 />
               </div>
 
-              {/* Engine Center */}
               <div className="relative flex items-center justify-center w-full max-w-xs">
                 <div
                   className={`relative z-10 w-full flex flex-col items-center justify-center px-6 py-6 rounded-lg border-2 ${isDarkMode ? 'bg-[#0a0a0a]' : 'bg-white'}`}
@@ -957,7 +952,6 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
                 </div>
               </div>
 
-              {/* Connector: Engine → Outputs */}
               <div className="flex flex-col items-center py-1">
                 <AnimatedConnector
                   isDarkMode={isDarkMode}
@@ -968,7 +962,6 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
                 />
               </div>
 
-              {/* Output nodes */}
               <div className="grid grid-cols-2 gap-2 sm:gap-3 w-full max-w-md">
                 {rightNodes.map((node: any) => {
                   const Icon = node.icon;
@@ -1020,7 +1013,6 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
               </div>
             </div>
 
-            {/* Desktop: Interactive SVG Particle Flow Diagram */}
             <div className="hidden lg:block w-full mx-auto">
               <ParticleFlowDiagram
                 leftNodes={leftNodes}
@@ -1031,6 +1023,7 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
             </div>
           </div>
         </div>
+        */}
       </div>
     </section>
   );
