@@ -707,6 +707,7 @@ class III:
             trigger_type=trigger.type,
             function_id=trigger.function_id,
             config=trigger.config,
+            metadata=trigger.metadata,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)
