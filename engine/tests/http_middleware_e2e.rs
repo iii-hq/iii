@@ -45,7 +45,10 @@ async fn start_api_server(port: u16) -> (Arc<Engine>, String) {
     .await
     .expect("RestApiCoreModule::create should succeed");
 
-    module.initialize().await.expect("initialize should succeed");
+    module
+        .initialize()
+        .await
+        .expect("initialize should succeed");
 
     let base_url = format!("http://127.0.0.1:{port}");
     (engine, base_url)
@@ -78,7 +81,10 @@ async fn start_api_server_with_global_middleware(
     .await
     .expect("RestApiCoreModule::create should succeed");
 
-    module.initialize().await.expect("initialize should succeed");
+    module
+        .initialize()
+        .await
+        .expect("initialize should succeed");
 
     let base_url = format!("http://127.0.0.1:{port}");
     (engine, base_url)
@@ -93,10 +99,7 @@ async fn register_http_trigger(
     method: &str,
     middleware_function_ids: Vec<&str>,
 ) {
-    let middleware_ids: Vec<Value> = middleware_function_ids
-        .iter()
-        .map(|id| json!(id))
-        .collect();
+    let middleware_ids: Vec<Value> = middleware_function_ids.iter().map(|id| json!(id)).collect();
 
     engine
         .trigger_registry

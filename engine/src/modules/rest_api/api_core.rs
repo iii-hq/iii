@@ -1063,10 +1063,7 @@ mod tests {
 
     #[test]
     fn test_path_router_with_middleware() {
-        let middleware_ids = vec![
-            "fn::auth_mw".to_string(),
-            "fn::rate_limit_mw".to_string(),
-        ];
+        let middleware_ids = vec!["fn::auth_mw".to_string(), "fn::rate_limit_mw".to_string()];
         let router = PathRouter::new(
             "/api/secure".to_string(),
             "POST".to_string(),

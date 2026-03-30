@@ -173,45 +173,43 @@ async fn execute_middleware(
     )
     .await
     {
-        Ok(Ok(Some(result))) => {
-            match result.get("action").and_then(|a| a.as_str()) {
-                Some("continue") => Ok(MiddlewareResult::Continue),
-                Some("respond") => {
-                    let response = result.get("response").unwrap_or(&Value::Null);
-                    let status = response
-                        .get("status_code")
-                        .and_then(|s| s.as_u64())
-                        .unwrap_or(200) as u16;
-                    let body = response.get("body").cloned().unwrap_or(Value::Null);
-                    let headers_map: HashMap<String, String> = response
-                        .get("headers")
-                        .and_then(|h| serde_json::from_value(h.clone()).ok())
-                        .unwrap_or_default();
-                    let mut resp = (
-                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
-                        Json(body),
-                    )
-                        .into_response();
-                    for (k, v) in headers_map {
-                        if let (Ok(name), Ok(val)) = (
-                            k.parse::<axum::http::header::HeaderName>(),
-                            v.parse::<axum::http::header::HeaderValue>(),
-                        ) {
-                            resp.headers_mut().insert(name, val);
-                        }
+        Ok(Ok(Some(result))) => match result.get("action").and_then(|a| a.as_str()) {
+            Some("continue") => Ok(MiddlewareResult::Continue),
+            Some("respond") => {
+                let response = result.get("response").unwrap_or(&Value::Null);
+                let status = response
+                    .get("status_code")
+                    .and_then(|s| s.as_u64())
+                    .unwrap_or(200) as u16;
+                let body = response.get("body").cloned().unwrap_or(Value::Null);
+                let headers_map: HashMap<String, String> = response
+                    .get("headers")
+                    .and_then(|h| serde_json::from_value(h.clone()).ok())
+                    .unwrap_or_default();
+                let mut resp = (
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                    Json(body),
+                )
+                    .into_response();
+                for (k, v) in headers_map {
+                    if let (Ok(name), Ok(val)) = (
+                        k.parse::<axum::http::header::HeaderName>(),
+                        v.parse::<axum::http::header::HeaderValue>(),
+                    ) {
+                        resp.headers_mut().insert(name, val);
                     }
-                    Err(resp)
                 }
-                other => {
-                    tracing::warn!(
-                        middleware_fn = %mw_fn_id,
-                        action = ?other,
-                        "Middleware returned invalid action, treating as continue"
-                    );
-                    Ok(MiddlewareResult::Continue)
-                }
+                Err(resp)
             }
-        }
+            other => {
+                tracing::warn!(
+                    middleware_fn = %mw_fn_id,
+                    action = ?other,
+                    "Middleware returned invalid action, treating as continue"
+                );
+                Ok(MiddlewareResult::Continue)
+            }
+        },
         Ok(Ok(None)) => {
             tracing::warn!(middleware_fn = %mw_fn_id, "Middleware returned no result");
             Ok(MiddlewareResult::Continue)
