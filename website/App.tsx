@@ -156,7 +156,10 @@ const App: React.FC = () => {
           <HeroSection isDarkMode={isDarkMode} />
         </div>
 
-        <div className={FULL_VIEWPORT_SECTION} data-machine-section="interactive-demo">
+        <div
+          className="w-full h-[calc(100dvh-4rem)] md:h-[calc(100dvh-5rem)]"
+          data-machine-section="interactive-demo"
+        >
           <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
 

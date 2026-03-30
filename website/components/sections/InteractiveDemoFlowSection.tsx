@@ -8,9 +8,9 @@ export function InteractiveDemoFlowSection({
   isDarkMode = true,
 }: InteractiveDemoFlowSectionProps) {
   return (
-    <section className="w-full">
-      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-7 md:py-8">
-        <div className="max-w-4xl mx-auto text-center mb-5 md:mb-7">
+    <section className="w-full h-full">
+      <div className="w-full h-full max-w-7xl mx-auto px-4 sm:px-6 py-6 md:py-7 grid grid-rows-[auto_minmax(0,1fr)] gap-4 md:gap-6">
+        <div className="max-w-4xl mx-auto text-center">
           <h2
             className={`text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1] ${
               isDarkMode ? 'text-iii-light' : 'text-iii-black'
@@ -31,7 +31,7 @@ export function InteractiveDemoFlowSection({
         <DemoSequencer
           steps={homepageFlow}
           mode="hero"
-          className="!h-auto w-full min-h-[340px] sm:min-h-[400px] md:min-h-[480px]"
+          className="!h-full !min-h-0 w-full max-h-full"
         />
       </div>
     </section>
