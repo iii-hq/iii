@@ -14,24 +14,10 @@ export const EngineFunctions = {
 /** Engine trigger types */
 export const EngineTriggers = {
   FUNCTIONS_AVAILABLE: 'engine::functions-available',
-  LOG: 'log',
-} as const
-
-/** Log function paths */
-export const LogFunctions = {
-  INFO: 'engine::log::info',
-  WARN: 'engine::log::warn',
-  ERROR: 'engine::log::error',
-  DEBUG: 'engine::log::debug',
 } as const
 
 /** Connection state for the III WebSocket */
-export type IIIConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'connected'
-  | 'reconnecting'
-  | 'failed'
+export type IIIConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
 
 /** Configuration for WebSocket reconnection behavior */
 export interface IIIReconnectionConfig {

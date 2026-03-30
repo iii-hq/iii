@@ -177,10 +177,9 @@ iii.registerFunction(
 **Browser worker** creates tasks and reacts to state changes:
 
 ```typescript title="task-board.tsx"
-import { registerWorker, Logger } from 'iii-sdk-browser'
+import { registerWorker } from 'iii-sdk-browser'
 
 const iii = registerWorker('ws://localhost:49135')
-const logger = new Logger(undefined, 'task-board')
 
 // Create a task — calls the backend function directly
 async function createTask(title: string, assignee: string) {
@@ -192,7 +191,7 @@ async function createTask(title: string, assignee: string) {
     payload: { title, assignee },
   })
 
-  logger.info('Task created', { taskId })
+  console.log('Task created', { taskId })
   return taskId
 }
 
