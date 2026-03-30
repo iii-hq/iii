@@ -787,7 +787,7 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
 
   return (
     <section
-      className={`relative overflow-hidden font-mono transition-colors duration-300 ${textPrimary}`}
+      className={`relative w-full overflow-hidden font-mono transition-colors duration-300 ${textPrimary}`}
     >
       {/* Subtle ambient glow decoration */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -799,7 +799,7 @@ export function EngineSection({ isDarkMode = true }: EngineSectionProps) {
           }}
         />
       </div>
-      <div className="relative z-10">
+      <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 md:py-10">
         {/* Header — PlanetScale-inspired: big statement, tight subtitle */}
         <div className="text-center mb-10 md:mb-16 space-y-5">
           <h2 className="text-2xl sm:text-4xl md:text-5xl lg:text-6xl font-bold tracking-tighter leading-[1.05]">
