@@ -1635,6 +1635,7 @@ mod tests {
                 function_id: "my_fn".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -1646,6 +1647,7 @@ mod tests {
                 function_id: "other_fn".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -2110,6 +2112,7 @@ mod tests {
                 function_id: "svc::worker".to_string(),
                 config: serde_json::json!({ "topic": "orders" }),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger");

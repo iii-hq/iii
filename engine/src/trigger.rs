@@ -105,6 +105,8 @@ pub struct Trigger {
     pub function_id: String,
     pub config: Value,
     pub worker_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 // Only `id` is considered for Hash and Eq/PartialEq
@@ -366,6 +368,7 @@ mod tests {
             function_id: format!("fn_{}", id),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         }
     }
 
@@ -657,6 +660,7 @@ mod tests {
             function_id: "fn_a".to_string(),
             config: serde_json::json!({"interval": 5}),
             worker_id: None,
+            metadata: None,
         };
         let t2 = Trigger {
             id: "trigger-1".to_string(),
@@ -664,6 +668,7 @@ mod tests {
             function_id: "fn_b".to_string(),
             config: serde_json::json!({"url": "https://example.com"}),
             worker_id: Some(Uuid::new_v4()),
+            metadata: None,
         };
 
         // Same id means equal, even though other fields differ.
@@ -684,6 +689,7 @@ mod tests {
             function_id: "fn_a".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
         let t2 = Trigger {
             id: "trigger-2".to_string(),
@@ -691,6 +697,7 @@ mod tests {
             function_id: "fn_a".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
 
         assert_ne!(t1, t2);
@@ -709,5 +716,36 @@ mod tests {
         assert_eq!(deserialized.id, "t1");
         assert_eq!(deserialized.trigger_type, "cron");
         assert_eq!(deserialized.function_id, "fn_t1");
+    }
+
+    #[test]
+    fn test_trigger_serialize_deserialize_with_metadata() {
+        let trigger = Trigger {
+            id: "t1".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "fn_t1".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: Some(serde_json::json!({"team": "platform", "priority": "high"})),
+        };
+        let json = serde_json::to_string(&trigger).unwrap();
+        let deserialized: Trigger = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.metadata, Some(serde_json::json!({"team": "platform", "priority": "high"})));
+    }
+
+    #[test]
+    fn test_trigger_serialize_deserialize_without_metadata() {
+        let trigger = Trigger {
+            id: "t2".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn_t2".to_string(),
+            config: serde_json::json!({}),
+            worker_id: None,
+            metadata: None,
+        };
+        let json = serde_json::to_string(&trigger).unwrap();
+        let deserialized: Trigger = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.metadata, None);
+        assert!(!json.contains("metadata"));
     }
 }

@@ -531,6 +531,7 @@ mod tests {
                 function_id: "test::join_guard".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
         connection
             .triggers
@@ -543,6 +544,7 @@ mod tests {
                 function_id: "test::leave_handler".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
 
         let join_result = connection
@@ -589,6 +591,7 @@ mod tests {
                 function_id: "test::join_guard".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
 
         connection
@@ -719,6 +722,7 @@ mod tests {
                 function_id: "test::leave_handler".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
 
         connection
@@ -871,6 +875,7 @@ mod tests {
                 function_id: "test::join_error".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
 
         let result = connection
@@ -902,6 +907,7 @@ mod tests {
                 function_id: "test::join_invalid_auth".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             });
 
         let result = connection
