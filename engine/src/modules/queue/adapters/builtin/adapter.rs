@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -46,6 +46,8 @@ pub struct BuiltinQueueAdapter {
     queue: Arc<BuiltinQueue>,
     engine: Arc<Engine>,
     subscriptions: Arc<RwLock<HashMap<String, SubscriptionHandle>>>,
+    topic_functions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    trigger_function_map: Arc<RwLock<HashMap<String, (String, String)>>>,
     delivery_map: Arc<RwLock<HashMap<u64, DeliveryInfo>>>,
     delivery_counter: Arc<AtomicU64>,
     poll_intervals: Arc<RwLock<HashMap<String, u64>>>,
@@ -142,6 +144,8 @@ impl BuiltinQueueAdapter {
             queue,
             engine,
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            topic_functions: Arc::new(RwLock::new(HashMap::new())),
+            trigger_function_map: Arc::new(RwLock::new(HashMap::new())),
             delivery_map: Arc::new(RwLock::new(HashMap::new())),
             delivery_counter: Arc::new(AtomicU64::new(0)),
             poll_intervals: Arc::new(RwLock::new(HashMap::new())),
@@ -155,6 +159,8 @@ impl Clone for BuiltinQueueAdapter {
             queue: Arc::clone(&self.queue),
             engine: Arc::clone(&self.engine),
             subscriptions: Arc::clone(&self.subscriptions),
+            topic_functions: Arc::clone(&self.topic_functions),
+            trigger_function_map: Arc::clone(&self.trigger_function_map),
             delivery_map: Arc::clone(&self.delivery_map),
             delivery_counter: Arc::clone(&self.delivery_counter),
             poll_intervals: Arc::clone(&self.poll_intervals),
@@ -194,7 +200,22 @@ impl QueueAdapter for BuiltinQueueAdapter {
         traceparent: Option<String>,
         baggage: Option<String>,
     ) {
-        self.queue.push(topic, data, traceparent, baggage).await;
+        let tf = self.topic_functions.read().await;
+        if let Some(function_ids) = tf.get(topic) {
+            for fid in function_ids {
+                let internal_queue = format!("{}::{}", topic, fid);
+                self.queue
+                    .push(
+                        &internal_queue,
+                        data.clone(),
+                        traceparent.clone(),
+                        baggage.clone(),
+                    )
+                    .await;
+            }
+        } else {
+            self.queue.push(topic, data, traceparent, baggage).await;
+        }
     }
 
     async fn subscribe(
@@ -205,6 +226,8 @@ impl QueueAdapter for BuiltinQueueAdapter {
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
+        let internal_queue = format!("{}::{}", topic, function_id);
+
         let handler: Arc<dyn JobHandler> = Arc::new(FunctionHandler {
             engine: Arc::clone(&self.engine),
             function_id: function_id.to_string(),
@@ -223,41 +246,123 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
         let handle = self
             .queue
-            .subscribe(topic, handler, subscription_config)
+            .subscribe(&internal_queue, handler, subscription_config)
             .await;
 
-        let mut subs = self.subscriptions.write().await;
-        subs.insert(format!("{}:{}", topic, id), handle);
+        {
+            let mut tf = self.topic_functions.write().await;
+            tf.entry(topic.to_string())
+                .or_default()
+                .insert(function_id.to_string());
+        }
 
-        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, "Subscribed to queue via BuiltinQueueAdapter");
+        {
+            let sub_key = format!("{}:{}", topic, id);
+            let mut tfm = self.trigger_function_map.write().await;
+            tfm.insert(
+                sub_key.clone(),
+                (topic.to_string(), function_id.to_string()),
+            );
+            let mut subs = self.subscriptions.write().await;
+            subs.insert(sub_key, handle);
+        }
+
+        tracing::debug!(topic = %topic, id = %id, function_id = %function_id, internal_queue = %internal_queue, "Subscribed to queue via BuiltinQueueAdapter");
     }
 
     async fn unsubscribe(&self, topic: &str, id: &str) {
         let key = format!("{}:{}", topic, id);
-        let mut subs = self.subscriptions.write().await;
 
-        if let Some(handle) = subs.remove(&key) {
-            self.queue.unsubscribe(handle).await;
-            tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
-        } else {
-            tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
+        let removed_mapping = {
+            let mut tfm = self.trigger_function_map.write().await;
+            tfm.remove(&key)
+        };
+
+        {
+            let mut subs = self.subscriptions.write().await;
+            if let Some(handle) = subs.remove(&key) {
+                self.queue.unsubscribe(handle).await;
+                tracing::debug!(topic = %topic, id = %id, "Unsubscribed from queue");
+            } else {
+                tracing::warn!(topic = %topic, id = %id, "No subscription found to unsubscribe");
+            }
+        }
+
+        if let Some((mapped_topic, mapped_fid)) = removed_mapping {
+            let still_has_triggers = {
+                let tfm = self.trigger_function_map.read().await;
+                tfm.values()
+                    .any(|(t, f)| t == &mapped_topic && f == &mapped_fid)
+            };
+
+            if !still_has_triggers {
+                let mut tf = self.topic_functions.write().await;
+                if let Some(fids) = tf.get_mut(&mapped_topic) {
+                    fids.remove(&mapped_fid);
+                    if fids.is_empty() {
+                        tf.remove(&mapped_topic);
+                    }
+                }
+            }
         }
     }
 
     async fn redrive_dlq(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.queue.dlq_redrive(topic).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut total = 0u64;
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                total += self.queue.dlq_redrive(&iq).await;
+            }
+            Ok(total)
+        } else {
+            Ok(self.queue.dlq_redrive(topic).await)
+        }
     }
 
     async fn redrive_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        Ok(self.queue.dlq_redrive_message(topic, message_id).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                if self.queue.dlq_redrive_message(&iq, message_id).await {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        } else {
+            Ok(self.queue.dlq_redrive_message(topic, message_id).await)
+        }
     }
 
     async fn discard_dlq_message(&self, topic: &str, message_id: &str) -> anyhow::Result<bool> {
-        Ok(self.queue.dlq_discard_message(topic, message_id).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                if self.queue.dlq_discard_message(&iq, message_id).await {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        } else {
+            Ok(self.queue.dlq_discard_message(topic, message_id).await)
+        }
     }
 
     async fn dlq_count(&self, topic: &str) -> anyhow::Result<u64> {
-        Ok(self.queue.dlq_count(topic).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut total = 0u64;
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                total += self.queue.dlq_count(&iq).await;
+            }
+            Ok(total)
+        } else {
+            Ok(self.queue.dlq_count(topic).await)
+        }
     }
 
     async fn dlq_messages(
@@ -265,7 +370,17 @@ impl QueueAdapter for BuiltinQueueAdapter {
         topic: &str,
         count: usize,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        Ok(self.queue.dlq_messages(topic, count).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut all = Vec::new();
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                all.extend(self.queue.dlq_messages(&iq, count).await);
+            }
+            Ok(all)
+        } else {
+            Ok(self.queue.dlq_messages(topic, count).await)
+        }
     }
 
     async fn setup_function_queue(
@@ -410,17 +525,13 @@ impl QueueAdapter for BuiltinQueueAdapter {
     async fn list_topics(&self) -> anyhow::Result<Vec<crate::modules::queue::TopicInfo>> {
         let mut topic_counts: HashMap<String, u64> = HashMap::new();
 
-        // Gather topics from subscriptions (keys are "topic:id" format)
         {
-            let subs = self.subscriptions.read().await;
-            for key in subs.keys() {
-                if let Some(topic) = key.split(':').next() {
-                    *topic_counts.entry(topic.to_string()).or_insert(0) += 1;
-                }
+            let tfm = self.trigger_function_map.read().await;
+            for (topic, _fid) in tfm.values() {
+                *topic_counts.entry(topic.clone()).or_insert(0) += 1;
             }
         }
 
-        // Gather function queue topics from poll_intervals
         {
             let intervals = self.poll_intervals.read().await;
             for queue_name in intervals.keys() {
@@ -440,18 +551,29 @@ impl QueueAdapter for BuiltinQueueAdapter {
     }
 
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<crate::modules::queue::TopicStats> {
-        // Count subscribers for this topic
         let consumer_count = {
-            let subs = self.subscriptions.read().await;
-            subs.keys()
-                .filter(|key| key.split(':').next().map(|t| t == topic).unwrap_or(false))
+            let tfm = self.trigger_function_map.read().await;
+            tfm.values()
+                .filter(|(t, _)| t == topic)
                 .count() as u64
         };
 
-        let dlq_depth = self.queue.dlq_count(topic).await;
+        let tf = self.topic_functions.read().await;
+        let mut depth = 0u64;
+        let mut dlq_depth = 0u64;
+        if let Some(fids) = tf.get(topic) {
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                depth += self.queue.queue_depth(&iq).await;
+                dlq_depth += self.queue.dlq_count(&iq).await;
+            }
+        } else {
+            depth = self.queue.queue_depth(topic).await;
+            dlq_depth = self.queue.dlq_count(topic).await;
+        }
 
         Ok(crate::modules::queue::TopicStats {
-            depth: self.queue.queue_depth(topic).await,
+            depth,
             consumer_count,
             dlq_depth,
             config: None,
@@ -464,7 +586,23 @@ impl QueueAdapter for BuiltinQueueAdapter {
         offset: u64,
         limit: u64,
     ) -> anyhow::Result<Vec<crate::modules::queue::DlqMessage>> {
-        Ok(self.queue.dlq_peek(topic, offset, limit).await)
+        let tf = self.topic_functions.read().await;
+        if let Some(fids) = tf.get(topic) {
+            let mut all = Vec::new();
+            for fid in fids {
+                let iq = format!("{}::{}", topic, fid);
+                all.extend(self.queue.dlq_peek(&iq, 0, offset + limit).await);
+            }
+            all.sort_by(|a, b| b.failed_at.cmp(&a.failed_at));
+            let result = all
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
+                .collect();
+            Ok(result)
+        } else {
+            Ok(self.queue.dlq_peek(topic, offset, limit).await)
+        }
     }
 }
 
