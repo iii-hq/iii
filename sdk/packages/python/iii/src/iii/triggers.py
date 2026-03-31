@@ -23,6 +23,7 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
     id: str
     function_id: str
     config: Any  # TConfig
+    metadata: dict[str, Any] | None = None
 
 
 class TriggerHandler(ABC, Generic[TConfig]):

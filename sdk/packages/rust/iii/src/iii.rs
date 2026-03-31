@@ -1633,9 +1633,9 @@ impl III {
                 trigger_type,
                 function_id,
                 config,
-                metadata: _,
+                metadata,
             } => {
-                self.handle_register_trigger(id, trigger_type, function_id, config);
+                self.handle_register_trigger(id, trigger_type, function_id, config, metadata);
             }
             Message::Ping => {
                 let _ = self.send_message(Message::Pong);
@@ -1864,6 +1864,7 @@ impl III {
         trigger_type: String,
         function_id: String,
         config: Value,
+        metadata: Option<Value>,
     ) {
         let handler = self
             .inner
@@ -1880,6 +1881,7 @@ impl III {
                     id: id.clone(),
                     function_id: function_id.clone(),
                     config,
+                    metadata,
                 };
 
                 match handler.register_trigger(config).await {

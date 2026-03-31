@@ -239,6 +239,8 @@ export type OnTriggerRegistrationInput = {
   function_id: string
   /** Trigger-specific configuration. */
   config: unknown
+  /** Arbitrary metadata attached to the trigger. */
+  metadata?: Record<string, unknown>
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
 }
