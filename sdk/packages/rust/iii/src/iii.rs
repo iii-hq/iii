@@ -781,11 +781,13 @@ impl III {
                     .expect("failed to create iii connection runtime");
 
                 rt.block_on(async move {
-                    telemetry::init_otel(otel_config).await;
+                    let otel_active = telemetry::init_otel(otel_config).await;
 
                     iii.run_connection(rx).await;
 
-                    telemetry::shutdown_otel().await;
+                    if otel_active {
+                        telemetry::shutdown_otel().await;
+                    }
                 });
             })
             .expect("failed to spawn iii connection thread");
