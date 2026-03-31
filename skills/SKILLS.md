@@ -19,6 +19,7 @@ Direct mappings to iii documentation HOWTOs. Each teaches one primitive or capab
 - [dead-letter-queues](iii-dead-letter-queues/SKILL.md) — Inspect and redrive failed queue jobs
 - [engine-config](iii-engine-config/SKILL.md) — Configure the iii engine via iii-config.yaml
 - [observability](iii-observability/SKILL.md) — OpenTelemetry tracing, metrics, and logging
+- [channels](iii-channels/SKILL.md) — Binary streaming between workers
 
 ## Architecture Pattern Skills
 

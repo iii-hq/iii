@@ -39,3 +39,14 @@ Full API reference: <https://iii.dev/docs/api-reference/sdk-node>
 - For HTTP endpoint patterns, see `iii-http-endpoints`
 - For Python SDK, see `iii-python-sdk`
 - For Rust SDK, see `iii-rust-sdk`
+
+## When to Use
+
+- Use this skill when the task is primarily about `iii-node-sdk` in the iii engine.
+- Triggers when the request directly asks for this pattern or an equivalent implementation.
+
+## Boundaries
+
+- Never use this skill as a generic fallback for unrelated tasks.
+- You must not apply this skill when a more specific iii skill is a better fit.
+- Always verify environment and safety constraints before applying examples from this skill.
