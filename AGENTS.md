@@ -1,83 +1,143 @@
-## iii
+# AGENTS.md
 
-Internal notes for contributors and AI agents working in this monorepo. Use `README.md` as the public source of truth for project overview. See `CONTRIBUTING.md` for build commands and development workflow.
+You are working in the iii monorepo — a backend unification engine with three primitives: **Function**, **Trigger**, **Worker**. The engine is Rust. SDKs exist for TypeScript, Python, and Rust. All communicate over WebSocket.
 
-### Architecture
-
-iii is a backend unification engine built on three primitives: **Function** (unit of work), **Trigger** (what causes it to run), and **Worker** (runtime connecting functions to the engine). One config file, one process, everything discoverable.
-
-### Repository Structure
-
-| Directory | Language | What it is |
-| --- | --- | --- |
-| `engine/` | Rust | Core runtime — modules (HTTP, cron, queue, state, stream, pubsub, otel), protocol, CLI |
-| `sdk/packages/node/iii/` | TypeScript | Node.js SDK (`iii-sdk` on npm) |
-| `sdk/packages/python/iii/` | Python | Python SDK (`iii-sdk` on PyPI) |
-| `sdk/packages/rust/iii/` | Rust | Rust SDK (`iii-sdk` on crates.io) |
-| `console/` | React + Rust | Developer dashboard for inspecting functions, triggers, traces, state |
-| `frameworks/motia/` | TypeScript/Python | Higher-level framework built on the SDK |
-| `skills/` | Markdown + JS/Py/Rs | 24 agent skills for AI coding agents (auto-discovered by SkillKit) |
-| `docs/` | MDX (Mintlify) | Documentation site at iii.dev/docs |
-| `website/` | TypeScript | iii.dev website |
-| `scripts/` | Shell | Build and CI scripts |
-
-### Important Files
-
-- `Cargo.toml` — Rust workspace root; members: engine, engine/function-macros, sdk/packages/rust/iii, sdk/packages/rust/iii-example, console/packages/console-rust
-- `pnpm-workspace.yaml` — pnpm workspace; includes sdk/node, frameworks/motia, console, docs
-- `turbo.json` — Turborepo config for JS/TS build orchestration
-- `biome.json` — Linter/formatter config for JS/TS
-- `engine/config.yaml` — Default engine configuration (modules, ports, adapters)
-- `engine/src/main.rs` — Engine entrypoint
-- `engine/src/lib.rs` — Engine library root
-- `engine/src/modules/` — Engine modules (http, cron, queue, state, stream, pubsub, otel, channels)
-- `sdk/packages/node/iii/src/index.ts` — Node.js SDK entrypoint
-- `sdk/packages/python/iii/iii_sdk/` — Python SDK source
-- `sdk/packages/rust/iii/src/lib.rs` — Rust SDK entrypoint
-- `skills/references/iii-config.yaml` — Full annotated engine config reference for skills
-
-### Build Commands
+## Commands
 
 ```bash
-# JS/TS (all packages)
-pnpm install && pnpm build && pnpm test
+# Setup
+pnpm install                     # JS/TS dependencies
+cargo build --release            # Rust workspace
 
-# Rust (engine + SDK + console)
-cargo build --release && cargo test
+# Build
+pnpm build                       # all JS/TS packages (Turborepo)
+cargo build --release             # engine + Rust SDK + console
 
-# Python SDK
-cd sdk/packages/python/iii && uv sync --extra dev && uv run pytest
+# Test
+pnpm test                        # all JS/TS tests
+cargo test                       # all Rust tests
+cargo test -p iii-engine          # engine only
+cargo test -p iii-sdk             # Rust SDK only
+cd sdk/packages/python/iii && uv sync --extra dev && uv run pytest  # Python SDK
 
-# Engine only
-cargo run --release              # start engine
-cargo test -p iii-engine         # test engine
-cargo test -p iii-sdk            # test Rust SDK
+# Lint & Format
+pnpm fmt                         # format JS/TS (Biome)
+pnpm fmt:check                   # check without changes
+pnpm lint                        # lint JS/TS
+cargo fmt --all                   # format Rust
+cargo clippy --workspace          # lint Rust
+
+# Run
+cargo run --release               # start engine (reads engine/config.yaml)
+pnpm dev:console                  # console frontend dev server
+pnpm dev:docs                     # docs dev server (Mintlify)
+pnpm dev:website                  # website dev server
 ```
 
-### Implementation Notes
+## Project Map
 
-- The engine is Rust, SDKs are TypeScript/Python/Rust. All three SDKs communicate with the engine over WebSocket.
-- SDK naming: the npm/PyPI/crates.io package is `iii-sdk`. The import is `iii-sdk` (Node), `iii_sdk` (Python), `iii_sdk` (Rust).
-- Engine config uses `expression` for cron schedule fields and leading slashes for `api_path` (e.g., `/orders`, not `orders`).
-- The `skills/` directory contains agent skills following the [Agent Skills specification](https://agentskills.io/specification). Each skill has a `SKILL.md` with YAML frontmatter. Reference implementations live in `skills/references/` named after their skill.
-- Skills are auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii` because SkillKit checks for a `skills/` directory at repo root.
-- All skill folder names are iii-prefixed (e.g., `iii-channels/`, `iii-http-endpoints/`) for marketplace indexing. The `name` field in each `SKILL.md` matches the directory name.
-- Console frontend is React. Console backend has a Rust component at `console/packages/console-rust/`.
-- Motia is a higher-level framework built on top of iii-sdk, located at `frameworks/motia/`.
-- Use `pnpm` (not npm) for all JS/TS dependency management. The lockfile is `pnpm-lock.yaml`.
-- Use `cargo fmt --all` before committing Rust changes. Use `pnpm fmt` for JS/TS.
-- Internal package references use `workspace:*` in pnpm (converted to actual versions on publish).
+```
+engine/                   Rust engine — runtime, modules, protocol, CLI
+sdk/packages/node/iii/    TypeScript SDK (npm: iii-sdk)
+sdk/packages/python/iii/  Python SDK (PyPI: iii-sdk)
+sdk/packages/rust/iii/    Rust SDK (crates.io: iii-sdk)
+console/                  Developer dashboard (React + Rust)
+frameworks/motia/         Higher-level framework on iii-sdk
+skills/                   24 agent skills (auto-discovered by SkillKit)
+docs/                     Documentation site (Mintlify/MDX)
+website/                  iii.dev website
+scripts/                  Build and CI scripts
+```
 
-### Conventions
+**Workspaces:** `Cargo.toml` (Rust), `pnpm-workspace.yaml` (JS/TS), `turbo.json` (build orchestration).
 
-- Trigger config field for cron schedules: `expression` (not `cron`)
-- HTTP trigger `api_path` values: always include leading slash (`/orders`, `/users/:id`)
-- Function IDs use `::` separator for namespacing (e.g., `orders::validate`, `reports::daily-summary`)
-- State scopes are named for the domain (e.g., `products`, `orders`, `sessions`)
-- Queue names are descriptive (e.g., `fulfillment`, `notifications`)
-- Skills must include "When to Use" and "Boundaries" sections in SKILL.md (SkillKit validates this)
+## Boundaries
 
-### Licensing
+### Always
+
+- Use `pnpm` (never `npm`) for JS/TS packages
+- Use `cargo fmt --all` before committing Rust changes
+- Use `pnpm fmt` before committing JS/TS changes
+- Use leading slashes for HTTP `api_path` values: `/orders`, `/users/:id`
+- Use `expression` (not `cron`) for cron trigger config fields
+- Use `::` separator for function IDs: `orders::validate`, `reports::daily-summary`
+- Use `workspace:*` for internal pnpm package references
+- Include `## When to Use` and `## Boundaries` sections in every SKILL.md
+- Match SKILL.md `name` field to its directory name exactly
+
+### Ask First
+
+- Changes to public SDK APIs (npm/PyPI/crates.io surface)
+- Changes to engine config schema (`engine/config.yaml`)
+- Changes to CI/CD workflows (`.github/`)
+- Adding new engine modules
+- Modifying the WebSocket protocol between SDK and engine
+
+### Never
+
+- Commit secrets, API keys, or credentials
+- Use `npm` instead of `pnpm`
+- Push directly to `main`
+- Change engine licensing (ELv2) or SDK licensing (Apache-2.0)
+- Remove "When to Use" / "Boundaries" from SKILL.md files (SkillKit validates these)
+- Use `cron` as a config key — the engine uses `expression`
+- Omit leading slashes on `api_path` — the engine standard is `/path`
+
+## Code Style
+
+**Rust (engine + SDK):**
+```rust
+// Function IDs use :: separator
+iii.register_function(
+    RegisterFunction::new("orders::validate", validate_order)
+        .description("Validate an incoming order"),
+);
+
+// HTTP triggers use leading slash
+iii.register_trigger(
+    IIITrigger::Http(HttpTriggerConfig::new("/orders/validate").method(HttpMethod::Post))
+        .for_function("orders::validate"),
+);
+
+// Cron triggers use `expression` field
+iii.register_trigger(
+    IIITrigger::Cron(CronTriggerConfig::new("0 9 * * *"))
+        .for_function("reports::daily-summary"),
+);
+```
+
+**TypeScript (SDK):**
+```typescript
+// HTTP trigger with leading slash
+iii.registerTrigger({
+  type: 'http',
+  function_id: 'orders::validate',
+  config: { api_path: '/orders/validate', http_method: 'POST' },
+});
+
+// Cron trigger with `expression` (not `cron`)
+iii.registerTrigger({
+  type: 'cron',
+  function_id: 'reports::daily-summary',
+  config: { expression: '0 9 * * *' },
+});
+```
+
+**Python (SDK):**
+```python
+# Same patterns — leading slash, expression field
+iii.register_trigger({
+    "type": "http",
+    "function_id": "orders::validate",
+    "config": {"api_path": "/orders/validate", "http_method": "POST"},
+})
+```
+
+## Skills
+
+The `skills/` directory contains 24 agent skills (iii-prefixed) auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`. Reference implementations live in `skills/references/` with TypeScript, Python, and Rust variants.
+
+## Licensing
 
 - `engine/` — Elastic License v2 (ELv2)
-- `sdk/`, `skills/`, `console/`, `frameworks/`, `docs/`, `website/` — Apache-2.0
+- Everything else — Apache-2.0
