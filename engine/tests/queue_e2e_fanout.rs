@@ -16,10 +16,7 @@ use iii::{
 
 use common::queue_helpers::{builtin_queue_config, enqueue_to_topic};
 
-fn register_capturing_function(
-    engine: &Arc<Engine>,
-    function_id: &str,
-) -> Arc<Mutex<Vec<Value>>> {
+fn register_capturing_function(engine: &Arc<Engine>, function_id: &str) -> Arc<Mutex<Vec<Value>>> {
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let cap = captured.clone();
     let function = Function {
@@ -42,10 +39,7 @@ fn register_capturing_function(
     captured
 }
 
-fn register_counting_fn(
-    engine: &Arc<Engine>,
-    function_id: &str,
-) -> Arc<AtomicU64> {
+fn register_counting_fn(engine: &Arc<Engine>, function_id: &str) -> Arc<AtomicU64> {
     let counter = Arc::new(AtomicU64::new(0));
     let cnt = counter.clone();
     let function = Function {
@@ -68,10 +62,7 @@ fn register_counting_fn(
     counter
 }
 
-async fn setup_engine_with_topic_triggers(
-    function_ids: &[&str],
-    topic: &str,
-) -> Arc<Engine> {
+async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) -> Arc<Engine> {
     iii::modules::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
@@ -101,11 +92,7 @@ async fn setup_engine_with_topic_triggers(
 #[tokio::test]
 async fn fanout_two_functions_same_topic_both_receive() {
     let topic = format!("fanout-{}", uuid::Uuid::new_v4());
-    let engine = setup_engine_with_topic_triggers(
-        &["test::fn_a", "test::fn_b"],
-        &topic,
-    )
-    .await;
+    let engine = setup_engine_with_topic_triggers(&["test::fn_a", "test::fn_b"], &topic).await;
 
     let cap_a = register_capturing_function(&engine, "test::fn_a");
     let cap_b = register_capturing_function(&engine, "test::fn_b");
@@ -118,8 +105,18 @@ async fn fanout_two_functions_same_topic_both_receive() {
 
     let a = cap_a.lock().await;
     let b = cap_b.lock().await;
-    assert_eq!(a.len(), 1, "fn_a should receive exactly 1 message, got {}", a.len());
-    assert_eq!(b.len(), 1, "fn_b should receive exactly 1 message, got {}", b.len());
+    assert_eq!(
+        a.len(),
+        1,
+        "fn_a should receive exactly 1 message, got {}",
+        a.len()
+    );
+    assert_eq!(
+        b.len(),
+        1,
+        "fn_b should receive exactly 1 message, got {}",
+        b.len()
+    );
     assert_eq!(a[0]["msg"], "hello");
     assert_eq!(b[0]["msg"], "hello");
 }
@@ -229,11 +226,7 @@ async fn fanout_mixed_functions_and_replicas() {
 #[tokio::test]
 async fn fanout_single_subscriber_unchanged() {
     let topic = format!("single-{}", uuid::Uuid::new_v4());
-    let engine = setup_engine_with_topic_triggers(
-        &["test::solo"],
-        &topic,
-    )
-    .await;
+    let engine = setup_engine_with_topic_triggers(&["test::solo"], &topic).await;
 
     let cap = register_capturing_function(&engine, "test::solo");
 
@@ -246,7 +239,11 @@ async fn fanout_single_subscriber_unchanged() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let received = cap.lock().await;
-    assert_eq!(received.len(), 3, "single subscriber should receive all 3 messages");
+    assert_eq!(
+        received.len(),
+        3,
+        "single subscriber should receive all 3 messages"
+    );
 }
 
 #[tokio::test]
@@ -329,11 +326,8 @@ async fn fanout_unsubscribe_stops_delivery() {
 #[tokio::test]
 async fn fanout_payload_integrity() {
     let topic = format!("payload-{}", uuid::Uuid::new_v4());
-    let engine = setup_engine_with_topic_triggers(
-        &["test::integrity_a", "test::integrity_b"],
-        &topic,
-    )
-    .await;
+    let engine =
+        setup_engine_with_topic_triggers(&["test::integrity_a", "test::integrity_b"], &topic).await;
 
     let cap_a = register_capturing_function(&engine, "test::integrity_a");
     let cap_b = register_capturing_function(&engine, "test::integrity_b");

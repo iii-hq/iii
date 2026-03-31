@@ -67,11 +67,7 @@ impl TopologyManager {
         Ok(())
     }
 
-    pub async fn setup_subscriber_queue(
-        &self,
-        topic: &str,
-        function_id: &str,
-    ) -> Result<()> {
+    pub async fn setup_subscriber_queue(&self, topic: &str, function_id: &str) -> Result<()> {
         let names = RabbitNames::new(topic);
 
         let queue_name = names.function_queue(function_id);

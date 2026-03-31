@@ -553,9 +553,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
     async fn topic_stats(&self, topic: &str) -> anyhow::Result<crate::modules::queue::TopicStats> {
         let consumer_count = {
             let tfm = self.trigger_function_map.read().await;
-            tfm.values()
-                .filter(|(t, _)| t == topic)
-                .count() as u64
+            tfm.values().filter(|(t, _)| t == topic).count() as u64
         };
 
         let tf = self.topic_functions.read().await;

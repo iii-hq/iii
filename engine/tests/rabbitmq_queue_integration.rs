@@ -1144,10 +1144,7 @@ fn register_rmq_capturing_function(
     captured
 }
 
-fn register_rmq_counting_fn(
-    engine: &Arc<Engine>,
-    function_id: &str,
-) -> Arc<AtomicU64> {
+fn register_rmq_counting_fn(engine: &Arc<Engine>, function_id: &str) -> Arc<AtomicU64> {
     let counter = Arc::new(AtomicU64::new(0));
     let cnt = counter.clone();
     let function = Function {

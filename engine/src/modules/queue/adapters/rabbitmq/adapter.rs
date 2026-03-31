@@ -307,7 +307,11 @@ impl QueueAdapter for RabbitMQAdapter {
             return;
         }
 
-        if let Err(e) = self.topology.setup_subscriber_queue(&topic, &function_id).await {
+        if let Err(e) = self
+            .topology
+            .setup_subscriber_queue(&topic, &function_id)
+            .await
+        {
             tracing::error!(
                 error = ?e,
                 topic = %topic,

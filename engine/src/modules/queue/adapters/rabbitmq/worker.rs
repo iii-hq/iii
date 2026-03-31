@@ -181,7 +181,7 @@ impl Worker {
                     .map_err(|e| format!("Failed to nack message: {}", e))?;
 
                 self.retry_handler
-                    .handle_failure(topic, &mut job, &format!("{:?}", e))
+                    .handle_failure(topic, &mut job, &format!("{:?}", e), Some(function_id))
                     .await
                     .map_err(|e| format!("Failed to handle failure: {}", e))?;
             }
