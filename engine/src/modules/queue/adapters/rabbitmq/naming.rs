@@ -27,6 +27,14 @@ impl RabbitNames {
         format!("{}.{}.queue", EXCHANGE_PREFIX, self.topic)
     }
 
+    pub fn function_queue(&self, function_id: &str) -> String {
+        format!("{}.{}.{}.queue", EXCHANGE_PREFIX, self.topic, function_id)
+    }
+
+    pub fn function_dlq(&self, function_id: &str) -> String {
+        format!("{}.{}.{}.dlq", EXCHANGE_PREFIX, self.topic, function_id)
+    }
+
     pub fn dlq(&self) -> String {
         format!("{}.{}.dlq", EXCHANGE_PREFIX, self.topic)
     }

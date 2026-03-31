@@ -281,6 +281,8 @@ impl QueueAdapter for RabbitMQAdapter {
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
     ) {
+        use super::naming::RabbitNames;
+
         let topic = topic.to_string();
         let id = id.to_string();
         let function_id = function_id.to_string();
@@ -300,11 +302,27 @@ impl QueueAdapter for RabbitMQAdapter {
             tracing::error!(
                 error = ?e,
                 topic = %topic,
-                "Failed to setup RabbitMQ topology for subscription"
+                "Failed to setup RabbitMQ fanout exchange"
             );
             return;
         }
 
+        if let Err(e) = self
+            .topology
+            .setup_subscriber_queue(&topic, &function_id)
+            .await
+        {
+            tracing::error!(
+                error = ?e,
+                topic = %topic,
+                function_id = %function_id,
+                "Failed to setup RabbitMQ per-function queue"
+            );
+            return;
+        }
+
+        let names = RabbitNames::new(&topic);
+        let per_function_queue = names.function_queue(&function_id);
         let consumer_tag = format!("consumer-{}", Uuid::new_v4());
 
         let effective_queue_mode = queue_config
@@ -330,6 +348,7 @@ impl QueueAdapter for RabbitMQAdapter {
         let topic_clone = topic.clone();
         let function_id_clone = function_id.clone();
         let consumer_tag_clone = consumer_tag.clone();
+        let queue_name_clone = per_function_queue.clone();
 
         let task_handle = tokio::spawn(async move {
             worker
@@ -338,6 +357,7 @@ impl QueueAdapter for RabbitMQAdapter {
                     function_id_clone,
                     condition_function_id,
                     consumer_tag_clone,
+                    queue_name_clone,
                 )
                 .await;
         });
@@ -355,7 +375,8 @@ impl QueueAdapter for RabbitMQAdapter {
         tracing::debug!(
             topic = %topic,
             function_id = %function_id,
-            "Subscribed to RabbitMQ queue"
+            queue = %per_function_queue,
+            "Subscribed to RabbitMQ per-function queue"
         );
     }
 

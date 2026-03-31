@@ -86,8 +86,8 @@ def test_subscription_with_queue_config_receives_messages(bridge):
     assert received == [{"infra": True}]
 
 
-def test_multiple_subscribers_on_same_topic_messages_delivered_to_one(bridge):
-    """Multiple subscribers on same topic - messages delivered to exactly one subscriber."""
+def test_multiple_subscribers_on_same_topic_each_receives_all(bridge):
+    """Multiple subscribers on same topic - each function receives every message (fan-out)."""
     topic = f"test-topic-multi-{int(time.time() * 1000)}"
     function_id1 = f"test.queue.multi1.{int(time.time() * 1000)}"
     function_id2 = f"test.queue.multi2.{int(time.time() * 1000)}"
@@ -112,11 +112,12 @@ def test_multiple_subscribers_on_same_topic_messages_delivered_to_one(bridge):
     bridge.trigger({"function_id": "enqueue", "payload": {"topic": topic, "data": {"msg": 2}}})
     time.sleep(2.0)
 
-    total = len(received1) + len(received2)
-    assert total == 2
-    all_received = received1 + received2
-    assert {"msg": 1} in all_received
-    assert {"msg": 2} in all_received
+    assert len(received1) == 2
+    assert len(received2) == 2
+    assert {"msg": 1} in received1
+    assert {"msg": 2} in received1
+    assert {"msg": 1} in received2
+    assert {"msg": 2} in received2
 
 
 def test_condition_function_filters_messages(bridge):

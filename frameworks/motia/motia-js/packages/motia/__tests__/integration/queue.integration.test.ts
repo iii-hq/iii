@@ -88,7 +88,7 @@ describe('queue integration', () => {
     expect(received).toEqual({ infra: true })
   }, 15000)
 
-  it('multiple subscribers on same topic - messages delivered to exactly one subscriber', async () => {
+  it('multiple subscribers on same topic - each function receives every message (fan-out)', async () => {
     const sdk = getInstance()
     const topic = `test-topic-multi-${Date.now()}`
     const functionId1 = `test.queue.multi1.${Date.now()}`
@@ -119,10 +119,12 @@ describe('queue integration', () => {
     await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { msg: 2 } } })
     await sleep(2000)
 
-    const total = received1.length + received2.length
-    expect(total).toBe(2)
-    expect([...received1, ...received2]).toContainEqual({ msg: 1 })
-    expect([...received1, ...received2]).toContainEqual({ msg: 2 })
+    expect(received1.length).toBe(2)
+    expect(received2.length).toBe(2)
+    expect(received1).toContainEqual({ msg: 1 })
+    expect(received1).toContainEqual({ msg: 2 })
+    expect(received2).toContainEqual({ msg: 1 })
+    expect(received2).toContainEqual({ msg: 2 })
   }, 15000)
 
   it('condition function filters messages', async () => {
