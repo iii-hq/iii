@@ -158,7 +158,38 @@ function extractLoggerDoc(ref: TypeDocReflection): LoggerDoc | undefined {
   return { description, methods }
 }
 
-export function parseTypedoc(jsonPath: string): SdkDoc {
+type Metadata ={
+  language: 'node' | 'browser',
+  languageLabel: string
+  title: string
+  description: string
+  installCommand: string
+  importExample: string
+}
+
+export function parseBrowserTypedoc(jsonPath: string): SdkDoc {
+  return parseTypedoc(jsonPath, {
+    language: 'node',
+    languageLabel: 'TypeScript',
+    title: 'Browser SDK',
+    description: 'API reference for the iii SDK for Browser / TypeScript.',
+    installCommand: 'npm install iii-browser-sdk',
+    importExample: "import { registerWorker } from 'iii-browser-sdk'",
+  })
+}
+
+export function parseNodeTypedoc(jsonPath: string): SdkDoc {
+ return parseTypedoc(jsonPath, {
+  language: 'node',
+  languageLabel: 'TypeScript',
+  title: 'Node.js SDK',
+  description: 'API reference for the iii SDK for Node.js / TypeScript.',
+  installCommand: 'npm install iii-sdk',
+  importExample: "import { registerWorker } from 'iii-sdk'",
+});
+}
+
+export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
   const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
 
   const modules: TypeDocReflection[] = raw.children ?? []
@@ -207,14 +238,7 @@ export function parseTypedoc(jsonPath: string): SdkDoc {
   }
 
   return {
-    metadata: {
-      language: 'node',
-      languageLabel: 'TypeScript',
-      title: 'Node.js SDK',
-      description: 'API reference for the iii SDK for Node.js / TypeScript.',
-      installCommand: 'npm install iii-sdk',
-      importExample: "import { registerWorker } from 'iii-sdk'",
-    },
+    metadata,
     initialization: {
       entryPoint: entryFn ?? { name: 'registerWorker', signature: '(address: string, options?: InitOptions) => ISdk', description: '', params: [], returns: { type: 'ISdk', description: '' }, examples: [] },
     },

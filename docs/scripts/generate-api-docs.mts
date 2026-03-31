@@ -1,11 +1,11 @@
 import { existsSync, writeFileSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseTypedoc } from './parsers/parse-typedoc.mjs'
 import { parseGriffe } from './parsers/parse-griffe.mjs'
 import { parseRustdoc } from './parsers/parse-rustdoc.mjs'
+import { parseBrowserTypedoc, parseNodeTypedoc, parseTypedoc } from './parsers/parse-typedoc.mjs'
 import { renderSdkMdx } from './renderers/render-mdx.mjs'
-import type { SdkDoc, FunctionDoc } from './types.mjs'
+import type { FunctionDoc, SdkDoc } from './types.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '../..')
@@ -23,7 +23,7 @@ const targets: GenerationTarget[] = [
     name: 'Node.js',
     jsonPath: resolve(ROOT, 'sdk/packages/node/iii/api-docs.json'),
     outputPath: resolve(DOCS_OUTPUT, 'sdk-node.mdx'),
-    parser: parseTypedoc,
+    parser: parseNodeTypedoc,
   },
   {
     name: 'Python',
@@ -41,7 +41,7 @@ const targets: GenerationTarget[] = [
     name: 'Browser',
     jsonPath: resolve(ROOT, 'sdk/packages/node/iii-browser/api-docs.json'),
     outputPath: resolve(DOCS_OUTPUT, 'sdk-browser.mdx'),
-    parser: parseTypedoc,
+    parser: parseBrowserTypedoc,
   },
 ]
 
