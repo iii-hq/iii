@@ -38,7 +38,7 @@ HTTP request
 | ---------------------------------------------------------------------------- | -------------------------------------------- |
 | `registerWorker`                                                             | Initialize the worker and connect to iii     |
 | `registerFunction`                                                           | Define each agent                            |
-| `trigger({ function_id: 'state::set/get/update', payload })`                 | Shared context between agents                |
+| trigger `state::set`, `state::get`, `state::update`                 | Shared context between agents                |
 | `trigger({ ..., action: TriggerAction.Enqueue({ queue }) })`                 | Async handoff between agents via named queue |
 | `trigger({ function_id, payload })`                                          | Explicit condition check before enqueuing    |
 | `trigger({ function_id: 'publish', payload, action: TriggerAction.Void() })` | Broadcast completion to any listeners        |
@@ -55,7 +55,7 @@ Code using this pattern commonly includes, when relevant:
 
 - `registerWorker(url, { workerName })` — worker initialization
 - `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` — async handoff between agents
-- `trigger({ function_id: 'state::set/get/update', payload: { scope, key } })` — shared context between agents
+- trigger `state::set`, `state::get`, `state::update` — shared context between agents
 - Explicit condition check via `await iii.trigger({ function_id: 'condition-fn', payload })` before enqueuing next agent
 - `trigger({ function_id: 'publish', payload: { topic, data }, action: TriggerAction.Void() })` — completion broadcast
 - Each agent as its own `registerFunction` with `agents::` prefix IDs

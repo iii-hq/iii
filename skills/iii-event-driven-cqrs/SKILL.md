@@ -42,7 +42,7 @@ HTTP GET /inventory (query)
 | ----------------------------------------------------------- | ----------------------------------------- |
 | `registerWorker`                                            | Initialize the worker and connect to iii  |
 | `registerFunction`                                          | Define commands, projections, and queries |
-| `trigger({ function_id: 'state::set/get/list', payload })`  | Event log and projection state            |
+| trigger `state::set`, `state::get`, `state::list`  | Event log and projection state            |
 | `trigger({ function_id: 'publish', payload })`              | Publish domain events                     |
 | `registerTrigger({ type: 'subscribe', config: { topic } })` | Subscribe projections to events           |
 | `registerTrigger({ type: 'http' })`                         | Command and query endpoints               |
