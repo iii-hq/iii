@@ -147,47 +147,41 @@ iii.registerFunction({ id: 'chat::broadcast' }, async (data) => {
 // createStream — Custom stream adapter with get/set/delete/list/listGroups
 // Useful for integrating external data sources as stream backends.
 // ---------------------------------------------------------------------------
-iii.createStream({
-  name: 'presence',
-  handlers: {
-    get: async ({ group_id, item_id }) => {
-      // Retrieve a single presence record from state
-      return await iii.trigger({
-        function_id: 'state::get',
-        payload: { scope: `presence::${group_id}`, key: item_id },
-      })
-    },
-    set: async ({ group_id, item_id, data }) => {
-      // Store presence record in state
-      await iii.trigger({
-        function_id: 'state::set',
-        payload: {
-          scope: `presence::${group_id}`,
-          key: item_id,
-          value: { ...data, updated_at: new Date().toISOString() },
-        },
-      })
-    },
-    delete: async ({ group_id, item_id }) => {
-      await iii.trigger({
-        function_id: 'state::delete',
-        payload: { scope: `presence::${group_id}`, key: item_id },
-      })
-    },
-    list: async ({ group_id }) => {
-      return await iii.trigger({
-        function_id: 'state::list',
-        payload: { scope: `presence::${group_id}` },
-      })
-    },
-    listGroups: async () => {
-      // Return known presence groups from a registry
-      const registry = await iii.trigger({
-        function_id: 'state::get',
-        payload: { scope: 'presence-registry', key: 'groups' },
-      })
-      return registry?.groups || []
-    },
+iii.createStream('presence', {
+  get: async ({ group_id, item_id }) => {
+    return await iii.trigger({
+      function_id: 'state::get',
+      payload: { scope: `presence::${group_id}`, key: item_id },
+    })
+  },
+  set: async ({ group_id, item_id, data }) => {
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: {
+        scope: `presence::${group_id}`,
+        key: item_id,
+        value: { ...data, updated_at: new Date().toISOString() },
+      },
+    })
+  },
+  delete: async ({ group_id, item_id }) => {
+    await iii.trigger({
+      function_id: 'state::delete',
+      payload: { scope: `presence::${group_id}`, key: item_id },
+    })
+  },
+  list: async ({ group_id }) => {
+    return await iii.trigger({
+      function_id: 'state::list',
+      payload: { scope: `presence::${group_id}` },
+    })
+  },
+  listGroups: async () => {
+    const registry = await iii.trigger({
+      function_id: 'state::get',
+      payload: { scope: 'presence-registry', key: 'groups' },
+    })
+    return registry?.groups || []
   },
 })
 

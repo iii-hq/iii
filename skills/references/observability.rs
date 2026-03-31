@@ -108,17 +108,19 @@ fn main() {
                 };
 
                 let total: f64 = items.iter().map(|i| i.price * i.qty as f64).sum();
+                let order_id = data.order_id.clone();
 
                 #[cfg(feature = "otel")]
                 with_span("persist-order", None, None, || {
                     let iii = iii.clone();
+                    let order_id = order_id.clone();
                     async move {
                         iii.trigger(TriggerRequest {
                             function_id: "state::set".into(),
                             payload: json!({
                                 "scope": "orders",
-                                "key": data.order_id,
-                                "value": { "_key": data.order_id, "total": total, "status": "confirmed" },
+                                "key": order_id,
+                                "value": { "_key": order_id, "total": total, "status": "confirmed" },
                             }),
                             action: None,
                             timeout_ms: None,
@@ -136,8 +138,8 @@ fn main() {
                     function_id: "state::set".into(),
                     payload: json!({
                         "scope": "orders",
-                        "key": data.order_id,
-                        "value": { "_key": data.order_id, "total": total, "status": "confirmed" },
+                        "key": order_id,
+                        "value": { "_key": order_id, "total": total, "status": "confirmed" },
                     }),
                     action: None,
                     timeout_ms: None,
@@ -146,7 +148,7 @@ fn main() {
                 .map_err(|e| e.to_string())?;
 
                 Ok(json!({
-                    "order_id": data.order_id,
+                    "order_id": order_id,
                     "total": total,
                     "validated": validation["valid"],
                 }))

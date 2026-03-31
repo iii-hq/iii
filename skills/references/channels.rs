@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction, TriggerRequest,
+    register_worker, InitOptions, RegisterFunction, TriggerRequest, TriggerAction,
     ChannelReader, extract_channel_refs,
     builtin_triggers::*,
     IIITrigger,
