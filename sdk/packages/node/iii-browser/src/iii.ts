@@ -25,7 +25,6 @@ import {
   type TriggerRequest,
   type TriggerTypeInfo,
   type WorkerInfo,
-  type WorkerRegisteredMessage,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
@@ -42,20 +41,6 @@ import type {
 } from './types'
 import { isChannelRef } from './utils'
 
-const SDK_VERSION = '0.10.0'
-
-function getBrowserInfo(): string {
-  if (typeof navigator !== 'undefined' && navigator.userAgent) {
-    return navigator.userAgent
-  }
-  return 'browser (unknown)'
-}
-
-function getDefaultWorkerName(): string {
-  const id = crypto.randomUUID().slice(0, 8)
-  return `browser:${id}`
-}
-
 /** @internal */
 export type TelemetryOptions = {
   language?: string
@@ -70,15 +55,12 @@ export type TelemetryOptions = {
  * @example
  * ```typescript
  * const iii = registerWorker('ws://localhost:49135', {
- *   workerName: 'my-browser-worker',
  *   invocationTimeoutMs: 10000,
  *   reconnectionConfig: { maxRetries: 5 },
  * })
  * ```
  */
 export type InitOptions = {
-  /** Display name for this worker. Defaults to `browser:<random-id>`. */
-  workerName?: string
   /** Default timeout for `trigger()` in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
@@ -89,8 +71,6 @@ export type InitOptions = {
   reconnectionConfig?: Partial<IIIReconnectionConfig>
   /** Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. */
   headers?: Record<string, string>
-  /** @internal */
-  telemetry?: TelemetryOptions
 }
 
 class Sdk implements ISdk {
@@ -104,8 +84,6 @@ class Sdk implements ISdk {
   private functionsAvailableTrigger?: Trigger
   private functionsAvailableFunctionPath?: string
   private messagesToSend: Record<string, unknown>[] = []
-  private workerName: string
-  private workerId?: string
   private reconnectTimeout?: ReturnType<typeof setTimeout>
   private invocationTimeoutMs: number
   private reconnectionConfig: IIIReconnectionConfig
@@ -117,7 +95,6 @@ class Sdk implements ISdk {
     private readonly address: string,
     private readonly options?: InitOptions,
   ) {
-    this.workerName = options?.workerName ?? getDefaultWorkerName()
     this.invocationTimeoutMs = options?.invocationTimeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS
     this.reconnectionConfig = {
       ...DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -486,29 +463,6 @@ class Sdk implements ISdk {
     return result.trigger_types
   }
 
-  private registerWorkerMetadata(): void {
-    const telemetryOpts = this.options?.telemetry
-    const language = telemetryOpts?.language ?? (typeof navigator !== 'undefined' ? navigator.language : undefined)
-
-    this.trigger({
-      function_id: EngineFunctions.REGISTER_WORKER,
-      payload: {
-        runtime: 'browser',
-        version: SDK_VERSION,
-        name: this.workerName,
-        os: getBrowserInfo(),
-        pid: 0,
-        telemetry: {
-          language,
-          project_name: telemetryOpts?.project_name,
-          framework: telemetryOpts?.framework,
-          amplitude_api_key: telemetryOpts?.amplitude_api_key,
-        },
-      },
-      action: { type: 'void' },
-    })
-  }
-
   /**
    * Registers a custom stream implementation, overriding the engine default
    * for the given stream name.
@@ -725,8 +679,6 @@ class Sdk implements ISdk {
       }
       this.sendMessageRaw(JSON.stringify(message))
     }
-
-    this.registerWorkerMetadata()
   }
 
   private isOpen(): boolean {
@@ -915,10 +867,6 @@ class Sdk implements ISdk {
       this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
       this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown })
-    } else if (msgType === MessageType.WorkerRegistered) {
-      const { worker_id } = message as WorkerRegisteredMessage
-      this.workerId = worker_id
-      console.debug('[iii] Worker registered with ID:', worker_id)
     }
   }
 }
@@ -974,9 +922,7 @@ export const TriggerAction = {
  * ```typescript
  * import { registerWorker } from 'iii-browser-sdk'
  *
- * const iii = registerWorker('ws://localhost:49135', {
- *   workerName: 'my-browser-worker',
- * })
+ * const iii = registerWorker('ws://localhost:49135')
  * ```
  */
 export const registerWorker = (address: string, options?: InitOptions): ISdk => new Sdk(address, options)

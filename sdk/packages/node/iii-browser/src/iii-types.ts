@@ -438,11 +438,6 @@ export type WorkerInfo = {
   active_invocations: number
 }
 
-export type WorkerRegisteredMessage = {
-  message_type: MessageType.WorkerRegistered
-  worker_id: string
-}
-
 export type UnregisterFunctionMessage = {
   message_type: MessageType.UnregisterFunction
   id: string
@@ -472,4 +467,3 @@ export type IIIMessage =
   | UnregisterTriggerMessage
   | UnregisterTriggerTypeMessage
   | TriggerRegistrationResultMessage
-  | WorkerRegisteredMessage
