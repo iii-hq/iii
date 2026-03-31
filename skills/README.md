@@ -54,6 +54,12 @@ Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, 
 
 ## Skills
 
+### Getting Started
+
+| Skill | What it does |
+| --- | --- |
+| [iii-getting-started](./iii-getting-started) | Install iii, create a project, write your first worker |
+
 ### HOWTO Skills
 
 Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or capability. Reference implementations are available in TypeScript, Python, and Rust.

@@ -2,6 +2,10 @@
 
 Skills for building on the [iii engine](https://iii.dev) — a backend unification and orchestration system.
 
+## Getting Started
+
+- [getting-started](iii-getting-started/SKILL.md) — Install iii, create a project, write your first worker
+
 ## HOWTO Skills
 
 Direct mappings to iii documentation HOWTOs. Each teaches one primitive or capability.
