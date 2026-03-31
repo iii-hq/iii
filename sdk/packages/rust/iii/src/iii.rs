@@ -755,7 +755,11 @@ impl III {
         let iii = self.clone();
 
         let otel_config = {
-            let mut config = self.inner.otel_config.lock_or_recover().take()
+            let mut config = self
+                .inner
+                .otel_config
+                .lock_or_recover()
+                .take()
                 .unwrap_or_default();
             if config.engine_ws_url.is_none() {
                 config.engine_ws_url = Some(self.inner.address.clone());

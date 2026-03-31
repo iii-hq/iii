@@ -86,10 +86,10 @@ impl AppState {
     /// Save state to the state file using atomic write-to-temp-then-rename.
     pub fn save(&self, path: &Path) -> Result<(), StateError> {
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent)?;
         }
 
         let content = serde_json::to_string_pretty(self)?;

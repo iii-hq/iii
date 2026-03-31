@@ -78,18 +78,18 @@ fn serialize_config_block(
     lines.push(begin_marker(worker_name));
     lines.push(format!("  - class: {}", class_value));
 
-    if let Some(config) = config_value {
-        if !config.is_null() {
-            lines.push("    config:".to_string());
-            let yaml_str = serde_yml::to_string(config).map_err(|e| {
-                WorkerError::ConfigError(format!("Failed to serialize config to YAML: {}", e))
-            })?;
-            for line in yaml_str.lines() {
-                if line.is_empty() {
-                    continue;
-                }
-                lines.push(format!("      {}", line));
+    if let Some(config) = config_value
+        && !config.is_null()
+    {
+        lines.push("    config:".to_string());
+        let yaml_str = serde_yml::to_string(config).map_err(|e| {
+            WorkerError::ConfigError(format!("Failed to serialize config to YAML: {}", e))
+        })?;
+        for line in yaml_str.lines() {
+            if line.is_empty() {
+                continue;
             }
+            lines.push(format!("      {}", line));
         }
     }
 
