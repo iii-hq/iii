@@ -940,7 +940,8 @@ impl Engine {
                     reg_id = format!("{prefix}::{reg_id}");
                 }
 
-                self.service_registry.register_service_from_function_id(&reg_id);
+                self.service_registry
+                    .register_service_from_function_id(&reg_id);
 
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self

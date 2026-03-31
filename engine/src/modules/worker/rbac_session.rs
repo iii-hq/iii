@@ -103,8 +103,7 @@ impl Session {
             ));
         };
 
-        serde_json::from_value(value)
-            .map_err(|e| ErrorBody::new("AUTH_ERROR", e.to_string()))
+        serde_json::from_value(value).map_err(|e| ErrorBody::new("AUTH_ERROR", e.to_string()))
     }
 }
 

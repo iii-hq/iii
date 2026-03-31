@@ -14,9 +14,8 @@ use serial_test::serial;
 use iii_sdk::{
     AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
     OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
-    OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput,
-    OnTriggerTypeRegistrationResult, RegisterFunction, RegisterFunctionMessage, TriggerRequest,
-    register_worker,
+    OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
+    RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
 };
 
 static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<AuthInput>>>> = OnceLock::new();
@@ -132,7 +131,9 @@ fn ensure_functions_registered() {
             "test::rbac-worker::on-function-reg",
             |input: OnFunctionRegistrationInput| async move {
                 if input.function_id.starts_with("denied::") {
-                    return Err(iii_sdk::IIIError::Handler("denied function registration".into()));
+                    return Err(iii_sdk::IIIError::Handler(
+                        "denied function registration".into(),
+                    ));
                 }
                 Ok::<_, iii_sdk::IIIError>(OnFunctionRegistrationResult {
                     function_id: Some(input.function_id),
@@ -148,7 +149,9 @@ fn ensure_functions_registered() {
                 let tt_reg_calls = tt_reg_calls.clone();
                 async move {
                     if input.trigger_type_id.starts_with("denied-tt::") {
-                        return Err(iii_sdk::IIIError::Handler("denied trigger type registration".into()));
+                        return Err(iii_sdk::IIIError::Handler(
+                            "denied trigger type registration".into(),
+                        ));
                     }
                     tt_reg_calls.lock().unwrap().push(input);
                     Ok::<_, iii_sdk::IIIError>(OnTriggerTypeRegistrationResult::default())
@@ -163,7 +166,9 @@ fn ensure_functions_registered() {
                 let trig_reg_calls = trig_reg_calls.clone();
                 async move {
                     if input.function_id.starts_with("denied-trig::") {
-                        return Err(iii_sdk::IIIError::Handler("denied trigger registration".into()));
+                        return Err(iii_sdk::IIIError::Handler(
+                            "denied trigger registration".into(),
+                        ));
                     }
                     trig_reg_calls.lock().unwrap().push(input);
                     Ok::<_, iii_sdk::IIIError>(OnTriggerRegistrationResult::default())
