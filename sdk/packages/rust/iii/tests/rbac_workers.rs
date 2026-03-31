@@ -13,8 +13,10 @@ use serial_test::serial;
 
 use iii_sdk::{
     AuthInput, AuthResult, IIIConnectionState, InitOptions, MiddlewareFunctionInput,
-    OnFunctionRegistrationInput, OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
-    RegisterFunction, RegisterFunctionMessage, TriggerRequest, register_worker,
+    OnFunctionRegistrationInput, OnFunctionRegistrationResult, OnTriggerRegistrationInput,
+    OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult, RegisterFunction, RegisterFunctionMessage, TriggerRequest,
+    register_worker,
 };
 
 static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<AuthInput>>>> = OnceLock::new();
@@ -62,6 +64,7 @@ fn ensure_functions_registered() {
                             allow_trigger_type_registration: false,
                             allow_function_registration: true,
                             context: json!({ "role": "anonymous", "user_id": "anonymous" }),
+                            function_registration_prefix: None,
                         }),
                         Some("valid-token") => Ok(AuthResult {
                             allowed_functions: vec!["test::ew::valid-token-echo".to_string()],
@@ -70,6 +73,7 @@ fn ensure_functions_registered() {
                             allow_trigger_type_registration: true,
                             allow_function_registration: true,
                             context: json!({ "role": "admin", "user_id": "user-1" }),
+                            function_registration_prefix: None,
                         }),
                         Some("restricted-token") => Ok(AuthResult {
                             allowed_functions: vec![],
@@ -78,6 +82,16 @@ fn ensure_functions_registered() {
                             allow_trigger_type_registration: false,
                             allow_function_registration: true,
                             context: json!({ "role": "restricted", "user_id": "user-2" }),
+                            function_registration_prefix: None,
+                        }),
+                        Some("prefix-token") => Ok(AuthResult {
+                            allowed_functions: vec![],
+                            forbidden_functions: vec![],
+                            allowed_trigger_types: None,
+                            allow_trigger_type_registration: true,
+                            allow_function_registration: true,
+                            context: json!({ "role": "prefixed", "user_id": "user-prefix" }),
+                            function_registration_prefix: Some("test-prefix".to_string()),
                         }),
                         _ => Err(iii_sdk::IIIError::Handler("invalid token".to_string())),
                     }
@@ -117,7 +131,13 @@ fn ensure_functions_registered() {
         refs.push(iii.register_function(RegisterFunction::new_async(
             "test::rbac-worker::on-function-reg",
             |input: OnFunctionRegistrationInput| async move {
-                Ok::<_, iii_sdk::IIIError>(!input.function_id.starts_with("denied::"))
+                if input.function_id.starts_with("denied::") {
+                    return Err(iii_sdk::IIIError::Handler("denied function registration".into()));
+                }
+                Ok::<_, iii_sdk::IIIError>(OnFunctionRegistrationResult {
+                    function_id: Some(input.function_id),
+                    ..Default::default()
+                })
             },
         )));
 
@@ -127,9 +147,11 @@ fn ensure_functions_registered() {
             move |input: OnTriggerTypeRegistrationInput| {
                 let tt_reg_calls = tt_reg_calls.clone();
                 async move {
-                    let denied = input.trigger_type_id.starts_with("denied-tt::");
+                    if input.trigger_type_id.starts_with("denied-tt::") {
+                        return Err(iii_sdk::IIIError::Handler("denied trigger type registration".into()));
+                    }
                     tt_reg_calls.lock().unwrap().push(input);
-                    Ok::<_, iii_sdk::IIIError>(!denied)
+                    Ok::<_, iii_sdk::IIIError>(OnTriggerTypeRegistrationResult::default())
                 }
             },
         )));
@@ -140,9 +162,11 @@ fn ensure_functions_registered() {
             move |input: OnTriggerRegistrationInput| {
                 let trig_reg_calls = trig_reg_calls.clone();
                 async move {
-                    let denied = input.function_id.starts_with("denied-trig::");
+                    if input.function_id.starts_with("denied-trig::") {
+                        return Err(iii_sdk::IIIError::Handler("denied trigger registration".into()));
+                    }
                     trig_reg_calls.lock().unwrap().push(input);
-                    Ok::<_, iii_sdk::IIIError>(!denied)
+                    Ok::<_, iii_sdk::IIIError>(OnTriggerRegistrationResult::default())
                 }
             },
         )));
@@ -459,6 +483,53 @@ async fn should_deny_trigger_registration_via_hook() {
             Some("user-1")
         );
     }
+
+    iii_client.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "prefix-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        iii_client.get_connection_state(),
+        IIIConnectionState::Connected
+    );
+
+    iii_client.register_function((
+        RegisterFunctionMessage::with_id("prefixed-echo".to_string()),
+        |input: Value| async move { Ok(json!({ "echoed": input })) },
+    ));
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let iii_server = common::shared_iii();
+    let result = iii_server
+        .trigger(TriggerRequest {
+            function_id: "test-prefix::prefixed-echo".to_string(),
+            payload: json!({ "msg": "prefix-test" }),
+            action: None,
+            timeout_ms: None,
+        })
+        .await
+        .expect("trigger with prefixed function_id should succeed");
+
+    assert_eq!(result["echoed"]["msg"], "prefix-test");
 
     iii_client.shutdown_async().await;
 }

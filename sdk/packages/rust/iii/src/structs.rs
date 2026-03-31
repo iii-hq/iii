@@ -48,6 +48,9 @@ pub struct AuthResult {
     /// invocation.
     #[serde(default = "default_context")]
     pub context: Value,
+    /// Optional prefix applied to all function IDs registered by this worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_registration_prefix: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -78,7 +81,8 @@ pub struct MiddlewareFunctionInput {
 
 /// Input passed to the `on_trigger_type_registration_function_id` hook
 /// when a worker attempts to register a new trigger type through the RBAC port.
-/// Return `true` to allow the registration.
+/// Return an [`OnTriggerTypeRegistrationResult`] with the (possibly mapped)
+/// fields, or return an error to deny the registration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OnTriggerTypeRegistrationInput {
     /// ID of the trigger type being registered.
@@ -89,9 +93,22 @@ pub struct OnTriggerTypeRegistrationInput {
     pub context: Value,
 }
 
+/// Result returned from the `on_trigger_type_registration_function_id` hook.
+/// Omitted fields keep the original value from the registration request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct OnTriggerTypeRegistrationResult {
+    /// Mapped trigger type ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_type_id: Option<String>,
+    /// Mapped description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Input passed to the `on_trigger_registration_function_id` hook
 /// when a worker attempts to register a trigger through the RBAC port.
-/// Return `true` to allow the registration.
+/// Return an [`OnTriggerRegistrationResult`] with the (possibly mapped)
+/// fields, or return an error to deny the registration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OnTriggerRegistrationInput {
     /// ID of the trigger being registered.
@@ -106,9 +123,28 @@ pub struct OnTriggerRegistrationInput {
     pub context: Value,
 }
 
+/// Result returned from the `on_trigger_registration_function_id` hook.
+/// Omitted fields keep the original value from the registration request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct OnTriggerRegistrationResult {
+    /// Mapped trigger ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<String>,
+    /// Mapped trigger type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_type: Option<String>,
+    /// Mapped function ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    /// Mapped trigger configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
+}
+
 /// Input passed to the `on_function_registration_function_id` hook
 /// when a worker attempts to register a function through the RBAC port.
-/// Return `true` to allow the registration.
+/// Return an [`OnFunctionRegistrationResult`] with the (possibly mapped)
+/// fields, or return an error to deny the registration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OnFunctionRegistrationInput {
     /// ID of the function being registered.
@@ -121,4 +157,19 @@ pub struct OnFunctionRegistrationInput {
     pub metadata: Option<Value>,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
+}
+
+/// Result returned from the `on_function_registration_function_id` hook.
+/// Omitted fields keep the original value from the registration request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct OnFunctionRegistrationResult {
+    /// Mapped function ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    /// Mapped description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Mapped metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }

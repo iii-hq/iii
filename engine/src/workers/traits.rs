@@ -89,6 +89,20 @@ impl FunctionHandler for Worker {
             let traceparent = inject_traceparent_from_context(&otel_context);
             let baggage = inject_baggage_from_context(&otel_context);
 
+            let function_id = if let Some(session) = &self.session {
+                if let Some(prefix) = &session.function_registration_prefix {
+                    let needle = format!("{prefix}::");
+                    function_id
+                        .strip_prefix(&needle)
+                        .map(String::from)
+                        .unwrap_or(function_id)
+                } else {
+                    function_id
+                }
+            } else {
+                function_id
+            };
+
             let send_result = self
                 .channel
                 .send(Outbound::Protocol(Message::InvokeFunction {

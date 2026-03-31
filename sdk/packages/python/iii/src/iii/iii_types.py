@@ -300,6 +300,8 @@ class AuthResult(BaseModel):
         allowed_trigger_types: Trigger type IDs the worker may register triggers for.
             When ``None``, all types are allowed.
         allow_trigger_type_registration: Whether the worker may register new trigger types.
+        function_registration_prefix: Optional prefix applied to all function IDs registered
+            by this worker.
         context: Arbitrary context forwarded to the middleware function on every invocation.
     """
 
@@ -319,6 +321,10 @@ class AuthResult(BaseModel):
     allow_function_registration: bool = Field(
         default=True,
         description="Whether the worker may register new functions. Defaults to ``True``.",
+    )
+    function_registration_prefix: str | None = Field(
+        default=None,
+        description="Optional prefix applied to all function IDs registered by this worker.",
     )
     context: dict[str, Any] = Field(
         description="Arbitrary context forwarded to the middleware function on every invocation.",
@@ -349,7 +355,8 @@ class MiddlewareFunctionInput(BaseModel):
 class OnTriggerTypeRegistrationInput(BaseModel):
     """Input passed to the ``on_trigger_type_registration_function_id`` hook
     when a worker attempts to register a new trigger type through the RBAC port.
-    Return ``True`` to allow the registration.
+    Return an ``OnTriggerTypeRegistrationResult`` with the (possibly mapped)
+    fields, or raise an exception to deny the registration.
 
     Attributes:
         trigger_type_id: ID of the trigger type being registered.
@@ -362,10 +369,24 @@ class OnTriggerTypeRegistrationInput(BaseModel):
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
+class OnTriggerTypeRegistrationResult(BaseModel):
+    """Result returned from the ``on_trigger_type_registration_function_id`` hook.
+    Omitted fields keep the original value from the registration request.
+
+    Attributes:
+        trigger_type_id: Mapped trigger type ID.
+        description: Mapped description.
+    """
+
+    trigger_type_id: str | None = Field(default=None, description="Mapped trigger type ID.")
+    description: str | None = Field(default=None, description="Mapped description.")
+
+
 class OnTriggerRegistrationInput(BaseModel):
     """Input passed to the ``on_trigger_registration_function_id`` hook
     when a worker attempts to register a trigger through the RBAC port.
-    Return ``True`` to allow the registration.
+    Return an ``OnTriggerRegistrationResult`` with the (possibly mapped)
+    fields, or raise an exception to deny the registration.
 
     Attributes:
         trigger_id: ID of the trigger being registered.
@@ -382,10 +403,28 @@ class OnTriggerRegistrationInput(BaseModel):
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
+class OnTriggerRegistrationResult(BaseModel):
+    """Result returned from the ``on_trigger_registration_function_id`` hook.
+    Omitted fields keep the original value from the registration request.
+
+    Attributes:
+        trigger_id: Mapped trigger ID.
+        trigger_type: Mapped trigger type.
+        function_id: Mapped function ID.
+        config: Mapped trigger configuration.
+    """
+
+    trigger_id: str | None = Field(default=None, description="Mapped trigger ID.")
+    trigger_type: str | None = Field(default=None, description="Mapped trigger type.")
+    function_id: str | None = Field(default=None, description="Mapped function ID.")
+    config: Any = Field(default=None, description="Mapped trigger configuration.")
+
+
 class OnFunctionRegistrationInput(BaseModel):
     """Input passed to the ``on_function_registration_function_id`` hook
     when a worker attempts to register a function through the RBAC port.
-    Return ``True`` to allow the registration.
+    Return an ``OnFunctionRegistrationResult`` with the (possibly mapped)
+    fields, or raise an exception to deny the registration.
 
     Attributes:
         function_id: ID of the function being registered.
@@ -398,6 +437,21 @@ class OnFunctionRegistrationInput(BaseModel):
     description: str | None = Field(default=None, description="Human-readable description of the function.")
     metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the function.")
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
+
+
+class OnFunctionRegistrationResult(BaseModel):
+    """Result returned from the ``on_function_registration_function_id`` hook.
+    Omitted fields keep the original value from the registration request.
+
+    Attributes:
+        function_id: Mapped function ID.
+        description: Mapped description.
+        metadata: Mapped metadata.
+    """
+
+    function_id: str | None = Field(default=None, description="Mapped function ID.")
+    description: str | None = Field(default=None, description="Mapped description.")
+    metadata: dict[str, Any] | None = Field(default=None, description="Mapped metadata.")
 
 
 class EnqueueResult(BaseModel):

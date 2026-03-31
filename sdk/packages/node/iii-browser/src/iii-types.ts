@@ -176,6 +176,8 @@ export type AuthResult = {
   allow_function_registration?: boolean
   /** Arbitrary context forwarded to the middleware function on every invocation. */
   context: Record<string, unknown>
+  /** Optional prefix applied to all function IDs registered by this worker. */
+  function_registration_prefix?: string
 }
 
 /**
@@ -197,7 +199,8 @@ export type MiddlewareFunctionInput = {
 /**
  * Input passed to the `on_trigger_type_registration_function_id` hook
  * when a worker attempts to register a new trigger type through the RBAC port.
- * Return `true` to allow the registration.
+ * Return an {@link OnTriggerTypeRegistrationResult} with the (possibly mapped)
+ * fields, or throw to deny the registration.
  */
 export type OnTriggerTypeRegistrationInput = {
   /** ID of the trigger type being registered. */
@@ -209,9 +212,22 @@ export type OnTriggerTypeRegistrationInput = {
 }
 
 /**
+ * Result returned from the `on_trigger_type_registration_function_id` hook.
+ * All fields are optional -- omitted fields keep the original value from the
+ * registration request.
+ */
+export type OnTriggerTypeRegistrationResult = {
+  /** Mapped trigger type ID. */
+  trigger_type_id?: string
+  /** Mapped description. */
+  description?: string
+}
+
+/**
  * Input passed to the `on_trigger_registration_function_id` hook
  * when a worker attempts to register a trigger through the RBAC port.
- * Return `true` to allow the registration.
+ * Return an {@link OnTriggerRegistrationResult} with the (possibly mapped)
+ * fields, or throw to deny the registration.
  */
 export type OnTriggerRegistrationInput = {
   /** ID of the trigger being registered. */
@@ -227,9 +243,26 @@ export type OnTriggerRegistrationInput = {
 }
 
 /**
+ * Result returned from the `on_trigger_registration_function_id` hook.
+ * All fields are optional -- omitted fields keep the original value from the
+ * registration request.
+ */
+export type OnTriggerRegistrationResult = {
+  /** Mapped trigger ID. */
+  trigger_id?: string
+  /** Mapped trigger type. */
+  trigger_type?: string
+  /** Mapped function ID. */
+  function_id?: string
+  /** Mapped trigger configuration. */
+  config?: unknown
+}
+
+/**
  * Input passed to the `on_function_registration_function_id` hook
  * when a worker attempts to register a function through the RBAC port.
- * Return `true` to allow the registration.
+ * Return an {@link OnFunctionRegistrationResult} with the (possibly mapped)
+ * fields, or throw to deny the registration.
  */
 export type OnFunctionRegistrationInput = {
   /** ID of the function being registered. */
@@ -240,6 +273,20 @@ export type OnFunctionRegistrationInput = {
   metadata?: Record<string, unknown>
   /** Auth context from `AuthResult.context` for this session. */
   context: Record<string, unknown>
+}
+
+/**
+ * Result returned from the `on_function_registration_function_id` hook.
+ * All fields are optional -- omitted fields keep the original value from the
+ * registration request.
+ */
+export type OnFunctionRegistrationResult = {
+  /** Mapped function ID. */
+  function_id?: string
+  /** Mapped description. */
+  description?: string
+  /** Mapped metadata. */
+  metadata?: Record<string, unknown>
 }
 
 /**

@@ -34,7 +34,8 @@ pub use protocol::{
 pub use stream::{Streams, UpdateBuilder};
 pub use structs::{
     AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
-    OnTriggerRegistrationInput, OnTriggerTypeRegistrationInput,
+    OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
+    OnTriggerTypeRegistrationInput, OnTriggerTypeRegistrationResult,
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{

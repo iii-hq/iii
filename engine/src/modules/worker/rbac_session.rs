@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, Uri};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -17,6 +18,14 @@ use crate::modules::worker::WorkerConfig;
 use crate::protocol::ErrorBody;
 
 use super::rbac_config::RbacConfig;
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_context() -> Value {
+    json!({})
+}
 
 // ---------------------------------------------------------------------------
 // Session
@@ -33,15 +42,25 @@ pub struct Session {
     pub allow_trigger_type_registration: bool,
     pub allow_function_registration: bool,
     pub context: Value,
+    pub function_registration_prefix: Option<String>,
 }
 
+#[derive(Deserialize)]
 pub(crate) struct AuthResult {
+    #[serde(default)]
     allowed_functions: Vec<String>,
+    #[serde(default)]
     forbidden_functions: Vec<String>,
+    #[serde(default)]
     allowed_trigger_types: Option<Vec<String>>,
+    #[serde(default)]
     allow_trigger_type_registration: bool,
+    #[serde(default = "default_true")]
     allow_function_registration: bool,
+    #[serde(default = "default_context")]
     context: Value,
+    #[serde(default)]
+    function_registration_prefix: Option<String>,
 }
 
 impl Session {
@@ -62,6 +81,7 @@ impl Session {
                 allow_trigger_type_registration: true,
                 allow_function_registration: true,
                 context: json!({}),
+                function_registration_prefix: None,
             });
         };
 
@@ -83,55 +103,8 @@ impl Session {
             ));
         };
 
-        let allowed_functions = value
-            .get("allowed_functions")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let forbidden_functions = value
-            .get("forbidden_functions")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let allowed_trigger_types = value
-            .get("allowed_trigger_types")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<String>>()
-            });
-
-        let allow_trigger_type_registration = value
-            .get("allow_trigger_type_registration")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let allow_function_registration = value
-            .get("allow_function_registration")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-
-        let context = value.get("context").cloned().unwrap_or(json!({}));
-
-        Ok(AuthResult {
-            allowed_functions,
-            forbidden_functions,
-            allowed_trigger_types,
-            allow_trigger_type_registration,
-            allow_function_registration,
-            context,
-        })
+        serde_json::from_value(value)
+            .map_err(|e| ErrorBody::new("AUTH_ERROR", e.to_string()))
     }
 }
 
@@ -167,5 +140,6 @@ pub async fn handle_session(
         allow_trigger_type_registration: auth.allow_trigger_type_registration,
         allow_function_registration: auth.allow_function_registration,
         context: auth.context,
+        function_registration_prefix: auth.function_registration_prefix,
     })
 }
