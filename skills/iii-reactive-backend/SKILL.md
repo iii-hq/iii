@@ -15,7 +15,7 @@ Comparable to: Convex, Firebase, Supabase, Appwrite
 
 Use the concepts below when they fit the task. Not every reactive backend needs every trigger or realtime surface shown here.
 
-- State is the "database" — CRUD via `state::set/get/update/delete/list`
+- State is the "database" — CRUD via `state::set`, `state::get`, `state::update`, `state::delete`, `state::list`
 - **State triggers** fire automatically when any value in a scope changes
 - Side effects (notifications, metrics, stream pushes) are wired reactively, not imperatively
 - **Streams** deliver real-time updates to connected clients
@@ -24,7 +24,7 @@ Use the concepts below when they fit the task. Not every reactive backend needs 
 
 ```text
 HTTP CRUD endpoints
-  → state::set/update/delete (writes to 'todos' scope)
+  → `state::set`, `state::update`, `state::delete` (writes to 'todos' scope)
     ↓ (automatic state triggers)
     → on-change → stream::send (push to clients)
     → update-metrics → state::update (aggregate counters)
@@ -54,7 +54,7 @@ CRUD endpoints, automatic change broadcasting via streams, and reactive aggregat
 Code using this pattern commonly includes, when relevant:
 
 - `registerWorker(url, { workerName })` — worker initialization
-- `trigger({ function_id: 'state::set/get', payload: { scope, key, value } })` — CRUD via state module
+- trigger `state::set`, `state::get` — CRUD via state module
 - `registerTrigger({ type: 'state', function_id, config: { scope } })` — reactive side effects on state change
 - Event argument destructuring in reactive handlers: `async (event) => { const { new_value, old_value, key } = event }`
 - `trigger({ function_id: 'stream::send', payload, action: TriggerAction.Void() })` — push live updates to clients

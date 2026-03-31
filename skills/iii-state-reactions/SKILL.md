@@ -24,7 +24,7 @@ Use the concepts below when they fit the task. Not every state reaction needs al
 
 ## Architecture
 
-    state::set / state::update / state::delete
+    state::set, state::update, or state::delete
       → StateModule emits change event
         → registerTrigger type:'state' (scope match)
           → condition_function_id check (if configured)

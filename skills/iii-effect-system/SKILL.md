@@ -39,7 +39,7 @@ HTTP request
 | `registerFunction`                                    | Define each effect                       |
 | `trigger({ function_id, payload })`                   | Compose effects synchronously            |
 | `trigger({ ..., action: TriggerAction.Void() })`      | Fire-and-forget side effects             |
-| `trigger({ function_id: 'state::set/get', payload })` | Persist data between effects             |
+| trigger `state::set`, `state::get` | Persist data between effects             |
 | `registerTrigger({ type: 'http' })`                   | Entry point                              |
 
 ## Reference Implementation
