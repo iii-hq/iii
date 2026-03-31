@@ -351,18 +351,21 @@ pub struct StateCallRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamJoinLeaveCallRequest {
-    pub event_type: String,
-    pub timestamp: i64,
+    pub subscription_id: String,
     pub stream_name: String,
     pub group_id: String,
     pub id: Option<String>,
+    pub context: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamCallRequest {
+    #[serde(rename = "type")]
     pub event_type: String,
     pub timestamp: i64,
+    #[serde(rename = "streamName")]
     pub stream_name: String,
+    #[serde(rename = "groupId")]
     pub group_id: String,
     pub id: Option<String>,
     pub event: Value,

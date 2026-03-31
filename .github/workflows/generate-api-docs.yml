@@ -62,8 +62,7 @@ jobs:
 
       # Step 4: Generate MDX from extracted JSON
       - name: Generate MDX files
-        working-directory: docs
-        run: pnpm tsx scripts/generate-api-docs.mts
+        run: pnpm tsx docs/scripts/generate-api-docs.mts
 
       # Step 5: Commit if changed
       - name: Commit generated docs

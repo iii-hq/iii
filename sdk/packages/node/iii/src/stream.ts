@@ -175,6 +175,41 @@ export type StreamUpdateInput = {
   ops: UpdateOp[]
 }
 
+/** Trigger config for `stream` triggers. Filters which item changes fire the handler. */
+export interface StreamTriggerConfig {
+  /** Stream name to watch. Only changes on this stream fire the handler. */
+  stream_name: string
+  /** If set, only changes within this group fire the handler. */
+  group_id?: string
+  /** If set, only changes to this specific item fire the handler. */
+  item_id?: string
+  /** Function ID for conditional execution. If it returns `false`, the handler is skipped. */
+  condition_function_id?: string
+}
+
+/** Trigger config for `stream:join` and `stream:leave` triggers. */
+export interface StreamJoinLeaveTriggerConfig {
+  /** Function ID for conditional execution. If it returns `false`, the handler is skipped. */
+  condition_function_id?: string
+}
+
+/** Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`, or `stream::delete`. */
+export interface StreamChangeEvent {
+  /** The event type. */
+  type: 'create' | 'update' | 'delete'
+  /** Unix timestamp of the event. */
+  timestamp: number
+  /** The stream where the change occurred. */
+  streamName: string
+  /** The group where the change occurred. */
+  groupId: string
+  /** The item ID that changed. */
+  id?: string
+  /** The event detail object containing `type` and `data` fields. */
+  // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+  event: { type: string; data: any }
+}
+
 /**
  * Interface for custom stream implementations. Passed to `ISdk.createStream`
  * to override the engine's built-in stream storage.

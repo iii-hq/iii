@@ -140,6 +140,31 @@ listTriggers(includeInternal: boolean) => Promise<TriggerInfo[]>
 | --- | --- | --- | --- |
 | `includeInternal` | `boolean` | Yes | Whether to include internal triggers (default: false) |
 
+### listTriggerTypes
+
+Lists all trigger types registered with the engine.
+
+**Signature**
+
+```typescript
+listTriggerTypes(includeInternal: boolean) => Promise<TriggerTypeInfo[]>
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `includeInternal` | `boolean` | Yes | Whether to include internal trigger types (default: false) |
+
+#### Example
+
+```typescript
+const triggerTypes = await iii.listTriggerTypes()
+for (const tt of triggerTypes) {
+  console.log(`${tt.id}: ${tt.description}`)
+}
+```
+
 ### onFunctionsAvailable
 
 Registers a callback to receive the current functions list
@@ -240,7 +265,7 @@ Registers a new trigger type. A trigger type is a way to invoke a function when 
 **Signature**
 
 ```typescript
-registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>) => void
+registerTriggerType(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>) => TriggerTypeRef<TConfig>
 ```
 
 #### Parameters
@@ -359,8 +384,8 @@ The `iii-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-sdk` | `MessageType`, `ChannelReader`, `ChannelWriter`, `Logger`, `ISdk`, `ApiRequest`, `ApiResponse`, `Channel`, `EnqueueResult`, `FunctionRef`, etc. |
-| `iii-sdk/stream` | `IStream`, `StreamAuthInput`, `StreamAuthResult`, `StreamJoinLeaveEvent`, `StreamJoinResult`, `DeleteResult`, `StreamContext`, `StreamDeleteInput`, `StreamGetInput`, `StreamListGroupsInput`, etc. |
+| `iii-sdk` | `MessageType`, `ChannelReader`, `ChannelWriter`, `Logger`, `ISdk`, `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Channel`, etc. |
+| `iii-sdk/stream` | `IStream`, `StreamAuthInput`, `StreamAuthResult`, `StreamChangeEvent`, `StreamJoinLeaveEvent`, `StreamJoinLeaveTriggerConfig`, `StreamJoinResult`, `StreamTriggerConfig`, `DeleteResult`, `StreamContext`, etc. |
 | `iii-sdk/state` | `StateEventType`, `IState`, `StateEventData`, `DeleteResult`, `StateDeleteInput`, `StateDeleteResult`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, etc. |
 | `iii-sdk/telemetry` | `WorkerMetricsCollector`, `IIIReconnectionConfig`, `OtelConfig`, `ReconnectionConfig`, `WorkerGaugesOptions`, `WorkerMetricsCollectorOptions`, `FunctionInfo`, `FunctionsAvailableCallback`, `IIIConnectionState`, `OtelLogEvent`, etc. |
 
@@ -470,7 +495,7 @@ logger.warn('Retry attempt', { attempt: 3, maxRetries: 5, endpoint: '/api/charge
 
 ## Types
 
-[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`FunctionInfo`](#functioninfo) · [`FunctionsAvailableCallback`](#functionsavailablecallback) · [`RegisterFunctionFormat`](#registerfunctionformat)
+[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`FunctionInfo`](#functioninfo) · [`FunctionsAvailableCallback`](#functionsavailablecallback) · [`RegisterFunctionFormat`](#registerfunctionformat)
 
 ### MessageType
 
@@ -560,6 +585,7 @@ Configuration options passed to registerWorker.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `enableMetricsReporting` | `boolean` | No | Enable worker metrics via OpenTelemetry. Defaults to `true`. |
+| `headers` | `Record<string, string>` | No | Custom HTTP headers sent during the WebSocket handshake. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
 | `otel` | Omit&lt;[`OtelConfig`](#otelconfig), "engineWsUrl"&gt; | No | OpenTelemetry configuration. OTel is initialized automatically by default.<br />Set `{ enabled: false }` or env `OTEL_ENABLED=false/0/no/off` to disable.<br />The `engineWsUrl` is set automatically from the III address. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
@@ -680,6 +706,31 @@ Request object passed to ISdk.trigger.
 | `payload` | `TInput` | Yes | Payload to pass to the function. |
 | `timeoutMs` | `number` | No | Override the default invocation timeout in milliseconds. |
 
+### TriggerTypeInfo
+
+Information about a registered trigger type, returned by `ISdk.listTriggerTypes`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `call_request_format` | `unknown` | No | JSON Schema for the call request payload. |
+| `description` | `string` | Yes | Human-readable description of the trigger type. |
+| `id` | `string` | Yes | Trigger type identifier (e.g. `http`, `cron`, `queue`). |
+| `trigger_request_format` | `unknown` | No | JSON Schema for the trigger configuration. |
+
+### TriggerTypeRef
+
+Typed handle returned by ISdk.registerTriggerType.
+
+Provides convenience methods to register triggers and functions scoped
+to this trigger type, so callers don't need to repeat the `type` field.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | Yes | The trigger type identifier. |
+| `registerFunction` | [`FunctionRef`](#functionref) | Yes | Register a function and immediately bind it to this trigger type. |
+| `registerTrigger` | [`Trigger`](#trigger) | Yes | Register a trigger bound to this trigger type. |
+| `unregister` | `void` | Yes | Unregister this trigger type from the engine. |
+
 ### IStream
 
 Interface for custom stream implementations. Passed to `ISdk.createStream`
@@ -794,9 +845,9 @@ type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `body` | [`RegisterFunctionFormat`](#registerfunctionformat)[] | No | The body of the parameter |
 | `description` | `string` | No | The description of the parameter |
 | `items` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The items of the parameter |
-| `name` | `string` | Yes | - |
-| `required` | `boolean` | No | Whether the parameter is required |
+| `name` | `string` | No | The name of the parameter |
+| `properties` | Record&lt;string, [`RegisterFunctionFormat`](#registerfunctionformat)&gt; | No | The body of the parameter |
+| `required` | `string[]` | No | Whether the parameter is required |
 | `type` | `"string" \| "number" \| "boolean" \| "object" \| "array" \| "null" \| "map"` | Yes | The type of the parameter |

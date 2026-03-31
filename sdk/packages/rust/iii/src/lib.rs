@@ -11,7 +11,10 @@ pub mod telemetry;
 pub mod triggers;
 pub mod types;
 
-pub use builtin_triggers::IIITrigger;
+pub use builtin_triggers::{
+    IIITrigger, StreamCallRequest, StreamJoinLeaveCallRequest, StreamJoinLeaveTriggerConfig,
+    StreamTriggerConfig,
+};
 pub use channels::{
     ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
     extract_channel_refs, is_channel_ref,

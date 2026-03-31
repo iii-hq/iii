@@ -153,6 +153,32 @@ class UpdateMerge(BaseModel):
 UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateRemove | UpdateMerge
 
 
+class StreamTriggerConfig(BaseModel):
+    """Trigger config for ``stream`` triggers. Filters which item changes fire the handler."""
+
+    stream_name: str
+    group_id: str | None = None
+    item_id: str | None = None
+    condition_function_id: str | None = None
+
+
+class StreamJoinLeaveTriggerConfig(BaseModel):
+    """Trigger config for ``stream:join`` and ``stream:leave`` triggers."""
+
+    condition_function_id: str | None = None
+
+
+class StreamChangeEvent(BaseModel):
+    """Handler input for ``stream`` triggers, fired when an item changes."""
+
+    type: str
+    timestamp: int
+    streamName: str
+    groupId: str
+    id: str | None = None
+    event: dict[str, Any]
+
+
 class IStream(ABC, Generic[TData]):
     """Abstract interface for stream operations."""
 
