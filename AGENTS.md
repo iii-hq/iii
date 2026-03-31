@@ -99,9 +99,9 @@ iii.register_trigger(
         .for_function("orders::validate"),
 );
 
-// Cron triggers use `expression` field
+// Cron triggers use `expression` field (7-field: sec min hour dom month dow year)
 iii.register_trigger(
-    IIITrigger::Cron(CronTriggerConfig::new("0 9 * * *"))
+    IIITrigger::Cron(CronTriggerConfig::new("0 0 9 * * * *"))
         .for_function("reports::daily-summary"),
 );
 ```
@@ -119,7 +119,7 @@ iii.registerTrigger({
 iii.registerTrigger({
   type: 'cron',
   function_id: 'reports::daily-summary',
-  config: { expression: '0 9 * * *' },
+  config: { expression: '0 0 9 * * * *' },
 });
 ```
 
