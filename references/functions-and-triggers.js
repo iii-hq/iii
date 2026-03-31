@@ -67,7 +67,7 @@ iii.registerFunction({ id: 'reports::daily-summary' }, async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'reports::daily-summary',
-  config: { cron: '0 9 * * *' }, // every day at 09:00
+  config: { expression: '0 9 * * *' }, // every day at 09:00
 })
 
 // ---------------------------------------------------------------------------

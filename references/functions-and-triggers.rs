@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. HTTP trigger — expose a function as a REST endpoint
     // -----------------------------------------------------------------------
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("orders/validate").method(HttpMethod::Post))
+        IIITrigger::Http(HttpTriggerConfig::new("/orders/validate").method(HttpMethod::Post))
             .for_function("orders::validate"),
     )
     .expect("failed to register http trigger");
@@ -206,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("orders").method(HttpMethod::Post))
+        IIITrigger::Http(HttpTriggerConfig::new("/orders").method(HttpMethod::Post))
             .for_function("orders::create"),
     )
     .expect("failed to register http trigger");

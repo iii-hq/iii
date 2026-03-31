@@ -91,5 +91,5 @@ iii.register_function("pipeline::consume", consume)
 iii.register_trigger({
     "type": "http",
     "function_id": "pipeline::produce",
-    "config": {"api_path": "pipeline/start", "http_method": "POST"},
+    "config": {"api_path": "/pipeline/start", "http_method": "POST"},
 })

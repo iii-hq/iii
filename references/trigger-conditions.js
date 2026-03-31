@@ -141,7 +141,7 @@ iii.registerTrigger({
   type: 'cron',
   function_id: 'reports::weekday-digest',
   config: {
-    cron: '0 8 * * *', // runs daily at 08:00 but condition limits to weekdays
+    expression: '0 8 * * *', // runs daily at 08:00 but condition limits to weekdays
     condition_function_id: 'conditions::is-weekday',
   },
 })

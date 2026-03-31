@@ -41,7 +41,7 @@ iii.register_function("orders::validate", validate_order)
 iii.register_trigger({
     "type": "http",
     "function_id": "orders::validate",
-    "config": {"api_path": "orders/validate", "http_method": "POST"},
+    "config": {"api_path": "/orders/validate", "http_method": "POST"},
 })
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ iii.register_function("reports::daily-summary", daily_summary)
 iii.register_trigger({
     "type": "cron",
     "function_id": "reports::daily-summary",
-    "config": {"cron": "0 9 * * *"},
+    "config": {"expression": "0 9 * * *"},
 })
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ iii.register_function("orders::create", create_order)
 iii.register_trigger({
     "type": "http",
     "function_id": "orders::create",
-    "config": {"api_path": "orders", "http_method": "POST"},
+    "config": {"api_path": "/orders", "http_method": "POST"},
 })
 
 # ---------------------------------------------------------------------------

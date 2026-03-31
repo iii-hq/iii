@@ -59,23 +59,24 @@ Supports 32+ agents including Claude Code, Cursor, Codex, Gemini CLI, OpenCode, 
 
 ### HOWTO Skills
 
-Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or capability.
+Direct mappings to [iii documentation](https://iii.dev/docs) HOWTOs. Each teaches one primitive or capability. Reference implementations are available in TypeScript, Python, and Rust.
 
 | Skill                                              | What it does                                                             |
 | -------------------------------------------------- | ------------------------------------------------------------------------ |
-| [functions-and-triggers](./functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
-| [http-endpoints](./http-endpoints)                 | Expose functions as REST API endpoints                                   |
-| [cron-scheduling](./cron-scheduling)               | Schedule recurring tasks with cron expressions                           |
-| [queue-processing](./queue-processing)             | Async job processing with retries, concurrency, and ordering             |
-| [state-management](./state-management)             | Distributed key-value state across functions                             |
-| [state-reactions](./state-reactions)               | Auto-trigger functions on state changes                                  |
-| [realtime-streams](./realtime-streams)             | Push live updates to WebSocket clients                                   |
-| [custom-triggers](./custom-triggers)               | Build custom trigger types for external events                           |
-| [trigger-actions](./trigger-actions)               | Synchronous, fire-and-forget, and enqueue invocation modes               |
-| [trigger-conditions](./trigger-conditions)         | Gate trigger execution with condition functions                          |
-| [dead-letter-queues](./dead-letter-queues)         | Inspect and redrive failed queue jobs                                    |
-| [engine-config](./engine-config)                   | Configure the iii engine via iii-config.yaml                             |
-| [observability](./observability)                   | OpenTelemetry tracing, metrics, and logging                              |
+| [functions-and-triggers](./iii-functions-and-triggers) | Register functions and bind triggers across TypeScript, Python, and Rust |
+| [http-endpoints](./iii-http-endpoints)                 | Expose functions as REST API endpoints                                   |
+| [cron-scheduling](./iii-cron-scheduling)               | Schedule recurring tasks with cron expressions                           |
+| [queue-processing](./iii-queue-processing)             | Async job processing with retries, concurrency, and ordering             |
+| [state-management](./iii-state-management)             | Distributed key-value state across functions                             |
+| [state-reactions](./iii-state-reactions)               | Auto-trigger functions on state changes                                  |
+| [realtime-streams](./iii-realtime-streams)             | Push live updates to WebSocket clients                                   |
+| [custom-triggers](./iii-custom-triggers)               | Build custom trigger types for external events                           |
+| [trigger-actions](./iii-trigger-actions)               | Synchronous, fire-and-forget, and enqueue invocation modes               |
+| [trigger-conditions](./iii-trigger-conditions)         | Gate trigger execution with condition functions                          |
+| [dead-letter-queues](./iii-dead-letter-queues)         | Inspect and redrive failed queue jobs                                    |
+| [engine-config](./iii-engine-config)                   | Configure the iii engine via iii-config.yaml                             |
+| [observability](./iii-observability)                   | OpenTelemetry tracing, metrics, and logging                              |
+| [channels](./iii-channels)                             | Binary streaming between workers                                         |
 
 ### Architecture Pattern Skills
 
@@ -83,21 +84,21 @@ Compose multiple iii primitives into common backend architectures. Each includes
 
 | Skill                                              | What it does                                               |
 | -------------------------------------------------- | ---------------------------------------------------------- |
-| [agentic-backend](./agentic-backend)               | Multi-agent pipelines with queue handoffs and shared state |
-| [reactive-backend](./reactive-backend)             | Real-time backends with state triggers and stream updates  |
-| [workflow-orchestration](./workflow-orchestration) | Durable multi-step pipelines with retries and DLQ          |
-| [http-invoked-functions](./http-invoked-functions) | Register external HTTP endpoints as iii functions          |
-| [effect-system](./effect-system)                   | Composable, traceable function pipelines                   |
-| [event-driven-cqrs](./event-driven-cqrs)           | CQRS with event sourcing and independent projections       |
-| [low-code-automation](./low-code-automation)       | Trigger-transform-action automation chains                 |
+| [agentic-backend](./iii-agentic-backend)               | Multi-agent pipelines with queue handoffs and shared state |
+| [reactive-backend](./iii-reactive-backend)             | Real-time backends with state triggers and stream updates  |
+| [workflow-orchestration](./iii-workflow-orchestration) | Durable multi-step pipelines with retries and DLQ          |
+| [http-invoked-functions](./iii-http-invoked-functions) | Register external HTTP endpoints as iii functions          |
+| [effect-system](./iii-effect-system)                   | Composable, traceable function pipelines                   |
+| [event-driven-cqrs](./iii-event-driven-cqrs)           | CQRS with event sourcing and independent projections       |
+| [low-code-automation](./iii-low-code-automation)       | Trigger-transform-action automation chains                 |
 
 ### SDK Reference Skills
 
 | Skill                      | What it does                     |
 | -------------------------- | -------------------------------- |
-| [node-sdk](./node-sdk)     | Node.js/TypeScript SDK reference |
-| [python-sdk](./python-sdk) | Python SDK reference             |
-| [rust-sdk](./rust-sdk)     | Rust SDK reference               |
+| [node-sdk](./iii-node-sdk)     | Node.js/TypeScript SDK reference |
+| [python-sdk](./iii-python-sdk) | Python SDK reference             |
+| [rust-sdk](./iii-rust-sdk)     | Rust SDK reference               |
 
 ### Shared References
 
@@ -110,13 +111,14 @@ Compose multiple iii primitives into common backend architectures. Each includes
 Each skill follows the [Agent Skills specification](https://agentskills.io/specification):
 
 ```text
-http-endpoints/
-└── SKILL.md    # YAML frontmatter (name + description) + markdown instructions
+iii-http-endpoints/
+└── SKILL.md                    # YAML frontmatter (name + description) + markdown instructions
 
 references/
-├── http-endpoints.js    # Full working code examples for each skill
-├── agentic-backend.js
-├── iii-config.yaml      # Shared engine config reference
+├── http-endpoints.js           # TypeScript reference implementation
+├── http-endpoints.py           # Python reference implementation
+├── http-endpoints.rs           # Rust reference implementation
+├── iii-config.yaml             # Shared engine config reference
 └── ...
 ```
 

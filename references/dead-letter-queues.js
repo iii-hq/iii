@@ -156,5 +156,5 @@ iii.registerFunction({ id: 'admin::auto-redrive' }, async () => {
 iii.registerTrigger({
   type: 'cron',
   function_id: 'admin::auto-redrive',
-  config: { cron: '0 * * * *' }, // every hour
+  config: { expression: '0 * * * *' }, // every hour
 })

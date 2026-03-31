@@ -130,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. HTTP trigger to kick off the pipeline
     // -----------------------------------------------------------------------
     iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("pipeline/start").method(HttpMethod::Post))
+        IIITrigger::Http(HttpTriggerConfig::new("/pipeline/start").method(HttpMethod::Post))
             .for_function("pipeline::produce"),
     )
     .expect("failed to register http trigger");
