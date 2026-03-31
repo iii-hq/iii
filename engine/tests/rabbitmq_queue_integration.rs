@@ -1110,3 +1110,247 @@ async fn rmq_handler_panic_recovery() {
         "DLQ message should contain the original panicking payload with panic: true"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fan-out per function tests (real RabbitMQ)
+// ---------------------------------------------------------------------------
+
+use common::queue_helpers::enqueue_to_topic;
+use iii::trigger::Trigger;
+
+fn register_rmq_capturing_function(
+    engine: &Arc<Engine>,
+    function_id: &str,
+) -> Arc<Mutex<Vec<Value>>> {
+    let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let cap = captured.clone();
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, input| {
+            let rec = cap.clone();
+            Box::pin(async move {
+                rec.lock().await.push(input);
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("rmq capturing handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+    captured
+}
+
+fn register_rmq_counting_fn(
+    engine: &Arc<Engine>,
+    function_id: &str,
+) -> Arc<AtomicU64> {
+    let counter = Arc::new(AtomicU64::new(0));
+    let cnt = counter.clone();
+    let function = Function {
+        handler: Arc::new(move |_invocation_id, _input| {
+            let c = cnt.clone();
+            Box::pin(async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                FunctionResult::Success(Some(json!({ "ok": true })))
+            })
+        }),
+        _function_id: function_id.to_string(),
+        _description: Some("rmq counting handler".to_string()),
+        request_format: None,
+        response_format: None,
+        metadata: None,
+    };
+    engine
+        .functions
+        .register_function(function_id.to_string(), function);
+    counter
+}
+
+#[tokio::test]
+async fn rmq_fanout_two_functions_same_topic_both_receive() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let topic = format!("{prefix}-fanout-both");
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let cap_a = register_rmq_capturing_function(&engine, "test::rmq_fan_a");
+    let cap_b = register_rmq_capturing_function(&engine, "test::rmq_fan_b");
+
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", Uuid::new_v4()),
+            trigger_type: "queue".to_string(),
+            function_id: "test::rmq_fan_a".to_string(),
+            config: json!({ "topic": &topic }),
+            worker_id: None,
+        })
+        .await
+        .expect("register trigger A");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", Uuid::new_v4()),
+            trigger_type: "queue".to_string(),
+            function_id: "test::rmq_fan_b".to_string(),
+            config: json!({ "topic": &topic }),
+            worker_id: None,
+        })
+        .await
+        .expect("register trigger B");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    enqueue_to_topic(&engine, &topic, json!({"msg": "fanout-test"}))
+        .await
+        .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    let a = cap_a.lock().await;
+    let b = cap_b.lock().await;
+    assert_eq!(a.len(), 1, "fn_a should receive 1 message, got {}", a.len());
+    assert_eq!(b.len(), 1, "fn_b should receive 1 message, got {}", b.len());
+    assert_eq!(a[0]["msg"], "fanout-test");
+    assert_eq!(b[0]["msg"], "fanout-test");
+}
+
+#[tokio::test]
+async fn rmq_fanout_replicas_compete_within_function() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let topic = format!("{prefix}-fanout-replica");
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let counter = register_rmq_counting_fn(&engine, "test::rmq_replica_fn");
+
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+
+    for _ in 0..2 {
+        engine
+            .trigger_registry
+            .register_trigger(Trigger {
+                id: format!("trig-{}", Uuid::new_v4()),
+                trigger_type: "queue".to_string(),
+                function_id: "test::rmq_replica_fn".to_string(),
+                config: json!({ "topic": &topic }),
+                worker_id: None,
+            })
+            .await
+            .expect("register trigger");
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    enqueue_to_topic(&engine, &topic, json!({"msg": "single"}))
+        .await
+        .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "only one replica should process the message"
+    );
+}
+
+#[tokio::test]
+async fn rmq_fanout_dlq_per_function() {
+    let ctx = get_rabbitmq().await;
+    let prefix = test_prefix();
+    let topic = format!("{prefix}-fanout-dlq");
+
+    let engine = {
+        iii::modules::observability::metrics::ensure_default_meter();
+        Arc::new(Engine::new())
+    };
+
+    let cap_success = register_rmq_capturing_function(&engine, "test::rmq_dlq_success");
+
+    let fail_count = Arc::new(AtomicU64::new(0));
+    register_failing_function(&engine, "test::rmq_dlq_fail", fail_count.clone());
+
+    let module = QueueCoreModule::create(
+        engine.clone(),
+        Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
+    )
+    .await
+    .expect("QueueCoreModule::create should succeed");
+    module.register_functions(engine.clone());
+    module.initialize().await.expect("init should succeed");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", Uuid::new_v4()),
+            trigger_type: "queue".to_string(),
+            function_id: "test::rmq_dlq_success".to_string(),
+            config: json!({ "topic": &topic }),
+            worker_id: None,
+        })
+        .await
+        .expect("register success trigger");
+
+    engine
+        .trigger_registry
+        .register_trigger(Trigger {
+            id: format!("trig-{}", Uuid::new_v4()),
+            trigger_type: "queue".to_string(),
+            function_id: "test::rmq_dlq_fail".to_string(),
+            config: json!({ "topic": &topic }),
+            worker_id: None,
+        })
+        .await
+        .expect("register fail trigger");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    enqueue_to_topic(&engine, &topic, json!({"data": "dlq-test"}))
+        .await
+        .expect("enqueue should succeed");
+
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    let success = cap_success.lock().await;
+    assert_eq!(
+        success.len(),
+        1,
+        "success function should receive the message"
+    );
+    assert_eq!(success[0]["data"], "dlq-test");
+
+    assert!(
+        fail_count.load(Ordering::SeqCst) >= 1,
+        "failing function should have been invoked at least once"
+    );
+}
