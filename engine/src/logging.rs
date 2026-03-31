@@ -312,6 +312,35 @@ fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
     otel_cfg
 }
 
+pub fn init_log_from_engine_config(cfg: &EngineConfig) {
+    let otel_cfg = extract_otel_config(cfg);
+    let otel_module_name = "modules::observability::OtelModule";
+    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
+
+    let log_level = otel_module_cfg
+        .and_then(|m| m.config.as_ref())
+        .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "info".to_string());
+
+    let log_format = otel_module_cfg
+        .and_then(|m| m.config.as_ref())
+        .and_then(|c| c.get("format"))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "default".to_string());
+
+    println!(
+        "Log level from config: {}, Log format: {}, OTel enabled: {}",
+        log_level, log_format, otel_cfg.enabled
+    );
+
+    if log_format.to_lowercase() == "json" {
+        init_prod_log(log_level.as_str(), &otel_cfg);
+    } else {
+        init_local_log(log_level.as_str(), &otel_cfg);
+    }
+}
+
 /// Initializes logging, strictly loading config from the given path.
 /// If `config_path` is `None`, initializes with default local logging.
 /// If the file is missing or unparseable, falls back to default local logging
@@ -336,33 +365,7 @@ pub fn init_log_from_config(config_path: Option<&str>) {
 
             let cfg = cfg.expect("already checked");
             println!("Parsed config file: {}", path);
-
-            let otel_cfg = extract_otel_config(&cfg);
-            let otel_module_name = "modules::observability::OtelModule";
-            let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
-
-            let log_level = otel_module_cfg
-                .and_then(|m| m.config.as_ref())
-                .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "info".to_string());
-
-            let log_format = otel_module_cfg
-                .and_then(|m| m.config.as_ref())
-                .and_then(|c| c.get("format"))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| "default".to_string());
-
-            println!(
-                "Log level from config: {}, Log format: {}, OTel enabled: {}",
-                log_level, log_format, otel_cfg.enabled
-            );
-
-            if log_format.to_lowercase() == "json" {
-                init_prod_log(log_level.as_str(), &otel_cfg);
-            } else {
-                init_local_log(log_level.as_str(), &otel_cfg);
-            }
+            init_log_from_engine_config(&cfg);
         }
     }
 }
@@ -879,6 +882,24 @@ mod tests {
         let otel = extract_otel_config(&cfg);
         assert!(!otel.enabled);
         assert!(matches!(otel.exporter, ExporterType::Otlp));
+    }
+
+    #[test]
+    fn test_extract_otel_config_reads_default_engine_config() {
+        let cfg = EngineConfig::default_config();
+
+        let otel = extract_otel_config(&cfg);
+        assert!(otel.enabled);
+        assert_eq!(otel.service_name, "iii");
+        assert!(matches!(otel.exporter, ExporterType::Memory));
+        assert_eq!(otel.memory_max_spans, 10000);
+    }
+
+    #[test]
+    fn test_init_log_from_engine_config_uses_default_otel_config() {
+        let cfg = EngineConfig::default_config();
+
+        init_log_from_engine_config(&cfg);
     }
 
     #[test]

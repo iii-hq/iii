@@ -125,6 +125,10 @@ enum WorkerCommands {
     },
 }
 
+fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
+    cli.use_default_config
+}
+
 async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
     let config = if cli.use_default_config {
         EngineConfig::default_config()
@@ -132,11 +136,11 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         EngineConfig::config_file(&cli.config)?
     };
 
-    logging::init_log_from_config(if cli.use_default_config {
-        None
+    if should_init_logging_from_engine_config(cli) {
+        logging::init_log_from_engine_config(&config);
     } else {
-        Some(&cli.config)
-    });
+        logging::init_log_from_config(Some(&cli.config));
+    }
 
     EngineBuilder::new()
         .with_config(config)
@@ -262,6 +266,12 @@ mod tests {
     fn version_flag_works_globally() {
         let cli = Cli::try_parse_from(["iii", "--version"]).expect("should parse --version");
         assert!(cli.version);
+    }
+
+    #[test]
+    fn use_default_config_uses_engine_config_for_logging() {
+        let cli = Cli::try_parse_from(["iii", "--use-default-config"]).unwrap();
+        assert!(should_init_logging_from_engine_config(&cli));
     }
 
     // --- New subcommand parse tests ---

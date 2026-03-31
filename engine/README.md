@@ -35,6 +35,8 @@ command -v iii && iii --version
 iii --use-default-config
 ```
 
+This starts the engine with the built-in modules and an in-memory OpenTelemetry configuration, so traces, metrics, and logs are available without creating `config.yaml` first.
+
 For a project-backed setup, create `config.yaml` in your working directory,
 or run `iii --config /path/to/config.yaml`.
 
