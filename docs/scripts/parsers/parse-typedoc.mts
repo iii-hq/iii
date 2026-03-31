@@ -159,7 +159,7 @@ function extractLoggerDoc(ref: TypeDocReflection): LoggerDoc | undefined {
 }
 
 type Metadata ={
-  language: 'node' | 'browser',
+  language: 'node',
   languageLabel: string
   title: string
   description: string
