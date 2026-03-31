@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Activity, ArrowRight, Eye, Radio, Zap } from "lucide-react";
+import { ArrowRight, Eye, Radio, Zap } from "lucide-react";
 
 interface ObservabilitySectionProps {
   isDarkMode?: boolean;
@@ -92,163 +92,165 @@ export function ObservabilitySection({
   const border = isDarkMode ? "border-iii-medium/20" : "border-iii-medium/30";
   const textMuted = isDarkMode ? "text-iii-medium" : "text-iii-medium-dark";
   const textPrimary = isDarkMode ? "text-iii-light" : "text-iii-black";
+  const textSecondary = isDarkMode ? "text-iii-light/70" : "text-iii-black/70";
 
   return (
-    <section ref={sectionRef} className="w-full">
-      <div className="mb-8 md:mb-12">
-        <div className="flex items-center gap-2 mb-3">
-          <Activity className="w-4 h-4 text-iii-accent" />
-          <span className="text-xs uppercase tracking-widest text-iii-accent font-semibold">
-            Observability
-          </span>
-        </div>
-        <h2
-          className={`text-2xl sm:text-3xl md:text-4xl font-bold tracking-tight ${textPrimary}`}
-        >
-          Trace-level visibility.{" "}
-          <span className="text-iii-accent">Built in.</span>
-        </h2>
-        <p className={`mt-3 text-sm sm:text-base max-w-2xl ${textMuted}`}>
-          Every function call, every span, every metric — captured automatically
-          with OpenTelemetry. Export to any backend or use the built-in console.
-        </p>
-      </div>
-
-      <div className={`rounded-lg border ${border} ${bg} p-4 sm:p-6 mb-6`}>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-iii-success animate-pulse" />
-            <span className={`text-xs font-medium ${textMuted}`}>
-              Trace Waterfall
-            </span>
-          </div>
-          <span className={`text-[10px] font-mono ${textMuted}`}>
-            trace_id: a1b2c3d4e5f6
-          </span>
-        </div>
-
-        <div className="space-y-1.5">
-          {spans.map((span, i) => {
-            const widthPct = (span.duration / maxDuration) * 100;
-            const offsetPct = (span.offset / maxDuration) * 100;
-            const indent = (span.indent || 0) * 16;
-
-            return (
-              <div key={span.name} className="flex items-center gap-3 group">
-                <div
-                  className={`shrink-0 text-[11px] sm:text-xs font-mono text-right transition-colors ${textMuted} ${
-                    isDarkMode
-                      ? "group-hover:text-iii-light"
-                      : "group-hover:text-iii-black"
-                  }`}
-                  style={{ width: 120, paddingLeft: indent }}
-                >
-                  {span.indent ? (
-                    <span className="opacity-30 mr-1">
-                      {span.indent > 1 ? "│ " : ""}├─
-                    </span>
-                  ) : null}
-                  {span.name}
-                </div>
-
-                <div className="flex-1 relative h-5 sm:h-6">
-                  <div
-                    className={`absolute inset-0 rounded-sm ${
-                      isDarkMode ? "bg-white/[0.03]" : "bg-black/[0.03]"
-                    }`}
-                  />
-                  <div
-                    className="absolute top-0.5 bottom-0.5 rounded-sm transition-all duration-1000 ease-out"
-                    style={{
-                      left: `${offsetPct}%`,
-                      width: animated ? `${widthPct}%` : "0%",
-                      backgroundColor: span.color,
-                      opacity: 0.85,
-                      transitionDelay: `${i * 120}ms`,
-                    }}
-                  />
-                </div>
-
-                <span
-                  className={`shrink-0 text-[10px] sm:text-xs font-mono tabular-nums ${textMuted}`}
-                  style={{ width: 44 }}
-                >
-                  {span.duration}ms
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className={`rounded-lg border ${border} ${bg} p-4 sm:p-6 mb-6`}>
-        <span className={`text-xs font-medium ${textMuted} block mb-4`}>
-          Integration Pipeline
-        </span>
-
-        <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-0 justify-between">
-          <PipelineNode
-            label="iii Engine"
-            sublabel="Auto-instrumented"
-            isDarkMode={isDarkMode}
-            accent
-          />
-
-          <PipelineArrow isDarkMode={isDarkMode} />
-
-          <PipelineNode
-            label="OTLP/gRPC"
-            sublabel="Traces + Metrics + Logs"
-            isDarkMode={isDarkMode}
-          />
-
-          <PipelineArrow isDarkMode={isDarkMode} />
-
-          <PipelineNode
-            label="OTel Collector"
-            sublabel="Process & Route"
-            isDarkMode={isDarkMode}
-          />
-
-          <PipelineArrow isDarkMode={isDarkMode} />
-
-          <div className="flex flex-wrap justify-center sm:justify-start gap-2">
-            {providers.map((p) => (
-              <div
-                key={p.name}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] sm:text-xs font-medium border ${border} ${
-                  isDarkMode ? "bg-iii-black/50" : "bg-white"
-                } transition-colors hover:border-iii-accent/30`}
-              >
-                <p.logo />
-                <span className={textMuted}>{p.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {features.map((f) => (
-          <div
-            key={f.title}
-            className={`rounded-lg border ${border} ${bg} p-4 sm:p-5 transition-colors hover:border-iii-accent/30`}
-          >
-            <f.icon
-              className={`w-4 h-4 mb-3 ${
-                isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
-              }`}
-            />
-            <h3
-              className={`text-sm font-semibold mb-1.5 ${textPrimary}`}
+    <section ref={sectionRef} className="w-full h-full flex items-start">
+      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 py-5 md:py-6">
+        <div className="mb-7 md:mb-10">
+          <div className="text-center space-y-3">
+            <h2
+              className={`text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1] ${textPrimary}`}
             >
-              {f.title}
-            </h3>
-            <p className={`text-xs leading-relaxed ${textMuted}`}>
-              {f.description}
+              Trace-level visibility.{" "}
+              <span className="text-iii-accent">Built in.</span>
+            </h2>
+            <p
+              className={`text-sm md:text-base lg:text-lg max-w-3xl mx-auto leading-relaxed ${textSecondary}`}
+            >
+              Every function call, every span, every metric - captured
+              automatically with OpenTelemetry. Export to any backend or use the
+              built-in console.
             </p>
           </div>
-        ))}
+        </div>
+
+        <div className={`rounded-lg border ${border} ${bg} p-4 sm:p-6 mb-6`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-iii-success animate-pulse" />
+              <span className={`text-xs font-medium ${textMuted}`}>
+                Trace Waterfall
+              </span>
+            </div>
+            <span className={`text-[10px] font-mono ${textMuted}`}>
+              trace_id: a1b2c3d4e5f6
+            </span>
+          </div>
+
+          <div className="space-y-1.5">
+            {spans.map((span, i) => {
+              const widthPct = (span.duration / maxDuration) * 100;
+              const offsetPct = (span.offset / maxDuration) * 100;
+              const indent = (span.indent || 0) * 16;
+
+              return (
+                <div key={span.name} className="flex items-center gap-3 group">
+                  <div
+                    className={`shrink-0 text-[11px] sm:text-xs font-mono text-right transition-colors ${textMuted} ${
+                      isDarkMode
+                        ? "group-hover:text-iii-light"
+                        : "group-hover:text-iii-black"
+                    }`}
+                    style={{ width: 120, paddingLeft: indent }}
+                  >
+                    {span.indent ? (
+                      <span className="opacity-30 mr-1">
+                        {span.indent > 1 ? "│ " : ""}├─
+                      </span>
+                    ) : null}
+                    {span.name}
+                  </div>
+
+                  <div className="flex-1 relative h-5 sm:h-6">
+                    <div
+                      className={`absolute inset-0 rounded-sm ${
+                        isDarkMode ? "bg-white/[0.03]" : "bg-black/[0.03]"
+                      }`}
+                    />
+                    <div
+                      className="absolute top-0.5 bottom-0.5 rounded-sm transition-all duration-1000 ease-out"
+                      style={{
+                        left: `${offsetPct}%`,
+                        width: animated ? `${widthPct}%` : "0%",
+                        backgroundColor: span.color,
+                        opacity: 0.85,
+                        transitionDelay: `${i * 120}ms`,
+                      }}
+                    />
+                  </div>
+
+                  <span
+                    className={`shrink-0 text-[10px] sm:text-xs font-mono tabular-nums ${textMuted}`}
+                    style={{ width: 44 }}
+                  >
+                    {span.duration}ms
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className={`rounded-lg border ${border} ${bg} p-4 sm:p-6 mb-6`}>
+          <span className={`text-xs font-medium ${textMuted} block mb-4`}>
+            Integration Pipeline
+          </span>
+
+          <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-0 justify-between">
+            <PipelineNode
+              label="iii Engine"
+              sublabel="Auto-instrumented"
+              isDarkMode={isDarkMode}
+              accent
+            />
+
+            <PipelineArrow isDarkMode={isDarkMode} />
+
+            <PipelineNode
+              label="OTLP/gRPC"
+              sublabel="Traces + Metrics + Logs"
+              isDarkMode={isDarkMode}
+            />
+
+            <PipelineArrow isDarkMode={isDarkMode} />
+
+            <PipelineNode
+              label="OTel Collector"
+              sublabel="Process & Route"
+              isDarkMode={isDarkMode}
+            />
+
+            <PipelineArrow isDarkMode={isDarkMode} />
+
+            <div className="flex flex-wrap justify-center sm:justify-start gap-2">
+              {providers.map((p) => (
+                <div
+                  key={p.name}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] sm:text-xs font-medium border ${border} ${
+                    isDarkMode ? "bg-iii-black/50" : "bg-white"
+                  } transition-colors hover:border-iii-accent/30`}
+                >
+                  <p.logo />
+                  <span className={textMuted}>{p.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          {features.map((f) => (
+            <div
+              key={f.title}
+              className={`rounded-lg border ${border} ${bg} p-4 sm:p-5 transition-colors hover:border-iii-accent/30`}
+            >
+              <f.icon
+                className={`w-4 h-4 mb-3 ${
+                  isDarkMode ? "text-iii-accent" : "text-iii-accent-light"
+                }`}
+              />
+              <h3
+                className={`text-sm font-semibold mb-1.5 ${textPrimary}`}
+              >
+                {f.title}
+              </h3>
+              <p className={`text-xs leading-relaxed ${textMuted}`}>
+                {f.description}
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

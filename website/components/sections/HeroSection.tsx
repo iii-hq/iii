@@ -284,6 +284,8 @@ export const cloudLogos = [
 
 const rotatingDescriptors = [
   'simple',
+  'scalable',
+  'durable',
   'extensible',
   'fast',
   'composable',
@@ -355,11 +357,11 @@ export function HeroSection({ isDarkMode = true }: HeroSectionProps) {
 
   return (
     <section
-      className={`relative min-h-[60vh] sm:min-h-[70vh] overflow-x-hidden font-mono transition-colors duration-300 ${
+      className={`relative w-full overflow-x-hidden font-mono transition-colors duration-300 ${
         isDarkMode ? 'text-iii-light' : 'text-iii-black'
       }`}
     >
-      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 pt-8 sm:pt-12 md:pt-24 pb-8 sm:pb-12 md:pb-16">
+      <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-10 md:py-14">
         <div className="flex flex-col items-center text-center">
           {/* Content */}
           <div className="space-y-4 sm:space-y-6 md:space-y-8 max-w-4xl w-full">

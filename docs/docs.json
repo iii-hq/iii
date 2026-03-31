@@ -46,6 +46,7 @@
                   "how-to/schedule-cron-task",
                   "how-to/create-ephemeral-worker",
                   "how-to/stream-realtime-data",
+                  "how-to/use-iii-in-the-browser",
                   "how-to/create-custom-trigger-type",
                   "how-to/configure-engine",
                   "how-to/worker-rbac"
@@ -115,6 +116,7 @@
                 "group": "SDKs",
                 "pages": [
                   "api-reference/sdk-node",
+                  "api-reference/sdk-browser",
                   "api-reference/sdk-python",
                   "api-reference/sdk-rust",
                   "api-reference/disable-telemetry"

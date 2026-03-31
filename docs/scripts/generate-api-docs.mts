@@ -37,6 +37,12 @@ const targets: GenerationTarget[] = [
     outputPath: resolve(DOCS_OUTPUT, 'sdk-rust.mdx'),
     parser: parseRustdoc,
   },
+  {
+    name: 'Browser',
+    jsonPath: resolve(ROOT, 'sdk/packages/node/iii-browser/api-docs.json'),
+    outputPath: resolve(DOCS_OUTPUT, 'sdk-browser.mdx'),
+    parser: parseTypedoc,
+  },
 ]
 
 function escapeRegExp(str: string): string {
@@ -101,5 +107,6 @@ for (const target of targets) {
 console.log('\n[generate-api-docs] Done.')
 
 if (hasErrors) {
+  /** @ts-expect-error process.env is not typed */
   process.exit(1)
 }

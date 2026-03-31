@@ -135,9 +135,9 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
 
   return (
     <footer
-      className={`relative overflow-hidden font-mono transition-colors duration-300 ${textPrimary}`}
+      className={`relative w-full overflow-hidden font-mono transition-colors duration-300 ${textPrimary}`}
     >
-      <div className="relative z-10">
+      <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-6 py-8 md:py-12">
         {/* Primary CTA Section */}
         <div className="text-center mb-6 md:mb-8">
           <div className="mb-4">
@@ -261,8 +261,8 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
           </div>
         </div>
 
-        {/* FAQ */}
-        <div className="mb-6 md:mb-8">
+        {/* FAQ — hidden for now */}
+        {/* <div className="mb-6 md:mb-8">
           <div>
             <h4
               className={`text-xs font-semibold uppercase tracking-wider mb-4 ${accentColor}`}
@@ -321,10 +321,10 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               ))}
             </div>
           </div>
-        </div>
+        </div> */}
 
-        {/* iii Particle Branding */}
-        <div className={`border-t ${borderColor} pt-8 md:pt-12`}>
+        {/* iii Particle Branding — hidden for now */}
+        {/* <div className={`border-t ${borderColor} pt-8 md:pt-12`}>
           <div className="h-52 sm:h-72 md:h-96 lg:h-[28rem] w-full overflow-hidden mb-8">
             <TextParticle
               renderSource={drawIiiLogo}
@@ -335,7 +335,9 @@ export function FooterSection({ isDarkMode = true }: FooterSectionProps) {
               particleDensity={4}
             />
           </div>
+        </div> */}
 
+        <div className="pt-8 md:pt-12">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <Logo
