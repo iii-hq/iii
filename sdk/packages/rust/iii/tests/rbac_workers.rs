@@ -148,12 +148,13 @@ fn ensure_functions_registered() {
             move |input: OnTriggerTypeRegistrationInput| {
                 let tt_reg_calls = tt_reg_calls.clone();
                 async move {
-                    if input.trigger_type_id.starts_with("denied-tt::") {
+                    let denied = input.trigger_type_id.starts_with("denied-tt::");
+                    tt_reg_calls.lock().unwrap().push(input);
+                    if denied {
                         return Err(iii_sdk::IIIError::Handler(
                             "denied trigger type registration".into(),
                         ));
                     }
-                    tt_reg_calls.lock().unwrap().push(input);
                     Ok::<_, iii_sdk::IIIError>(OnTriggerTypeRegistrationResult::default())
                 }
             },
@@ -165,12 +166,13 @@ fn ensure_functions_registered() {
             move |input: OnTriggerRegistrationInput| {
                 let trig_reg_calls = trig_reg_calls.clone();
                 async move {
-                    if input.function_id.starts_with("denied-trig::") {
+                    let denied = input.function_id.starts_with("denied-trig::");
+                    trig_reg_calls.lock().unwrap().push(input);
+                    if denied {
                         return Err(iii_sdk::IIIError::Handler(
                             "denied trigger registration".into(),
                         ));
                     }
-                    trig_reg_calls.lock().unwrap().push(input);
                     Ok::<_, iii_sdk::IIIError>(OnTriggerRegistrationResult::default())
                 }
             },
