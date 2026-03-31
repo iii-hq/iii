@@ -814,10 +814,10 @@ impl III {
     ///
     /// Unlike [`shutdown`](Self::shutdown), this method does **not** block
     /// to wait for `run_connection()` to finish, making it safe to call from
-    /// an async context without stalling the executor. When the `otel`
-    /// feature is enabled, `telemetry::shutdown_otel()` still runs inside the
-    /// connection thread after `run_connection()` returns, so it may not
-    /// complete unless [`shutdown`](Self::shutdown) is used to join the thread.
+    /// an async context without stalling the executor.
+    /// `telemetry::shutdown_otel()` still runs inside the connection thread
+    /// after `run_connection()` returns, so it may not complete unless
+    /// [`shutdown`](Self::shutdown) is used to join the thread.
     pub async fn shutdown_async(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
