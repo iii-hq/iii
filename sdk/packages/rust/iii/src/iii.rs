@@ -43,9 +43,7 @@ use crate::{
     types::{Channel, RemoteFunctionData, RemoteFunctionHandler, RemoteTriggerTypeData},
 };
 
-#[cfg(feature = "otel")]
 use crate::telemetry;
-#[cfg(feature = "otel")]
 use crate::telemetry::types::OtelConfig;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -290,16 +288,9 @@ type WsTx = futures_util::stream::SplitSink<
 >;
 
 /// Inject trace context headers for outbound messages.
-/// Returns (traceparent, baggage) - both None when otel feature is disabled.
-#[cfg(feature = "otel")]
 fn inject_trace_headers() -> (Option<String>, Option<String>) {
     use crate::telemetry::context;
     (context::inject_traceparent(), context::inject_baggage())
-}
-
-#[cfg(not(feature = "otel"))]
-fn inject_trace_headers() -> (Option<String>, Option<String>) {
-    (None, None)
 }
 
 /// Connection state for the III WebSocket client
@@ -661,7 +652,6 @@ struct IIIInner {
     functions_available_function_id: Mutex<Option<String>>,
     functions_available_trigger: Mutex<Option<Trigger>>,
     headers: Mutex<Option<HashMap<String, String>>>,
-    #[cfg(feature = "otel")]
     otel_config: Mutex<Option<OtelConfig>>,
 }
 
@@ -725,7 +715,6 @@ impl III {
             functions_available_function_id: Mutex::new(None),
             functions_available_trigger: Mutex::new(None),
             headers: Mutex::new(None),
-            #[cfg(feature = "otel")]
             otel_config: Mutex::new(None),
         };
         Self {
@@ -749,7 +738,6 @@ impl III {
     }
 
     /// Set OpenTelemetry configuration (call before connect)
-    #[cfg(feature = "otel")]
     pub fn set_otel_config(&self, config: OtelConfig) {
         *self.inner.otel_config.lock_or_recover() = Some(config);
     }
@@ -766,7 +754,6 @@ impl III {
 
         let iii = self.clone();
 
-        #[cfg(feature = "otel")]
         let otel_config = {
             let mut config = self.inner.otel_config.lock_or_recover().take();
             if let Some(ref mut cfg) = config {
@@ -791,14 +778,12 @@ impl III {
                     .expect("failed to create iii connection runtime");
 
                 rt.block_on(async move {
-                    #[cfg(feature = "otel")]
                     if let Some(cfg) = otel_config {
                         telemetry::init_otel(cfg).await;
                     }
 
                     iii.run_connection(rx).await;
 
-                    #[cfg(feature = "otel")]
                     telemetry::shutdown_otel().await;
                 });
             })
@@ -810,8 +795,8 @@ impl III {
     /// Shutdown the III client and wait for the connection thread to finish.
     ///
     /// This stops the connection loop, sends a shutdown signal, and joins
-    /// the background connection thread. When the `otel` feature is enabled,
-    /// telemetry is flushed inside the connection thread before it exits.
+    /// the background connection thread. Telemetry is flushed inside the
+    /// connection thread before it exits.
     pub fn shutdown(&self) {
         self.inner.running.store(false, Ordering::SeqCst);
         let _ = self.inner.outbound.send(Outbound::Shutdown);
@@ -1716,7 +1701,6 @@ impl III {
             // invoke_function_with_timeout) are linked as children of the caller's trace.
             // We use FutureExt::with_context() instead of cx.attach() because
             // ContextGuard is !Send and can't be held across .await in tokio::spawn.
-            #[cfg(feature = "otel")]
             let otel_cx = {
                 use crate::telemetry::context::extract_context;
                 use opentelemetry::trace::{SpanKind, TraceContextExt, Tracer};
@@ -1730,19 +1714,13 @@ impl III {
                 parent_cx.with_span(span)
             };
 
-            #[cfg(feature = "otel")]
             let result = {
                 use opentelemetry::trace::FutureExt as OtelFutureExt;
                 handler(data).with_context(otel_cx.clone()).await
             };
 
-            #[cfg(not(feature = "otel"))]
-            let result = handler(data).await;
-
             // Record span status based on result
-            #[allow(unused_mut)]
             let mut error_stacktrace: Option<String> = None;
-            #[cfg(feature = "otel")]
             {
                 use opentelemetry::KeyValue;
                 use opentelemetry::trace::{Status, TraceContextExt};
@@ -1786,13 +1764,10 @@ impl III {
                 // Inject trace context from our span into the response.
                 // We briefly attach the otel context (no .await crossing)
                 // so inject_traceparent/inject_baggage can read it.
-                #[cfg(feature = "otel")]
                 let (resp_tp, resp_bg) = {
                     let _guard = otel_cx.attach();
                     inject_trace_headers()
                 };
-                #[cfg(not(feature = "otel"))]
-                let (resp_tp, resp_bg) = inject_trace_headers();
 
                 let message = match result {
                     Ok(value) => Message::InvocationResult {
