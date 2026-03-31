@@ -755,11 +755,10 @@ impl III {
         let iii = self.clone();
 
         let otel_config = {
-            let mut config = self.inner.otel_config.lock_or_recover().take();
-            if let Some(ref mut cfg) = config {
-                if cfg.engine_ws_url.is_none() {
-                    cfg.engine_ws_url = Some(self.inner.address.clone());
-                }
+            let mut config = self.inner.otel_config.lock_or_recover().take()
+                .unwrap_or_default();
+            if config.engine_ws_url.is_none() {
+                config.engine_ws_url = Some(self.inner.address.clone());
             }
             config
         };
@@ -778,9 +777,7 @@ impl III {
                     .expect("failed to create iii connection runtime");
 
                 rt.block_on(async move {
-                    if let Some(cfg) = otel_config {
-                        telemetry::init_otel(cfg).await;
-                    }
+                    telemetry::init_otel(otel_config).await;
 
                     iii.run_connection(rx).await;
 
