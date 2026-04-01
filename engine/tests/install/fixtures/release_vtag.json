@@ -1,0 +1,24 @@
+{
+  "tag_name": "v0.8.0",
+  "name": "iii v0.8.0",
+  "prerelease": false,
+  "draft": false,
+  "assets": [
+    {
+      "name": "iii-x86_64-apple-darwin.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/v0.8.0/iii-x86_64-apple-darwin.tar.gz"
+    },
+    {
+      "name": "iii-aarch64-apple-darwin.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/v0.8.0/iii-aarch64-apple-darwin.tar.gz"
+    },
+    {
+      "name": "iii-x86_64-unknown-linux-musl.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/v0.8.0/iii-x86_64-unknown-linux-musl.tar.gz"
+    },
+    {
+      "name": "iii-aarch64-unknown-linux-gnu.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/v0.8.0/iii-aarch64-unknown-linux-gnu.tar.gz"
+    }
+  ]
+}

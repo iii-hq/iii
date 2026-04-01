@@ -1,0 +1,16 @@
+{
+  "tag_name": "iii/v0.9.0-beta.1",
+  "name": "iii v0.9.0-beta.1",
+  "prerelease": true,
+  "draft": false,
+  "assets": [
+    {
+      "name": "iii-x86_64-apple-darwin.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/iii%2Fv0.9.0-beta.1/iii-x86_64-apple-darwin.tar.gz"
+    },
+    {
+      "name": "iii-aarch64-apple-darwin.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/iii%2Fv0.9.0-beta.1/iii-aarch64-apple-darwin.tar.gz"
+    }
+  ]
+}

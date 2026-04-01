@@ -1,0 +1,12 @@
+{
+  "tag_name": "console/v1.2.0",
+  "name": "Console v1.2.0",
+  "prerelease": false,
+  "draft": false,
+  "assets": [
+    {
+      "name": "console-x86_64-apple-darwin.tar.gz",
+      "browser_download_url": "https://github.com/iii-hq/iii/releases/download/console%2Fv1.2.0/console-x86_64-apple-darwin.tar.gz"
+    }
+  ]
+}
