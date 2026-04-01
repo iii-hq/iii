@@ -52,6 +52,7 @@ async fn subscribe_and_receive_published_messages() {
             trigger_type: "subscribe".to_string(),
             function_id: fn_id.clone(),
             config: json!({"topic": topic}),
+            metadata: None,
         })
         .expect("register trigger");
 
@@ -128,6 +129,7 @@ async fn topic_isolation() {
             trigger_type: "subscribe".to_string(),
             function_id: fn_id_a.clone(),
             config: json!({"topic": topic_a}),
+            metadata: None,
         })
         .expect("register trigger a");
     let trigger_b = iii
@@ -135,6 +137,7 @@ async fn topic_isolation() {
             trigger_type: "subscribe".to_string(),
             function_id: fn_id_b.clone(),
             config: json!({"topic": topic_b}),
+            metadata: None,
         })
         .expect("register trigger b");
 

@@ -48,6 +48,7 @@ async fn middleware_continue_to_handler() {
             "http_method": "GET",
             "middleware_function_ids": ["test::mw::continue::rs"],
         }),
+        metadata: None,
     })
     .expect("register trigger");
 
@@ -107,6 +108,7 @@ async fn middleware_short_circuit() {
             "http_method": "GET",
             "middleware_function_ids": ["test::mw::block::rs"],
         }),
+        metadata: None,
     })
     .expect("register trigger");
 
@@ -180,6 +182,7 @@ async fn multiple_middleware_ordering() {
                 "test::mw::order::second::rs",
             ],
         }),
+        metadata: None,
     })
     .expect("register trigger");
 
@@ -218,6 +221,7 @@ async fn no_middleware_regression() {
             "api_path": "test/rs/mw/none",
             "http_method": "GET",
         }),
+        metadata: None,
     })
     .expect("register trigger");
 

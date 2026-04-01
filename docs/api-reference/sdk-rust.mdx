@@ -218,7 +218,7 @@ register_trigger(input: RegisterTriggerInput) -> Result<Trigger, IIIError>
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `input` | `RegisterTriggerInput` | Yes | Trigger registration input with trigger_type, function_id, and config. |
+| `input` | `RegisterTriggerInput` | Yes | Trigger registration input with trigger_type, function_id, config, and optional metadata. |
 
 #### Example
 
@@ -227,6 +227,7 @@ let trigger = iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".to_string(),
     function_id: "greet".to_string(),
     config: json!({ "api_path": "/greet", "http_method": "GET" }),
+    metadata: None,
 })?;
 // Later...
 trigger.unregister();
@@ -664,6 +665,7 @@ Trigger information returned by `engine::triggers::list`
 | `trigger_type` | `String` | Yes | - |
 | `function_id` | `String` | Yes | - |
 | `config` | `Value` | Yes | - |
+| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
 
 ### WorkerInfo
 

@@ -290,6 +290,7 @@ impl StreamAdapter for BridgeAdapter {
                 topic: STREAM_EVENTS_TOPIC.to_string(),
             })
             .unwrap_or_default(),
+            metadata: None,
         });
 
         self.pub_sub.watch_events().await;

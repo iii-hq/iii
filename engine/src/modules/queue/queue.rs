@@ -1283,6 +1283,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({"topic": "my-topic"}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -1298,6 +1299,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({"topic": ""}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -1313,6 +1315,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -1332,6 +1335,7 @@ mod tests {
                 "condition_function_id": "test::condition_fn"
             }),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -1357,6 +1361,7 @@ mod tests {
                 }
             }),
             worker_id: None,
+            metadata: None,
         };
         let result = module.register_trigger(trigger).await;
         assert!(result.is_ok());
@@ -1372,6 +1377,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({"topic": "unsub-topic"}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());
@@ -1387,6 +1393,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         let result = module.unregister_trigger(trigger).await;
         assert!(result.is_ok());

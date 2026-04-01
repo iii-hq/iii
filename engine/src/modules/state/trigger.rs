@@ -185,6 +185,7 @@ mod tests {
                 "condition_function_id": "state.condition"
             }),
             worker_id: None,
+            metadata: None,
         };
 
         module
@@ -220,6 +221,7 @@ mod tests {
                 "scope": 123
             }),
             worker_id: None,
+            metadata: None,
         };
 
         let error = module

@@ -35,6 +35,7 @@ impl TriggerRegistrator for Worker {
                     trigger_type: trigger.trigger_type,
                     function_id: trigger.function_id,
                     config: trigger.config,
+                    metadata: trigger.metadata,
                 }))
                 .await
                 .map_err(|err| {
@@ -151,6 +152,7 @@ mod tests {
             function_id: "fn1".into(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         worker.register_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();
@@ -178,6 +180,7 @@ mod tests {
             function_id: "fn2".into(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         worker.unregister_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();

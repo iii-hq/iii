@@ -107,7 +107,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.periodic_job".into(), config: json!({
     "expression": "* * * * *",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>
@@ -167,7 +167,7 @@ iii.register_function((RegisterFunctionMessage::with_id("job.handle_tick".into()
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }) })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }), metadata: None })?;
 ```
 
   </Tab>
@@ -315,7 +315,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }) })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "cron".into(), function_id: "cron.orders_sweep".into(), config: json!({ "expression": "*/5 * * * *" }), metadata: None })?;
 ```
 
   </Tab>

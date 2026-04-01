@@ -554,6 +554,7 @@ class III:
         trigger_id = data.get("id", "")
         function_id = data.get("function_id", "")
         config = data.get("config")
+        metadata = data.get("metadata")
 
         result_base = {
             "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
@@ -567,7 +568,7 @@ class III:
 
         try:
             await handler_data.handler.register_trigger(
-                TriggerConfig(id=trigger_id, function_id=function_id, config=config)
+                TriggerConfig(id=trigger_id, function_id=function_id, config=config, metadata=metadata)
             )
             await self._send(result_base)
         except Exception as e:
@@ -707,6 +708,7 @@ class III:
             trigger_type=trigger.type,
             function_id=trigger.function_id,
             config=trigger.config,
+            metadata=trigger.metadata,
         )
         self._triggers[trigger_id] = msg
         self._send_if_connected(msg)

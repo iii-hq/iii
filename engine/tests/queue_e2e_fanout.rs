@@ -81,6 +81,7 @@ async fn setup_engine_with_topic_triggers(function_ids: &[&str], topic: &str) ->
                 function_id: fid.to_string(),
                 config: json!({ "topic": topic }),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger should succeed");
@@ -144,6 +145,7 @@ async fn fanout_replicas_compete_within_function() {
                 function_id: "test::replica_fn".to_string(),
                 config: json!({ "topic": &topic }),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger should succeed");
@@ -185,6 +187,7 @@ async fn fanout_mixed_functions_and_replicas() {
             function_id: "test::mix_a".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register trigger should succeed");
@@ -198,6 +201,7 @@ async fn fanout_mixed_functions_and_replicas() {
                 function_id: "test::mix_b".to_string(),
                 config: json!({ "topic": &topic }),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger should succeed");
@@ -272,6 +276,7 @@ async fn fanout_unsubscribe_stops_delivery() {
             function_id: "test::unsub_a".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register trigger A should succeed");
@@ -284,6 +289,7 @@ async fn fanout_unsubscribe_stops_delivery() {
             function_id: "test::unsub_b".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register trigger B should succeed");
@@ -383,6 +389,7 @@ async fn fanout_with_condition_function() {
             function_id: "test::cond_always".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register always trigger should succeed");
@@ -398,6 +405,7 @@ async fn fanout_with_condition_function() {
                 "condition_function_id": "test::only_important"
             }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register conditional trigger should succeed");

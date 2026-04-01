@@ -81,6 +81,7 @@ pub struct TriggerInfo {
     pub trigger_type: String,
     pub function_id: String,
     pub config: Value,
+    pub metadata: Option<Value>,
 }
 
 /// Trigger type information returned by `engine::trigger-types::list`
@@ -177,10 +178,21 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
         function_id: impl Into<String>,
         config: C,
     ) -> Result<Trigger, IIIError> {
+        self.register_trigger_with_metadata(function_id, config, None)
+    }
+
+    /// Register a trigger with compile-time validated trigger config and optional metadata.
+    pub fn register_trigger_with_metadata(
+        &self,
+        function_id: impl Into<String>,
+        config: C,
+        metadata: Option<Value>,
+    ) -> Result<Trigger, IIIError> {
         self.iii.register_trigger(RegisterTriggerInput {
             trigger_type: self.trigger_type_id.clone(),
             function_id: function_id.into(),
             config: serde_json::to_value(config).map_err(|e| IIIError::Handler(e.to_string()))?,
+            metadata,
         })
     }
 }
@@ -1013,6 +1025,7 @@ impl III {
     ///     trigger_type: "http".to_string(),
     ///     function_id: "greet".to_string(),
     ///     config: json!({ "api_path": "/greet", "http_method": "GET" }),
+    ///     metadata: None,
     /// })?;
     /// // Later...
     /// trigger.unregister();
@@ -1025,6 +1038,7 @@ impl III {
             trigger_type: input.trigger_type,
             function_id: input.function_id,
             config: input.config,
+            metadata: input.metadata,
         };
 
         self.inner
@@ -1242,6 +1256,7 @@ impl III {
                 trigger_type: "engine::functions-available".to_string(),
                 function_id,
                 config: serde_json::json!({}),
+                metadata: None,
             }) {
                 Ok(trigger) => {
                     *trigger_guard = Some(trigger);
@@ -1606,8 +1621,9 @@ impl III {
                 trigger_type,
                 function_id,
                 config,
+                metadata,
             } => {
-                self.handle_register_trigger(id, trigger_type, function_id, config);
+                self.handle_register_trigger(id, trigger_type, function_id, config, metadata);
             }
             Message::Ping => {
                 let _ = self.send_message(Message::Pong);
@@ -1826,6 +1842,7 @@ impl III {
         trigger_type: String,
         function_id: String,
         config: Value,
+        metadata: Option<Value>,
     ) {
         let handler = self
             .inner
@@ -1842,6 +1859,7 @@ impl III {
                     id: id.clone(),
                     function_id: function_id.clone(),
                     config,
+                    metadata,
                 };
 
                 match handler.register_trigger(config).await {
@@ -1901,6 +1919,7 @@ mod tests {
                 trigger_type: "demo".to_string(),
                 function_id: "functions.echo".to_string(),
                 config: json!({ "foo": "bar" }),
+                metadata: None,
             })
             .unwrap();
 

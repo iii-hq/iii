@@ -119,6 +119,9 @@ pub struct OnTriggerRegistrationInput {
     pub function_id: String,
     /// Trigger-specific configuration.
     pub config: Value,
+    /// Arbitrary metadata attached to the trigger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
 }

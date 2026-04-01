@@ -11,6 +11,8 @@ export type TriggerConfig<TConfig> = {
   function_id: string
   /** Trigger-specific configuration. */
   config: TConfig
+  /** Arbitrary metadata attached to the trigger. */
+  metadata?: Record<string, unknown>
 }
 
 /**
