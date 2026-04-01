@@ -12,8 +12,8 @@ pub mod triggers;
 pub mod types;
 
 pub use builtin_triggers::{
-    IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType,
-    StreamJoinLeaveCallRequest, StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
+    IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType, StreamJoinLeaveCallRequest,
+    StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
 pub use channels::{
     ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
