@@ -1287,7 +1287,7 @@ class III:
         telemetry: dict[str, Any] = {
             "language": language,
             "project_name": telemetry_opts.project_name if telemetry_opts else None,
-            "framework": (telemetry_opts.framework if telemetry_opts else "iii-py"),
+            "framework": (telemetry_opts.framework if telemetry_opts else None) or "iii-py",
             "amplitude_api_key": (
                 telemetry_opts.amplitude_api_key if telemetry_opts else None
             ),
