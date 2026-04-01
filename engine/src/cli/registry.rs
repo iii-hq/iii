@@ -120,7 +120,7 @@ pub static REGISTRY: &[BinarySpec] = &[
             cli_command: "cloud",
             binary_subcommand: None,
         }],
-        tag_prefix: Some("cli"),
+        tag_prefix: None,
     },
 ];
 
