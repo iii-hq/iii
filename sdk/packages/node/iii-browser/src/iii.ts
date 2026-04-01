@@ -24,7 +24,6 @@ import {
   type TriggerRegistrationResultMessage,
   type TriggerRequest,
   type TriggerTypeInfo,
-  type WorkerInfo,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
@@ -420,19 +419,6 @@ class Sdk implements ISdk {
       payload: {},
     })
     return result.functions
-  }
-
-  /**
-   * Lists all connected workers.
-   *
-   * @returns An array of {@link WorkerInfo} objects.
-   */
-  listWorkers = async (): Promise<WorkerInfo[]> => {
-    const result = await this.trigger<Record<string, never>, { workers: WorkerInfo[] }>({
-      function_id: EngineFunctions.LIST_WORKERS,
-      payload: {},
-    })
-    return result.workers
   }
 
   listTriggers = async (includeInternal = false): Promise<TriggerInfo[]> => {

@@ -38,6 +38,7 @@ from .logger import Logger
 from .stream import (
     IStream,
     StreamChangeEvent,
+    StreamChangeEventDetail,
     StreamContext,
     StreamJoinLeaveEvent,
     StreamJoinLeaveTriggerConfig,
@@ -118,6 +119,7 @@ __all__ = [
     # Stream
     "IStream",
     "StreamChangeEvent",
+    "StreamChangeEventDetail",
     "StreamContext",
     "StreamJoinLeaveEvent",
     "StreamJoinLeaveTriggerConfig",
