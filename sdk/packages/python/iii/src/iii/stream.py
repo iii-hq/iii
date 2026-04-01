@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, List, TypeVar
+from typing import Any, Generic, List, Literal, TypeVar
 
 from pydantic import BaseModel
 
@@ -168,15 +168,22 @@ class StreamJoinLeaveTriggerConfig(BaseModel):
     condition_function_id: str | None = None
 
 
+class StreamChangeEventDetail(BaseModel):
+    """Detail of a stream change event containing the mutation type and data."""
+
+    type: Literal["create", "update", "delete"]
+    data: Any
+
+
 class StreamChangeEvent(BaseModel):
     """Handler input for ``stream`` triggers, fired when an item changes."""
 
-    type: str
+    type: Literal["stream"]
     timestamp: int
     streamName: str
     groupId: str
     id: str | None = None
-    event: dict[str, Any]
+    event: StreamChangeEventDetail
 
 
 class IStream(ABC, Generic[TData]):

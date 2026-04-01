@@ -1005,6 +1005,7 @@ mod tests {
                 "condition_function_id": "fn::condition"
             }),
             worker_id: None,
+            metadata: None,
         };
 
         module
@@ -1038,6 +1039,7 @@ mod tests {
             function_id: "fn::users".to_string(),
             config: json!({ "http_method": "GET" }),
             worker_id: None,
+            metadata: None,
         };
 
         let err = module

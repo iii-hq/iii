@@ -193,6 +193,7 @@ mod tests {
             function_id: function_id.to_string(),
             config,
             worker_id: None,
+            metadata: None,
         }
     }
 

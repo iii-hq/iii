@@ -195,7 +195,7 @@ iii.register_function((RegisterFunctionMessage::with_id("hello::api".into()), |i
 iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), function_id: "hello::api".into(), config: json!({
     "api_path": "hello",
     "http_method": "GET",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>
@@ -323,7 +323,7 @@ iii.register_function((RegisterFunctionMessage::with_id("greet::process".into())
 
 iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "greet::process".into(), config: json!({
     "topic": "greet::process",
-}) })?;
+}), metadata: None })?;
 ```
 
   </Tab>

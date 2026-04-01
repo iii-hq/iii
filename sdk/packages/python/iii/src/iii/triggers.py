@@ -23,6 +23,7 @@ class TriggerConfig(BaseModel, Generic[TConfig]):
     id: str
     function_id: str
     config: Any  # TConfig
+    metadata: dict[str, Any] | None = None
 
 
 class TriggerHandler(ABC, Generic[TConfig]):
@@ -89,7 +90,9 @@ class TriggerTypeRef(Generic[C, R]):
         self._config_cls = config_cls
         self._request_cls = request_cls
 
-    def register_trigger(self, function_id: str, config: C) -> Trigger:
+    def register_trigger(
+        self, function_id: str, config: C, metadata: dict[str, Any] | None = None
+    ) -> Trigger:
         """Register a trigger with validated config.
 
         If the config is a Pydantic model it is serialized automatically.
@@ -104,6 +107,7 @@ class TriggerTypeRef(Generic[C, R]):
                 "type": self._trigger_type_id,
                 "function_id": function_id,
                 "config": config_value,
+                "metadata": metadata,
             }
         )
 

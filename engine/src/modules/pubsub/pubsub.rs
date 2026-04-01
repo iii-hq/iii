@@ -301,6 +301,7 @@ mod tests {
             function_id: "test::listener".to_string(),
             config: json!({ "topic": "orders" }),
             worker_id: None,
+            metadata: None,
         };
 
         module
@@ -339,6 +340,7 @@ mod tests {
                 function_id: "test::listener".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger without topic");

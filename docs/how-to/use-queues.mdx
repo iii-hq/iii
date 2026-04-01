@@ -562,6 +562,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "orders::create".into(),
     config: json!({ "api_path": "/orders", "http_method": "POST" }),
+    metadata: None,
 })?;
 ```
 </Tab>

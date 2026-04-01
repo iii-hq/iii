@@ -478,7 +478,7 @@ The handler receives a payload with the following shape:
 import { StreamChangeEvent } from 'iii-sdk/stream'
 
 const fn = iii.registerFunction({ id: 'onChatMessage' }, (input: StreamChangeEvent) => {
-  console.log(`[${input.type}] ${input.streamName}/${input.groupId}/${input.id}`, input.event.data)
+  console.log(`[${input.event.type}] ${input.streamName}/${input.groupId}/${input.id}`, input.event.data)
   return {}
 })
 
@@ -494,7 +494,7 @@ iii.registerTrigger({
 from iii import StreamChangeEvent
 
 def on_chat_message(input: StreamChangeEvent):
-    print(f"[{input.type}] {input.streamName}/{input.groupId}/{input.id}", input.event['data'])
+    print(f"[{input.event.type}] {input.streamName}/{input.groupId}/{input.id}", input.event.data)
     return {}
 
 iii.register_function({'id': 'onChatMessage'}, on_chat_message)
@@ -507,11 +507,11 @@ iii.register_trigger({
 </Tab>
 <Tab title="Rust">
 ```rust
-use iii_sdk::{IIITrigger, StreamCallRequest, StreamTriggerConfig};
+use iii_sdk::{IIITrigger, StreamCallRequest, StreamEventType, StreamTriggerConfig};
 
 iii.register_function((RegisterFunctionMessage::with_id("onChatMessage".into()), |input| async move {
     let event: StreamCallRequest = serde_json::from_value(input)?;
-    println!("[{}] {}/{}/{}: {:?}", event.event_type, event.stream_name, event.group_id, event.id.as_deref().unwrap_or(""), event.event);
+    println!("[{:?}] {}/{}/{}: {:?}", event.event.event_type, event.stream_name, event.group_id, event.id.as_deref().unwrap_or(""), event.event.data);
     Ok(json!({}))
 });
 

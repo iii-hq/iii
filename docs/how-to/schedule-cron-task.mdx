@@ -108,6 +108,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "cleanup::expired-sessions".into(),
     config: json!({ "expression": "* * * * * * *" }), // runs every second
+    metadata: None,
 })?;
 ```
 </Tab>

@@ -768,6 +768,7 @@ mod tests {
                 "scope": "orders"
             }),
             worker_id: None,
+            metadata: None,
         };
 
         {
@@ -816,6 +817,7 @@ mod tests {
                 "key": "special-key"
             }),
             worker_id: None,
+            metadata: None,
         };
 
         {
@@ -881,6 +883,7 @@ mod tests {
             function_id: "test::on_state_change".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
 
         {
@@ -1130,6 +1133,7 @@ mod tests {
                 "condition_function_id": "test::condition_none"
             }),
             worker_id: None,
+            metadata: None,
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
@@ -1211,6 +1215,7 @@ mod tests {
                 "condition_function_id": "test::condition_error"
             }),
             worker_id: None,
+            metadata: None,
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(
@@ -1267,6 +1272,7 @@ mod tests {
             function_id: "test::failing_state_handler".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
 
         let config = serde_json::from_value::<super::super::trigger::StateTriggerConfig>(

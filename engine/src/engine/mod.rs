@@ -493,6 +493,7 @@ impl Engine {
                 trigger_type,
                 function_id,
                 config,
+                metadata,
             } => {
                 tracing::debug!(
                     trigger_id = %id,
@@ -530,6 +531,7 @@ impl Engine {
                             "trigger_type": trigger_type,
                             "function_id": function_id,
                             "config": config,
+                            "metadata": metadata,
                             "context": session.context,
                         });
                         match self.call(hook_fn_id, hook_input).await {
@@ -576,6 +578,7 @@ impl Engine {
                         function_id: reg_function_id,
                         config: reg_config,
                         worker_id: Some(worker.id),
+                        metadata: metadata.clone(),
                     })
                     .await;
                 crate::modules::telemetry::collector::track_trigger_registered();
@@ -1649,6 +1652,7 @@ mod tests {
             trigger_type: "my_trigger_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({"key": "value"}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -1690,6 +1694,7 @@ mod tests {
             trigger_type: "unreg_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2118,6 +2123,7 @@ mod tests {
                 function_id: "engine::fire".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
         engine.trigger_registry.triggers.insert(
@@ -2128,6 +2134,7 @@ mod tests {
                 function_id: "engine::fire".to_string(),
                 config: json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -2355,6 +2362,7 @@ mod tests {
             trigger_type: "cleanup_trigger_type".to_string(),
             function_id: "some_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &register_trigger_msg)
@@ -2772,6 +2780,7 @@ mod tests {
             trigger_type: "cleanup_trigger_type".to_string(),
             function_id: "handler_func".to_string(),
             config: serde_json::json!({}),
+            metadata: None,
         };
         engine
             .router_msg(&worker, &t_msg)
@@ -2908,5 +2917,54 @@ mod tests {
             handled,
             "OTLP prefix with empty payload should still be handled"
         );
+    }
+
+    #[tokio::test]
+    async fn test_router_msg_register_trigger_with_metadata() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = Worker::new(tx);
+
+        let register_type_msg = Message::RegisterTriggerType {
+            id: "metadata_type".to_string(),
+            description: "Trigger type for metadata test".to_string(),
+            trigger_request_format: None,
+            call_request_format: None,
+        };
+        engine
+            .router_msg(&worker, &register_type_msg)
+            .await
+            .unwrap();
+
+        let register_trigger_msg = Message::RegisterTrigger {
+            id: "trigger_meta_1".to_string(),
+            trigger_type: "metadata_type".to_string(),
+            function_id: "handler_func".to_string(),
+            config: serde_json::json!({"key": "value"}),
+            metadata: Some(serde_json::json!({"team": "platform", "env": "staging"})),
+        };
+        engine
+            .router_msg(&worker, &register_trigger_msg)
+            .await
+            .unwrap();
+
+        assert!(
+            engine
+                .trigger_registry
+                .triggers
+                .contains_key("trigger_meta_1")
+        );
+        let trigger = engine
+            .trigger_registry
+            .triggers
+            .get("trigger_meta_1")
+            .unwrap();
+        assert_eq!(
+            trigger.metadata,
+            Some(serde_json::json!({"team": "platform", "env": "staging"}))
+        );
+
+        while rx.try_recv().is_ok() {}
     }
 }

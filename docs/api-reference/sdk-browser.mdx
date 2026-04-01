@@ -19,9 +19,7 @@ established automatically -- there is no separate `connect()` call.
 ```typescript
 import { registerWorker } from 'iii-browser-sdk'
 
-const iii = registerWorker('ws://localhost:49135', {
-  workerName: 'my-browser-worker',
-})
+const iii = registerWorker('ws://localhost:49135')
 ```
 
 ## Methods
@@ -151,16 +149,6 @@ const triggerTypes = await iii.listTriggerTypes()
 for (const tt of triggerTypes) {
   console.log(`${tt.id}: ${tt.description}`)
 }
-```
-
-### listWorkers
-
-Lists all connected workers.
-
-**Signature**
-
-```typescript
-listWorkers() => Promise<WorkerInfo[]>
 ```
 
 ### onFunctionsAvailable
@@ -467,7 +455,6 @@ Configuration options passed to registerWorker.
 | `headers` | `Record<string, string>` | No | Custom headers are not supported by browser WebSocket. Use query parameters or cookies for auth. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
 | `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
-| `workerName` | `string` | No | Display name for this worker. Defaults to `browser:<random-id>`. |
 
 ### RegisterFunctionInput
 
