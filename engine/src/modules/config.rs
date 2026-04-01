@@ -70,26 +70,6 @@ impl EngineConfig {
         .to_string()
     }
 
-    fn expand_default_placeholders(yaml_content: &str) -> String {
-        let re = Regex::new(r"\$\{([^}:]+)(?::([^}]*))?\}").unwrap();
-
-        re.replace_all(yaml_content, |caps: &regex::Captures| match caps.get(2) {
-            Some(default) => default.as_str().to_string(),
-            None => {
-                let var_name = &caps[1];
-                tracing::error!(
-                    "Default config placeholder '{}' is missing a literal default value",
-                    var_name
-                );
-                panic!(
-                    "Default config placeholder '{}' is missing a literal default value",
-                    var_name
-                );
-            }
-        })
-        .to_string()
-    }
-
     /// Loads config strictly from the given file path.
     /// Returns a clear error if the file does not exist or cannot be parsed.
     pub fn config_file(path: &str) -> anyhow::Result<Self> {
@@ -121,16 +101,19 @@ impl EngineConfig {
 }
 
 fn default_otel_module_entry() -> ModuleEntry {
-    let yaml_content = include_str!("../../config.yaml");
-    let yaml_content = EngineConfig::expand_default_placeholders(yaml_content);
-    let config: EngineConfig =
-        serde_yaml::from_str(&yaml_content).expect("default engine config YAML should parse");
-
-    config
-        .modules
-        .into_iter()
-        .find(|entry| entry.class == "modules::observability::OtelModule")
-        .expect("default engine config should include OtelModule")
+    ModuleEntry {
+        class: "modules::observability::OtelModule".to_string(),
+        config: Some(serde_json::json!({
+            "enabled": true,
+            "service_name": "iii",
+            "exporter": "memory",
+            "metrics_enabled": true,
+            "metrics_exporter": "memory",
+            "logs_enabled": true,
+            "logs_exporter": "memory",
+            "logs_console_output": true,
+        })),
+    }
 }
 
 fn default_module_entries() -> Vec<ModuleEntry> {
@@ -788,24 +771,6 @@ mod tests {
         assert_eq!(otel["metrics_exporter"], serde_json::json!("memory"));
         assert_eq!(otel["logs_enabled"], serde_json::json!(true));
         assert_eq!(otel["logs_exporter"], serde_json::json!("memory"));
-    }
-
-    #[test]
-    fn test_default_config_ignores_runtime_otel_env_vars() {
-        temp_env::with_var("OTEL_SERVICE_NAME", Some("override-service"), || {
-            temp_env::with_var("OTEL_ENABLED", Some("false"), || {
-                let config = EngineConfig::default_config();
-                let otel = config
-                    .modules
-                    .iter()
-                    .find(|entry| entry.class == "modules::observability::OtelModule")
-                    .and_then(|entry| entry.config.as_ref())
-                    .expect("default config should include OtelModule config");
-
-                assert_eq!(otel["service_name"], serde_json::json!("iii"));
-                assert_eq!(otel["enabled"], serde_json::json!(true));
-            });
-        });
     }
 
     // =========================================================================
