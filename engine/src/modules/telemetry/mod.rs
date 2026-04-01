@@ -22,7 +22,6 @@ use crate::modules::module::Module;
 use crate::workers::WorkerTelemetryMeta;
 
 use self::amplitude::{AmplitudeClient, AmplitudeEvent};
-use self::collector::collector;
 use self::environment::EnvironmentInfo;
 
 const API_KEY: &str = "a7182ac460dde671c8f2e1318b517228";
@@ -257,121 +256,123 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     m
 }
 
-struct DeltaAccumulator {
-    invocations_total: u64,
-    invocations_success: u64,
-    invocations_error: u64,
-    api_requests: u64,
-    queue_emits: u64,
-    queue_consumes: u64,
-    pubsub_publishes: u64,
-    pubsub_subscribes: u64,
-    cron_executions: u64,
-}
-
-impl DeltaAccumulator {
-    fn new() -> Self {
-        Self {
-            invocations_total: 0,
-            invocations_success: 0,
-            invocations_error: 0,
-            api_requests: 0,
-            queue_emits: 0,
-            queue_consumes: 0,
-            pubsub_publishes: 0,
-            pubsub_subscribes: 0,
-            cron_executions: 0,
-        }
-    }
-
-    fn snapshot(&mut self) -> DeltaSnapshot {
-        use std::sync::atomic::Ordering;
-        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
-        let col = collector();
-
-        let cur = DeltaAccumulator {
-            invocations_total: acc.invocations_total.load(Ordering::Relaxed),
-            invocations_success: acc.invocations_success.load(Ordering::Relaxed),
-            invocations_error: acc.invocations_error.load(Ordering::Relaxed),
-            api_requests: col.api_requests.load(Ordering::Relaxed),
-            queue_emits: col.queue_emits.load(Ordering::Relaxed),
-            queue_consumes: col.queue_consumes.load(Ordering::Relaxed),
-            pubsub_publishes: col.pubsub_publishes.load(Ordering::Relaxed),
-            pubsub_subscribes: col.pubsub_subscribes.load(Ordering::Relaxed),
-            cron_executions: col.cron_executions.load(Ordering::Relaxed),
-        };
-
-        let deltas = DeltaSnapshot {
-            invocations_total: cur.invocations_total.saturating_sub(self.invocations_total),
-            invocations_success: cur
-                .invocations_success
-                .saturating_sub(self.invocations_success),
-            invocations_error: cur.invocations_error.saturating_sub(self.invocations_error),
-            api_requests: cur.api_requests.saturating_sub(self.api_requests),
-            queue_emits: cur.queue_emits.saturating_sub(self.queue_emits),
-            queue_consumes: cur.queue_consumes.saturating_sub(self.queue_consumes),
-            pubsub_publishes: cur.pubsub_publishes.saturating_sub(self.pubsub_publishes),
-            pubsub_subscribes: cur.pubsub_subscribes.saturating_sub(self.pubsub_subscribes),
-            cron_executions: cur.cron_executions.saturating_sub(self.cron_executions),
-        };
-
-        *self = cur;
-        deltas
-    }
-}
-
-struct DeltaSnapshot {
-    invocations_total: u64,
-    invocations_success: u64,
-    invocations_error: u64,
-    api_requests: u64,
-    queue_emits: u64,
-    queue_consumes: u64,
-    pubsub_publishes: u64,
-    pubsub_subscribes: u64,
-    cron_executions: u64,
-}
-
-impl DeltaSnapshot {
-    fn insert_into(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
-        m.insert(
-            "delta_invocations_total".into(),
-            serde_json::json!(self.invocations_total),
-        );
-        m.insert(
-            "delta_invocations_success".into(),
-            serde_json::json!(self.invocations_success),
-        );
-        m.insert(
-            "delta_invocations_error".into(),
-            serde_json::json!(self.invocations_error),
-        );
-        m.insert(
-            "delta_api_requests".into(),
-            serde_json::json!(self.api_requests),
-        );
-        m.insert(
-            "delta_queue_emits".into(),
-            serde_json::json!(self.queue_emits),
-        );
-        m.insert(
-            "delta_queue_consumes".into(),
-            serde_json::json!(self.queue_consumes),
-        );
-        m.insert(
-            "delta_pubsub_publishes".into(),
-            serde_json::json!(self.pubsub_publishes),
-        );
-        m.insert(
-            "delta_pubsub_subscribes".into(),
-            serde_json::json!(self.pubsub_subscribes),
-        );
-        m.insert(
-            "delta_cron_executions".into(),
-            serde_json::json!(self.cron_executions),
-        );
-    }
-}
+// TODO: Re-enable delta metrics reporting once more important dashboards are ready.
+//
+// struct DeltaAccumulator {
+//     invocations_total: u64,
+//     invocations_success: u64,
+//     invocations_error: u64,
+//     api_requests: u64,
+//     queue_emits: u64,
+//     queue_consumes: u64,
+//     pubsub_publishes: u64,
+//     pubsub_subscribes: u64,
+//     cron_executions: u64,
+// }
+//
+// impl DeltaAccumulator {
+//     fn new() -> Self {
+//         Self {
+//             invocations_total: 0,
+//             invocations_success: 0,
+//             invocations_error: 0,
+//             api_requests: 0,
+//             queue_emits: 0,
+//             queue_consumes: 0,
+//             pubsub_publishes: 0,
+//             pubsub_subscribes: 0,
+//             cron_executions: 0,
+//         }
+//     }
+//
+//     fn snapshot(&mut self) -> DeltaSnapshot {
+//         use std::sync::atomic::Ordering;
+//         let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+//         let col = collector();
+//
+//         let cur = DeltaAccumulator {
+//             invocations_total: acc.invocations_total.load(Ordering::Relaxed),
+//             invocations_success: acc.invocations_success.load(Ordering::Relaxed),
+//             invocations_error: acc.invocations_error.load(Ordering::Relaxed),
+//             api_requests: col.api_requests.load(Ordering::Relaxed),
+//             queue_emits: col.queue_emits.load(Ordering::Relaxed),
+//             queue_consumes: col.queue_consumes.load(Ordering::Relaxed),
+//             pubsub_publishes: col.pubsub_publishes.load(Ordering::Relaxed),
+//             pubsub_subscribes: col.pubsub_subscribes.load(Ordering::Relaxed),
+//             cron_executions: col.cron_executions.load(Ordering::Relaxed),
+//         };
+//
+//         let deltas = DeltaSnapshot {
+//             invocations_total: cur.invocations_total.saturating_sub(self.invocations_total),
+//             invocations_success: cur
+//                 .invocations_success
+//                 .saturating_sub(self.invocations_success),
+//             invocations_error: cur.invocations_error.saturating_sub(self.invocations_error),
+//             api_requests: cur.api_requests.saturating_sub(self.api_requests),
+//             queue_emits: cur.queue_emits.saturating_sub(self.queue_emits),
+//             queue_consumes: cur.queue_consumes.saturating_sub(self.queue_consumes),
+//             pubsub_publishes: cur.pubsub_publishes.saturating_sub(self.pubsub_publishes),
+//             pubsub_subscribes: cur.pubsub_subscribes.saturating_sub(self.pubsub_subscribes),
+//             cron_executions: cur.cron_executions.saturating_sub(self.cron_executions),
+//         };
+//
+//         *self = cur;
+//         deltas
+//     }
+// }
+//
+// struct DeltaSnapshot {
+//     invocations_total: u64,
+//     invocations_success: u64,
+//     invocations_error: u64,
+//     api_requests: u64,
+//     queue_emits: u64,
+//     queue_consumes: u64,
+//     pubsub_publishes: u64,
+//     pubsub_subscribes: u64,
+//     cron_executions: u64,
+// }
+//
+// impl DeltaSnapshot {
+//     fn insert_into(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
+//         m.insert(
+//             "delta_invocations_total".into(),
+//             serde_json::json!(self.invocations_total),
+//         );
+//         m.insert(
+//             "delta_invocations_success".into(),
+//             serde_json::json!(self.invocations_success),
+//         );
+//         m.insert(
+//             "delta_invocations_error".into(),
+//             serde_json::json!(self.invocations_error),
+//         );
+//         m.insert(
+//             "delta_api_requests".into(),
+//             serde_json::json!(self.api_requests),
+//         );
+//         m.insert(
+//             "delta_queue_emits".into(),
+//             serde_json::json!(self.queue_emits),
+//         );
+//         m.insert(
+//             "delta_queue_consumes".into(),
+//             serde_json::json!(self.queue_consumes),
+//         );
+//         m.insert(
+//             "delta_pubsub_publishes".into(),
+//             serde_json::json!(self.pubsub_publishes),
+//         );
+//         m.insert(
+//             "delta_pubsub_subscribes".into(),
+//             serde_json::json!(self.pubsub_subscribes),
+//         );
+//         m.insert(
+//             "delta_cron_executions".into(),
+//             serde_json::json!(self.cron_executions),
+//         );
+//     }
+// }
 
 fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
     let mut functions_iii_builtin_count = 0usize;
@@ -710,9 +711,10 @@ impl Module for TelemetryModule {
                 "uptime_secs".into(),
                 serde_json::json!(start_time.elapsed().as_secs()),
             );
-            let d = DeltaAccumulator::new().snapshot();
-            props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
-            d.insert_into(&mut props);
+            // TODO: Re-enable delta metrics once more important dashboards are ready.
+            // let d = DeltaAccumulator::new().snapshot();
+            // props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
+            // d.insert_into(&mut props);
 
             let boot_heartbeat = ctx_for_started.build_event(
                 "heartbeat",
@@ -728,22 +730,18 @@ impl Module for TelemetryModule {
 
             interval.tick().await;
 
-            let mut deltas = DeltaAccumulator::new();
+            // TODO: Re-enable delta metrics once downstream dashboards are ready.
+            // let mut deltas = DeltaAccumulator::new();
 
             loop {
                 tokio::select! {
                     result = shutdown_rx.changed() => {
                         if result.is_err() || *shutdown_rx.borrow() {
-                            use std::sync::atomic::Ordering;
 
-                            let acc = crate::modules::observability::metrics::get_metrics_accumulator();
                             let snap = collect_engine_snapshot(&engine);
 
                             let mut props = build_base_properties(&snap);
                             props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
-                            props.insert("invocations_total".into(), serde_json::json!(acc.invocations_total.load(Ordering::Relaxed)));
-                            props.insert("invocations_success".into(), serde_json::json!(acc.invocations_success.load(Ordering::Relaxed)));
-                            props.insert("invocations_error".into(), serde_json::json!(acc.invocations_error.load(Ordering::Relaxed)));
 
                             let event = ctx.build_event(
                                 "engine_stopped",
@@ -761,7 +759,7 @@ impl Module for TelemetryModule {
                         }
                     }
                     _ = interval.tick() => {
-                        let d = deltas.snapshot();
+                        // let d = deltas.snapshot();
                         let snap = collect_engine_snapshot(&engine);
 
                         let mut props = build_base_properties(&snap);
@@ -769,8 +767,8 @@ impl Module for TelemetryModule {
                         props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
                         props.insert("period_secs".into(), serde_json::json!(interval_secs));
                         props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
-                        props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
-                        d.insert_into(&mut props);
+                        // props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
+                        // d.insert_into(&mut props);
 
                         let event = ctx.build_event(
                             "heartbeat",
