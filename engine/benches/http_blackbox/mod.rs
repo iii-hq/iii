@@ -1,6 +1,6 @@
 use std::{net::TcpListener as StdTcpListener, time::Duration};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::join_all};
 use iii::{EngineBuilder, protocol::Message};
 use reqwest::Client;
 use serde_json::json;
@@ -90,6 +90,18 @@ impl BenchRuntime {
             .expect("send http request")
     }
 
+    #[allow(dead_code)]
+    pub async fn wait_for_stable_route(&self, path: &str, concurrent_requests: usize) {
+        wait_for_route_batch(
+            &self.client,
+            &self.base_http_url,
+            path,
+            &common::http_request_body(),
+            concurrent_requests,
+        )
+        .await;
+    }
+
     pub async fn shutdown(self) {
         self.worker_task.abort();
         self.engine_task.abort();
@@ -120,23 +132,41 @@ async fn wait_for_ws_server(ws_url: &str) {
 }
 
 async fn wait_for_route(client: &Client, base_http_url: &str, path: &str) {
+    wait_for_route_batch(client, base_http_url, path, &common::http_request_body(), 1).await;
+}
+
+async fn wait_for_route_batch(
+    client: &Client,
+    base_http_url: &str,
+    path: &str,
+    body: &serde_json::Value,
+    concurrent_requests: usize,
+) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
-        let response = client
-            .post(format!("{base_http_url}/{path}"))
-            .json(&common::http_request_body())
-            .send()
-            .await;
+        let statuses = join_all((0..concurrent_requests).map(|_| async {
+            client
+                .post(format!("{base_http_url}/{path}"))
+                .json(body)
+                .send()
+                .await
+                .map(|response| response.status())
+        }))
+        .await;
 
-        if let Ok(response) = response
-            && response.status().is_success()
+        if statuses
+            .iter()
+            .all(|status| matches!(status, Ok(code) if code.is_success()))
         {
             return;
         }
 
         sleep(Duration::from_millis(10)).await;
     }
-    panic!("http route did not become ready within 10s");
+
+    panic!(
+        "http route {path} did not become ready for a stable batch of {concurrent_requests} requests within 10s"
+    );
 }
 
 async fn run_worker(ws_url: String, route_count: usize) {
