@@ -333,20 +333,6 @@ struct DeltaSnapshot {
 }
 
 impl DeltaSnapshot {
-    fn zero() -> Self {
-        Self {
-            invocations_total: 0,
-            invocations_success: 0,
-            invocations_error: 0,
-            api_requests: 0,
-            queue_emits: 0,
-            queue_consumes: 0,
-            pubsub_publishes: 0,
-            pubsub_subscribes: 0,
-            cron_executions: 0,
-        }
-    }
-
     fn insert_into(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
         m.insert(
             "delta_invocations_total".into(),
@@ -724,8 +710,9 @@ impl Module for TelemetryModule {
                 "uptime_secs".into(),
                 serde_json::json!(start_time.elapsed().as_secs()),
             );
-            props.insert("is_active".into(), serde_json::json!(false));
-            DeltaSnapshot::zero().insert_into(&mut props);
+            let d = DeltaAccumulator::new().snapshot();
+            props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
+            d.insert_into(&mut props);
 
             let boot_heartbeat = ctx_for_started.build_event(
                 "heartbeat",
