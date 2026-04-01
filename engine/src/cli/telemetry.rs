@@ -45,8 +45,12 @@ fn is_telemetry_disabled() -> bool {
     environment::is_ci_environment() || environment::is_dev_optout()
 }
 
-fn build_user_properties() -> serde_json::Value {
+fn build_user_properties(install_method_override: Option<&str>) -> serde_json::Value {
     let env_info = environment::EnvironmentInfo::collect();
+    let install_method = match install_method_override {
+        Some(m) => m,
+        None => environment::detect_install_method(),
+    };
     serde_json::json!({
         "environment.os": env_info.os,
         "environment.arch": env_info.arch,
@@ -55,12 +59,16 @@ fn build_user_properties() -> serde_json::Value {
         "environment.machine_id": env_info.machine_id,
         "iii_execution_context": env_info.iii_execution_context,
         "env": environment::detect_env(),
-        "install_method": environment::detect_install_method(),
+        "install_method": install_method,
         "cli_version": env!("CARGO_PKG_VERSION"),
     })
 }
 
-fn build_event(event_type: &str, properties: serde_json::Value) -> Option<AmplitudeEvent> {
+fn build_event(
+    event_type: &str,
+    properties: serde_json::Value,
+    install_method_override: Option<&str>,
+) -> Option<AmplitudeEvent> {
     if is_telemetry_disabled() {
         return None;
     }
@@ -71,7 +79,7 @@ fn build_event(event_type: &str, properties: serde_json::Value) -> Option<Amplit
         user_id: None,
         event_type: event_type.to_string(),
         event_properties: properties,
-        user_properties: Some(build_user_properties()),
+        user_properties: Some(build_user_properties(install_method_override)),
         platform: "iii".to_string(),
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -102,7 +110,11 @@ fn send_fire_and_forget(event: AmplitudeEvent) {
 }
 
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {
-    if let Some(mut event) = build_event(event_type, properties) {
+    let install_method = properties
+        .get("install_method")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(mut event) = build_event(event_type, properties, install_method.as_deref()) {
         event.platform = "install-script".to_string();
         send_direct(event).await;
     }
@@ -116,6 +128,7 @@ pub fn send_cli_update_started(target_binary: &str, from_version: &str) {
             "from_version": from_version,
             "install_method": environment::detect_install_method(),
         }),
+        None,
     ) {
         send_fire_and_forget(event);
     }
@@ -130,6 +143,7 @@ pub fn send_cli_update_succeeded(target_binary: &str, from_version: &str, to_ver
             "to_version": to_version,
             "install_method": environment::detect_install_method(),
         }),
+        None,
     ) {
         send_fire_and_forget(event);
     }
@@ -144,6 +158,7 @@ pub fn send_cli_update_failed(target_binary: &str, from_version: &str, error: &s
             "error": error,
             "install_method": environment::detect_install_method(),
         }),
+        None,
     ) {
         send_fire_and_forget(event);
     }
@@ -205,7 +220,7 @@ mod tests {
         unsafe {
             env::set_var("III_TELEMETRY_ENABLED", "false");
         }
-        let result = build_event("cli_update_started", serde_json::json!({}));
+        let result = build_event("cli_update_started", serde_json::json!({}), None);
         assert!(result.is_none());
         unsafe {
             env::remove_var("III_TELEMETRY_ENABLED");
@@ -219,6 +234,7 @@ mod tests {
         let result = build_event(
             "cli_update_started",
             serde_json::json!({"target_binary": "iii"}),
+            None,
         );
         assert!(result.is_some());
         let event = result.expect("event should be built");
@@ -243,8 +259,8 @@ mod tests {
     #[serial]
     fn test_build_event_insert_ids_are_unique() {
         clear_opt_out_vars();
-        let e1 = build_event("evt", serde_json::json!({})).expect("event");
-        let e2 = build_event("evt", serde_json::json!({})).expect("event");
+        let e1 = build_event("evt", serde_json::json!({}), None).expect("event");
+        let e2 = build_event("evt", serde_json::json!({}), None).expect("event");
         assert_ne!(e1.insert_id, e2.insert_id);
     }
 }

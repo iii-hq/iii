@@ -9,17 +9,39 @@ install_event_prefix=""
 from_version=""
 release_version=""
 
+# Returns a JSON-encoded string (with surrounding quotes).
+# Uses jq when available; falls back to awk for escaping.
+json_str() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$1" | jq -Rs '.'
+    return
+  fi
+  printf '%s' "$1" | awk '
+    BEGIN { ORS=""; printf "\"" }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      gsub(/\r/, "\\r")
+      if (NR > 1) printf "\\n"
+      printf "%s", $0
+    }
+    END { printf "\"" }
+  '
+}
+
 err() {
   _stage="$1"; shift
   echo "error: $*" >&2
   if [ -n "${install_event_prefix:-}" ]; then
-    _err_msg=$(echo "$*" | tr '"' "'")
     if [ "$install_event_prefix" = "upgrade" ]; then
-      iii_emit_event "upgrade_failed" \
-        "{\"from_version\":\"${from_version:-}\",\"to_version\":\"${release_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"}"
+      payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s,"error_stage":%s,"error_message":%s}' \
+        "$(json_str "${from_version:-}")" "$(json_str "$release_version")" "$(json_str "$BIN_NAME")" "$(json_str "$_stage")" "$(json_str "$*")")
+      iii_emit_event "upgrade_failed" "$payload"
     else
-      iii_emit_event "install_failed" \
-        "{\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"}"
+      payload=$(printf '{"install_method":"sh","target_binary":%s,"error_stage":%s,"error_message":%s}' \
+        "$(json_str "$BIN_NAME")" "$(json_str "$_stage")" "$(json_str "$*")")
+      iii_emit_event "install_failed" "$payload"
     fi
   fi
   exit 1
@@ -295,6 +317,10 @@ fi
 from_version=$(iii_detect_from_version "$bin_dir/$BIN_NAME")
 if [ -n "$from_version" ]; then
   install_event_prefix="upgrade"
+  # Use the existing binary for telemetry until the new one is extracted
+  if [ -x "$bin_dir/$BIN_NAME" ]; then
+    telemetry_emitter="$bin_dir/$BIN_NAME"
+  fi
 else
   install_event_prefix="install"
 fi
@@ -307,17 +333,20 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name"
+curl -fsSL -L "$asset_url" -o "$tmpdir/$asset_name" \
+  || err "download" "failed to download $asset_url"
 
 case "$asset_name" in
   *.tar.gz|*.tgz)
-    tar -xzf "$tmpdir/$asset_name" -C "$tmpdir"
+    tar -xzf "$tmpdir/$asset_name" -C "$tmpdir" \
+      || err "extract" "failed to extract $asset_name"
     ;;
   *.zip)
     if ! command -v unzip >/dev/null 2>&1; then
       err "extract" "unzip is required to extract $asset_name"
     fi
-    unzip -q "$tmpdir/$asset_name" -d "$tmpdir"
+    unzip -q "$tmpdir/$asset_name" -d "$tmpdir" \
+      || err "extract" "failed to extract $asset_name"
     ;;
   *)
     ;;
@@ -335,19 +364,22 @@ fi
 
 telemetry_emitter="$bin_file"
 if [ "$install_event_prefix" = "upgrade" ]; then
-  iii_emit_event "upgrade_started" \
-    "{\"from_version\":\"${from_version}\",\"to_version\":\"${release_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"}"
+  payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
+    "$(json_str "$from_version")" "$(json_str "$release_version")" "$(json_str "$BIN_NAME")")
+  iii_emit_event "upgrade_started" "$payload"
 else
-  iii_emit_event "install_started" \
-    "{\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"os\":\"$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)\",\"arch\":\"$(uname -m 2>/dev/null || echo unknown)\"}"
+  payload=$(printf '{"install_method":"sh","target_binary":%s,"os":%s,"arch":%s}' \
+    "$(json_str "$BIN_NAME")" "$(json_str "$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)")" "$(json_str "$(uname -m 2>/dev/null || echo unknown)")")
+  iii_emit_event "install_started" "$payload"
 fi
 
 installed_version=""
 if command -v install >/dev/null 2>&1; then
-  install -m 755 "$bin_file" "$bin_dir/$BIN_NAME"
+  install -m 755 "$bin_file" "$bin_dir/$BIN_NAME" \
+    || err "install" "failed to install binary to $bin_dir/$BIN_NAME"
 else
-  cp "$bin_file" "$bin_dir/$BIN_NAME"
-  chmod 755 "$bin_dir/$BIN_NAME"
+  { cp "$bin_file" "$bin_dir/$BIN_NAME" && chmod 755 "$bin_dir/$BIN_NAME"; } \
+    || err "install" "failed to copy binary to $bin_dir/$BIN_NAME"
 fi
 
 installed_version=$("$bin_dir/$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")
@@ -355,11 +387,13 @@ installed_version=$("$bin_dir/$BIN_NAME" --version 2>/dev/null | awk '{print $NF
 printf 'installed %s to %s\n' "$BIN_NAME" "$bin_dir/$BIN_NAME"
 
 if [ "$install_event_prefix" = "upgrade" ]; then
-  iii_emit_event "upgrade_succeeded" \
-    "{\"from_version\":\"${from_version}\",\"to_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"}"
+  payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
+    "$(json_str "$from_version")" "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
+  iii_emit_event "upgrade_succeeded" "$payload"
 else
-  iii_emit_event "install_succeeded" \
-    "{\"installed_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"}"
+  payload=$(printf '{"installed_version":%s,"install_method":"sh","target_binary":%s}' \
+    "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
+  iii_emit_event "install_succeeded" "$payload"
 fi
 
 # Best-effort: have the binary initialize its telemetry IDs.
