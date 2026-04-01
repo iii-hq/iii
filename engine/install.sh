@@ -12,11 +12,11 @@ release_version=""
 err() {
   _stage="$1"; shift
   echo "error: $*" >&2
-  if [ -n "${install_event_prefix:-}" ] && [ -n "${telemetry_emitter:-}" ]; then
+  if [ -n "${install_event_prefix:-}" ]; then
     _err_msg=$(echo "$*" | tr '"' "'")
     if [ "$install_event_prefix" = "upgrade" ]; then
       iii_emit_event "upgrade_failed" \
-        "{\"from_version\":\"${from_version:-}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"}"
+        "{\"from_version\":\"${from_version:-}\",\"to_version\":\"${release_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"}"
     else
       iii_emit_event "install_failed" \
         "{\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"error_stage\":\"${_stage}\",\"error_message\":\"${_err_msg}\"}"
@@ -318,10 +318,9 @@ else
     "{\"installed_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"}"
 fi
 
-telemetry_emitter="$bin_dir/$BIN_NAME"
-if ! "$telemetry_emitter" --install-only-generate-ids >/dev/null 2>&1; then
-  err "telemetry" "failed to initialize telemetry ids"
-fi
+# Best-effort: have the binary initialize its telemetry IDs.
+# Older binaries won't have this flag — silently skip.
+"$bin_dir/$BIN_NAME" --install-only-generate-ids >/dev/null 2>&1 || true
 
 case ":$PATH:" in
   *":$bin_dir:"*)
