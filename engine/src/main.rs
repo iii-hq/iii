@@ -330,8 +330,9 @@ mod tests {
 
     #[test]
     fn cloud_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "cloud", "deploy", "--project", "abc", "--tag", "v1"])
-            .expect("should parse cloud with args");
+        let cli =
+            Cli::try_parse_from(["iii", "cloud", "deploy", "--project", "abc", "--tag", "v1"])
+                .expect("should parse cloud with args");
         match cli.command {
             Some(Commands::Cloud { args }) => {
                 assert_eq!(args, vec!["deploy", "--project", "abc", "--tag", "v1"]);
