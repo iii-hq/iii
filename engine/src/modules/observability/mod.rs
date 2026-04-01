@@ -9,7 +9,7 @@ pub mod metrics;
 pub mod otel;
 mod sampler;
 
-mod config;
+pub(crate) mod config;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -1666,11 +1666,7 @@ impl Module for OtelModule {
     }
 }
 
-crate::register_module!(
-    "modules::observability::OtelModule",
-    OtelModule,
-    enabled_by_default = false
-);
+crate::register_module!("modules::observability::OtelModule", OtelModule, mandatory);
 
 #[cfg(test)]
 mod tests {

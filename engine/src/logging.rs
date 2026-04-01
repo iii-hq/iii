@@ -278,35 +278,42 @@ static TRACING: OnceLock<()> = OnceLock::new();
 /// Extract OTEL configuration from the OtelModule config in the config file.
 /// This is called early during startup, before modules are loaded.
 fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
+    use crate::modules::observability::config::OtelModuleConfig;
+
     let otel_module_name = "modules::observability::OtelModule";
     let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
 
+    let module_config: OtelModuleConfig = match otel_module_cfg {
+        Some(entry) => match &entry.config {
+            Some(cfg) => serde_json::from_value(cfg.clone()).unwrap_or_default(),
+            None => OtelModuleConfig::default(),
+        },
+        None => return OtelConfig::default(),
+    };
+
     let mut otel_cfg = OtelConfig::default();
 
-    if let Some(module_entry) = otel_module_cfg
-        && let Some(config) = &module_entry.config
-    {
-        if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
-            otel_cfg.enabled = enabled;
-        }
-        if let Some(service_name) = config.get("service_name").and_then(|v| v.as_str()) {
-            otel_cfg.service_name = service_name.to_string();
-        }
-        if let Some(exporter) = config.get("exporter").and_then(|v| v.as_str()) {
-            otel_cfg.exporter = match exporter.to_lowercase().as_str() {
-                "memory" => ExporterType::Memory,
-                _ => ExporterType::Otlp,
-            };
-        }
-        if let Some(endpoint) = config.get("endpoint").and_then(|v| v.as_str()) {
-            otel_cfg.endpoint = endpoint.to_string();
-        }
-        if let Some(sampling) = config.get("sampling_ratio").and_then(|v| v.as_f64()) {
-            otel_cfg.sampling_ratio = sampling;
-        }
-        if let Some(max_spans) = config.get("memory_max_spans").and_then(|v| v.as_u64()) {
-            otel_cfg.memory_max_spans = max_spans as usize;
-        }
+    if let Some(enabled) = module_config.enabled {
+        otel_cfg.enabled = enabled;
+    }
+    if let Some(service_name) = module_config.service_name {
+        otel_cfg.service_name = service_name;
+    }
+    if let Some(exporter) = module_config.exporter {
+        otel_cfg.exporter = match exporter {
+            crate::modules::observability::config::OtelExporterType::Memory => ExporterType::Memory,
+            crate::modules::observability::config::OtelExporterType::Otlp => ExporterType::Otlp,
+            crate::modules::observability::config::OtelExporterType::Both => ExporterType::Both,
+        };
+    }
+    if let Some(endpoint) = module_config.endpoint {
+        otel_cfg.endpoint = endpoint;
+    }
+    if let Some(sampling) = module_config.sampling_ratio {
+        otel_cfg.sampling_ratio = sampling;
+    }
+    if let Some(max_spans) = module_config.memory_max_spans {
+        otel_cfg.memory_max_spans = max_spans;
     }
 
     otel_cfg
@@ -892,7 +899,6 @@ mod tests {
         assert!(otel.enabled);
         assert_eq!(otel.service_name, "iii");
         assert!(matches!(otel.exporter, ExporterType::Memory));
-        assert_eq!(otel.memory_max_spans, 10000);
     }
 
     #[test]

@@ -100,40 +100,15 @@ impl EngineConfig {
     }
 }
 
-fn default_otel_module_entry() -> ModuleEntry {
-    ModuleEntry {
-        class: "modules::observability::OtelModule".to_string(),
-        config: Some(serde_json::json!({
-            "enabled": true,
-            "service_name": "iii",
-            "exporter": "memory",
-            "metrics_enabled": true,
-            "metrics_exporter": "memory",
-            "logs_enabled": true,
-            "logs_exporter": "memory",
-            "logs_console_output": true,
-        })),
-    }
-}
-
 fn default_module_entries() -> Vec<ModuleEntry> {
-    let mut entries = inventory::iter::<ModuleRegistration>
+    inventory::iter::<ModuleRegistration>
         .into_iter()
         .filter(|registration| registration.is_default)
         .map(|registration| ModuleEntry {
             class: registration.class.to_string(),
             config: None,
         })
-        .collect::<Vec<_>>();
-
-    if !entries
-        .iter()
-        .any(|entry| entry.class == "modules::observability::OtelModule")
-    {
-        entries.push(default_otel_module_entry());
-    }
-
-    entries
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -754,23 +729,16 @@ mod tests {
     }
 
     #[test]
-    fn test_default_config_includes_enabled_memory_otel_module() {
+    fn test_default_config_includes_otel_module() {
         let config = EngineConfig::default_config();
 
-        let otel = config
-            .modules
-            .iter()
-            .find(|entry| entry.class == "modules::observability::OtelModule")
-            .and_then(|entry| entry.config.as_ref())
-            .expect("default config should include OtelModule config");
-
-        assert_eq!(otel["enabled"], serde_json::json!(true));
-        assert_eq!(otel["service_name"], serde_json::json!("iii"));
-        assert_eq!(otel["exporter"], serde_json::json!("memory"));
-        assert_eq!(otel["metrics_enabled"], serde_json::json!(true));
-        assert_eq!(otel["metrics_exporter"], serde_json::json!("memory"));
-        assert_eq!(otel["logs_enabled"], serde_json::json!(true));
-        assert_eq!(otel["logs_exporter"], serde_json::json!("memory"));
+        assert!(
+            config
+                .modules
+                .iter()
+                .any(|entry| entry.class == "modules::observability::OtelModule"),
+            "default config should include OtelModule (registered as mandatory)"
+        );
     }
 
     // =========================================================================
