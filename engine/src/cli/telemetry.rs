@@ -102,7 +102,8 @@ fn send_fire_and_forget(event: AmplitudeEvent) {
 }
 
 pub async fn send_install_lifecycle_event(event_type: &str, properties: serde_json::Value) {
-    if let Some(event) = build_event(event_type, properties) {
+    if let Some(mut event) = build_event(event_type, properties) {
+        event.platform = "install-script".to_string();
         send_direct(event).await;
     }
 }

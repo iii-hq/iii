@@ -553,7 +553,7 @@ class Sdk implements ISdk {
         telemetry: {
           language,
           project_name: telemetryOpts?.project_name,
-          framework: telemetryOpts?.framework,
+          framework: telemetryOpts?.framework ?? 'iii-node',
           amplitude_api_key: telemetryOpts?.amplitude_api_key,
         },
       },

@@ -7,6 +7,7 @@ BIN_NAME="${BIN_NAME:-iii}"
 telemetry_emitter=""
 install_event_prefix=""
 from_version=""
+release_version=""
 
 err() {
   _stage="$1"; shift
@@ -170,6 +171,7 @@ if [ -n "$VERSION" ]; then
   echo "installing version: $VERSION"
   _ver="${VERSION#iii/}"
   _ver="${_ver#v}"
+  release_version="$_ver"
   _tag="iii/v${_ver}"
   api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
   json=$(github_api "$api_url" 2>/dev/null) || {
@@ -197,6 +199,18 @@ else
     fi
     api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
     json=$(github_api "$api_url")
+  fi
+fi
+
+if [ -z "$release_version" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    release_version=$(printf '%s' "$json" | jq -r '.tag_name' | sed -E 's#^(iii/)?v##')
+  else
+    release_version=$(printf '%s' "$json" \
+      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
+      | head -n 1 \
+      | sed -E 's/.*"([^"]+)".*/\1/' \
+      | sed -E 's#^(iii/)?v##')
   fi
 fi
 
@@ -278,7 +292,7 @@ fi
 telemetry_emitter="$bin_file"
 if [ "$install_event_prefix" = "upgrade" ]; then
   iii_emit_event "upgrade_started" \
-    "{\"from_version\":\"${from_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"}"
+    "{\"from_version\":\"${from_version}\",\"to_version\":\"${release_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"}"
 else
   iii_emit_event "install_started" \
     "{\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\",\"os\":\"$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo unknown)\",\"arch\":\"$(uname -m 2>/dev/null || echo unknown)\"}"

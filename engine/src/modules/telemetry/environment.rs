@@ -19,8 +19,6 @@ struct TelemetryYaml {
     #[serde(default)]
     state: StateSection,
     #[serde(default)]
-    preferences: PreferencesSection,
-    #[serde(default)]
     iii_execution_context: Option<String>,
 }
 
@@ -34,12 +32,6 @@ struct IdentitySection {
 struct StateSection {
     #[serde(default)]
     first_run_sent: Option<bool>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-struct PreferencesSection {
-    #[serde(default)]
-    dev_optout: Option<bool>,
 }
 
 fn iii_dir() -> std::path::PathBuf {
@@ -129,7 +121,6 @@ fn build_fresh_v2_yaml() -> TelemetryYaml {
             device_id: Some(generate_new_device_id()),
         },
         state: StateSection::default(),
-        preferences: PreferencesSection::default(),
         iii_execution_context: Some(EXECUTION_CONTEXT_YAML_DEFAULT.to_string()),
     }
 }
@@ -222,7 +213,6 @@ pub fn read_config_key(section: &str, key: &str) -> Option<String> {
             state.identity.device_id.filter(|v| !v.is_empty())
         }
         ("state", "first_run_sent") => state.state.first_run_sent.map(|v| v.to_string()),
-        ("preferences", "dev_optout") => state.preferences.dev_optout.map(|v| v.to_string()),
         ("telemetry", "iii_execution_context") => state.iii_execution_context,
         _ => None,
     }
@@ -236,9 +226,6 @@ pub fn set_config_key(section: &str, key: &str, value: &str) {
         }
         ("state", "first_run_sent") => {
             state.state.first_run_sent = Some(value.eq_ignore_ascii_case("true") || value == "1");
-        }
-        ("preferences", "dev_optout") => {
-            state.preferences.dev_optout = Some(value.eq_ignore_ascii_case("true") || value == "1");
         }
         ("telemetry", "iii_execution_context") => {
             state.iii_execution_context = Some(value.to_string());
@@ -343,10 +330,6 @@ pub fn is_ci_environment() -> bool {
 
 pub fn is_dev_optout() -> bool {
     if std::env::var("III_TELEMETRY_DEV").ok().as_deref() == Some("true") {
-        return true;
-    }
-
-    if read_config_key("preferences", "dev_optout").as_deref() == Some("true") {
         return true;
     }
 

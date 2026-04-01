@@ -1374,7 +1374,16 @@ impl III {
 
     /// Register this worker's metadata with the engine (called automatically on connect)
     fn register_worker_metadata(&self) {
-        if let Some(metadata) = self.inner.worker_metadata.lock_or_recover().clone() {
+        if let Some(mut metadata) = self.inner.worker_metadata.lock_or_recover().clone() {
+            let fw = metadata
+                .telemetry
+                .as_ref()
+                .and_then(|t| t.framework.as_deref())
+                .unwrap_or("");
+            if fw.is_empty() {
+                let telem = metadata.telemetry.get_or_insert_with(Default::default);
+                telem.framework = Some("iii-rust".to_string());
+            }
             if let Ok(value) = serde_json::to_value(metadata) {
                 let _ = self.send_message(Message::InvokeFunction {
                     invocation_id: None,

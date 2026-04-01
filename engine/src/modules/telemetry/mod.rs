@@ -208,20 +208,51 @@ fn collect_engine_snapshot(engine: &Engine) -> EngineSnapshot {
 
 fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde_json::Value> {
     let mut m = serde_json::Map::new();
-    m.insert("project_id".into(), serde_json::json!(snap.project.project_id));
-    m.insert("project_name".into(), serde_json::json!(snap.project.project_name));
-    m.insert("version".into(), serde_json::json!(env!("CARGO_PKG_VERSION")));
-    m.insert("function_count".into(), serde_json::json!(snap.ft.function_count));
-    m.insert("trigger_count".into(), serde_json::json!(snap.ft.trigger_count));
+    m.insert(
+        "project_id".into(),
+        serde_json::json!(snap.project.project_id),
+    );
+    m.insert(
+        "project_name".into(),
+        serde_json::json!(snap.project.project_name),
+    );
+    m.insert(
+        "version".into(),
+        serde_json::json!(env!("CARGO_PKG_VERSION")),
+    );
+    m.insert(
+        "function_count".into(),
+        serde_json::json!(snap.ft.function_count),
+    );
+    m.insert(
+        "trigger_count".into(),
+        serde_json::json!(snap.ft.trigger_count),
+    );
     m.insert("functions".into(), serde_json::json!(snap.ft.functions));
-    m.insert("trigger_types".into(), serde_json::json!(snap.ft.trigger_types));
-    m.insert("functions_iii_builtin_count".into(), serde_json::json!(snap.ft.functions_iii_builtin_count));
-    m.insert("functions_non_iii_builtin_count".into(), serde_json::json!(snap.ft.functions_non_iii_builtin_count));
+    m.insert(
+        "trigger_types".into(),
+        serde_json::json!(snap.ft.trigger_types),
+    );
+    m.insert(
+        "functions_iii_builtin_count".into(),
+        serde_json::json!(snap.ft.functions_iii_builtin_count),
+    );
+    m.insert(
+        "functions_non_iii_builtin_count".into(),
+        serde_json::json!(snap.ft.functions_non_iii_builtin_count),
+    );
     m.insert("client_type".into(), serde_json::json!(snap.wd.client_type));
-    m.insert("sdk_languages".into(), serde_json::json!(snap.wd.sdk_languages));
-    m.insert("worker_count_total".into(), serde_json::json!(snap.wd.worker_count_total));
-    m.insert("worker_count_motia".into(), serde_json::json!(snap.wd.worker_count_motia));
-    m.insert("worker_count_non_iii_sdk_framework".into(), serde_json::json!(snap.wd.worker_count_non_iii_sdk_framework));
+    m.insert(
+        "sdk_languages".into(),
+        serde_json::json!(snap.wd.sdk_languages),
+    );
+    m.insert(
+        "worker_count_total".into(),
+        serde_json::json!(snap.wd.worker_count_total),
+    );
+    for (fw, count) in &snap.wd.worker_count_by_framework {
+        m.insert(format!("worker_count_{fw}"), serde_json::json!(count));
+    }
     m.insert("workers".into(), serde_json::json!(snap.wd.workers));
     m
 }
@@ -272,7 +303,9 @@ impl DeltaAccumulator {
 
         let deltas = DeltaSnapshot {
             invocations_total: cur.invocations_total.saturating_sub(self.invocations_total),
-            invocations_success: cur.invocations_success.saturating_sub(self.invocations_success),
+            invocations_success: cur
+                .invocations_success
+                .saturating_sub(self.invocations_success),
             invocations_error: cur.invocations_error.saturating_sub(self.invocations_error),
             api_requests: cur.api_requests.saturating_sub(self.api_requests),
             queue_emits: cur.queue_emits.saturating_sub(self.queue_emits),
@@ -315,15 +348,42 @@ impl DeltaSnapshot {
     }
 
     fn insert_into(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
-        m.insert("delta_invocations_total".into(), serde_json::json!(self.invocations_total));
-        m.insert("delta_invocations_success".into(), serde_json::json!(self.invocations_success));
-        m.insert("delta_invocations_error".into(), serde_json::json!(self.invocations_error));
-        m.insert("delta_api_requests".into(), serde_json::json!(self.api_requests));
-        m.insert("delta_queue_emits".into(), serde_json::json!(self.queue_emits));
-        m.insert("delta_queue_consumes".into(), serde_json::json!(self.queue_consumes));
-        m.insert("delta_pubsub_publishes".into(), serde_json::json!(self.pubsub_publishes));
-        m.insert("delta_pubsub_subscribes".into(), serde_json::json!(self.pubsub_subscribes));
-        m.insert("delta_cron_executions".into(), serde_json::json!(self.cron_executions));
+        m.insert(
+            "delta_invocations_total".into(),
+            serde_json::json!(self.invocations_total),
+        );
+        m.insert(
+            "delta_invocations_success".into(),
+            serde_json::json!(self.invocations_success),
+        );
+        m.insert(
+            "delta_invocations_error".into(),
+            serde_json::json!(self.invocations_error),
+        );
+        m.insert(
+            "delta_api_requests".into(),
+            serde_json::json!(self.api_requests),
+        );
+        m.insert(
+            "delta_queue_emits".into(),
+            serde_json::json!(self.queue_emits),
+        );
+        m.insert(
+            "delta_queue_consumes".into(),
+            serde_json::json!(self.queue_consumes),
+        );
+        m.insert(
+            "delta_pubsub_publishes".into(),
+            serde_json::json!(self.pubsub_publishes),
+        );
+        m.insert(
+            "delta_pubsub_subscribes".into(),
+            serde_json::json!(self.pubsub_subscribes),
+        );
+        m.insert(
+            "delta_cron_executions".into(),
+            serde_json::json!(self.cron_executions),
+        );
     }
 }
 
@@ -369,8 +429,7 @@ fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
 
 struct WorkerData {
     worker_count_total: usize,
-    worker_count_motia: usize,
-    worker_count_non_iii_sdk_framework: usize,
+    worker_count_by_framework: HashMap<String, u64>,
     worker_count_by_language: HashMap<String, u64>,
     workers: Vec<String>,
     sdk_languages: Vec<String>,
@@ -380,9 +439,9 @@ struct WorkerData {
 
 fn collect_worker_data(engine: &Engine) -> WorkerData {
     let mut runtime_counts: HashMap<String, u64> = HashMap::new();
+    let mut framework_counts: HashMap<String, u64> = HashMap::new();
     let mut best_telemetry: Option<(uuid::Uuid, WorkerTelemetryMeta)> = None;
     let mut worker_count_total = 0usize;
-    let mut worker_count_motia = 0usize;
     let mut workers: Vec<String> = Vec::new();
 
     for entry in engine.worker_registry.workers.iter() {
@@ -401,17 +460,11 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
             .and_then(|t| t.framework.clone())
             .unwrap_or_default();
 
-        if framework.to_lowercase().contains("motia")
-            || framework == "iii-js"
-            || framework == "iii-py"
-        {
-            worker_count_motia += 1;
-        }
-
-        if framework.is_empty() {
-            workers.push(runtime);
-        } else {
+        if !framework.is_empty() {
+            *framework_counts.entry(framework.clone()).or_insert(0) += 1;
             workers.push(format!("{}:{}", runtime, framework));
+        } else {
+            workers.push(runtime);
         }
 
         if let Some(telemetry) = worker.telemetry.as_ref()
@@ -436,19 +489,16 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
     let sdk_languages: Vec<String> = runtime_counts
         .keys()
         .map(|r| match r.as_str() {
-            "node" => "iii-js".to_string(),
+            "node" => "iii-node".to_string(),
             "python" => "iii-py".to_string(),
             "rust" => "iii-rust".to_string(),
             other => other.to_string(),
         })
         .collect();
 
-    let worker_count_non_iii_sdk_framework = worker_count_total.saturating_sub(worker_count_motia);
-
     WorkerData {
         worker_count_total,
-        worker_count_motia,
-        worker_count_non_iii_sdk_framework,
+        worker_count_by_framework: framework_counts,
         worker_count_by_language: runtime_counts,
         workers,
         sdk_languages,
@@ -665,9 +715,15 @@ impl Module for TelemetryModule {
 
             let mut props = build_base_properties(&snap);
             props.insert("session_start".into(), serde_json::json!(true));
-            props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
+            props.insert(
+                "worker_count_by_language".into(),
+                serde_json::json!(snap.wd.worker_count_by_language),
+            );
             props.insert("period_secs".into(), serde_json::json!(interval_secs));
-            props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
+            props.insert(
+                "uptime_secs".into(),
+                serde_json::json!(start_time.elapsed().as_secs()),
+            );
             props.insert("is_active".into(), serde_json::json!(false));
             DeltaSnapshot::zero().insert_into(&mut props);
 
@@ -1592,8 +1648,7 @@ mod tests {
         let wd = collect_worker_data(&engine);
 
         assert_eq!(wd.worker_count_total, 0);
-        assert_eq!(wd.worker_count_motia, 0);
-        assert_eq!(wd.worker_count_non_iii_sdk_framework, 0);
+        assert!(wd.worker_count_by_framework.is_empty());
         assert!(wd.sdk_telemetry.is_none());
         assert!(wd.sdk_languages.is_empty());
     }
@@ -1608,7 +1663,7 @@ mod tests {
         worker1.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
             project_name: Some("proj-a".to_string()),
-            framework: Some("iii-js".to_string()),
+            framework: Some("iii-node".to_string()),
         });
         let w1_id = worker1.id;
         engine.worker_registry.workers.insert(w1_id, worker1);
@@ -1623,14 +1678,13 @@ mod tests {
         let wd = collect_worker_data(&engine);
 
         assert_eq!(wd.worker_count_total, 2);
-        assert_eq!(wd.worker_count_motia, 1);
-        assert_eq!(wd.worker_count_non_iii_sdk_framework, 1);
+        assert_eq!(wd.worker_count_by_framework.get("iii-node"), Some(&1));
 
         assert!(wd.sdk_telemetry.is_some());
         let telem = wd.sdk_telemetry.unwrap();
         assert_eq!(telem.language, Some("typescript".to_string()));
         assert_eq!(telem.project_name, Some("proj-a".to_string()));
-        assert_eq!(telem.framework, Some("iii-js".to_string()));
+        assert_eq!(telem.framework, Some("iii-node".to_string()));
     }
 
     #[test]
@@ -1716,8 +1770,7 @@ mod tests {
 
         let wd = collect_worker_data(&engine);
         assert_eq!(wd.worker_count_total, 1);
-        assert_eq!(wd.worker_count_motia, 1);
-        assert_eq!(wd.worker_count_non_iii_sdk_framework, 0);
+        assert_eq!(wd.worker_count_by_framework.get("motia"), Some(&1));
     }
 
     #[test]
@@ -2046,7 +2099,7 @@ mod tests {
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
             project_name: Some("telemetry-spec".to_string()),
-            framework: Some("iii-js".to_string()),
+            framework: Some("iii-node".to_string()),
         });
         engine.worker_registry.register_worker(worker);
 
