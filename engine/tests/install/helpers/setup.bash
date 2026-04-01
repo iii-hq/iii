@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared BATS setup/teardown for install.sh tests.
 
-INSTALL_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/install.sh"
+INSTALL_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/install.sh"
 FIXTURES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../fixtures" && pwd)"
 HELPERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -141,4 +141,48 @@ setup_existing_binary() {
 # Remove existing binary for fresh install tests (default state)
 remove_existing_binary() {
   rm -f "${FAKE_BIN_DIR}/iii"
+}
+
+# Remove a command from PATH by shadowing directories that contain it.
+# Creates symlinks for every executable EXCEPT the target into a shadow dir,
+# then replaces the original directory in PATH with the shadow.
+# Usage: hide_command_from_path <command_name>
+hide_command_from_path() {
+  local cmd="$1"
+  rm -f "${MOCK_BIN_DIR}/${cmd}"
+  local shadow="${SANDBOX}/${cmd}_shadow"
+  mkdir -p "$shadow"
+  local new_path="${MOCK_BIN_DIR}" dir bn
+  local saved_ifs="$IFS"
+  IFS=":"
+  for dir in $PATH; do
+    [ "$dir" = "$MOCK_BIN_DIR" ] && continue
+    if [ -x "${dir}/${cmd}" ]; then
+      for f in "$dir"/*; do
+        [ ! -x "$f" ] && continue
+        bn=$(basename "$f")
+        [ "$bn" = "$cmd" ] && continue
+        [ -e "${shadow}/${bn}" ] && continue
+        ln -s "$f" "${shadow}/${bn}" 2>/dev/null || true
+      done
+      new_path="${new_path}:${shadow}"
+    else
+      new_path="${new_path}:${dir}"
+    fi
+  done
+  IFS="$saved_ifs"
+  export PATH="$new_path"
+}
+
+hide_jq_from_path() {
+  hide_command_from_path "jq"
+}
+
+hide_curl_from_path() {
+  hide_command_from_path "curl"
+}
+
+hide_unzip_from_path() {
+  rm -f "${MOCK_BIN_DIR}/unzip"
+  hide_command_from_path "unzip"
 }
