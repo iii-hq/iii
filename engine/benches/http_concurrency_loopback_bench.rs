@@ -15,10 +15,11 @@ fn http_concurrency_loopback_benchmark(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
     group.measurement_time(Duration::from_secs(3));
 
-    let runtime = rt.block_on(BenchRuntime::start(100));
-    let target_path = common::http_api_path(99);
-
     for concurrency in common::http_concurrency_levels() {
+        let runtime = rt.block_on(BenchRuntime::start(100));
+        let target_path = common::http_api_path(99);
+        rt.block_on(runtime.wait_for_stable_route(&target_path, concurrency));
+
         group.throughput(Throughput::Elements(concurrency as u64));
         group.bench_with_input(
             BenchmarkId::from_parameter(concurrency),
@@ -35,7 +36,8 @@ fn http_concurrency_loopback_benchmark(c: &mut Criterion) {
                                 let body = &body;
                                 async move {
                                     let response = runtime.post_json(target_path, body).await;
-                                    assert!(response.status().is_success());
+                                    let status = response.status();
+                                    assert!(status.is_success(), "expected success, got {status}");
                                 }
                             });
                             join_all(requests).await;
@@ -45,9 +47,9 @@ fn http_concurrency_loopback_benchmark(c: &mut Criterion) {
                 });
             },
         );
-    }
 
-    rt.block_on(runtime.shutdown());
+        rt.block_on(runtime.shutdown());
+    }
     group.finish();
 }
 
