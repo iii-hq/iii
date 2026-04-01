@@ -1,0 +1,94 @@
+---
+title: Ecosystem Overview
+description: How Motia, the iii engine, and the iii SDK relate to each other.
+---
+
+## What You're Running
+
+When you run a Motia project, three things are involved:
+
+1. **iii engine** — The runtime. A Rust binary that manages functions, triggers, state, queues, cron, and observability. You installed it with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh` and you start it with the `iii` command.
+
+2. **iii-sdk** — The client library that connects your code to the engine via WebSocket. You don't install this directly — Motia includes it as a dependency.
+
+3. **motia** — The framework you write your code with. It provides Steps, typed schemas, CLI scaffolding, and build tooling on top of the iii SDK.
+
+```
+Your Steps (.step.ts / .step.py)
+    |
+motia framework (npm: motia)
+    |
+iii-sdk (npm: iii-sdk) — included automatically
+    |
+iii engine (binary: iii) — you installed this separately
+```
+
+Motia is the framework. The iii engine is the runtime. You need both.
+
+## Why the Version Numbers Are Different
+
+You will see different version numbers across components. This is expected:
+
+| What you see | Component | Current |
+|---|---|---|
+| `iii -v` | iii engine | 0.10.0 |
+| `"motia"` in package.json | motia framework | 1.0.4-rc.1 |
+| Bottom-left of console UI | iii-console | 0.10.0 |
+
+The engine and SDK are at `0.10.0`. Motia is at `1.0.4-rc.1`. They version independently because they ship on different release cycles. The engine and SDK versions always match each other. Motia tracks its own version.
+
+Your `package.json` should have `motia` (the framework). The `iii-sdk` package is pulled in automatically as a dependency of motia. You do not need to add `iii-sdk` to your own `package.json` unless you want to use the SDK directly.
+
+## CLI Commands
+
+**Engine CLI** (the `iii` binary):
+
+| Command | What it does |
+|---|---|
+| `iii` | Start the engine with `config.yaml` in current directory |
+| `iii -c iii-config.yaml` | Start the engine with a specific config file |
+| `iii console` | Open the developer dashboard |
+| `iii trigger <function_id>` | Invoke a function from the command line |
+| `iii create` | Scaffold a new iii SDK project (not motia) |
+
+**Motia CLI** (the `motia` package):
+
+| Command | What it does |
+|---|---|
+| `npx motia@latest create` | Scaffold a new motia project |
+| `npx motia dev` | Start the motia development worker |
+| `npx motia build` | Build for production |
+
+To run a motia project, you start the iii engine in one terminal and the motia worker in another:
+
+```bash
+# Terminal 1: start the engine
+iii
+
+# Terminal 2: start your motia worker
+npx motia dev
+```
+
+Or use the config.yaml to have the engine start your worker automatically (see [Configure Engine](/docs/how-to/configure-engine)).
+
+## Do I Need iii-sdk or motia?
+
+**If you're building a Motia project** — use `motia`. It includes `iii-sdk` automatically. Your `package.json` should have:
+```json
+{
+  "dependencies": {
+    "motia": "^1.0.4-rc.1"
+  }
+}
+```
+
+**If you're building a standalone worker** (like an embedding service, auth layer, or custom integration) — use `iii-sdk` directly:
+```json
+{
+  "dependencies": {
+    "iii-sdk": "^0.10.0"
+  }
+}
+```
+
+You can also mix them in the same engine. A motia project and a standalone iii-sdk worker can both connect to the same engine and call each other's functions.
