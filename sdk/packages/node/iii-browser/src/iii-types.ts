@@ -407,37 +407,6 @@ export type TriggerTypeInfo = {
   call_request_format?: unknown
 }
 
-/** Worker connection status. */
-export type WorkerStatus = 'connected' | 'available' | 'busy' | 'disconnected'
-
-/**
- * Metadata about a connected worker, returned by `ISdk.listWorkers`.
- */
-export type WorkerInfo = {
-  /** Unique worker identifier assigned by the engine. */
-  id: string
-  /** Display name of the worker. */
-  name?: string
-  /** Runtime environment (e.g. `node`, `python`, `rust`). */
-  runtime?: string
-  /** SDK version. */
-  version?: string
-  /** Operating system info. */
-  os?: string
-  /** IP address of the worker. */
-  ip_address?: string
-  /** Current connection status. */
-  status: WorkerStatus
-  /** Timestamp (ms since epoch) when the worker connected. */
-  connected_at_ms: number
-  /** Number of functions registered by this worker. */
-  function_count: number
-  /** List of function IDs registered by this worker. */
-  functions: string[]
-  /** Number of currently active invocations. */
-  active_invocations: number
-}
-
 export type UnregisterFunctionMessage = {
   message_type: MessageType.UnregisterFunction
   id: string

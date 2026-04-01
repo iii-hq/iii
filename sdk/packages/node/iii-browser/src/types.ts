@@ -10,7 +10,6 @@ import type {
   TriggerInfo,
   TriggerRequest,
   TriggerTypeInfo,
-  WorkerInfo,
 } from './iii-types'
 import type { IStream } from './stream'
 import type { TriggerHandler } from './triggers'
@@ -179,13 +178,6 @@ export interface ISdk {
    * ```
    */
   listFunctions(): Promise<FunctionInfo[]>
-
-  /**
-   * Lists all connected workers.
-   *
-   * @returns An array of {@link WorkerInfo} objects.
-   */
-  listWorkers(): Promise<WorkerInfo[]>
 
   /**
    * Lists all registered triggers.

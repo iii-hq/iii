@@ -196,7 +196,7 @@ export interface StreamJoinLeaveTriggerConfig {
 /** Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`, or `stream::delete`. */
 export interface StreamChangeEvent {
   /** The event type. */
-  type: 'create' | 'update' | 'delete'
+  type: 'stream'
   /** Unix timestamp of the event. */
   timestamp: number
   /** The stream where the change occurred. */
@@ -206,8 +206,11 @@ export interface StreamChangeEvent {
   /** The item ID that changed. */
   id?: string
   /** The event detail object containing `type` and `data` fields. */
-  // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-  event: { type: string; data: any }
+  event: {
+    type: 'create' | 'update' | 'delete'
+    // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+    data: any
+  }
 }
 
 /**

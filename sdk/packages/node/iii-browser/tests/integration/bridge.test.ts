@@ -38,14 +38,11 @@ describe('Bridge Operations', () => {
       resolveReceived = r
     })
 
-    const fn = iii.registerFunction(
-      { id: 'browser.test.void-receiver' },
-      async (data: Record<string, unknown>) => {
-        receivedData = data
-        resolveReceived?.()
-        return {}
-      },
-    )
+    const fn = iii.registerFunction({ id: 'browser.test.void-receiver' }, async (data: Record<string, unknown>) => {
+      receivedData = data
+      resolveReceived?.()
+      return {}
+    })
 
     await sleep(300)
 
@@ -87,12 +84,6 @@ describe('Bridge Operations', () => {
     await expect(
       iii.trigger({ function_id: 'browser.nonexistent.function', payload: {}, timeoutMs: 2000 }),
     ).rejects.toThrow()
-  })
-
-  it('should list connected workers', async () => {
-    const workers = await execute(async () => iii.listWorkers())
-    expect(Array.isArray(workers)).toBe(true)
-    expect(workers.length).toBeGreaterThan(0)
   })
 
   it('should handle function returning complex data', async () => {

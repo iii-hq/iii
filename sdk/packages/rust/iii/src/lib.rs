@@ -12,8 +12,8 @@ pub mod triggers;
 pub mod types;
 
 pub use builtin_triggers::{
-    IIITrigger, StreamCallRequest, StreamJoinLeaveCallRequest, StreamJoinLeaveTriggerConfig,
-    StreamTriggerConfig,
+    IIITrigger, StreamCallRequest, StreamEventDetail, StreamEventType,
+    StreamJoinLeaveCallRequest, StreamJoinLeaveTriggerConfig, StreamTriggerConfig,
 };
 pub use channels::{
     ChannelDirection, ChannelItem, ChannelReader, ChannelWriter, StreamChannelRef,
@@ -31,7 +31,7 @@ pub use protocol::{
     Message, RegisterFunctionMessage, RegisterServiceMessage, RegisterTriggerInput,
     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerAction, TriggerRequest,
 };
-pub use stream::{Streams, UpdateBuilder};
+pub use stream::UpdateBuilder;
 pub use structs::{
     AuthInput, AuthResult, MiddlewareFunctionInput, OnFunctionRegistrationInput,
     OnFunctionRegistrationResult, OnTriggerRegistrationInput, OnTriggerRegistrationResult,
@@ -39,7 +39,9 @@ pub use structs::{
 };
 pub use triggers::{Trigger, TriggerConfig, TriggerHandler};
 pub use types::{
-    ApiRequest, ApiResponse, Channel, FieldPath, StreamUpdateInput, UpdateOp, UpdateResult,
+    ApiRequest, ApiResponse, Channel, DeleteResult, FieldPath, SetResult, StreamAuthInput,
+    StreamAuthResult, StreamDeleteInput, StreamGetInput, StreamJoinResult, StreamListGroupsInput,
+    StreamListInput, StreamSetInput, StreamUpdateInput, UpdateOp, UpdateResult,
 };
 
 pub use serde_json::Value;

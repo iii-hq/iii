@@ -209,8 +209,8 @@ print("Messages:", messages)
 </Tab>
 <Tab title="Rust">
 ```rust title="stream_reader.rs"
-use iii_sdk::RegisterFunction;
-use serde_json::Value;
+use iii_sdk::{RegisterFunction, TriggerRequest};
+use serde_json::{json, Value};
 
 let iii_clone = iii.clone();
 let reg = RegisterFunction::new_async("chat::list", move |input: Value| {
@@ -237,8 +237,8 @@ iii.register_function(reg);
 // Then call from another function or worker
 let messages = iii
     .trigger(TriggerRequest {
-        function_id: "chat::list".into(),
-        payload: json!({ "roomId": "room-123" }),
+        function_id: "stream::list".into(),
+        payload: json!({ "stream_name": "chat", "group_id": "room-123" }),
         action: None,
         timeout_ms: None,
     })
@@ -341,7 +341,7 @@ import { StreamChangeEvent } from 'iii-sdk/stream'
 const onMessage = iii.registerFunction({ id: 'chat::onMessage' }, async (input: StreamChangeEvent) => {
   const logger = new Logger()
 
-  if (input.type === 'create') {
+  if (input.event.type === 'create') {
     logger.info('New message in room', { room: input.groupId, messageId: input.id, data: input.event.data })
   }
 
@@ -362,11 +362,11 @@ from iii import StreamChangeEvent
 def on_message(input: StreamChangeEvent):
     logger = Logger()
 
-    if input.type == "create":
+    if input.event.type == "create":
         logger.info("New message in room", {
             "room": input.groupId,
             "messageId": input.id,
-            "data": input.event["data"],
+            "data": input.event.data,
         })
 
     return {}
@@ -381,18 +381,18 @@ iii.register_trigger({
 </Tab>
 <Tab title="Rust">
 ```rust title="stream_triggers.rs"
-use iii_sdk::{IIITrigger, StreamCallRequest, StreamTriggerConfig};
+use iii_sdk::{IIITrigger, StreamCallRequest, StreamEventType, StreamTriggerConfig};
 
 let reg = RegisterFunction::new_async("chat::onMessage", move |input: Value| {
     async move {
         let logger = Logger::new();
         let event: StreamCallRequest = serde_json::from_value(input)?;
 
-        if event.event_type == "create" {
+        if event.event.event_type == StreamEventType::Create {
             logger.info("New message in room", Some(json!({
                 "room": event.group_id,
                 "messageId": event.id,
-                "data": event.event["data"],
+                "data": event.event.data,
             })));
         }
 
