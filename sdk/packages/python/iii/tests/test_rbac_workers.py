@@ -76,7 +76,8 @@ def iii_server():
 
     def middlware_handler(data: dict) -> dict:
         mid = MiddlewareFunctionInput(**data)
-        return {**mid.payload, "_intercepted": True, "_caller": mid.context.get("user_id")}
+        enriched = {**mid.payload, "_intercepted": True, "_caller": mid.context.get("user_id")}
+        return client.trigger({"function_id": mid.function_id, "payload": enriched})
 
     def echo_handler(data):
         return {"echoed": data}

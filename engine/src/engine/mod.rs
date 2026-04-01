@@ -670,89 +670,45 @@ impl Engine {
                     }
 
                     if let Some(middleware_id) = &session.config.middleware_function_id {
-                        let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
-                        let middleware_input = serde_json::json!({
-                            "function_id": function_id,
-                            "payload": data,
-                            "action": action,
-                            "context": session.context,
-                        });
-                        let engine = self.clone();
-                        let w = worker.clone();
-                        let middleware_id = middleware_id.clone();
-                        let function_id = function_id.clone();
-                        let original_data = data.clone();
-                        let traceparent = traceparent.clone();
-                        let baggage = baggage.clone();
+                        if !function_id.starts_with("engine::") {
+                            let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
+                            let middleware_input = serde_json::json!({
+                                "function_id": function_id,
+                                "payload": data,
+                                "action": action,
+                                "context": session.context,
+                            });
+                            let engine = self.clone();
+                            let w = worker.clone();
+                            let middleware_id = middleware_id.clone();
+                            let function_id = function_id.clone();
+                            let traceparent = traceparent.clone();
+                            let baggage = baggage.clone();
 
-                        tokio::spawn(async move {
-                            // Phase 1: call middleware to get enriched payload (or rejection)
-                            let enriched_payload =
-                                match engine.call(&middleware_id, middleware_input).await {
-                                    Ok(result) => result.unwrap_or(original_data),
-                                    Err(err) => {
-                                        engine
-                                            .send_msg(
-                                                &w,
-                                                Message::InvocationResult {
-                                                    invocation_id: inv_id,
-                                                    function_id,
-                                                    result: None,
-                                                    error: Some(err),
-                                                    traceparent,
-                                                    baggage,
-                                                },
-                                            )
-                                            .await;
-                                        return;
-                                    }
-                                };
-
-                            // Phase 2: invoke target function with caller's session
-                            let result = engine
-                                .remember_invocation(
-                                    &w,
-                                    Some(inv_id),
-                                    &function_id,
-                                    enriched_payload,
-                                    traceparent.clone(),
-                                    baggage.clone(),
-                                )
-                                .await;
-
-                            let response = match result {
-                                Ok(Ok(result)) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result,
-                                    error: None,
-                                    traceparent,
-                                    baggage,
-                                },
-                                Ok(Err(err)) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result: None,
-                                    error: Some(err),
-                                    traceparent,
-                                    baggage,
-                                },
-                                Err(err) => Message::InvocationResult {
-                                    invocation_id: inv_id,
-                                    function_id,
-                                    result: None,
-                                    error: Some(ErrorBody::new(
-                                        "invocation_error",
-                                        err.to_string(),
-                                    )),
-                                    traceparent,
-                                    baggage,
-                                },
-                            };
-                            engine.send_msg(&w, response).await;
-                            w.remove_invocation(&inv_id).await;
-                        });
-                        return Ok(());
+                            tokio::spawn(async move {
+                                let response =
+                                    match engine.call(&middleware_id, middleware_input).await {
+                                        Ok(result) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result,
+                                            error: None,
+                                            traceparent,
+                                            baggage,
+                                        },
+                                        Err(err) => Message::InvocationResult {
+                                            invocation_id: inv_id,
+                                            function_id,
+                                            result: None,
+                                            error: Some(err),
+                                            traceparent,
+                                            baggage,
+                                        },
+                                    };
+                                engine.send_msg(&w, response).await;
+                            });
+                            return Ok(());
+                        }
                     }
                 }
 

@@ -65,7 +65,8 @@ beforeAll(async () => {
   })
 
   iii.registerFunction({ id: 'test::rbac-worker::middleware' }, async (input: MiddlewareFunctionInput) => {
-    return { ...input.payload, _intercepted: true, _caller: input.context.user_id }
+    const enrichedPayload = { ...input.payload, _intercepted: true, _caller: input.context.user_id }
+    return iii.trigger({ function_id: input.function_id, payload: enrichedPayload })
   })
 
   iii.registerFunction(

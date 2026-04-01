@@ -100,21 +100,30 @@ fn ensure_functions_registered() {
 
         refs.push(iii.register_function(RegisterFunction::new_async(
             "test::rbac-worker::middleware",
-            |input: MiddlewareFunctionInput| async move {
-                let mut enriched = input.payload.as_object().cloned().unwrap_or_default();
-                enriched.insert("_intercepted".to_string(), json!(true));
-                enriched.insert(
-                    "_caller".to_string(),
-                    json!(
-                        input
-                            .context
-                            .get("user_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                    ),
-                );
+            |input: MiddlewareFunctionInput| {
+                let iii = common::shared_iii().clone();
+                async move {
+                    let mut enriched = input.payload.as_object().cloned().unwrap_or_default();
+                    enriched.insert("_intercepted".to_string(), json!(true));
+                    enriched.insert(
+                        "_caller".to_string(),
+                        json!(
+                            input
+                                .context
+                                .get("user_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                        ),
+                    );
 
-                Ok::<Value, iii_sdk::IIIError>(json!(enriched))
+                    iii.trigger(TriggerRequest {
+                        function_id: input.function_id,
+                        payload: json!(enriched),
+                        action: None,
+                        timeout_ms: None,
+                    })
+                    .await
+                }
             },
         )));
 
