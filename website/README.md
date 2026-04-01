@@ -20,7 +20,7 @@ npm run build
 
 ## Deployment
 
-Deployed to [Vercel](https://vercel.com) under the **motia** org. Pushes to `main` auto-deploy to production at [iii.dev](https://iii.dev).
+Deployed to [Vercel](https://vercel.com) under the **iii** org. Pushes to `main` auto-deploy to production at [iii.dev](https://iii.dev).
 
 ## License
 

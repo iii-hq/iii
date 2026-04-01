@@ -266,9 +266,9 @@ nc -zv 127.0.0.1 49134
 
 ## Built-in Defaults
 
-When you start the engine with `iii --use-default-config`, it loads the modules registered as enabled by default in the current build, including the core REST API, queue, cron, pub/sub, state, stream, and KV modules.
+When you start the engine with `iii --use-default-config`, it loads the core modules plus an in-memory `modules::observability::OtelModule` configuration. Traces, metrics, and logs are enabled and stored in memory by default in this mode.
 
-Queue and Stream use their built-in adapters under this mode. For custom ports, observability, or production adapters such as Redis or RabbitMQ, provide an explicit `config.yaml`.
+Queue and Stream use their built-in adapters under this mode. For custom ports or production adapters such as Redis or RabbitMQ, provide an explicit `config.yaml`.
 
 ## Startup Flow
 
@@ -336,6 +336,8 @@ curl http://localhost:3111/health
 ```
 
 ## Logging
+
+`iii --use-default-config` already enables the built-in observability module with in-memory exporters. Provide an explicit config only if you want to change ports, exporters, or log level.
 
 Configure the observability module (traces, metrics, logs):
 

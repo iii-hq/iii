@@ -1,12 +1,10 @@
 use serde_json::Value;
 
-#[cfg(feature = "otel")]
 use opentelemetry::logs::{AnyValue, LogRecord as _, Logger as _, LoggerProvider as _, Severity};
 
 /// Convert a `serde_json::Value` into an OpenTelemetry `AnyValue` so that
 /// nested objects and arrays are preserved as structured OTLP attributes
 /// (`kvlistValue` / `arrayValue`) instead of being stringified.
-#[cfg(feature = "otel")]
 fn json_value_to_anyvalue(v: &Value) -> AnyValue {
     match v {
         Value::String(s) => AnyValue::String(s.clone().into()),
@@ -69,7 +67,6 @@ impl Logger {
 
     /// Emit a LogRecord via the OTel LoggerProvider with trace context from the active span.
     /// Returns `true` if the log was emitted via OTel, `false` otherwise.
-    #[cfg(feature = "otel")]
     fn emit_otel(&self, message: &str, severity: Severity, data: Option<&Value>) -> bool {
         let Some(provider) = crate::telemetry::get_logger_provider() else {
             return false;
@@ -122,9 +119,7 @@ impl Logger {
     /// # let logger = Logger::new();
     /// logger.info("Order processed", Some(json!({ "order_id": "ord_123", "status": "completed" })));
     /// ```
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
     pub fn info(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Info, data.as_ref()) {
             return;
         }
@@ -148,9 +143,7 @@ impl Logger {
     /// # let logger = Logger::new();
     /// logger.warn("Retry attempt", Some(json!({ "attempt": 3, "max_retries": 5, "endpoint": "/api/charge" })));
     /// ```
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
     pub fn warn(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Warn, data.as_ref()) {
             return;
         }
@@ -174,9 +167,7 @@ impl Logger {
     /// # let logger = Logger::new();
     /// logger.error("Payment failed", Some(json!({ "order_id": "ord_123", "gateway": "stripe", "error_code": "card_declined" })));
     /// ```
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
     pub fn error(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Error, data.as_ref()) {
             return;
         }
@@ -200,9 +191,7 @@ impl Logger {
     /// # let logger = Logger::new();
     /// logger.debug("Cache lookup", Some(json!({ "key": "user:42", "hit": false })));
     /// ```
-    #[cfg_attr(not(feature = "otel"), allow(unused_variables))]
     pub fn debug(&self, message: &str, data: Option<Value>) {
-        #[cfg(feature = "otel")]
         if self.emit_otel(message, Severity::Debug, data.as_ref()) {
             return;
         }

@@ -186,7 +186,7 @@ pub struct RateLimitConfig {
 }
 
 /// OpenTelemetry module configuration (for YAML deserialization)
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OtelModuleConfig {
     /// Whether OpenTelemetry export is enabled
@@ -284,6 +284,38 @@ pub struct OtelModuleConfig {
     /// Log format: "default" for human-readable, "json" for structured JSON
     #[serde(default)]
     pub format: Option<String>,
+}
+
+impl Default for OtelModuleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Some(true),
+            service_name: Some("iii".to_string()),
+            exporter: Some(OtelExporterType::Memory),
+            metrics_enabled: Some(true),
+            metrics_exporter: Some(MetricsExporterType::Memory),
+            logs_enabled: Some(true),
+            logs_exporter: Some(LogsExporterType::Memory),
+            logs_console_output: true,
+            logs_sampling_ratio: 1.0,
+            // All other fields left as None/empty — resolved at runtime
+            service_version: None,
+            service_namespace: None,
+            endpoint: None,
+            sampling_ratio: None,
+            sampling: None,
+            memory_max_spans: None,
+            metrics_retention_seconds: None,
+            metrics_max_count: None,
+            logs_max_count: None,
+            logs_retention_seconds: None,
+            logs_batch_size: None,
+            logs_flush_interval_ms: None,
+            alerts: Vec::new(),
+            level: None,
+            format: None,
+        }
+    }
 }
 
 fn default_logs_sampling_ratio() -> f64 {

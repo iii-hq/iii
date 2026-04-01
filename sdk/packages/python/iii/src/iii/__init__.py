@@ -14,8 +14,11 @@ from .iii_types import (
     MessageType,
     MiddlewareFunctionInput,
     OnFunctionRegistrationInput,
+    OnFunctionRegistrationResult,
     OnTriggerRegistrationInput,
+    OnTriggerRegistrationResult,
     OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult,
     RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
@@ -32,7 +35,15 @@ from .iii_types import (
     TriggerTypeInfo,
 )
 from .logger import Logger
-from .stream import IStream, StreamContext
+from .stream import (
+    IStream,
+    StreamChangeEvent,
+    StreamChangeEventDetail,
+    StreamContext,
+    StreamJoinLeaveEvent,
+    StreamJoinLeaveTriggerConfig,
+    StreamTriggerConfig,
+)
 from .telemetry_types import OtelConfig
 from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
 from .types import (
@@ -64,8 +75,11 @@ __all__ = [
     "AuthResult",
     "MiddlewareFunctionInput",
     "OnFunctionRegistrationInput",
+    "OnFunctionRegistrationResult",
     "OnTriggerRegistrationInput",
+    "OnTriggerRegistrationResult",
     "OnTriggerTypeRegistrationInput",
+    "OnTriggerTypeRegistrationResult",
     # Message types
     "EnqueueResult",
     "FunctionInfo",
@@ -104,7 +118,12 @@ __all__ = [
     "RemoteFunctionHandler",
     # Stream
     "IStream",
+    "StreamChangeEvent",
+    "StreamChangeEventDetail",
     "StreamContext",
+    "StreamJoinLeaveEvent",
+    "StreamJoinLeaveTriggerConfig",
+    "StreamTriggerConfig",
     # Utilities
     "http",
     # Format extraction

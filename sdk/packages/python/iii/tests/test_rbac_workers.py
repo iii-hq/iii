@@ -11,8 +11,11 @@ from iii import (
     InitOptions,
     MiddlewareFunctionInput,
     OnFunctionRegistrationInput,
+    OnFunctionRegistrationResult,
     OnTriggerRegistrationInput,
+    OnTriggerRegistrationResult,
     OnTriggerTypeRegistrationInput,
+    OnTriggerTypeRegistrationResult,
     TriggerConfig,
     TriggerHandler,
     register_worker,
@@ -60,6 +63,15 @@ def iii_server():
                 context={"role": "restricted", "user_id": "user-2"},
             ).model_dump()
 
+        if token == "prefix-token":
+            return AuthResult(
+                allowed_functions=[],
+                forbidden_functions=[],
+                allow_trigger_type_registration=True,
+                context={"role": "prefixed", "user_id": "user-prefix"},
+                function_registration_prefix="test-prefix",
+            ).model_dump()
+
         raise Exception("invalid token")
 
     def middlware_handler(data: dict) -> dict:
@@ -79,19 +91,27 @@ def iii_server():
     def private_handler(_data):
         return {"private": True}
 
-    def on_function_reg_handler(data: dict) -> bool:
+    def on_function_reg_handler(data: dict) -> dict:
         reg_input = OnFunctionRegistrationInput(**data)
-        return not reg_input.function_id.startswith("denied::")
+        if reg_input.function_id.startswith("denied::"):
+            raise Exception("denied function registration")
+        return OnFunctionRegistrationResult(
+            function_id=reg_input.function_id,
+        ).model_dump()
 
-    def on_trigger_type_reg_handler(data: dict) -> bool:
+    def on_trigger_type_reg_handler(data: dict) -> dict:
         reg_input = OnTriggerTypeRegistrationInput(**data)
         trigger_type_reg_calls.append(reg_input)
-        return not reg_input.trigger_type_id.startswith("denied-tt::")
+        if reg_input.trigger_type_id.startswith("denied-tt::"):
+            raise Exception("denied trigger type registration")
+        return OnTriggerTypeRegistrationResult().model_dump()
 
-    def on_trigger_reg_handler(data: dict) -> bool:
+    def on_trigger_reg_handler(data: dict) -> dict:
         reg_input = OnTriggerRegistrationInput(**data)
         trigger_reg_calls.append(reg_input)
-        return not reg_input.function_id.startswith("denied-trig::")
+        if reg_input.function_id.startswith("denied-trig::"):
+            raise Exception("denied trigger registration")
+        return OnTriggerRegistrationResult().model_dump()
 
     client.register_function({"id": "test::rbac-worker::auth"}, auth_handler)
     client.register_function({"id": "test::rbac-worker::middleware"}, middlware_handler)
@@ -252,5 +272,28 @@ class TestRbacWorkers:
                     "function_id": "denied::blocked-fn",
                     "payload": {},
                 })
+        finally:
+            iii_client.shutdown()
+
+    def test_function_registration_prefix(self, iii_server):
+        iii_client = register_worker(
+            EW_URL,
+            InitOptions(otel={"enabled": False}, headers={"x-test-token": "prefix-token"}),
+        )
+
+        try:
+            iii_client.register_function(
+                {"id": "prefixed-echo"},
+                lambda data: {"echoed": data},
+            )
+
+            time.sleep(1.0)
+
+            result = iii_server.trigger({
+                "function_id": "test-prefix::prefixed-echo",
+                "payload": {"msg": "prefix-test"},
+            })
+
+            assert result["echoed"]["msg"] == "prefix-test"
         finally:
             iii_client.shutdown()

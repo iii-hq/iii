@@ -127,7 +127,7 @@ export function HelloWorldSection({
 
   return (
     <section
-      className={`relative overflow-hidden font-mono transition-colors duration-300 ${textPrimary}`}
+      className={`relative w-full overflow-hidden font-mono transition-colors duration-300 ${textPrimary}`}
     >
       {/* Subtle ambient glow decoration */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -146,9 +146,9 @@ export function HelloWorldSection({
           }}
         />
       </div>
-      <div className="relative z-10">
+      <div className="relative z-10 w-full max-w-7xl mx-auto px-4 sm:px-6 py-5 md:py-6">
         {/* Header */}
-        <div className="text-center mb-10 md:mb-16 space-y-4">
+        <div className="text-center mb-7 md:mb-10 space-y-3">
           <h2 className="text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1]">
             <span className="block sm:inline">One protocol.</span>{' '}
             <span className={`${accentColor} relative inline-block`}>

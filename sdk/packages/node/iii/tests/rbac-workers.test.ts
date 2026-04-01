@@ -4,8 +4,11 @@ import type {
   AuthResult,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
+  OnFunctionRegistrationResult,
   OnTriggerRegistrationInput,
+  OnTriggerRegistrationResult,
   OnTriggerTypeRegistrationInput,
+  OnTriggerTypeRegistrationResult,
 } from '../src/index'
 import { registerWorker } from '../src/index'
 import { iii, sleep } from './utils'
@@ -48,6 +51,16 @@ beforeAll(async () => {
       }
     }
 
+    if (token === 'prefix-token') {
+      return {
+        allowed_functions: [],
+        forbidden_functions: [],
+        allow_trigger_type_registration: true,
+        context: { role: 'prefixed', user_id: 'user-prefix' },
+        function_registration_prefix: 'test-prefix',
+      }
+    }
+
     throw new Error('invalid token')
   })
 
@@ -58,24 +71,33 @@ beforeAll(async () => {
 
   iii.registerFunction(
     { id: 'test::rbac-worker::on-function-reg' },
-    async (input: OnFunctionRegistrationInput) => {
-      return !input.function_id.startsWith('denied::')
+    async (input: OnFunctionRegistrationInput): Promise<OnFunctionRegistrationResult> => {
+      if (input.function_id.startsWith('denied::')) {
+        throw new Error('denied function registration')
+      }
+      return { function_id: input.function_id }
     },
   )
 
   iii.registerFunction(
     { id: 'test::rbac-worker::on-trigger-type-reg' },
-    async (input: OnTriggerTypeRegistrationInput) => {
+    async (input: OnTriggerTypeRegistrationInput): Promise<OnTriggerTypeRegistrationResult> => {
       triggerTypeRegCalls.push(input)
-      return !input.trigger_type_id.startsWith('denied-tt::')
+      if (input.trigger_type_id.startsWith('denied-tt::')) {
+        throw new Error('denied trigger type registration')
+      }
+      return {}
     },
   )
 
   iii.registerFunction(
     { id: 'test::rbac-worker::on-trigger-reg' },
-    async (input: OnTriggerRegistrationInput) => {
+    async (input: OnTriggerRegistrationInput): Promise<OnTriggerRegistrationResult> => {
       triggerRegCalls.push(input)
-      return !input.function_id.startsWith('denied-trig::')
+      if (input.function_id.startsWith('denied-trig::')) {
+        throw new Error('denied trigger registration')
+      }
+      return {}
     },
   )
 
@@ -251,6 +273,31 @@ describe('RBAC Workers', () => {
           payload: {},
         }),
       ).rejects.toThrow()
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  it('should apply function_registration_prefix and strip on invocation', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'prefix-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      iiiClient.registerFunction({ id: 'prefixed-echo' }, async (data: Record<string, unknown>) => {
+        return { echoed: data }
+      })
+
+      await sleep(1000)
+
+      // biome-ignore lint/suspicious/noExplicitAny: any is fine here
+      const result = await iii.trigger<any, any>({
+        function_id: 'test-prefix::prefixed-echo',
+        payload: { msg: 'prefix-test' },
+      })
+
+      expect(result.echoed.msg).toBe('prefix-test')
     } finally {
       await iiiClient.shutdown()
     }

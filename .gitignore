@@ -1,42 +1,68 @@
+# Dependencies
 node_modules/
+.venv/
+__pycache__/
+*.egg-info/
+
+# Build outputs
 dist/
 target/
 .turbo/
 .next/
+.bin/
+
+# Runtime data
+data/
+*.log
+app.log
+*.db
+*.sqlite*
+
+# Test / coverage
+.coverage
+coverage/
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environment
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+
+# IDE / editor
 .vscode/
-.claude/
-
-.coverage
-coverage/
-htmlcov/
-.DS_Store
-
-data/
-node_modules
-.mypy_cache
-__pycache__/
-.venv
-.bin/
 .idea/
-app.log
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI tools
+.claude/
+.planning/
+.gstack/
+AGENTS.md
+
+# Project-specific
 .shared/
 .worktrees/
 .sisyphus/
 conductor
 .omc
-.cursor
-AGENTS.md
-.planning
+iii_workers/
 
 # Generated API doc intermediates
 sdk/packages/node/iii/api-docs.json
+sdk/packages/node/iii-browser/api-docs.json
 sdk/packages/python/iii/api-docs.json
 
-.planning/
-iii_workers/
-.gstack/
+
+docs/plans/

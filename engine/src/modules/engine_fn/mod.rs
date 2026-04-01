@@ -74,6 +74,8 @@ pub struct TriggerInfo {
     pub trigger_type: String,
     pub function_id: String,
     pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -211,6 +213,7 @@ impl EngineFunctionsModule {
                     trigger_type: t.trigger_type.clone(),
                     function_id: t.function_id.clone(),
                     config: t.config.clone(),
+                    metadata: t.metadata.clone(),
                 }
             })
             .collect()
@@ -697,6 +700,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: serde_json::json!({"interval": 5}),
             worker_id: None,
+            metadata: None,
         };
         engine
             .trigger_registry
@@ -792,6 +796,7 @@ mod tests {
             function_id: "test::on_functions_changed".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
 
         // Register
@@ -817,6 +822,7 @@ mod tests {
                 function_id: format!("test::handler_{}", i),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             };
             module.register_trigger(trigger).await.unwrap();
         }
@@ -837,6 +843,7 @@ mod tests {
             function_id: "test::handler".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -884,6 +891,7 @@ mod tests {
             function_id: "test::on_workers".to_string(),
             config: serde_json::json!({}),
             worker_id: None,
+            metadata: None,
         };
         module.register_trigger(trigger).await.unwrap();
 
@@ -976,11 +984,38 @@ mod tests {
             trigger_type: "cron".to_string(),
             function_id: "fn::handler".to_string(),
             config: serde_json::json!({"schedule": "* * * * *"}),
+            metadata: None,
         };
         let json = serde_json::to_value(&info).expect("serialize");
         assert_eq!(json["id"], "t-1");
         assert_eq!(json["trigger_type"], "cron");
         assert_eq!(json["function_id"], "fn::handler");
+    }
+
+    #[test]
+    fn test_trigger_info_serializes_with_metadata() {
+        let info = TriggerInfo {
+            id: "t-2".to_string(),
+            trigger_type: "http".to_string(),
+            function_id: "fn::api".to_string(),
+            config: serde_json::json!({"path": "/users"}),
+            metadata: Some(serde_json::json!({"team": "api"})),
+        };
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert_eq!(json["metadata"], serde_json::json!({"team": "api"}));
+    }
+
+    #[test]
+    fn test_trigger_info_omits_null_metadata() {
+        let info = TriggerInfo {
+            id: "t-3".to_string(),
+            trigger_type: "cron".to_string(),
+            function_id: "fn::cleanup".to_string(),
+            config: serde_json::json!({}),
+            metadata: None,
+        };
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert!(json.get("metadata").is_none());
     }
 
     #[tokio::test]
@@ -1097,6 +1132,7 @@ mod tests {
                 function_id: "engine::internal".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
         module.engine.trigger_registry.triggers.insert(
@@ -1107,6 +1143,7 @@ mod tests {
                 function_id: "user::visible".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 
@@ -1219,6 +1256,7 @@ mod tests {
                 function_id: "test::worker_listener".to_string(),
                 config: serde_json::json!({}),
                 worker_id: None,
+                metadata: None,
             },
         );
 

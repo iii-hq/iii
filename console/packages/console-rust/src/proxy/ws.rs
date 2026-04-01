@@ -54,8 +54,8 @@ async fn proxy_websocket(client_ws: WebSocket, target_url: String) {
             let upstream_msg = match msg {
                 Message::Text(t) => TungsteniteMessage::Text(t.to_string().into()),
                 Message::Binary(b) => TungsteniteMessage::Binary(b.to_vec().into()),
-                Message::Ping(p) => TungsteniteMessage::Ping(p.into()),
-                Message::Pong(p) => TungsteniteMessage::Pong(p.into()),
+                Message::Ping(p) => TungsteniteMessage::Ping(p),
+                Message::Pong(p) => TungsteniteMessage::Pong(p),
                 Message::Close(frame) => {
                     let close_msg = TungsteniteMessage::Close(frame.map(|f| {
                         tokio_tungstenite::tungstenite::protocol::CloseFrame {

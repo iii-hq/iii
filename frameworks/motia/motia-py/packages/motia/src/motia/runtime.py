@@ -40,35 +40,6 @@ log = logging.getLogger("motia.runtime")
 CONDITION_PATH_KEY = "condition_function_id"
 
 
-def _compose_middleware(
-    middlewares: list[Callable[..., Any]],
-) -> Callable[..., Any]:
-    """Compose multiple middlewares into a single middleware."""
-
-    async def composed(req: Any, ctx: Any, handler: Callable[..., Any]) -> Any:
-        composed_handler = handler
-        for middleware in reversed(middlewares):
-
-            def make_next(
-                m: Callable[..., Any] = middleware,
-                p: Callable[..., Any] = composed_handler,
-            ) -> Callable[..., Any]:
-                async def next_handler() -> Any:
-                    result = m(req, ctx, p)
-                    if inspect.iscoroutine(result):
-                        return await result
-                    return result
-
-                return next_handler
-
-            composed_handler = make_next()
-        result = composed_handler()
-        if inspect.iscoroutine(result):
-            return await result
-        return result
-
-    return composed
-
 
 def _jsonable_value(value: Any) -> tuple[bool, Any | None]:
     """Check if a value is JSON-serializable."""
@@ -283,6 +254,15 @@ class Motia:
         index: int,
         metadata: dict[str, Any],
     ) -> None:
+        middlewares = trigger.middleware or []
+        middleware_function_ids: list[str] = []
+
+        for mw_index, mw in enumerate(middlewares):
+            middleware_id = f"{function_id}::middleware::{mw_index}"
+            middleware_function_ids.append(middleware_id)
+
+            self._register_middleware_function(middleware_id, mw, trigger)
+
         @iii_http  # type: ignore[untyped-decorator]
         async def api_handler(req: IIIHttpRequest, res: IIIHttpResponse) -> Any:
             with step_span(
@@ -308,17 +288,9 @@ class Motia:
                     )
 
                     context = _flow_context(trigger_info, motia_request)
-                    middlewares = trigger.middleware or []
-
-                    if middlewares:
-                        composed = _compose_middleware(middlewares)
-                        result = composed(motia_request, context, lambda: handler(motia_request, context))
-                        if inspect.iscoroutine(result):
-                            result = await result
-                    else:
-                        result = handler(motia_request, context)
-                        if inspect.iscoroutine(result):
-                            result = await result
+                    result = handler(motia_request, context)
+                    if inspect.iscoroutine(result):
+                        result = await result
 
                     if result is not None and hasattr(result, "model_dump"):
                         result = result.model_dump()
@@ -359,12 +331,72 @@ class Motia:
             "metadata": metadata,
         }
 
+        if middleware_function_ids:
+            trigger_config["middleware_function_ids"] = middleware_function_ids
+
         if trigger.condition:
             condition_path = f"{function_id}::conditions::{index}"
             self._register_condition(trigger, condition_path, "http", index)
             trigger_config[CONDITION_PATH_KEY] = condition_path
 
         get_instance().register_trigger({"type": "http", "function_id": function_id, "config": trigger_config})
+
+    def _register_middleware_function(
+        self,
+        middleware_id: str,
+        mw: Callable[..., Any],
+        trigger: ApiTrigger,
+    ) -> None:
+        async def middleware_wrapper(engine_req: Any) -> Any:
+            request_data = engine_req.get("request", {}) if isinstance(engine_req, dict) else {}
+
+            http_request: MotiaHttpRequest[Any] = MotiaHttpRequest.model_construct(
+                path_params=request_data.get("path_params", {}),
+                query_params=request_data.get("query_params", {}),
+                body=None,
+                headers=request_data.get("headers", {}),
+                method=request_data.get("method", trigger.method),
+                request_body=None,
+            )
+            motia_request: MotiaHttpArgs[Any] = MotiaHttpArgs.model_construct(
+                request=http_request,
+                response=None,  # type: ignore[arg-type]
+            )
+            trigger_info = TriggerInfo(type="http")
+            context = _flow_context(trigger_info, motia_request)
+
+            next_called = False
+
+            async def next_fn() -> None:
+                nonlocal next_called
+                next_called = True
+
+            try:
+                result = mw(motia_request, context, next_fn)
+                if inspect.iscoroutine(result):
+                    result = await result
+
+                if next_called:
+                    return {"action": "continue"}
+
+                if result is not None:
+                    if hasattr(result, "model_dump"):
+                        result = result.model_dump()
+                    if isinstance(result, dict) and "status" in result:
+                        return {
+                            "action": "respond",
+                            "response": {
+                                "status_code": result.get("status"),
+                                "body": result.get("body"),
+                                "headers": result.get("headers"),
+                            },
+                        }
+
+                return {"action": "continue"}
+            except Exception:
+                raise
+
+        get_instance().register_function({"id": middleware_id}, middleware_wrapper)
 
     def _register_queue_trigger(
         self,

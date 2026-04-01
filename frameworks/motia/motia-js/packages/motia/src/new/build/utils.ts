@@ -43,6 +43,7 @@ type TriggerConfigBase = {
 type ApiTriggerConfig = TriggerConfigBase & {
   api_path: string
   http_method: string
+  middleware_function_ids?: string[]
 }
 
 type QueueTriggerConfig = TriggerConfigBase & {
@@ -52,23 +53,6 @@ type QueueTriggerConfig = TriggerConfigBase & {
 
 type CronTriggerConfig = TriggerConfigBase & {
   expression: string
-}
-
-const composeMiddleware = <TRequestBody = unknown, TEnqueueData = never>(
-  ...middlewares: ApiMiddleware<TRequestBody, TEnqueueData>[]
-) => {
-  return async (
-    args: MotiaHttpArgs<TRequestBody>,
-    ctx: FlowContext<TEnqueueData, MotiaHttpArgs<TRequestBody>>,
-    handler: () => Promise<ApiResponse | void>,
-  ): Promise<ApiResponse | void> => {
-    const composedHandler = middlewares.reduceRight<() => Promise<ApiResponse | void>>(
-      (nextHandler, middleware) => () => middleware(args, ctx, nextHandler),
-      handler,
-    )
-
-    return composedHandler()
-  }
 }
 
 const flowContext = <EnqueueData, TInput = unknown>(
@@ -161,6 +145,65 @@ export class Motia {
       const function_id = `steps::${step.config.name}::trigger::${triggerSuffix}`
 
       if (isApiTrigger(trigger)) {
+        const middlewares = Array.isArray(trigger?.middleware) ? trigger.middleware : []
+        const middlewareFunctionIds: string[] = []
+
+        middlewares.forEach((mw, mwIndex) => {
+          const middlewareId = `${function_id}::middleware::${mwIndex}`
+          middlewareFunctionIds.push(middlewareId)
+
+          getInstance().registerFunction(
+            { id: middlewareId },
+            async (engineReq: {
+              phase: string
+              request: {
+                path_params: Record<string, string>
+                query_params: Record<string, string>
+                headers: Record<string, string>
+                method: string
+              }
+              context: Record<string, unknown>
+            }) => {
+              const motiaRequest: MotiaHttpArgs<unknown> = {
+                request: {
+                  pathParams: engineReq.request?.path_params ?? {},
+                  queryParams: engineReq.request?.query_params ?? {},
+                  body: undefined,
+                  headers: engineReq.request?.headers ?? {},
+                  method: engineReq.request?.method ?? trigger.method,
+                  requestBody: undefined as any,
+                },
+                response: undefined as any,
+              }
+              const triggerInfo: TriggerInfo = { type: 'http' }
+              const context = flowContext(triggerInfo, motiaRequest)
+
+              let nextCalled = false
+              const next = async (): Promise<ApiResponse | void> => {
+                nextCalled = true
+                return undefined
+              }
+
+              try {
+                const result = await mw(motiaRequest, context, next)
+
+                if (nextCalled) return { action: 'continue' }
+
+                if (result && 'status' in result) {
+                  return {
+                    action: 'respond',
+                    response: { status_code: result.status, body: result.body, headers: result.headers },
+                  }
+                }
+
+                return { action: 'continue' }
+              } catch (error) {
+                throw error
+              }
+            },
+          )
+        })
+
         getInstance().registerFunction(
           { id: function_id, metadata },
           // biome-ignore lint/suspicious/noConfusingVoidType: void is necessary here
@@ -178,30 +221,13 @@ export class Motia {
               response: res,
             }
             const context = flowContext(triggerInfo, motiaRequest)
-            const middlewares = Array.isArray(trigger?.middleware) ? trigger.middleware : []
+            const result = await step.handler(motiaRequest, context as FlowContext)
 
-            if (middlewares.length > 0) {
-              const composed = composeMiddleware(...middlewares)
-              const result = await composed(motiaRequest, context, () =>
-                step.handler(motiaRequest, context as FlowContext),
-              )
-
-              if (result) {
-                return {
-                  status_code: result.status,
-                  body: result.body,
-                  headers: result.headers,
-                }
-              }
-            } else {
-              const result = await step.handler(motiaRequest, context as FlowContext)
-
-              if (result) {
-                return {
-                  status_code: result.status,
-                  body: result.body,
-                  headers: result.headers,
-                }
+            if (result) {
+              return {
+                status_code: result.status,
+                body: result.body,
+                headers: result.headers,
               }
             }
           }),
@@ -212,6 +238,9 @@ export class Motia {
           api_path: apiPath,
           http_method: trigger.method,
           metadata,
+          ...(middlewareFunctionIds.length > 0 && {
+            middleware_function_ids: middlewareFunctionIds,
+          }),
         }
 
         if (trigger.condition) {

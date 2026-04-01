@@ -174,6 +174,52 @@ for fn in await iii.list_functions_async():
     print(fn.function_id, fn.description)
 ```
 
+### list_trigger_types
+
+List all trigger types registered with the engine.
+
+**Signature**
+
+```python
+list_trigger_types(include_internal: bool = False)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `include_internal` | `bool` | No | If ``True``, include engine-internal trigger types (e.g. ``engine::functions-available``). Defaults to ``False``. |
+
+#### Example
+
+```python
+trigger_types = iii.list_trigger_types()
+for tt in trigger_types:
+    print(tt.id, tt.trigger_request_format)
+```
+
+### list_trigger_types_async
+
+List all trigger types registered with the engine.
+
+**Signature**
+
+```python
+async (include_internal: bool = False)
+```
+
+#### Parameters
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `include_internal` | `bool` | No | If ``True``, include engine-internal trigger types (e.g. ``engine::functions-available``). Defaults to ``False``. |
+
+#### Example
+
+```python
+trigger_types = await iii.list_trigger_types_async()
+```
+
 ### list_triggers
 
 List all triggers registered with the engine.
@@ -399,6 +445,9 @@ trigger.unregister()
 
 Register a custom trigger type with the engine.
 
+Returns a :class:`TriggerTypeRef` handle with ``register_trigger``
+and ``register_function`` methods.
+
 **Signature**
 
 ```python
@@ -409,16 +458,23 @@ register_trigger_type(trigger_type: RegisterTriggerTypeInput | dict[str, Any], h
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `trigger_type` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) \| dict[str, Any] | Yes | A ``RegisterTriggerTypeInput`` or dict with ``id`` and ``description``. |
-| `handler` | [`TriggerHandler`](#triggerhandler)[Any] | Yes | A ``TriggerHandler`` instance.  Must implement both ``register_trigger(config)`` and ``unregister_trigger(trigger)`` async methods. ``register_trigger`` is called when a trigger of this type is bound to a function, and ``unregister_trigger`` is called when the binding is removed. |
+| `trigger_type` | [`RegisterTriggerTypeInput`](#registertriggertypeinput) \| dict[str, Any] | Yes | A ``RegisterTriggerTypeInput`` or dict with ``id``, ``description``, and optional ``trigger_request_format`` / ``call_request_format`` (Pydantic class or dict). |
+| `handler` | [`TriggerHandler`](#triggerhandler)[Any] | Yes | A ``TriggerHandler`` instance. |
 
 #### Example
 
 ```python
-iii.register_trigger_type({"id": "webhook", "description": "Webhook trigger"}, handler)
-iii.register_trigger_type(
-    RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"), handler
+webhook = iii.register_trigger_type(
+    RegisterTriggerTypeInput(
+        id="webhook",
+        description="Webhook trigger",
+        trigger_request_format=WebhookConfig,
+        call_request_format=WebhookCallRequest,
+    ),
+    WebhookHandler(),
 )
+webhook.register_function("handler", handle_webhook)
+webhook.register_trigger("handler", WebhookConfig(url="/hook"))
 ```
 
 ### shutdown
@@ -668,6 +724,7 @@ Options for configuring the III SDK.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `enable_metrics_reporting` | `bool` | No | Enable worker metrics via OpenTelemetry. Default ``True``. |
+| `headers` | `dict[str, str] \| None` | No | - |
 | `invocation_timeout_ms` | `int` | No | Default timeout for ``trigger()`` in milliseconds. Default ``30000``. |
 | `otel` | [`OtelConfig`](#otelconfig) \| dict[str, Any] \| None | No | OpenTelemetry configuration. Enabled by default. Set ``\{'enabled': False\}`` or env ``OTEL_ENABLED=false`` to disable. |
 | `reconnection_config` | [`ReconnectionConfig`](#reconnectionconfig) \| None | No | WebSocket reconnection behavior. |
@@ -754,16 +811,19 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | --- | --- | --- | --- |
 | `config` | `Any` | No | Trigger-type-specific configuration. |
 | `function_id` | `str` | No | ID of the function this trigger invokes. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
 | `type` | `str` | No | Trigger type identifier (e.g. ``http``, ``queue``, ``cron``). |
 
 ### RegisterTriggerTypeInput
 
-Input for registering a trigger type (matches Node SDK's RegisterTriggerTypeInput).
+Input for registering a trigger type.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `call_request_format` | `Any \| None` | No | JSON Schema describing the payload sent to functions. |
 | `description` | `str` | No | Human-readable description of the trigger type. |
 | `id` | `str` | No | Unique identifier for the trigger type. |
+| `trigger_request_format` | `Any \| None` | No | JSON Schema describing the expected trigger config. |
 
 ### TriggerActionEnqueue
 

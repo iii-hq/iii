@@ -57,7 +57,7 @@ export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
 
   return (
     <section className={`w-full min-w-0 font-mono ${sectionBg}`}>
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 pt-8 md:pt-12 lg:pt-16 pb-6 md:pb-8">
+      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 py-8 md:py-10">
         <div className="max-w-4xl mx-auto text-center">
           <h2
             className={`text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold tracking-tighter leading-[1.1] ${primary}`}
@@ -75,7 +75,7 @@ export function WhyIIISection({ isDarkMode = true }: WhyIIISectionProps) {
         </div>
       </div>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 pt-6 md:pt-8 pb-6">
+      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 pb-8 md:pb-10">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 md:gap-8">
           {GROUPS.map((points, groupIdx) => {
             const startNumber = GROUPS.slice(0, groupIdx).reduce(

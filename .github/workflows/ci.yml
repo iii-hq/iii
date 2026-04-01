@@ -188,6 +188,60 @@ jobs:
         run: bash scripts/stop-iii.sh /tmp/iii-engine.pid /tmp/iii-backend.pid /tmp/iii-bridge.pid
 
   # ──────────────────────────────────────────────────────────────
+  # SDK Node Browser
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-node-browser-ci:
+    name: SDK Browser Tests
+    needs: build-engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm --filter iii-browser-sdk exec tsc --noEmit
+
+      - name: Build
+        run: pnpm --filter iii-browser-sdk build
+
+      - name: Run unit tests
+        run: pnpm --filter iii-browser-sdk test
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Run integration tests
+        env:
+          III_URL: ws://localhost:49199
+          III_HTTP_URL: http://localhost:3199
+        run: pnpm --filter iii-browser-sdk test:integration
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
+  # ──────────────────────────────────────────────────────────────
   # SDK Python
   # ──────────────────────────────────────────────────────────────
 

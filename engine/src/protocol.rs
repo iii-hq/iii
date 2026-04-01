@@ -53,6 +53,8 @@ pub enum Message {
         trigger_type: String,
         function_id: String,
         config: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     TriggerRegistrationResult {
         id: String,

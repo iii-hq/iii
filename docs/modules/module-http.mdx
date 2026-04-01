@@ -93,6 +93,9 @@ This module adds a new Trigger Type: `http`.
   <ResponseField name="condition_function_id" type="string">
     Function ID for conditional execution. The engine invokes it with the request; if it returns `false`, the handler function is not called.
   </ResponseField>
+  <ResponseField name="middleware_function_ids" type="string[]">
+    Function IDs for per-route middleware. The engine invokes each in order before the handler. Each must return `{ action: "continue" }` or `{ action: "respond", response }`.
+  </ResponseField>
 </Expandable>
 
 ### Sample code
@@ -177,69 +180,75 @@ Functions must return an `ApiResponse` object:
 
 ## Middleware
 
-The HTTP module supports a middleware system that runs functions at defined phases of the request lifecycle. Middleware functions are registered using the `http_middleware` trigger type.
+The HTTP module supports middleware functions that run before the handler. There are two types:
 
-### Phases
+- **Per-route middleware** — attached to a specific trigger via `middleware_function_ids` in trigger config
+- **Global middleware** — configured in `iii-config.yaml`, runs on all HTTP routes
 
-| Phase | Description |
-|-------|-------------|
-| `onRequest` | Runs before route matching. |
-| `preHandler` | Runs after route match, before the handler. |
-| `postHandler` | Runs after the handler returns a response. |
-| `onResponse` | Runs after the response is sent (fire-and-forget). |
-| `onError` | Runs when the handler returns an error. |
-| `onTimeout` | Runs when the handler exceeds the configured timeout. |
+### Global Middleware Configuration
 
-Phases execute in priority order (lower number = higher priority).
+<ResponseField name="middleware" type="MiddlewareConfig[]">
+  List of global middleware functions. Each runs on every HTTP request, before conditions and per-route middleware.
 
-### Middleware Trigger Config
+  <Expandable title="MiddlewareConfig">
+    <ResponseField name="function_id" type="string" required>
+      Function ID of the middleware to invoke.
+    </ResponseField>
+    <ResponseField name="phase" type="string">
+      Lifecycle phase. Currently only `preHandler` is supported. Defaults to `preHandler`.
+    </ResponseField>
+    <ResponseField name="priority" type="number">
+      Execution order. Lower values run first. Defaults to `0`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
 
-<Expandable title="Trigger Config">
-  <ResponseField name="phase" type="string" required>
-    The lifecycle phase to attach to. One of: `onRequest`, `preHandler`, `postHandler`, `onResponse`, `onError`, `onTimeout`.
-  </ResponseField>
-  <ResponseField name="scope" type="object">
-    Limits the middleware to requests matching a path prefix. When omitted, applies to all routes.
-
-    <Expandable title="Scope">
-      <ResponseField name="path" type="string" required>
-        Path prefix to match. Supports `:param` segments and a trailing `*` wildcard (e.g., `/api/*`).
-      </ResponseField>
-    </Expandable>
-  </ResponseField>
-  <ResponseField name="priority" type="number">
-    Execution order within a phase. Lower values run first. Defaults to `0`.
-  </ResponseField>
-</Expandable>
+```yaml
+- class: modules::api::RestApiModule
+  config:
+    port: 3111
+    middleware:
+      - function_id: "global::rate-limiter"
+        phase: preHandler
+        priority: 5
+      - function_id: "global::auth"
+        phase: preHandler
+        priority: 10
+```
 
 ### Middleware Function Contract
 
-Middleware functions receive a `MiddlewareRequest` object:
+Middleware functions receive a lightweight request object (no body):
 
 <ResponseField name="phase" type="string">
-  The phase in which the middleware is executing.
+  The phase in which the middleware is executing (`preHandler`).
 </ResponseField>
 
 <ResponseField name="request" type="object">
-  The current `ApiRequest` object.
+  Request metadata: `path_params`, `query_params`, `headers`, `method`. Does not include `body`.
 </ResponseField>
 
 <ResponseField name="context" type="object">
-  Accumulated context from previous middleware in the same phase.
-</ResponseField>
-
-<ResponseField name="matched_route" type="object">
-  Present on `preHandler` and later phases. Contains `function_id` and `path_pattern`.
-</ResponseField>
-
-<ResponseField name="response" type="object">
-  Present on `onResponse` phase only. The response that was sent.
+  Empty context object for future use.
 </ResponseField>
 
 Middleware must return one of:
 
-- `{ action: "continue", request?: object, context?: object }` — pass control to the next middleware. Optional `request` and `context` patches are deep-merged into the current values.
-- `{ action: "respond", response: { status_code, body, headers } }` — short-circuit and return a response immediately. Subsequent middleware in the same phase is skipped.
+- `{ action: "continue" }` — proceed to the next middleware or handler.
+- `{ action: "respond", response: { status_code, body, headers } }` — short-circuit and return a response immediately. Remaining middleware and the handler are skipped.
+
+### Execution Order
+
+```
+1. Route match
+2. Global middleware (from config, sorted by priority)
+3. Condition check (if configured)
+4. Per-route middleware (from trigger config, in order)
+5. Body parsing
+6. Handler function
+```
+
+See the [HTTP Middleware how-to guide](/how-to/use-http-middleware) for full examples.
 
 ## Request Lifecycle
 
@@ -251,7 +260,13 @@ sequenceDiagram
 
     Client->>+Engine: HTTP Request (GET /users/123)
     Note over Engine: Match route<br/>in registry
-    Engine->>+Worker: Invoke Function (JSON)
+    Engine->>+Worker: Global middleware (if configured)
+    Worker-->>-Engine: { action: "continue" }
+    Note over Engine: Condition check<br/>(if configured)
+    Engine->>+Worker: Per-route middleware (if configured)
+    Worker-->>-Engine: { action: "continue" }
+    Note over Engine: Parse body
+    Engine->>+Worker: Invoke handler Function
     Note over Worker: Execute handler
 
     Worker-->>-Engine: Return {status_code, body, headers}

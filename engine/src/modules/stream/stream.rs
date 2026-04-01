@@ -1801,6 +1801,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1819,6 +1820,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1837,6 +1839,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1855,6 +1858,7 @@ mod tests {
                     function_id: "test::stream_handler".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),
@@ -1873,6 +1877,7 @@ mod tests {
                     function_id: "test::stream_handler_fail".to_string(),
                     config: serde_json::json!({}),
                     worker_id: None,
+                    metadata: None,
                 },
                 config: StreamTriggerConfig {
                     stream_name: Some("events".to_string()),

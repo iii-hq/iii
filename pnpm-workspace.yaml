@@ -1,6 +1,7 @@
 packages:
   - sdk/packages/node/iii
   - sdk/packages/node/iii-example
+  - sdk/packages/node/iii-browser
   - frameworks/motia/motia-js/packages/*
   - frameworks/motia/motia-js/playground
   - frameworks/motia/docs

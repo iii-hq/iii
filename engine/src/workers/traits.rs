@@ -35,6 +35,7 @@ impl TriggerRegistrator for Worker {
                     trigger_type: trigger.trigger_type,
                     function_id: trigger.function_id,
                     config: trigger.config,
+                    metadata: trigger.metadata,
                 }))
                 .await
                 .map_err(|err| {
@@ -89,6 +90,20 @@ impl FunctionHandler for Worker {
             let traceparent = inject_traceparent_from_context(&otel_context);
             let baggage = inject_baggage_from_context(&otel_context);
 
+            let function_id = if let Some(session) = &self.session {
+                if let Some(prefix) = &session.function_registration_prefix {
+                    let needle = format!("{prefix}::");
+                    function_id
+                        .strip_prefix(&needle)
+                        .map(String::from)
+                        .unwrap_or(function_id)
+                } else {
+                    function_id
+                }
+            } else {
+                function_id
+            };
+
             let send_result = self
                 .channel
                 .send(Outbound::Protocol(Message::InvokeFunction {
@@ -137,6 +152,7 @@ mod tests {
             function_id: "fn1".into(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         worker.register_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();
@@ -164,6 +180,7 @@ mod tests {
             function_id: "fn2".into(),
             config: json!({}),
             worker_id: None,
+            metadata: None,
         };
         worker.unregister_trigger(trigger).await.unwrap();
         let msg = rx.recv().await.unwrap();

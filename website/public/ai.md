@@ -41,8 +41,6 @@ Observe operations, traces, and system behavior across the entire connected stac
 It really is as simple as Functions, Triggers, and Workers
 Anything that does work.
 A Function receives input and optionally returns output. It can live anywhere — locally, on cloud, on serverless, or as a third-party HTTP endpoint. All Functions are treated the same within iii.
-#### The Engine does it all
-Operations flow through the Engine to any worker, in any language
 
 ## Polyglot Runtime
 ### One protocol. Any language.
@@ -50,7 +48,7 @@ Python registers a function. Rust registers a function. Node.js consumes both.Si
 
 ## Observability
 ### Trace-level visibility. Built in.
-Every function call, every span, every metric — captured automatically with OpenTelemetry. Export to any backend or use the built-in console.
+Every function call, every span, every metric - captured automatically with OpenTelemetry. Export to any backend or use the built-in console.
 #### Built-in Console
 Native trace viewer with waterfall, flame graph, service breakdown, and trace map visualizations.
 #### Export Anywhere

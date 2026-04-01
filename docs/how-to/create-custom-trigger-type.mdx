@@ -242,6 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trigger_type: "webhook".into(),
         function_id: "github::push".into(),
         config: json!({ "path": "/hooks/github" }),
+        metadata: None,
     })?;
 
     tokio::signal::ctrl_c().await?;

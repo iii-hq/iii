@@ -9,7 +9,7 @@ pub mod span_exporter;
 pub mod types;
 pub mod worker_metrics;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use opentelemetry::propagation::TextMapCompositePropagator;
@@ -39,6 +39,9 @@ struct OtelState {
 
 static OTEL_STATE: OnceLock<Mutex<Option<OtelState>>> = OnceLock::new();
 static OTEL_INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// Reference count of active workers using OpenTelemetry. `shutdown_otel` only
+/// tears down the global state when this reaches zero.
+static OTEL_REF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
     OTEL_STATE.get_or_init(|| Mutex::new(None))
@@ -50,13 +53,18 @@ fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
 /// over a shared WebSocket connection to the III Engine.
 ///
 /// This should be called once at startup. Subsequent calls are no-ops.
-pub async fn init_otel(config: OtelConfig) {
+///
+/// Returns `true` if this caller should call `shutdown_otel` when done
+/// (i.e. otel was either freshly initialized or was already active).
+/// Returns `false` when otel is disabled and no ref count was taken.
+pub async fn init_otel(config: OtelConfig) -> bool {
     let lock = get_otel_lock();
     let mut state = lock.lock().await;
 
     if state.is_some() {
-        tracing::warn!("OpenTelemetry already initialized, skipping");
-        return;
+        OTEL_REF_COUNT.fetch_add(1, Ordering::SeqCst);
+        tracing::debug!("OpenTelemetry already initialized, incrementing ref count");
+        return true;
     }
 
     let enabled = config.enabled.unwrap_or_else(|| {
@@ -67,7 +75,7 @@ pub async fn init_otel(config: OtelConfig) {
 
     if !enabled {
         tracing::debug!("OpenTelemetry disabled, skipping initialization");
-        return;
+        return false;
     }
 
     let service_name = config
@@ -215,6 +223,7 @@ pub async fn init_otel(config: OtelConfig) {
 
     *state = Some(otel_state);
     OTEL_INITIALIZED.store(true, Ordering::Release);
+    OTEL_REF_COUNT.fetch_add(1, Ordering::SeqCst);
 
     tracing::info!(
         service = %service_name,
@@ -222,6 +231,8 @@ pub async fn init_otel(config: OtelConfig) {
         logs_batch = resolved_batch_size,
         "OpenTelemetry initialized"
     );
+
+    true
 }
 
 /// Shutdown OpenTelemetry gracefully, flushing all pending data.
@@ -230,6 +241,15 @@ pub async fn init_otel(config: OtelConfig) {
 /// (default 10 seconds). If the timeout is exceeded, a warning is logged and
 /// the function returns without waiting further.
 pub async fn shutdown_otel() {
+    let prev = OTEL_REF_COUNT.fetch_sub(1, Ordering::SeqCst);
+    if prev > 1 {
+        tracing::debug!(
+            remaining = prev - 1,
+            "OpenTelemetry still in use, skipping shutdown"
+        );
+        return;
+    }
+
     let lock = get_otel_lock();
     let mut state = lock.lock().await;
 

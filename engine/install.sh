@@ -179,26 +179,70 @@ if [ -n "$VERSION" ]; then
     api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
     json=$(github_api "$api_url") || err "download" "release tag not found: $VERSION (tried tags: iii/v${_ver}, v${_ver})"
   }
+
+  # Reject prereleases even when a specific version is requested
+  _is_prerelease=""
+  if command -v jq >/dev/null 2>&1; then
+    _is_prerelease=$(printf '%s' "$json" | jq -r '.prerelease')
+  else
+    case "$json" in
+      *'"prerelease":true'*|*'"prerelease": true'*) _is_prerelease="true" ;;
+    esac
+  fi
+  if [ "$_is_prerelease" = "true" ]; then
+    err "download" "version $VERSION is a prerelease — use a stable release"
+  fi
 else
   echo "installing latest version"
-  api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
-  json_list=$(github_api "$api_url")
-  if command -v jq >/dev/null 2>&1; then
-    json=$(printf '%s' "$json_list" \
-      | jq -c 'first(.[] | select(.prerelease == false and ((.tag_name | startswith("iii/v")) or (.tag_name | startswith("v")))))')
-    if [ "$json" = "null" ] || [ -z "$json" ]; then
-      err "download" "no stable iii release found"
+
+  # Try /releases/latest first — single API call, GitHub guarantees non-prerelease/non-draft
+  api_url="https://api.github.com/repos/$REPO/releases/latest"
+  json=$(github_api "$api_url" 2>/dev/null) || json=""
+
+  # Validate the tag matches our expected prefix (iii/v*)
+  if [ -n "$json" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      _latest_tag=$(printf '%s' "$json" | jq -r '.tag_name // ""')
+    else
+      _latest_tag=$(printf '%s' "$json" \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -n 1 \
+        | sed -E 's/.*"([^"]+)".*/\1/')
     fi
-  else
-    _tag=$(printf '%s' "$json_list" \
-      | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"(iii/v|v)[^"]+"' \
-      | head -n 1 \
-      | sed -E 's/.*"([^"]+)".*/\1/')
-    if [ -z "$_tag" ]; then
-      err "download" "could not determine latest release"
+
+    case "$_latest_tag" in
+      iii/v*) ;; # Tag matches expected prefix, use this release
+      *)
+        # Latest release doesn't match our prefix — fall back to listing
+        json=""
+        ;;
+    esac
+  fi
+
+  # Fallback: list releases and filter by prefix + non-prerelease
+  if [ -z "$json" ]; then
+    api_url="https://api.github.com/repos/$REPO/releases?per_page=20"
+    json_list=$(github_api "$api_url")
+    if command -v jq >/dev/null 2>&1; then
+      json=$(printf '%s' "$json_list" \
+        | jq -c 'first(.[] | select(.prerelease == false and (.tag_name | startswith("iii/v"))))')
+      if [ "$json" = "null" ] || [ -z "$json" ]; then
+        err "download" "no stable iii release found"
+      fi
+    else
+      # No-jq path: filter for iii/v* tags from non-prerelease entries
+      _tag=$(printf '%s' "$json_list" \
+        | tr '{' '\n' \
+        | grep -v '"prerelease"[[:space:]]*:[[:space:]]*true' \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"iii/v[^"]+"' \
+        | head -n 1 \
+        | sed -E 's/.*"([^"]+)".*/\1/')
+      if [ -z "$_tag" ]; then
+        err "download" "could not determine latest release"
+      fi
+      api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
+      json=$(github_api "$api_url")
     fi
-    api_url="https://api.github.com/repos/$REPO/releases/tags/${_tag}"
-    json=$(github_api "$api_url")
   fi
 fi
 

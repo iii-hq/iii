@@ -1,12 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Terminal } from './components/Terminal';
-import { ExampleCodeSection } from './components/sections/ExampleCodeSection';
 import { HeroSection } from './components/sections/HeroSection';
 import { WhyIIISection } from './components/sections/WhyIIISection';
 import { InteractiveDemoFlowSection } from './components/sections/InteractiveDemoFlowSection';
 import { HelloWorldSection } from './components/sections/HelloWorldSection';
 import { EngineSection } from './components/sections/EngineSection';
-import { AgentReadySection } from './components/sections/AgentReadySection';
 import { ObservabilitySection } from './components/sections/ObservabilitySection';
 import { FooterSection } from './components/sections/FooterSection';
 import { Navbar } from './components/Navbar';
@@ -16,6 +14,9 @@ import { ManifestoPage } from './pages/ManifestoPage';
 import { CookieConsent } from './components/CookieConsent';
 import { useCookieConsent } from './lib/useCookieConsent';
 import { KeySequence } from './types';
+
+const FULL_VIEWPORT_SECTION =
+  'w-full min-h-[calc(100dvh-4rem)] md:min-h-[calc(100dvh-5rem)] flex items-center';
 
 const AppRouter: React.FC = () => {
   const pathname = window.location.pathname;
@@ -150,68 +151,35 @@ const App: React.FC = () => {
         onToggleMode={toggleMode}
       />
 
-      <main className="flex-1 relative z-10 flex flex-col items-center w-full pt-16 md:pt-20">
-        {/* Section 1: Hero - One Engine. Any Language. Anywhere. */}
-        <div className="w-full" data-machine-section="hero">
+      <main className="flex-1 relative z-10 flex flex-col w-full pt-16 md:pt-20">
+        <div className={FULL_VIEWPORT_SECTION} data-machine-section="hero">
           <HeroSection isDarkMode={isDarkMode} />
         </div>
 
-        <div className="w-full">
+        <div
+          className="w-full h-[calc(100dvh-4rem)] md:h-[calc(100dvh-5rem)]"
+          data-machine-section="interactive-demo"
+        >
           <InteractiveDemoFlowSection isDarkMode={isDarkMode} />
         </div>
 
-        <div
-          className="w-full min-w-0 self-stretch"
-          data-machine-section="why-iii"
-        >
+        <div className={FULL_VIEWPORT_SECTION} data-machine-section="why-iii">
           <WhyIIISection isDarkMode={isDarkMode} />
         </div>
-        {/* Section 3: Architecture (formerly Engine) - Trigger → Function → Workers */}
-        <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
-          data-machine-section="architecture"
-        >
+
+        <div className={FULL_VIEWPORT_SECTION} data-machine-section="architecture">
           <EngineSection isDarkMode={isDarkMode} />
         </div>
 
-        {/* Section 2: Hello World - Polyglot proof with IPC */}
-        <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
-          data-machine-section="hello-world"
-        >
+        <div className={FULL_VIEWPORT_SECTION} data-machine-section="hello-world">
           <HelloWorldSection isDarkMode={isDarkMode} />
         </div>
 
-        {/* Section 4: Triggers as Universal Adapters - Code Examples */}
-        {/* <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
-          data-machine-section="examples"
-          data-machine-exclude="true"
-        >
-          <ExampleCodeSection isDarkMode={isDarkMode} />
-        </div> */}
-
-        {/* Section 5: Observability - Trace-level visibility with OpenTelemetry */}
-        <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24"
-          data-machine-section="observability"
-        >
+        <div className={FULL_VIEWPORT_SECTION} data-machine-section="observability">
           <ObservabilitySection isDarkMode={isDarkMode} />
         </div>
 
-        {/* Section 6: Agent-Ready - AI agents as first-class citizens */}
-        {/* <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl py-8 md:py-12 lg:py-24"
-          data-machine-section="agent-ready"
-        >
-          <AgentReadySection isDarkMode={isDarkMode} />
-        </div> */}
-
-        {/* Section 7: Footer + CTA - FAQ, Discord, Links */}
-        <div
-          className="w-[95%] md:w-[90%] lg:w-[85%] max-w-7xl pt-8 md:pt-12 lg:pt-24 pb-8 md:pb-12 lg:pb-24"
-          data-machine-section="footer"
-        >
+        <div className="w-full" data-machine-section="footer">
           <FooterSection isDarkMode={isDarkMode} />
         </div>
       </main>

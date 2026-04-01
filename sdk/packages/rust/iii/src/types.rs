@@ -141,13 +141,80 @@ pub struct DeleteResult {
     pub old_value: Option<Value>,
 }
 
-/// Input for the stream update function
+// ============================================================================
+// Stream Input Types
+// ============================================================================
+
+/// Input for retrieving a single stream item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamGetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+/// Input for setting a stream item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamSetInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+    pub data: Value,
+}
+
+/// Input for deleting a stream item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamDeleteInput {
+    pub stream_name: String,
+    pub group_id: String,
+    pub item_id: String,
+}
+
+/// Input for listing all items in a stream group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamListInput {
+    pub stream_name: String,
+    pub group_id: String,
+}
+
+/// Input for listing all groups in a stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamListGroupsInput {
+    pub stream_name: String,
+}
+
+/// Input for atomically updating a stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamUpdateInput {
     pub stream_name: String,
     pub group_id: String,
     pub item_id: String,
     pub ops: Vec<UpdateOp>,
+}
+
+// ============================================================================
+// Stream Auth Types
+// ============================================================================
+
+/// Input for stream authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamAuthInput {
+    pub headers: HashMap<String, String>,
+    pub path: String,
+    pub query_params: HashMap<String, Vec<String>>,
+    pub addr: String,
+}
+
+/// Result of stream authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamAuthResult {
+    pub context: Option<Value>,
+}
+
+/// Result of a stream join request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamJoinResult {
+    pub unauthorized: bool,
 }
 
 #[derive(Clone)]
