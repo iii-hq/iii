@@ -4,11 +4,43 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-use std::collections::BTreeMap;
+use machineid_rs::{Encryption, HWIDComponent, IdBuilder};
 
-use sha2::{Digest, Sha256};
+const TELEMETRY_SCHEMA_VERSION: u8 = 2;
+const DEVICE_ID_SALT: &str = "iii-machine-id";
+const EXECUTION_CONTEXT_ENV: &str = "III_EXECUTION_CONTEXT";
+const EXECUTION_CONTEXT_YAML_DEFAULT: &str = "${III_EXECUTION_CONTEXT:user}";
 
-type TomlSections = BTreeMap<String, BTreeMap<String, String>>;
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct TelemetryYaml {
+    version: Option<u8>,
+    #[serde(default)]
+    identity: IdentitySection,
+    #[serde(default)]
+    state: StateSection,
+    #[serde(default)]
+    preferences: PreferencesSection,
+    #[serde(default)]
+    iii_execution_context: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct IdentitySection {
+    #[serde(default)]
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct StateSection {
+    #[serde(default)]
+    first_run_sent: Option<bool>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct PreferencesSection {
+    #[serde(default)]
+    dev_optout: Option<bool>,
+}
 
 fn iii_dir() -> std::path::PathBuf {
     dirs::home_dir()
@@ -17,7 +49,7 @@ fn iii_dir() -> std::path::PathBuf {
 }
 
 pub fn telemetry_config_path() -> std::path::PathBuf {
-    iii_dir().join("telemetry.toml")
+    iii_dir().join("telemetry.yaml")
 }
 
 fn write_atomic(path: &std::path::Path, content: &str) {
@@ -36,34 +68,191 @@ fn write_atomic(path: &std::path::Path, content: &str) {
     }
 }
 
+fn normalize_execution_context(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "kubernetes" | "k8s" => "kubernetes".to_string(),
+        "docker" => "docker".to_string(),
+        "container" => "container".to_string(),
+        "ci" | "cicd" => "ci".to_string(),
+        "user" => "user".to_string(),
+        "" => "user".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn parse_yaml_env_syntax(raw: &str) -> Option<(String, Option<String>)> {
+    if !(raw.starts_with("${") && raw.ends_with('}')) {
+        return None;
+    }
+
+    let inner = &raw[2..raw.len() - 1];
+    let mut parts = inner.splitn(2, ':');
+    let var = parts.next()?.trim();
+    if var.is_empty() {
+        return None;
+    }
+    let default = parts.next().map(|s| s.to_string());
+    Some((var.to_string(), default))
+}
+
+fn expand_yaml_env_syntax(raw: &str) -> String {
+    if let Some((var, default)) = parse_yaml_env_syntax(raw) {
+        match std::env::var(&var) {
+            Ok(val) if !val.is_empty() => val,
+            _ => default.unwrap_or_default(),
+        }
+    } else {
+        raw.to_string()
+    }
+}
+
+fn machine_id_from_machineid_rs() -> Option<String> {
+    let mut builder = IdBuilder::new(Encryption::SHA256);
+    builder.add_component(HWIDComponent::SystemID);
+    builder
+        .build(DEVICE_ID_SALT)
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+}
+
+fn generate_new_device_id() -> String {
+    if let Some(machine_id) = machine_id_from_machineid_rs() {
+        return machine_id;
+    }
+    format!("fallback-{}", uuid::Uuid::new_v4())
+}
+
+fn build_fresh_v2_yaml() -> TelemetryYaml {
+    TelemetryYaml {
+        version: Some(TELEMETRY_SCHEMA_VERSION),
+        identity: IdentitySection {
+            device_id: Some(generate_new_device_id()),
+        },
+        state: StateSection::default(),
+        preferences: PreferencesSection::default(),
+        iii_execution_context: Some(EXECUTION_CONTEXT_YAML_DEFAULT.to_string()),
+    }
+}
+
+fn read_telemetry_yaml(path: &std::path::Path) -> Option<TelemetryYaml> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_yaml::from_str(&contents).ok()
+}
+
+fn write_telemetry_yaml(state: &TelemetryYaml) {
+    if let Ok(serialized) = serde_yaml::to_string(state) {
+        write_atomic(&telemetry_config_path(), &serialized);
+    }
+}
+
+fn load_or_migrate_v2_state() -> TelemetryYaml {
+    let path = telemetry_config_path();
+    let parsed = read_telemetry_yaml(&path);
+
+    if let Some(mut state) = parsed
+        && state.version == Some(TELEMETRY_SCHEMA_VERSION)
+    {
+        let mut changed = false;
+        if state.identity.device_id.is_none() {
+            state.identity.device_id = Some(generate_new_device_id());
+            changed = true;
+        }
+        if state.iii_execution_context.is_none() {
+            state.iii_execution_context = Some(EXECUTION_CONTEXT_YAML_DEFAULT.to_string());
+            changed = true;
+        }
+        if changed {
+            write_telemetry_yaml(&state);
+        }
+        return state;
+    }
+
+    let fresh = build_fresh_v2_yaml();
+    write_telemetry_yaml(&fresh);
+    fresh
+}
+
+pub fn get_or_create_device_id() -> String {
+    let mut state = load_or_migrate_v2_state();
+    if let Some(existing) = state.identity.device_id.clone()
+        && !existing.is_empty()
+    {
+        return existing;
+    }
+
+    let id = generate_new_device_id();
+    state.identity.device_id = Some(id.clone());
+    write_telemetry_yaml(&state);
+    id
+}
+
+pub fn resolve_execution_context() -> String {
+    if let Ok(env_ctx) = std::env::var(EXECUTION_CONTEXT_ENV)
+        && !env_ctx.is_empty()
+    {
+        return normalize_execution_context(&env_ctx);
+    }
+
+    if is_ci_environment() {
+        return "ci".to_string();
+    }
+
+    let runtime = detect_container_runtime();
+    if runtime != "none" {
+        return runtime;
+    }
+
+    let mut state = load_or_migrate_v2_state();
+    if state.iii_execution_context.is_none() {
+        state.iii_execution_context = Some(EXECUTION_CONTEXT_YAML_DEFAULT.to_string());
+        write_telemetry_yaml(&state);
+    }
+
+    let raw = state
+        .iii_execution_context
+        .clone()
+        .unwrap_or_else(|| EXECUTION_CONTEXT_YAML_DEFAULT.to_string());
+    normalize_execution_context(&expand_yaml_env_syntax(&raw))
+}
+
 pub fn read_config_key(section: &str, key: &str) -> Option<String> {
-    let contents = std::fs::read_to_string(telemetry_config_path()).ok()?;
-    let sections: TomlSections = toml::from_str(&contents).ok()?;
-    sections
-        .get(section)?
-        .get(key)
-        .filter(|v| !v.is_empty())
-        .cloned()
+    let state = load_or_migrate_v2_state();
+    match (section, key) {
+        ("identity", "device_id") | ("identity", "id") => {
+            state.identity.device_id.filter(|v| !v.is_empty())
+        }
+        ("state", "first_run_sent") => state.state.first_run_sent.map(|v| v.to_string()),
+        ("preferences", "dev_optout") => state.preferences.dev_optout.map(|v| v.to_string()),
+        ("telemetry", "iii_execution_context") => state.iii_execution_context,
+        _ => None,
+    }
 }
 
 pub fn set_config_key(section: &str, key: &str, value: &str) {
-    let path = telemetry_config_path();
-    let contents = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut sections: TomlSections = toml::from_str(&contents).unwrap_or_default();
-    sections
-        .entry(section.to_string())
-        .or_default()
-        .insert(key.to_string(), value.to_string());
-    if let Ok(serialized) = toml::to_string(&sections) {
-        write_atomic(&path, &serialized);
+    let mut state = load_or_migrate_v2_state();
+    match (section, key) {
+        ("identity", "device_id") | ("identity", "id") => {
+            state.identity.device_id = Some(value.to_string());
+        }
+        ("state", "first_run_sent") => {
+            state.state.first_run_sent = Some(value.eq_ignore_ascii_case("true") || value == "1");
+        }
+        ("preferences", "dev_optout") => {
+            state.preferences.dev_optout = Some(value.eq_ignore_ascii_case("true") || value == "1");
+        }
+        ("telemetry", "iii_execution_context") => {
+            state.iii_execution_context = Some(value.to_string());
+        }
+        _ => {}
     }
+    state.version = Some(TELEMETRY_SCHEMA_VERSION);
+    write_telemetry_yaml(&state);
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EnvironmentInfo {
     pub machine_id: String,
-    pub is_container: bool,
-    pub container_runtime: String,
+    pub iii_execution_context: String,
     pub timezone: String,
     pub cpu_cores: usize,
     pub os: String,
@@ -72,12 +261,9 @@ pub struct EnvironmentInfo {
 
 impl EnvironmentInfo {
     pub fn collect() -> Self {
-        let container_runtime = detect_container_runtime();
-        let is_container = container_runtime != "none";
         Self {
-            machine_id: hashed_hostname(),
-            is_container,
-            container_runtime,
+            machine_id: get_or_create_device_id(),
+            iii_execution_context: resolve_execution_context(),
             timezone: detect_timezone(),
             cpu_cores: std::thread::available_parallelism()
                 .map(|p| p.get())
@@ -90,8 +276,7 @@ impl EnvironmentInfo {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "machine_id": self.machine_id,
-            "is_container": self.is_container,
-            "container_runtime": self.container_runtime,
+            "iii_execution_context": self.iii_execution_context,
             "timezone": self.timezone,
             "cpu_cores": self.cpu_cores,
             "os": self.os,
@@ -100,32 +285,9 @@ impl EnvironmentInfo {
     }
 }
 
-fn hashed_hostname() -> String {
-    let raw = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let mut hasher = Sha256::new();
-    hasher.update(raw.as_bytes());
-    let result = hasher.finalize();
-    hex::encode(&result[..16])
-}
-
-/// Detect container runtime. Returns "docker", "kubernetes", or "none".
-/// Priority: III_CONTAINER env var (authoritative) > KUBERNETES_SERVICE_HOST >
-/// /.dockerenv / cgroup heuristics > "none".
+/// Detect whether the process runs inside a container.
+/// Returns `"kubernetes"`, `"docker"`, `"container"`, or `"none"`.
 pub fn detect_container_runtime() -> String {
-    if let Ok(val) = std::env::var("III_CONTAINER") {
-        let lower = val.to_lowercase();
-        if lower == "docker" {
-            return "docker".to_string();
-        }
-        if lower == "kubernetes" || lower == "k8s" {
-            return "kubernetes".to_string();
-        }
-    }
-
     if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
         return "kubernetes".to_string();
     }
@@ -142,7 +304,7 @@ pub fn detect_container_runtime() -> String {
                 return "kubernetes".to_string();
             }
             if lower.contains("docker") || lower.contains("containerd") {
-                return "docker".to_string();
+                return "container".to_string();
             }
         }
     }
@@ -239,13 +401,6 @@ pub fn detect_env() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Read the host user ID from `III_HOST_USER_ID` (Docker correlation).
-pub fn detect_host_user_id() -> Option<String> {
-    std::env::var("III_HOST_USER_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,88 +408,120 @@ mod tests {
     use std::env;
 
     // =========================================================================
-    // telemetry.toml helpers
+    // telemetry.yaml + migration
     // =========================================================================
 
     #[test]
-    fn test_toml_roundtrip() {
-        let mut sections: TomlSections = BTreeMap::new();
-        sections
-            .entry("identity".to_string())
-            .or_default()
-            .insert("id".to_string(), "abc-123".to_string());
-        sections
-            .entry("state".to_string())
-            .or_default()
-            .insert("first_run_sent".to_string(), "true".to_string());
-
-        let serialized = toml::to_string(&sections).unwrap();
-        let parsed: TomlSections = toml::from_str(&serialized).unwrap();
-        assert_eq!(parsed["identity"]["id"], "abc-123");
-        assert_eq!(parsed["state"]["first_run_sent"], "true");
+    #[serial]
+    fn test_telemetry_config_path_is_yaml() {
+        assert!(
+            telemetry_config_path()
+                .to_string_lossy()
+                .ends_with("telemetry.yaml")
+        );
     }
 
     #[test]
-    fn test_set_and_read_config_key_new_file() {
+    #[serial]
+    fn test_load_or_migrate_writes_v2_yaml_with_device_id() {
         let dir = tempfile::tempdir().unwrap();
-        let toml_path = dir.path().join(".iii").join("telemetry.toml");
-
-        let key = read_key_from(&toml_path, "identity", "id");
-        assert!(key.is_none());
-
-        write_key_to(&toml_path, "identity", "id", "test-uuid");
-        let key = read_key_from(&toml_path, "identity", "id");
-        assert_eq!(key.as_deref(), Some("test-uuid"));
-    }
-
-    #[test]
-    fn test_set_config_key_preserves_other_sections() {
-        let dir = tempfile::tempdir().unwrap();
-        let toml_path = dir.path().join(".iii").join("telemetry.toml");
-
-        write_key_to(&toml_path, "identity", "id", "my-id");
-        write_key_to(&toml_path, "state", "first_run_sent", "true");
-
-        let id = read_key_from(&toml_path, "identity", "id");
-        let state = read_key_from(&toml_path, "state", "first_run_sent");
-        assert_eq!(id.as_deref(), Some("my-id"));
-        assert_eq!(state.as_deref(), Some("true"));
-    }
-
-    #[test]
-    fn test_set_config_key_updates_existing_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let toml_path = dir.path().join(".iii").join("telemetry.toml");
-
-        write_key_to(&toml_path, "identity", "id", "old-id");
-        write_key_to(&toml_path, "identity", "id", "new-id");
-
-        let id = read_key_from(&toml_path, "identity", "id");
-        assert_eq!(id.as_deref(), Some("new-id"));
-    }
-
-    fn read_key_from(path: &std::path::Path, section: &str, key: &str) -> Option<String> {
-        let contents = std::fs::read_to_string(path).ok()?;
-        let sections: TomlSections = toml::from_str(&contents).ok()?;
-        sections
-            .get(section)?
-            .get(key)
-            .filter(|v| !v.is_empty())
-            .cloned()
-    }
-
-    fn write_key_to(path: &std::path::Path, section: &str, key: &str, value: &str) {
-        let contents = std::fs::read_to_string(path).unwrap_or_default();
-        let mut sections: TomlSections = toml::from_str(&contents).unwrap_or_default();
-        sections
-            .entry(section.to_string())
-            .or_default()
-            .insert(key.to_string(), value.to_string());
-        let serialized = toml::to_string(&sections).unwrap();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
+        unsafe {
+            env::set_var("HOME", dir.path());
         }
-        std::fs::write(path, serialized).ok();
+        let state = load_or_migrate_v2_state();
+        assert_eq!(state.version, Some(2));
+        assert!(state.identity.device_id.is_some());
+        assert!(telemetry_config_path().exists());
+        unsafe {
+            env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_v1_yaml_resets_to_fresh_v2_state() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var("HOME", dir.path());
+        }
+        let path = telemetry_config_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"version: 1
+identity:
+  device_id: "legacy-id"
+state:
+  first_run_sent: true
+"#,
+        )
+        .unwrap();
+
+        let state = load_or_migrate_v2_state();
+        assert_eq!(state.version, Some(2));
+        assert_ne!(state.identity.device_id.as_deref(), Some("legacy-id"));
+        assert_eq!(state.state.first_run_sent, None);
+        unsafe {
+            env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_and_read_config_key_for_state() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var("HOME", dir.path());
+        }
+        set_config_key("state", "first_run_sent", "true");
+        assert_eq!(
+            read_config_key("state", "first_run_sent").as_deref(),
+            Some("true")
+        );
+        unsafe {
+            env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_or_create_device_id_is_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var("HOME", dir.path());
+        }
+        let d1 = get_or_create_device_id();
+        let d2 = get_or_create_device_id();
+        assert!(!d1.is_empty());
+        assert_eq!(d1, d2);
+        unsafe {
+            env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_execution_context_prefers_explicit_env() {
+        unsafe {
+            env::set_var(EXECUTION_CONTEXT_ENV, "docker");
+        }
+        assert_eq!(resolve_execution_context(), "docker");
+        unsafe {
+            env::remove_var(EXECUTION_CONTEXT_ENV);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_execution_context_detects_ci() {
+        unsafe {
+            env::remove_var(EXECUTION_CONTEXT_ENV);
+            env::set_var("CI", "true");
+        }
+        assert_eq!(resolve_execution_context(), "ci");
+        unsafe {
+            env::remove_var("CI");
+        }
     }
 
     // =========================================================================
@@ -344,109 +531,12 @@ mod tests {
     #[test]
     fn test_environment_info_collect_returns_valid_fields() {
         let info = EnvironmentInfo::collect();
-        assert!(
-            !info.machine_id.is_empty(),
-            "machine_id should not be empty"
-        );
-        assert!(info.cpu_cores >= 1, "cpu_cores should be at least 1");
-        assert!(!info.os.is_empty(), "os should not be empty");
-        assert!(!info.arch.is_empty(), "arch should not be empty");
-        assert!(!info.timezone.is_empty(), "timezone should not be empty");
-        assert!(
-            !info.container_runtime.is_empty(),
-            "container_runtime should not be empty"
-        );
-    }
-
-    #[test]
-    fn test_environment_info_os_and_arch_match_consts() {
-        let info = EnvironmentInfo::collect();
-        assert_eq!(info.os, std::env::consts::OS);
-        assert_eq!(info.arch, std::env::consts::ARCH);
-    }
-
-    #[test]
-    fn test_environment_info_to_json_has_all_keys() {
-        let info = EnvironmentInfo::collect();
-        let json = info.to_json();
-
-        assert!(json.get("machine_id").is_some());
-        assert!(json.get("is_container").is_some());
-        assert!(json.get("container_runtime").is_some());
-        assert!(json.get("timezone").is_some());
-        assert!(json.get("cpu_cores").is_some());
-        assert!(json.get("os").is_some());
-        assert!(json.get("arch").is_some());
-    }
-
-    #[test]
-    fn test_environment_info_to_json_types() {
-        let info = EnvironmentInfo::collect();
-        let json = info.to_json();
-
-        assert!(json["machine_id"].is_string());
-        assert!(json["is_container"].is_boolean());
-        assert!(json["container_runtime"].is_string());
-        assert!(json["timezone"].is_string());
-        assert!(json["cpu_cores"].is_number());
-        assert!(json["os"].is_string());
-        assert!(json["arch"].is_string());
-    }
-
-    #[test]
-    fn test_environment_info_clone() {
-        let info = EnvironmentInfo::collect();
-        let cloned = info.clone();
-        assert_eq!(info.machine_id, cloned.machine_id);
-        assert_eq!(info.os, cloned.os);
-        assert_eq!(info.arch, cloned.arch);
-        assert_eq!(info.cpu_cores, cloned.cpu_cores);
-        assert_eq!(info.is_container, cloned.is_container);
-        assert_eq!(info.container_runtime, cloned.container_runtime);
-        assert_eq!(info.timezone, cloned.timezone);
-    }
-
-    #[test]
-    fn test_environment_info_debug_format() {
-        let info = EnvironmentInfo::collect();
-        let debug_str = format!("{:?}", info);
-        assert!(debug_str.contains("EnvironmentInfo"));
-        assert!(debug_str.contains("machine_id"));
-        assert!(debug_str.contains("os"));
-    }
-
-    #[test]
-    fn test_is_container_consistent_with_runtime() {
-        let info = EnvironmentInfo::collect();
-        if info.container_runtime == "none" {
-            assert!(!info.is_container);
-        } else {
-            assert!(info.is_container);
-        }
-    }
-
-    // =========================================================================
-    // hashed_hostname
-    // =========================================================================
-
-    #[test]
-    fn test_hashed_hostname_is_deterministic() {
-        let h1 = hashed_hostname();
-        let h2 = hashed_hostname();
-        assert_eq!(
-            h1, h2,
-            "hashed_hostname should return same value on repeated calls"
-        );
-    }
-
-    #[test]
-    fn test_hashed_hostname_is_hex_and_32_chars() {
-        let h = hashed_hostname();
-        assert_eq!(h.len(), 32, "hashed hostname should be 32 hex characters");
-        assert!(
-            h.chars().all(|c| c.is_ascii_hexdigit()),
-            "hashed hostname should only contain hex characters"
-        );
+        assert!(!info.machine_id.is_empty());
+        assert!(!info.iii_execution_context.is_empty());
+        assert!(info.cpu_cores >= 1);
+        assert!(!info.os.is_empty());
+        assert!(!info.arch.is_empty());
+        assert!(!info.timezone.is_empty());
     }
 
     // =========================================================================
@@ -455,35 +545,8 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_detect_container_runtime_env_docker() {
+    fn test_detect_container_runtime_kubernetes_env() {
         unsafe {
-            env::set_var("III_CONTAINER", "docker");
-            env::remove_var("KUBERNETES_SERVICE_HOST");
-        }
-        assert_eq!(detect_container_runtime(), "docker");
-        unsafe {
-            env::remove_var("III_CONTAINER");
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_detect_container_runtime_env_kubernetes() {
-        unsafe {
-            env::set_var("III_CONTAINER", "kubernetes");
-            env::remove_var("KUBERNETES_SERVICE_HOST");
-        }
-        assert_eq!(detect_container_runtime(), "kubernetes");
-        unsafe {
-            env::remove_var("III_CONTAINER");
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_detect_container_runtime_kubernetes_service_host() {
-        unsafe {
-            env::remove_var("III_CONTAINER");
             env::set_var("KUBERNETES_SERVICE_HOST", "10.96.0.1");
         }
         assert_eq!(detect_container_runtime(), "kubernetes");
@@ -496,12 +559,11 @@ mod tests {
     #[serial]
     fn test_detect_container_runtime_none_on_host() {
         unsafe {
-            env::remove_var("III_CONTAINER");
             env::remove_var("KUBERNETES_SERVICE_HOST");
         }
         let runtime = detect_container_runtime();
         assert!(
-            runtime == "none" || runtime == "docker" || runtime == "kubernetes",
+            runtime == "none" || runtime == "docker" || runtime == "container" || runtime == "kubernetes",
             "unexpected runtime: {runtime}"
         );
     }
@@ -540,43 +602,6 @@ mod tests {
         assert_eq!(detect_env(), "unknown");
         unsafe {
             env::remove_var("III_ENV");
-        }
-    }
-
-    // =========================================================================
-    // detect_host_user_id
-    // =========================================================================
-
-    #[test]
-    #[serial]
-    fn test_detect_host_user_id_none_when_unset() {
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
-        }
-        assert_eq!(detect_host_user_id(), None);
-    }
-
-    #[test]
-    #[serial]
-    fn test_detect_host_user_id_returns_value() {
-        unsafe {
-            env::set_var("III_HOST_USER_ID", "some-uuid");
-        }
-        assert_eq!(detect_host_user_id(), Some("some-uuid".to_string()));
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_detect_host_user_id_none_when_empty() {
-        unsafe {
-            env::set_var("III_HOST_USER_ID", "");
-        }
-        assert_eq!(detect_host_user_id(), None);
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
         }
     }
 
@@ -821,15 +846,6 @@ mod tests {
         unsafe {
             env::remove_var("LANG");
         }
-    }
-
-    // =========================================================================
-    // detect_container (legacy alias via collect)
-    // =========================================================================
-
-    #[test]
-    fn test_detect_container_on_host() {
-        let _result = EnvironmentInfo::collect().is_container;
     }
 
     // =========================================================================

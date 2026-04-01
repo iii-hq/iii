@@ -132,50 +132,12 @@ fn resolve_project_context(sdk_telemetry: Option<&WorkerTelemetryMeta>) -> Proje
     }
 }
 
-fn get_or_create_install_id() -> String {
-    static INSTALL_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    INSTALL_ID
-        .get_or_init(|| {
-            if let Some(id) = environment::read_config_key("identity", "id") {
-                return id;
-            }
-
-            let base_dir = dirs::home_dir().unwrap_or_else(|| {
-                tracing::warn!(
-                    "Failed to resolve home directory, falling back to temp dir for telemetry_id"
-                );
-                std::env::temp_dir()
-            });
-
-            let legacy_path = base_dir.join(".iii").join("telemetry_id");
-            if let Ok(id) = std::fs::read_to_string(&legacy_path) {
-                let id = id.trim().to_string();
-                if !id.is_empty() {
-                    environment::set_config_key("identity", "id", &id);
-                    return id;
-                }
-            }
-
-            let id = format!("auto-{}", uuid::Uuid::new_v4());
-            environment::set_config_key("identity", "id", &id);
-            id
-        })
-        .clone()
+fn get_or_create_device_id() -> String {
+    environment::get_or_create_device_id()
 }
 
 fn check_and_mark_first_run() -> bool {
     if environment::read_config_key("state", "first_run_sent").as_deref() == Some("true") {
-        return false;
-    }
-
-    let legacy_path = dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".iii")
-        .join("state.ini");
-    if let Ok(contents) = std::fs::read_to_string(&legacy_path)
-        && contents.contains("first_run_sent=true")
-    {
-        environment::set_config_key("state", "first_run_sent", "true");
         return false;
     }
 
@@ -364,7 +326,7 @@ fn collect_worker_data(engine: &Engine) -> WorkerData {
 /// Cloneable context for building telemetry events inside spawned tasks.
 #[derive(Clone)]
 struct TelemetryContext {
-    install_id: String,
+    device_id: String,
     env_info: EnvironmentInfo,
 }
 
@@ -382,16 +344,12 @@ impl TelemetryContext {
             "environment.cpu_cores": env.cpu_cores,
             "environment.timezone": env.timezone,
             "environment.machine_id": env.machine_id,
-            "environment.is_container": env.is_container,
-            "environment.container_runtime": env.container_runtime,
+            "iii_execution_context": env.iii_execution_context,
             "env": environment::detect_env(),
             "install_method": environment::detect_install_method(),
             "iii_version": env!("CARGO_PKG_VERSION"),
         });
 
-        if let Some(host_user_id) = environment::detect_host_user_id() {
-            props["host_user_id"] = serde_json::Value::String(host_user_id);
-        }
         if let Some(project_id) = project.project_id {
             props["project_id"] = serde_json::Value::String(project_id);
         }
@@ -412,9 +370,8 @@ impl TelemetryContext {
             .and_then(|t| t.language.clone())
             .or_else(environment::detect_language);
         AmplitudeEvent {
-            device_id: self.install_id.clone(),
-            // user_id: currently telemetry_id, will become iii cloud user ID when accounts ship
-            user_id: Some(self.install_id.clone()),
+            device_id: self.device_id.clone(),
+            user_id: None,
             event_type: event_type.to_string(),
             event_properties: properties,
             user_properties: Some(self.build_user_properties(sdk_telemetry)),
@@ -507,7 +464,7 @@ impl Module for TelemetryModule {
             return Ok(Box::new(DisabledTelemetryModule));
         }
 
-        let install_id = get_or_create_install_id();
+        let device_id = get_or_create_device_id();
         let env_info = EnvironmentInfo::collect();
 
         tracing::info!("Anonymous telemetry enabled. Set III_TELEMETRY_ENABLED=false to disable.");
@@ -521,7 +478,7 @@ impl Module for TelemetryModule {
             .map(|key| Arc::new(AmplitudeClient::new(key.to_owned())));
 
         let ctx = TelemetryContext {
-            install_id: install_id.clone(),
+            device_id: device_id.clone(),
             env_info,
         };
 
@@ -556,7 +513,7 @@ impl Module for TelemetryModule {
         let start_time_boot = start_time;
         let interval_secs_boot = interval_secs;
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
 
             let ft = collect_functions_and_triggers(&engine_for_started);
             let wd = collect_worker_data(&engine_for_started);
@@ -897,8 +854,7 @@ mod tests {
     fn make_env_info() -> EnvironmentInfo {
         EnvironmentInfo {
             machine_id: "machine-1".to_string(),
-            is_container: false,
-            container_runtime: "none".to_string(),
+            iii_execution_context: "user".to_string(),
             timezone: "UTC".to_string(),
             cpu_cores: 4,
             os: "linux".to_string(),
@@ -921,7 +877,7 @@ mod tests {
             client: Arc::new(AmplitudeClient::new(String::new())),
             sdk_client: sdk_client.then(|| Arc::new(AmplitudeClient::new(String::new()))),
             ctx: TelemetryContext {
-                install_id: "test-install-id".to_string(),
+                device_id: "test-install-id".to_string(),
                 env_info: make_env_info(),
             },
             start_time: Instant::now(),
@@ -1237,16 +1193,14 @@ mod tests {
         unsafe {
             env::remove_var("III_PROJECT_ID");
             env::remove_var("III_PROJECT_ROOT");
-            env::remove_var("III_HOST_USER_ID");
             env::remove_var("III_ENV");
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "test-machine".to_string(),
-                is_container: false,
-                container_runtime: "none".to_string(),
+                iii_execution_context: "user".to_string(),
                 timezone: "UTC".to_string(),
                 cpu_cores: 4,
                 os: "linux".to_string(),
@@ -1261,8 +1215,7 @@ mod tests {
         assert_eq!(props["environment.cpu_cores"], 4);
         assert_eq!(props["environment.timezone"], "UTC");
         assert_eq!(props["environment.machine_id"], "test-machine");
-        assert_eq!(props["environment.is_container"], false);
-        assert_eq!(props["environment.container_runtime"], "none");
+        assert_eq!(props["iii_execution_context"], "user");
         assert_eq!(props["iii_version"], env!("CARGO_PKG_VERSION"));
         assert!(props.get("env").is_some());
         assert!(props.get("install_method").is_some());
@@ -1285,7 +1238,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1302,7 +1255,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1323,7 +1276,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1337,46 +1290,6 @@ mod tests {
         assert_eq!(props["project_name"], "my-project");
     }
 
-    #[test]
-    #[serial]
-    fn test_build_user_properties_host_user_id_included() {
-        unsafe {
-            env::set_var("III_HOST_USER_ID", "host-uuid-123");
-            env::remove_var("III_PROJECT_ID");
-            env::remove_var("III_PROJECT_ROOT");
-        }
-
-        let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
-            env_info: make_env_info(),
-        };
-
-        let props = ctx.build_user_properties(None);
-        assert_eq!(props["host_user_id"], "host-uuid-123");
-
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_build_user_properties_host_user_id_absent_when_unset() {
-        unsafe {
-            env::remove_var("III_HOST_USER_ID");
-            env::remove_var("III_PROJECT_ID");
-            env::remove_var("III_PROJECT_ROOT");
-        }
-
-        let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
-            env_info: make_env_info(),
-        };
-
-        let props = ctx.build_user_properties(None);
-        assert!(props.get("host_user_id").is_none());
-    }
-
     // =========================================================================
     // AmplitudeEvent serialization (via TelemetryContext::build_event)
     // =========================================================================
@@ -1384,11 +1297,10 @@ mod tests {
     #[test]
     fn test_build_event_basic_fields() {
         let ctx = TelemetryContext {
-            install_id: "test-install-id".to_string(),
+            device_id: "test-install-id".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "abc123".to_string(),
-                is_container: false,
-                container_runtime: "none".to_string(),
+                iii_execution_context: "user".to_string(),
                 timezone: "UTC".to_string(),
                 cpu_cores: 4,
                 os: "linux".to_string(),
@@ -1399,7 +1311,7 @@ mod tests {
         let event = ctx.build_event("test_event", serde_json::json!({"key": "value"}), None);
 
         assert_eq!(event.device_id, "test-install-id");
-        assert_eq!(event.user_id, Some("test-install-id".to_string()));
+        assert_eq!(event.user_id, None);
         assert_eq!(event.event_type, "test_event");
         assert_eq!(event.event_properties["key"], "value");
         assert_eq!(event.platform, "iii-engine");
@@ -1412,11 +1324,10 @@ mod tests {
     #[test]
     fn test_build_event_with_sdk_telemetry_language() {
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "m1".to_string(),
-                is_container: false,
-                container_runtime: "none".to_string(),
+                iii_execution_context: "user".to_string(),
                 timezone: "UTC".to_string(),
                 cpu_cores: 2,
                 os: "macos".to_string(),
@@ -1437,7 +1348,7 @@ mod tests {
     #[test]
     fn test_build_event_insert_id_is_unique() {
         let ctx = TelemetryContext {
-            install_id: "id-1".to_string(),
+            device_id: "id-1".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1452,7 +1363,7 @@ mod tests {
     #[test]
     fn test_build_event_app_version_matches_cargo_pkg() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1463,7 +1374,7 @@ mod tests {
     #[test]
     fn test_build_event_country_is_none() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1474,7 +1385,7 @@ mod tests {
     #[test]
     fn test_build_event_user_properties_is_some() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1491,7 +1402,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1508,7 +1419,7 @@ mod tests {
         }
 
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1523,7 +1434,7 @@ mod tests {
     #[test]
     fn test_build_event_timestamp_is_recent() {
         let ctx = TelemetryContext {
-            install_id: "id-test".to_string(),
+            device_id: "id-test".to_string(),
             env_info: make_env_info(),
         };
 
@@ -1539,11 +1450,10 @@ mod tests {
     #[test]
     fn test_telemetry_context_clone() {
         let ctx = TelemetryContext {
-            install_id: "clone-test-id".to_string(),
+            device_id: "clone-test-id".to_string(),
             env_info: EnvironmentInfo {
                 machine_id: "m1".to_string(),
-                is_container: true,
-                container_runtime: "docker".to_string(),
+                iii_execution_context: "docker".to_string(),
                 timezone: "America/Chicago".to_string(),
                 cpu_cores: 16,
                 os: "linux".to_string(),
@@ -1552,12 +1462,11 @@ mod tests {
         };
 
         let cloned = ctx.clone();
-        assert_eq!(cloned.install_id, ctx.install_id);
+        assert_eq!(cloned.device_id, ctx.device_id);
         assert_eq!(cloned.env_info.machine_id, ctx.env_info.machine_id);
-        assert_eq!(cloned.env_info.is_container, ctx.env_info.is_container);
         assert_eq!(
-            cloned.env_info.container_runtime,
-            ctx.env_info.container_runtime
+            cloned.env_info.iii_execution_context,
+            ctx.env_info.iii_execution_context
         );
         assert_eq!(cloned.env_info.timezone, ctx.env_info.timezone);
         assert_eq!(cloned.env_info.cpu_cores, ctx.env_info.cpu_cores);
@@ -1997,20 +1906,20 @@ mod tests {
     }
 
     // =========================================================================
-    // get_or_create_install_id
+    // get_or_create_device_id
     // =========================================================================
 
     #[test]
-    fn test_get_or_create_install_id_returns_nonempty_string() {
-        let id = get_or_create_install_id();
+    fn test_get_or_create_device_id_returns_nonempty_string() {
+        let id = get_or_create_device_id();
         assert!(!id.is_empty());
     }
 
     #[test]
-    fn test_get_or_create_install_id_is_stable() {
-        let id1 = get_or_create_install_id();
-        let id2 = get_or_create_install_id();
-        assert_eq!(id1, id2, "install_id should be stable across calls");
+    fn test_get_or_create_device_id_is_stable() {
+        let id1 = get_or_create_device_id();
+        let id2 = get_or_create_device_id();
+        assert_eq!(id1, id2, "device_id should be stable across calls");
     }
 
     // =========================================================================
@@ -2146,9 +2055,9 @@ mod tests {
             .await
             .expect("start background tasks");
 
-        tokio::time::sleep(Duration::from_millis(2200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         shutdown_tx.send(true).expect("signal shutdown");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         module.destroy().await.expect("destroy telemetry module");
 
         reset_telemetry_globals();
