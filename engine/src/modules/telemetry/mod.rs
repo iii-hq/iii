@@ -193,6 +193,140 @@ struct FunctionTriggerData {
     functions_non_iii_builtin_count: usize,
 }
 
+struct EngineSnapshot {
+    ft: FunctionTriggerData,
+    wd: WorkerData,
+    project: ProjectContext,
+}
+
+fn collect_engine_snapshot(engine: &Engine) -> EngineSnapshot {
+    let ft = collect_functions_and_triggers(engine);
+    let wd = collect_worker_data(engine);
+    let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+    EngineSnapshot { ft, wd, project }
+}
+
+fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("project_id".into(), serde_json::json!(snap.project.project_id));
+    m.insert("project_name".into(), serde_json::json!(snap.project.project_name));
+    m.insert("version".into(), serde_json::json!(env!("CARGO_PKG_VERSION")));
+    m.insert("function_count".into(), serde_json::json!(snap.ft.function_count));
+    m.insert("trigger_count".into(), serde_json::json!(snap.ft.trigger_count));
+    m.insert("functions".into(), serde_json::json!(snap.ft.functions));
+    m.insert("trigger_types".into(), serde_json::json!(snap.ft.trigger_types));
+    m.insert("functions_iii_builtin_count".into(), serde_json::json!(snap.ft.functions_iii_builtin_count));
+    m.insert("functions_non_iii_builtin_count".into(), serde_json::json!(snap.ft.functions_non_iii_builtin_count));
+    m.insert("client_type".into(), serde_json::json!(snap.wd.client_type));
+    m.insert("sdk_languages".into(), serde_json::json!(snap.wd.sdk_languages));
+    m.insert("worker_count_total".into(), serde_json::json!(snap.wd.worker_count_total));
+    m.insert("worker_count_motia".into(), serde_json::json!(snap.wd.worker_count_motia));
+    m.insert("worker_count_non_iii_sdk_framework".into(), serde_json::json!(snap.wd.worker_count_non_iii_sdk_framework));
+    m.insert("workers".into(), serde_json::json!(snap.wd.workers));
+    m
+}
+
+struct DeltaAccumulator {
+    invocations_total: u64,
+    invocations_success: u64,
+    invocations_error: u64,
+    api_requests: u64,
+    queue_emits: u64,
+    queue_consumes: u64,
+    pubsub_publishes: u64,
+    pubsub_subscribes: u64,
+    cron_executions: u64,
+}
+
+impl DeltaAccumulator {
+    fn new() -> Self {
+        Self {
+            invocations_total: 0,
+            invocations_success: 0,
+            invocations_error: 0,
+            api_requests: 0,
+            queue_emits: 0,
+            queue_consumes: 0,
+            pubsub_publishes: 0,
+            pubsub_subscribes: 0,
+            cron_executions: 0,
+        }
+    }
+
+    fn snapshot(&mut self) -> DeltaSnapshot {
+        use std::sync::atomic::Ordering;
+        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+        let col = collector();
+
+        let cur = DeltaAccumulator {
+            invocations_total: acc.invocations_total.load(Ordering::Relaxed),
+            invocations_success: acc.invocations_success.load(Ordering::Relaxed),
+            invocations_error: acc.invocations_error.load(Ordering::Relaxed),
+            api_requests: col.api_requests.load(Ordering::Relaxed),
+            queue_emits: col.queue_emits.load(Ordering::Relaxed),
+            queue_consumes: col.queue_consumes.load(Ordering::Relaxed),
+            pubsub_publishes: col.pubsub_publishes.load(Ordering::Relaxed),
+            pubsub_subscribes: col.pubsub_subscribes.load(Ordering::Relaxed),
+            cron_executions: col.cron_executions.load(Ordering::Relaxed),
+        };
+
+        let deltas = DeltaSnapshot {
+            invocations_total: cur.invocations_total.saturating_sub(self.invocations_total),
+            invocations_success: cur.invocations_success.saturating_sub(self.invocations_success),
+            invocations_error: cur.invocations_error.saturating_sub(self.invocations_error),
+            api_requests: cur.api_requests.saturating_sub(self.api_requests),
+            queue_emits: cur.queue_emits.saturating_sub(self.queue_emits),
+            queue_consumes: cur.queue_consumes.saturating_sub(self.queue_consumes),
+            pubsub_publishes: cur.pubsub_publishes.saturating_sub(self.pubsub_publishes),
+            pubsub_subscribes: cur.pubsub_subscribes.saturating_sub(self.pubsub_subscribes),
+            cron_executions: cur.cron_executions.saturating_sub(self.cron_executions),
+        };
+
+        *self = cur;
+        deltas
+    }
+}
+
+struct DeltaSnapshot {
+    invocations_total: u64,
+    invocations_success: u64,
+    invocations_error: u64,
+    api_requests: u64,
+    queue_emits: u64,
+    queue_consumes: u64,
+    pubsub_publishes: u64,
+    pubsub_subscribes: u64,
+    cron_executions: u64,
+}
+
+impl DeltaSnapshot {
+    fn zero() -> Self {
+        Self {
+            invocations_total: 0,
+            invocations_success: 0,
+            invocations_error: 0,
+            api_requests: 0,
+            queue_emits: 0,
+            queue_consumes: 0,
+            pubsub_publishes: 0,
+            pubsub_subscribes: 0,
+            cron_executions: 0,
+        }
+    }
+
+    fn insert_into(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
+        m.insert("delta_invocations_total".into(), serde_json::json!(self.invocations_total));
+        m.insert("delta_invocations_success".into(), serde_json::json!(self.invocations_success));
+        m.insert("delta_invocations_error".into(), serde_json::json!(self.invocations_error));
+        m.insert("delta_api_requests".into(), serde_json::json!(self.api_requests));
+        m.insert("delta_queue_emits".into(), serde_json::json!(self.queue_emits));
+        m.insert("delta_queue_consumes".into(), serde_json::json!(self.queue_consumes));
+        m.insert("delta_pubsub_publishes".into(), serde_json::json!(self.pubsub_publishes));
+        m.insert("delta_pubsub_subscribes".into(), serde_json::json!(self.pubsub_subscribes));
+        m.insert("delta_cron_executions".into(), serde_json::json!(self.cron_executions));
+    }
+}
+
 fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
     let mut functions_iii_builtin_count = 0usize;
     let mut functions_non_iii_builtin_count = 0usize;
@@ -510,14 +644,10 @@ impl Module for TelemetryModule {
         let engine_for_started = Arc::clone(&self.engine);
         let client_for_started = Arc::clone(self.active_client());
         let ctx_for_started = self.ctx.clone();
-        let start_time_boot = start_time;
-        let interval_secs_boot = interval_secs;
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(120)).await;
 
-            let ft = collect_functions_and_triggers(&engine_for_started);
-            let wd = collect_worker_data(&engine_for_started);
-            let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+            let snap = collect_engine_snapshot(&engine_for_started);
 
             if check_and_mark_first_run() {
                 let first_run_event = ctx_for_started.build_event(
@@ -528,48 +658,24 @@ impl Module for TelemetryModule {
                         "arch": std::env::consts::ARCH,
                         "install_method": environment::detect_install_method(),
                     }),
-                    wd.sdk_telemetry.as_ref(),
+                    snap.wd.sdk_telemetry.as_ref(),
                 );
                 let _ = client_for_started.send_event(first_run_event).await;
             }
 
-            let uptime_secs = start_time_boot.elapsed().as_secs();
+            let mut props = build_base_properties(&snap);
+            props.insert("session_start".into(), serde_json::json!(true));
+            props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
+            props.insert("period_secs".into(), serde_json::json!(interval_secs));
+            props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
+            props.insert("is_active".into(), serde_json::json!(false));
+            DeltaSnapshot::zero().insert_into(&mut props);
+
             let boot_heartbeat = ctx_for_started.build_event(
                 "heartbeat",
-                serde_json::json!({
-                    "session_start": true,
-                    "project_id": project.project_id,
-                    "project_name": project.project_name,
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "function_count": ft.function_count,
-                    "trigger_count": ft.trigger_count,
-                    "functions": ft.functions,
-                    "trigger_types": ft.trigger_types,
-                    "functions_iii_builtin_count": ft.functions_iii_builtin_count,
-                    "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
-                    "client_type": wd.client_type,
-                    "sdk_languages": wd.sdk_languages,
-                    "worker_count_total": wd.worker_count_total,
-                    "worker_count_motia": wd.worker_count_motia,
-                    "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
-                    "worker_count_by_language": wd.worker_count_by_language,
-                    "workers": wd.workers,
-                    "delta_invocations_total": 0u64,
-                    "delta_invocations_success": 0u64,
-                    "delta_invocations_error": 0u64,
-                    "delta_api_requests": 0u64,
-                    "delta_queue_emits": 0u64,
-                    "delta_queue_consumes": 0u64,
-                    "delta_pubsub_publishes": 0u64,
-                    "delta_pubsub_subscribes": 0u64,
-                    "delta_cron_executions": 0u64,
-                    "period_secs": interval_secs_boot,
-                    "uptime_secs": uptime_secs,
-                    "is_active": false,
-                }),
-                wd.sdk_telemetry.as_ref(),
+                serde_json::Value::Object(props),
+                snap.wd.sdk_telemetry.as_ref(),
             );
-
             let _ = client_for_started.send_event(boot_heartbeat).await;
         });
 
@@ -579,17 +685,7 @@ impl Module for TelemetryModule {
 
             interval.tick().await;
 
-            let acc = crate::modules::observability::metrics::get_metrics_accumulator();
-
-            let mut prev_invocations_total: u64 = 0;
-            let mut prev_invocations_success: u64 = 0;
-            let mut prev_invocations_error: u64 = 0;
-            let mut prev_api_requests: u64 = 0;
-            let mut prev_queue_emits: u64 = 0;
-            let mut prev_queue_consumes: u64 = 0;
-            let mut prev_pubsub_publishes: u64 = 0;
-            let mut prev_pubsub_subscribes: u64 = 0;
-            let mut prev_cron_executions: u64 = 0;
+            let mut deltas = DeltaAccumulator::new();
 
             loop {
                 tokio::select! {
@@ -597,39 +693,19 @@ impl Module for TelemetryModule {
                         if result.is_err() || *shutdown_rx.borrow() {
                             use std::sync::atomic::Ordering;
 
-                            let uptime_secs = start_time.elapsed().as_secs();
-                            let invocations_total = acc.invocations_total.load(Ordering::Relaxed);
-                            let invocations_success = acc.invocations_success.load(Ordering::Relaxed);
-                            let invocations_error = acc.invocations_error.load(Ordering::Relaxed);
+                            let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+                            let snap = collect_engine_snapshot(&engine);
 
-                            let wd = collect_worker_data(&engine);
-                            let ft = collect_functions_and_triggers(&engine);
-                            let project = resolve_project_context(wd.sdk_telemetry.as_ref());
+                            let mut props = build_base_properties(&snap);
+                            props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
+                            props.insert("invocations_total".into(), serde_json::json!(acc.invocations_total.load(Ordering::Relaxed)));
+                            props.insert("invocations_success".into(), serde_json::json!(acc.invocations_success.load(Ordering::Relaxed)));
+                            props.insert("invocations_error".into(), serde_json::json!(acc.invocations_error.load(Ordering::Relaxed)));
 
                             let event = ctx.build_event(
                                 "engine_stopped",
-                                serde_json::json!({
-                                    "project_id": project.project_id,
-                                    "project_name": project.project_name,
-                                    "version": env!("CARGO_PKG_VERSION"),
-                                    "uptime_secs": uptime_secs,
-                                    "invocations_total": invocations_total,
-                                    "invocations_success": invocations_success,
-                                    "invocations_error": invocations_error,
-                                    "function_count": ft.function_count,
-                                    "trigger_count": ft.trigger_count,
-                                    "functions": ft.functions,
-                                    "trigger_types": ft.trigger_types,
-                                    "functions_iii_builtin_count": ft.functions_iii_builtin_count,
-                                    "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
-                                    "client_type": wd.client_type,
-                                    "sdk_languages": wd.sdk_languages,
-                                    "worker_count_total": wd.worker_count_total,
-                                    "worker_count_motia": wd.worker_count_motia,
-                                    "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
-                                    "workers": wd.workers,
-                                }),
-                                wd.sdk_telemetry.as_ref(),
+                                serde_json::Value::Object(props),
+                                snap.wd.sdk_telemetry.as_ref(),
                             );
 
                             let _ = tokio::time::timeout(
@@ -642,80 +718,21 @@ impl Module for TelemetryModule {
                         }
                     }
                     _ = interval.tick() => {
-                        use std::sync::atomic::Ordering;
+                        let d = deltas.snapshot();
+                        let snap = collect_engine_snapshot(&engine);
 
-                        let invocations_total = acc.invocations_total.load(Ordering::Relaxed);
-                        let invocations_success = acc.invocations_success.load(Ordering::Relaxed);
-                        let invocations_error = acc.invocations_error.load(Ordering::Relaxed);
-                        let api_requests = collector().api_requests.load(Ordering::Relaxed);
-                        let queue_emits = collector().queue_emits.load(Ordering::Relaxed);
-                        let queue_consumes = collector().queue_consumes.load(Ordering::Relaxed);
-                        let pubsub_publishes = collector().pubsub_publishes.load(Ordering::Relaxed);
-                        let pubsub_subscribes = collector().pubsub_subscribes.load(Ordering::Relaxed);
-                        let cron_executions = collector().cron_executions.load(Ordering::Relaxed);
-
-                        let delta_invocations_total = invocations_total.saturating_sub(prev_invocations_total);
-                        let delta_invocations_success = invocations_success.saturating_sub(prev_invocations_success);
-                        let delta_invocations_error = invocations_error.saturating_sub(prev_invocations_error);
-                        let delta_api_requests = api_requests.saturating_sub(prev_api_requests);
-                        let delta_queue_emits = queue_emits.saturating_sub(prev_queue_emits);
-                        let delta_queue_consumes = queue_consumes.saturating_sub(prev_queue_consumes);
-                        let delta_pubsub_publishes = pubsub_publishes.saturating_sub(prev_pubsub_publishes);
-                        let delta_pubsub_subscribes = pubsub_subscribes.saturating_sub(prev_pubsub_subscribes);
-                        let delta_cron_executions = cron_executions.saturating_sub(prev_cron_executions);
-
-                        prev_invocations_total = invocations_total;
-                        prev_invocations_success = invocations_success;
-                        prev_invocations_error = invocations_error;
-                        prev_api_requests = api_requests;
-                        prev_queue_emits = queue_emits;
-                        prev_queue_consumes = queue_consumes;
-                        prev_pubsub_publishes = pubsub_publishes;
-                        prev_pubsub_subscribes = pubsub_subscribes;
-                        prev_cron_executions = cron_executions;
-
-                        let is_active = delta_invocations_total > 0;
-                        let uptime_secs = start_time.elapsed().as_secs();
-
-                        let ft = collect_functions_and_triggers(&engine);
-                        let wd = collect_worker_data(&engine);
-                        let project = resolve_project_context(wd.sdk_telemetry.as_ref());
-
-                        let properties = serde_json::json!({
-                            "session_start": false,
-                            "delta_invocations_total": delta_invocations_total,
-                            "delta_invocations_success": delta_invocations_success,
-                            "delta_invocations_error": delta_invocations_error,
-                            "delta_api_requests": delta_api_requests,
-                            "delta_queue_emits": delta_queue_emits,
-                            "delta_queue_consumes": delta_queue_consumes,
-                            "delta_pubsub_publishes": delta_pubsub_publishes,
-                            "delta_pubsub_subscribes": delta_pubsub_subscribes,
-                            "delta_cron_executions": delta_cron_executions,
-                            "function_count": ft.function_count,
-                            "trigger_count": ft.trigger_count,
-                            "functions": ft.functions,
-                            "trigger_types": ft.trigger_types,
-                            "functions_iii_builtin_count": ft.functions_iii_builtin_count,
-                            "functions_non_iii_builtin_count": ft.functions_non_iii_builtin_count,
-                            "worker_count_total": wd.worker_count_total,
-                            "worker_count_motia": wd.worker_count_motia,
-                            "worker_count_non_iii_sdk_framework": wd.worker_count_non_iii_sdk_framework,
-                            "worker_count_by_language": wd.worker_count_by_language,
-                            "workers": wd.workers,
-                            "sdk_languages": wd.sdk_languages,
-                            "client_type": wd.client_type,
-                            "project_id": project.project_id,
-                            "project_name": project.project_name,
-                            "period_secs": interval_secs,
-                            "uptime_secs": uptime_secs,
-                            "is_active": is_active,
-                        });
+                        let mut props = build_base_properties(&snap);
+                        props.insert("session_start".into(), serde_json::json!(false));
+                        props.insert("worker_count_by_language".into(), serde_json::json!(snap.wd.worker_count_by_language));
+                        props.insert("period_secs".into(), serde_json::json!(interval_secs));
+                        props.insert("uptime_secs".into(), serde_json::json!(start_time.elapsed().as_secs()));
+                        props.insert("is_active".into(), serde_json::json!(d.invocations_total > 0));
+                        d.insert_into(&mut props);
 
                         let event = ctx.build_event(
                             "heartbeat",
-                            properties,
-                            wd.sdk_telemetry.as_ref(),
+                            serde_json::Value::Object(props),
+                            snap.wd.sdk_telemetry.as_ref(),
                         );
 
                         let _ = client.send_event(event).await;
