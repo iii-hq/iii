@@ -666,22 +666,21 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
 </ResponseField>
 
 ```yaml
-# Example: run Python SDK worker
+# Example: run Python motia framework worker
 - class: modules::shell::ExecModule
   config:
     watch:
       - ./steps
     exec:
-      - motia-py
+      - uv run motia run --dir steps
 
-# Example: run Node.js SDK worker
+# Example: run Node.js motia framework worker
 - class: modules::shell::ExecModule
   config:
     watch:
       - ./steps
     exec:
-      - npx
-      - motia-node
+      - npx motia dev
 ```
 
 </Accordion>

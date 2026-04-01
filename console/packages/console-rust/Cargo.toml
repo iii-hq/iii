@@ -4,7 +4,7 @@ version = "0.10.0"
 edition = "2021"
 description = "Developer console for the iii engine"
 license = "Apache-2.0"
-repository = "https://github.com/MotiaDev/iii-console"
+repository = "https://github.com/iii-hq/iii"
 
 [dependencies]
 # Web framework
