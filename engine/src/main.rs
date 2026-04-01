@@ -39,7 +39,12 @@ struct Cli {
     install_only_generate_ids: bool,
 
     /// Install lifecycle event type (e.g. install_succeeded, upgrade_succeeded).
-    #[arg(long, hide = true, global = true, requires = "install_only_generate_ids")]
+    #[arg(
+        long,
+        hide = true,
+        global = true,
+        requires = "install_only_generate_ids"
+    )]
     install_event_type: Option<String>,
 
     /// Install lifecycle event properties as JSON.

@@ -546,7 +546,10 @@ state:
         }
         let runtime = detect_container_runtime();
         assert!(
-            runtime == "none" || runtime == "docker" || runtime == "container" || runtime == "kubernetes",
+            runtime == "none"
+                || runtime == "docker"
+                || runtime == "container"
+                || runtime == "kubernetes",
             "unexpected runtime: {runtime}"
         );
     }
