@@ -45,7 +45,7 @@ pub struct Session {
     pub function_registration_prefix: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub(crate) struct AuthResult {
     #[serde(default)]
     allowed_functions: Vec<String>,

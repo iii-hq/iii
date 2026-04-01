@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
+    modules::worker::rbac_session::Session,
     modules::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsModule,
@@ -137,7 +138,7 @@ pub struct RegisterFunctionRequest {
 }
 
 pub struct Handler<H> {
-    f: H,
+    pub f: H,
 }
 
 impl<H, F> Handler<H>
@@ -151,6 +152,20 @@ where
 
     pub fn call(&self, input: Value) -> F {
         (self.f)(input)
+    }
+}
+
+pub struct SessionHandler<H> {
+    pub f: H,
+}
+
+impl<H, F> SessionHandler<H>
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+{
+    pub fn new(f: H) -> Self {
+        Self { f }
     }
 }
 
@@ -173,6 +188,13 @@ pub trait EngineTrait: Send + Sync {
         handler: Handler<H>,
     ) where
         H: Fn(Value) -> F + Send + Sync + 'static,
+        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
         F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
 }
 
@@ -247,6 +269,8 @@ impl Engine {
                 worker.add_invocation(invocation_id).await;
             }
 
+            let session = worker.session.clone();
+
             self.invocations
                 .handle_invocation(
                     invocation_id,
@@ -256,6 +280,7 @@ impl Engine {
                     function,
                     traceparent,
                     baggage,
+                    session,
                 )
                 .await
         } else {
@@ -656,13 +681,47 @@ impl Engine {
                         let w = worker.clone();
                         let middleware_id = middleware_id.clone();
                         let function_id = function_id.clone();
+                        let original_data = data.clone();
                         let traceparent = traceparent.clone();
                         let baggage = baggage.clone();
 
                         tokio::spawn(async move {
-                            let response = match engine.call(&middleware_id, middleware_input).await
-                            {
-                                Ok(result) => Message::InvocationResult {
+                            // Phase 1: call middleware to get enriched payload (or rejection)
+                            let enriched_payload =
+                                match engine.call(&middleware_id, middleware_input).await {
+                                    Ok(result) => result.unwrap_or(original_data),
+                                    Err(err) => {
+                                        engine
+                                            .send_msg(
+                                                &w,
+                                                Message::InvocationResult {
+                                                    invocation_id: inv_id,
+                                                    function_id,
+                                                    result: None,
+                                                    error: Some(err),
+                                                    traceparent,
+                                                    baggage,
+                                                },
+                                            )
+                                            .await;
+                                        return;
+                                    }
+                                };
+
+                            // Phase 2: invoke target function with caller's session
+                            let result = engine
+                                .remember_invocation(
+                                    &w,
+                                    Some(inv_id),
+                                    &function_id,
+                                    enriched_payload,
+                                    traceparent.clone(),
+                                    baggage.clone(),
+                                )
+                                .await;
+
+                            let response = match result {
+                                Ok(Ok(result)) => Message::InvocationResult {
                                     invocation_id: inv_id,
                                     function_id,
                                     result,
@@ -670,7 +729,7 @@ impl Engine {
                                     traceparent,
                                     baggage,
                                 },
-                                Err(err) => Message::InvocationResult {
+                                Ok(Err(err)) => Message::InvocationResult {
                                     invocation_id: inv_id,
                                     function_id,
                                     result: None,
@@ -678,8 +737,20 @@ impl Engine {
                                     traceparent,
                                     baggage,
                                 },
+                                Err(err) => Message::InvocationResult {
+                                    invocation_id: inv_id,
+                                    function_id,
+                                    result: None,
+                                    error: Some(ErrorBody::new(
+                                        "invocation_error",
+                                        err.to_string(),
+                                    )),
+                                    traceparent,
+                                    baggage,
+                                },
                             };
                             engine.send_msg(&w, response).await;
+                            w.remove_invocation(&inv_id).await;
                         });
                         return Ok(());
                     }
@@ -1283,6 +1354,7 @@ impl EngineTrait for Engine {
                     function,
                     traceparent,
                     baggage,
+                    None,
                 )
                 .await;
 
@@ -1337,7 +1409,7 @@ impl EngineTrait for Engine {
         let handler_function_id = function_id.clone();
 
         let function = Function {
-            handler: Arc::new(move |invocation_id, input| {
+            handler: Arc::new(move |invocation_id, input, _session| {
                 let handler = handler_arc.clone();
                 let path = handler_function_id.clone();
                 Box::pin(async move { handler.handle_function(invocation_id, path, input).await })
@@ -1361,9 +1433,36 @@ impl EngineTrait for Engine {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
         let function = Function {
-            handler: Arc::new(move |_id, input| {
+            handler: Arc::new(move |_id, input, _session| {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
+            }),
+            _function_id: request.function_id.clone(),
+            _description: request.description,
+            request_format: request.request_format,
+            response_format: request.response_format,
+            metadata: request.metadata,
+        };
+
+        self.functions
+            .register_function(request.function_id, function);
+    }
+
+    fn register_function_handler_with_session<H, F>(
+        &self,
+        request: RegisterFunctionRequest,
+        handler: SessionHandler<H>,
+    ) where
+        H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+    {
+        let handler_arc: Arc<H> = Arc::new(handler.f);
+
+        let function = Function {
+            handler: Arc::new(move |_id, input, session| {
+                let handler = handler_arc.clone();
+                let session = session.clone();
+                Box::pin(async move { handler(input, session).await })
             }),
             _function_id: request.function_id.clone(),
             _description: request.description,

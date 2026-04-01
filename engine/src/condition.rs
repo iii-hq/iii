@@ -82,6 +82,24 @@ mod tests {
                 + 'static,
         {
         }
+        fn register_function_handler_with_session<H, F>(
+            &self,
+            _req: crate::engine::RegisterFunctionRequest,
+            _handler: crate::engine::SessionHandler<H>,
+        ) where
+            H: Fn(
+                    Value,
+                    Option<std::sync::Arc<crate::modules::worker::rbac_session::Session>>,
+                ) -> F
+                + Send
+                + Sync
+                + 'static,
+            F: std::future::Future<
+                    Output = crate::function::FunctionResult<Option<Value>, ErrorBody>,
+                > + Send
+                + 'static,
+        {
+        }
     }
 
     #[tokio::test]

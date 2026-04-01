@@ -160,6 +160,28 @@ fn extract_success_type(return_type: &syn::Type) -> Option<TokenStream2> {
     Some(quote! { #success_ty })
 }
 
+fn type_contains_ident(ty: &syn::Type, name: &str) -> bool {
+    match ty {
+        syn::Type::Path(type_path) => type_path.path.segments.iter().any(|seg| {
+            if seg.ident == name {
+                return true;
+            }
+            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                args.args.iter().any(|arg| {
+                    if let syn::GenericArgument::Type(inner_ty) = arg {
+                        type_contains_ident(inner_ty, name)
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                false
+            }
+        }),
+        _ => false,
+    }
+}
+
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -197,18 +219,28 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let description = extract_optional(&metas, "description");
                     let method_ident = method.sig.ident.clone();
 
-                    let input_type = match method
+                    let non_self_params: Vec<_> = method
                         .sig
                         .inputs
                         .iter()
-                        .find(|arg| !matches!(arg, syn::FnArg::Receiver(_)))
-                    {
+                        .filter(|arg| !matches!(arg, syn::FnArg::Receiver(_)))
+                        .collect();
+
+                    let input_type = match non_self_params.first() {
                         Some(syn::FnArg::Typed(pat_type)) => {
                             let ty = &*pat_type.ty;
                             quote! { #ty }
                         }
                         _ => quote! { () },
                     };
+
+                    let has_session_param = non_self_params.get(1).map_or(false, |arg| {
+                        if let syn::FnArg::Typed(pat_type) = arg {
+                            type_contains_ident(&pat_type.ty, "Session")
+                        } else {
+                            false
+                        }
+                    });
 
                     // Extract return type
                     let return_type = match &method.sig.output {
@@ -224,9 +256,15 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let handler_ident = format_ident!("{}_handler", method_ident);
                     let description = quote!(Some(#description.into()));
 
+                    let method_call = if has_session_param {
+                        quote! { this.#method_ident(input, session).await }
+                    } else {
+                        quote! { this.#method_ident(input).await }
+                    };
+
                     let result_handling = if needs_serialization {
                         quote! {
-                            let result = this.#method_ident(input).await;
+                            let result = #method_call;
                             match result {
                                 FunctionResult::Success(value) => {
                                     match serde_json::to_value(&value) {
@@ -251,9 +289,7 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                             }
                         }
                     } else {
-                        quote! {
-                            this.#method_ident(input).await
-                        }
+                        method_call
                     };
 
                     // Generate request_format schema
@@ -284,8 +320,47 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                         None => quote! { None },
                     };
 
-                    generated.push(quote! {
-                        {
+                    let handler_and_registration = if has_session_param {
+                        quote! {
+                            let this = self.clone();
+                            let #handler_ident = SessionHandler::new(move |input: Value, session: Option<::std::sync::Arc<Session>>| {
+                                let this = this.clone();
+
+                                async move {
+                                    let parsed: Result<#input_type, _> = serde_json::from_value(input);
+                                    let input = match parsed {
+                                        Ok(v) => v,
+                                        Err(err) => {
+                                            eprintln!(
+                                                "[warning] Failed to deserialize input for {}: {}",
+                                                #id,
+                                                err
+                                            );
+                                            return FunctionResult::Failure(ErrorBody {
+                                                code: "deserialization_error".into(),
+                                                message: format!("Failed to deserialize input for {}: {}", #id, err.to_string()),
+                                                stacktrace: None,
+                                            });
+                                        }
+                                    };
+
+                                    #result_handling
+                                }
+                            });
+
+                            engine.register_function_handler_with_session(
+                                RegisterFunctionRequest {
+                                    function_id: #id.into(),
+                                    description: #description,
+                                    request_format: #request_format_expr,
+                                    response_format: #response_format_expr,
+                                    metadata: None,
+                                },
+                                #handler_ident,
+                            );
+                        }
+                    } else {
+                        quote! {
                             let this = self.clone();
                             let #handler_ident = Handler::new(move |input: Value| {
                                 let this = this.clone();
@@ -322,6 +397,12 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 },
                                 #handler_ident,
                             );
+                        }
+                    };
+
+                    generated.push(quote! {
+                        {
+                            #handler_and_registration
                         }
                     });
                 }

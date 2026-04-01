@@ -855,8 +855,9 @@ mod tests {
     }
 
     fn register_test_function(engine: &Arc<Engine>, function_id: &str) {
-        let handler: Arc<HandlerFn> =
-            Arc::new(|_invocation_id, _input| Box::pin(async { FunctionResult::NoResult }));
+        let handler: Arc<HandlerFn> = Arc::new(|_invocation_id, _input, _session| {
+            Box::pin(async { FunctionResult::NoResult })
+        });
         engine.functions.register_function(
             function_id.to_string(),
             Function {
@@ -1588,7 +1589,7 @@ mod tests {
     fn test_collect_functions_and_triggers_filters_engine_prefix() {
         let engine = make_test_engine();
 
-        let handler: Arc<crate::function::HandlerFn> = Arc::new(|_inv_id, _input| {
+        let handler: Arc<crate::function::HandlerFn> = Arc::new(|_inv_id, _input, _session| {
             Box::pin(async { crate::function::FunctionResult::NoResult })
         });
         engine.functions.register_function(
