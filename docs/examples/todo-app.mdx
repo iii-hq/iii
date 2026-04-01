@@ -3,9 +3,11 @@ title: 'Todo App'
 description: 'A full-stack realtime todo app powered by a single WebSocket connection for both operations and live sync.'
 ---
 
-This example builds a full-stack todo app where the browser connects to the iii engine over a **single WebSocket**. That one connection handles function invocations (create, toggle, delete, list) and delivers real-time stream change events back to the UI — no polling, no separate event channel.
+<Frame caption="Todo App">
+  <img src="/assets/todo-app.png" />
+</Frame>
 
-<img src="/images/todo-app.png" />
+This example builds a full-stack todo app where the browser connects to the iii engine over a **single WebSocket**. That one connection handles function invocations (create, toggle, delete, list) and delivers real-time stream change events back to the UI — no polling, no separate event channel.
 
 ```mermaid
 graph LR
