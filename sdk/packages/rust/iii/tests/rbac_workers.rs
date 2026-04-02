@@ -541,3 +541,105 @@ async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
 
     iii_client.shutdown_async().await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn should_only_list_allowed_functions_for_valid_token() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "valid-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let functions = iii_client
+        .list_functions()
+        .await
+        .expect("list_functions should succeed");
+    let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
+
+    assert!(
+        ids.contains(&"test::ew::valid-token-echo"),
+        "should contain allowed function"
+    );
+    assert!(
+        ids.contains(&"test::ew::public::echo"),
+        "should contain exposed public function"
+    );
+    assert!(
+        ids.contains(&"test::ew::meta-public"),
+        "should contain metadata-matched function"
+    );
+
+    assert!(
+        !ids.contains(&"test::ew::private"),
+        "should not contain private function"
+    );
+    assert!(
+        !ids.contains(&"test::rbac-worker::auth"),
+        "should not contain auth function"
+    );
+
+    iii_client.shutdown_async().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn should_only_list_exposed_functions_for_restricted_token() {
+    ensure_functions_registered();
+    common::settle().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("x-test-token".to_string(), "restricted-token".to_string());
+
+    let iii_client = register_worker(
+        &ew_url(),
+        InitOptions {
+            headers: Some(headers),
+            ..Default::default()
+        },
+    );
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let functions = iii_client
+        .list_functions()
+        .await
+        .expect("list_functions should succeed");
+    let ids: Vec<&str> = functions.iter().map(|f| f.function_id.as_str()).collect();
+
+    assert!(
+        ids.contains(&"test::ew::public::echo"),
+        "should contain exposed public function"
+    );
+    assert!(
+        ids.contains(&"test::ew::meta-public"),
+        "should contain metadata-matched function"
+    );
+
+    assert!(
+        !ids.contains(&"test::ew::valid-token-echo"),
+        "should not contain valid-token-only function"
+    );
+    assert!(
+        !ids.contains(&"test::ew::private"),
+        "should not contain private function"
+    );
+    assert!(
+        !ids.contains(&"test::rbac-worker::auth"),
+        "should not contain auth function"
+    );
+
+    iii_client.shutdown_async().await;
+}

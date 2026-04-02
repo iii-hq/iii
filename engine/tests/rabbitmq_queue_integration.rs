@@ -1125,7 +1125,7 @@ fn register_rmq_capturing_function(
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let cap = captured.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, input| {
+        handler: Arc::new(move |_invocation_id, input, _session| {
             let rec = cap.clone();
             Box::pin(async move {
                 rec.lock().await.push(input);
@@ -1148,7 +1148,7 @@ fn register_rmq_counting_fn(engine: &Arc<Engine>, function_id: &str) -> Arc<Atom
     let counter = Arc::new(AtomicU64::new(0));
     let cnt = counter.clone();
     let function = Function {
-        handler: Arc::new(move |_invocation_id, _input| {
+        handler: Arc::new(move |_invocation_id, _input, _session| {
             let c = cnt.clone();
             Box::pin(async move {
                 c.fetch_add(1, Ordering::SeqCst);

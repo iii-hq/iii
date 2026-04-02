@@ -15,6 +15,7 @@ modules:
         on_trigger_type_registration_function_id: test::rbac-worker::on-trigger-type-reg
         expose_functions:
           - match("test::ew::public::*")
+          - match("engine::functions::list")
           - metadata:
               ew_public: true
 

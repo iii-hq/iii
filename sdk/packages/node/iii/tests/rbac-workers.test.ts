@@ -278,6 +278,52 @@ describe('RBAC Workers', () => {
     }
   })
 
+  it('should only list allowed functions for valid-token worker', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'valid-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      await sleep(1000)
+
+      const functions = await iiiClient.listFunctions()
+      const functionIds = functions.map((f) => f.function_id)
+
+      expect(functionIds).toContain('test::ew::valid-token-echo')
+      expect(functionIds).toContain('test::ew::public::echo')
+      expect(functionIds).toContain('test::ew::meta-public')
+
+      expect(functionIds).not.toContain('test::ew::private')
+      expect(functionIds).not.toContain('test::rbac-worker::auth')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
+  it('should only list exposed functions for restricted-token worker', async () => {
+    const iiiClient = registerWorker(EW_URL, {
+      headers: { 'x-test-token': 'restricted-token' },
+      otel: { enabled: false },
+    })
+
+    try {
+      await sleep(1000)
+
+      const functions = await iiiClient.listFunctions()
+      const functionIds = functions.map((f) => f.function_id)
+
+      expect(functionIds).toContain('test::ew::public::echo')
+      expect(functionIds).toContain('test::ew::meta-public')
+
+      expect(functionIds).not.toContain('test::ew::valid-token-echo')
+      expect(functionIds).not.toContain('test::ew::private')
+      expect(functionIds).not.toContain('test::rbac-worker::auth')
+    } finally {
+      await iiiClient.shutdown()
+    }
+  })
+
   it('should apply function_registration_prefix and strip on invocation', async () => {
     const iiiClient = registerWorker(EW_URL, {
       headers: { 'x-test-token': 'prefix-token' },
