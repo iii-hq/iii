@@ -10,7 +10,6 @@ async fn init_with_runtime_returns_sdk_instance() {
     ));
 }
 
-#[cfg(feature = "otel")]
 #[tokio::test]
 async fn init_applies_otel_config_before_auto_connect() {
     use iii_sdk::OtelConfig;

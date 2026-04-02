@@ -113,6 +113,7 @@ async fn register_http_trigger(
                 "middleware_function_ids": middleware_ids,
             }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register_trigger should succeed");

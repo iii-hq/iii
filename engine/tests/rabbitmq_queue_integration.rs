@@ -1198,6 +1198,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
             function_id: "test::rmq_fan_a".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register trigger A");
@@ -1210,6 +1211,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
             function_id: "test::rmq_fan_b".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register trigger B");
@@ -1261,6 +1263,7 @@ async fn rmq_fanout_replicas_compete_within_function() {
                 function_id: "test::rmq_replica_fn".to_string(),
                 config: json!({ "topic": &topic }),
                 worker_id: None,
+                metadata: None,
             })
             .await
             .expect("register trigger");
@@ -1314,6 +1317,7 @@ async fn rmq_fanout_dlq_per_function() {
             function_id: "test::rmq_dlq_success".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register success trigger");
@@ -1326,6 +1330,7 @@ async fn rmq_fanout_dlq_per_function() {
             function_id: "test::rmq_dlq_fail".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
+            metadata: None,
         })
         .await
         .expect("register fail trigger");

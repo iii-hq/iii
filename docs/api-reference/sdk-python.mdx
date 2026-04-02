@@ -811,6 +811,7 @@ Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
 | --- | --- | --- | --- |
 | `config` | `Any` | No | Trigger-type-specific configuration. |
 | `function_id` | `str` | No | ID of the function this trigger invokes. |
+| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
 | `type` | `str` | No | Trigger type identifier (e.g. ``http``, ``queue``, ``cron``). |
 
 ### RegisterTriggerTypeInput

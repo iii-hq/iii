@@ -137,11 +137,15 @@ class RegisterTriggerInput(BaseModel):
         type: Trigger type identifier (e.g. ``http``, ``queue``, ``cron``).
         function_id: ID of the function this trigger invokes.
         config: Trigger-type-specific configuration.
+        metadata: Arbitrary metadata attached to the trigger.
     """
 
     type: str = Field(description="Trigger type identifier.")
     function_id: str = Field(description="ID of the function this trigger invokes.")
     config: Any = Field(default=None, description="Trigger-type-specific configuration.")
+    metadata: dict[str, Any] | None = Field(
+        default=None, description="Arbitrary metadata attached to the trigger."
+    )
 
 
 class RegisterServiceInput(BaseModel):
@@ -170,6 +174,7 @@ class RegisterTriggerMessage(BaseModel):
     trigger_type: str = Field(alias="trigger_type")
     function_id: str = Field()
     config: Any
+    metadata: dict[str, Any] | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 
@@ -393,6 +398,7 @@ class OnTriggerRegistrationInput(BaseModel):
         trigger_type: Trigger type identifier.
         function_id: ID of the function this trigger is bound to.
         config: Trigger-specific configuration.
+        metadata: Arbitrary metadata attached to the trigger.
         context: Auth context from ``AuthResult.context`` for this session.
     """
 
@@ -400,6 +406,7 @@ class OnTriggerRegistrationInput(BaseModel):
     trigger_type: str = Field(description="Trigger type identifier.")
     function_id: str = Field(description="ID of the function this trigger is bound to.")
     config: Any = Field(default=None, description="Trigger-specific configuration.")
+    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the trigger.")
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
@@ -558,12 +565,16 @@ class TriggerInfo(BaseModel):
         trigger_type: Type of trigger (e.g. ``http``, ``queue``, ``cron``).
         function_id: ID of the function this trigger invokes.
         config: Trigger-type-specific configuration.
+        metadata: Arbitrary metadata attached to the trigger.
     """
 
     id: str = Field(description="Unique trigger identifier.")
     trigger_type: str = Field(description="Type of trigger (e.g. ``http``, ``queue``, ``cron``).")
     function_id: str = Field(description="ID of the function this trigger invokes.")
     config: Any = Field(default=None, description="Trigger-type-specific configuration.")
+    metadata: dict[str, Any] | None = Field(
+        default=None, description="Arbitrary metadata attached to the trigger."
+    )
 
 
 class TriggerTypeInfo(BaseModel):

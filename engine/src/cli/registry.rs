@@ -103,6 +103,25 @@ pub static REGISTRY: &[BinarySpec] = &[
         }],
         tag_prefix: None,
     },
+    BinarySpec {
+        name: "iii-cloud",
+        repo: "iii-hq/iii-cloud-cli",
+        has_checksum: true,
+        supported_targets: &[
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+        ],
+        commands: &[CommandMapping {
+            cli_command: "cloud",
+            binary_subcommand: None,
+        }],
+        tag_prefix: None,
+    },
 ];
 
 /// Resolve a CLI command name to its BinarySpec and optional binary subcommand.
@@ -173,6 +192,14 @@ mod tests {
         let (spec, sub) = resolve_command("motia").unwrap();
         assert_eq!(spec.name, "motia-cli");
         assert_eq!(spec.repo, "MotiaDev/motia-cli");
+        assert!(sub.is_none());
+    }
+
+    #[test]
+    fn test_resolve_cloud() {
+        let (spec, sub) = resolve_command("cloud").unwrap();
+        assert_eq!(spec.name, "iii-cloud");
+        assert_eq!(spec.repo, "iii-hq/iii-cloud-cli");
         assert!(sub.is_none());
     }
 

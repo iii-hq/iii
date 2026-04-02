@@ -6,7 +6,6 @@ pub mod logger;
 pub mod protocol;
 pub mod stream;
 pub mod structs;
-#[cfg(feature = "otel")]
 pub mod telemetry;
 pub mod triggers;
 pub mod types;
@@ -60,8 +59,7 @@ pub struct InitOptions {
     pub metadata: Option<WorkerMetadata>,
     /// Custom HTTP headers sent during the WebSocket handshake.
     pub headers: Option<std::collections::HashMap<String, String>>,
-    /// OpenTelemetry configuration. Requires the `otel` feature.
-    #[cfg(feature = "otel")]
+    /// OpenTelemetry configuration.
     pub otel: Option<crate::telemetry::types::OtelConfig>,
 }
 
@@ -92,7 +90,6 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
     let InitOptions {
         metadata,
         headers,
-        #[cfg(feature = "otel")]
         otel,
     } = options;
 
@@ -106,7 +103,6 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
         iii.set_headers(h);
     }
 
-    #[cfg(feature = "otel")]
     if let Some(cfg) = otel {
         iii.set_otel_config(cfg);
     }
@@ -116,8 +112,7 @@ pub fn register_worker(address: &str, options: InitOptions) -> III {
     iii
 }
 
-// OpenTelemetry re-exports (behind "otel" feature flag)
-#[cfg(feature = "otel")]
+// OpenTelemetry re-exports
 pub use telemetry::{
     context::{
         current_span_id, current_trace_id, extract_baggage, extract_context, extract_traceparent,
@@ -133,7 +128,5 @@ pub use telemetry::{
 };
 
 // Re-export commonly used OpenTelemetry types for convenience
-#[cfg(feature = "otel")]
 pub use opentelemetry::trace::SpanKind;
-#[cfg(feature = "otel")]
 pub use opentelemetry::trace::Status as SpanStatus;

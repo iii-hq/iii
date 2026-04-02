@@ -122,6 +122,8 @@ pub enum Message {
         trigger_type: String,
         function_id: String,
         config: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
     },
     TriggerRegistrationResult {
         id: String,
@@ -220,6 +222,8 @@ pub struct RegisterTriggerInput {
     pub trigger_type: String,
     pub function_id: String,
     pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +232,8 @@ pub struct RegisterTriggerMessage {
     pub trigger_type: String,
     pub function_id: String,
     pub config: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 impl RegisterTriggerMessage {
@@ -237,6 +243,7 @@ impl RegisterTriggerMessage {
             trigger_type: self.trigger_type.clone(),
             function_id: self.function_id.clone(),
             config: self.config.clone(),
+            metadata: self.metadata.clone(),
         }
     }
 }

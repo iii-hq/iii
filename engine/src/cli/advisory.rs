@@ -75,21 +75,21 @@ pub fn check_advisories(advisories: &AdvisoriesDocument, state: &AppState) -> Ve
     for advisory in &advisories.advisories {
         if let Some(binary_state) = state.binaries.get(&advisory.affected_binary) {
             // Parse the affected version range
-            if let Ok(req) = VersionReq::parse(&advisory.affected_versions) {
-                if req.matches(&binary_state.version) {
-                    matched.push(MatchedAdvisory {
-                        advisory: Advisory {
-                            id: advisory.id.clone(),
-                            severity: advisory.severity.clone(),
-                            affected_binary: advisory.affected_binary.clone(),
-                            affected_versions: advisory.affected_versions.clone(),
-                            fixed_version: advisory.fixed_version.clone(),
-                            message: advisory.message.clone(),
-                            url: advisory.url.clone(),
-                        },
-                        installed_version: binary_state.version.clone(),
-                    });
-                }
+            if let Ok(req) = VersionReq::parse(&advisory.affected_versions)
+                && req.matches(&binary_state.version)
+            {
+                matched.push(MatchedAdvisory {
+                    advisory: Advisory {
+                        id: advisory.id.clone(),
+                        severity: advisory.severity.clone(),
+                        affected_binary: advisory.affected_binary.clone(),
+                        affected_versions: advisory.affected_versions.clone(),
+                        fixed_version: advisory.fixed_version.clone(),
+                        message: advisory.message.clone(),
+                        url: advisory.url.clone(),
+                    },
+                    installed_version: binary_state.version.clone(),
+                });
             }
         }
     }

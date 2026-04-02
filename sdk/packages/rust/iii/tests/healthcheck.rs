@@ -52,6 +52,7 @@ async fn register_healthcheck_function_and_trigger() {
                 "http_method": "GET",
                 "description": "Healthcheck endpoint",
             }),
+            metadata: None,
         })
         .expect("register trigger");
 

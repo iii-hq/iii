@@ -188,19 +188,21 @@ class Sdk implements ISdk {
 
     return {
       id: triggerType.id,
-      registerTrigger: (functionId: string, config: TConfig) => {
+      registerTrigger: (functionId: string, config: TConfig, metadata?: Record<string, unknown>) => {
         return this.registerTrigger({
           type: triggerType.id,
           function_id: functionId,
           config,
+          metadata,
         })
       },
-      registerFunction: (func, handler, config) => {
+      registerFunction: (func, handler, config, metadata?) => {
         const ref = this.registerFunction(func, handler)
         this.registerTrigger({
           type: triggerType.id,
           function_id: func.id,
           config,
+          metadata,
         })
         return ref
       },
@@ -960,13 +962,13 @@ class Sdk implements ISdk {
     }
   }
 
-  private async onRegisterTrigger(message: { trigger_type: string; id: string; function_id: string; config: unknown }) {
-    const { trigger_type, id, function_id, config } = message
+  private async onRegisterTrigger(message: { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> }) {
+    const { trigger_type, id, function_id, config, metadata } = message
     const triggerTypeData = this.triggerTypes.get(trigger_type)
 
     if (triggerTypeData) {
       try {
-        await triggerTypeData.handler.registerTrigger({ id, function_id, config })
+        await triggerTypeData.handler.registerTrigger({ id, function_id, config, metadata })
         this.sendMessage(MessageType.TriggerRegistrationResult, {
           id,
           message_type: MessageType.TriggerRegistrationResult,
@@ -1014,7 +1016,7 @@ class Sdk implements ISdk {
       const { invocation_id, function_id, data, traceparent, baggage } = message as InvokeFunctionMessage
       this.onInvokeFunction(invocation_id, function_id, data, traceparent, baggage)
     } else if (msgType === MessageType.RegisterTrigger) {
-      this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown })
+      this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown; metadata?: Record<string, unknown> })
     } else if (msgType === MessageType.WorkerRegistered) {
       const { worker_id } = message as WorkerRegisteredMessage
       this.workerId = worker_id

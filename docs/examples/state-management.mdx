@@ -140,6 +140,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "users.update_status".into(),
     config: json!({ "api_path": "users/:id/status", "http_method": "POST" }),
+    metadata: None,
 })?;
 ```
 
@@ -238,6 +239,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "http".into(),
     function_id: "users.get_status".into(),
     config: json!({ "api_path": "users/:id/status", "http_method": "GET" }),
+    metadata: None,
 })?;
 ```
 
@@ -363,6 +365,7 @@ iii.register_trigger(RegisterTriggerInput {
     trigger_type: "cron".into(),
     function_id: "cron.orders_audit".into(),
     config: json!({ "expression": "*/5 * * * *" }),
+    metadata: None,
 })?;
 ```
 

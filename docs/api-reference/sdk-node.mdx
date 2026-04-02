@@ -629,6 +629,7 @@ type RegisterTriggerInput = Omit<RegisterTriggerMessage, "message_type" | "id">
 | `function_id` | `string` | Yes | - |
 | `id` | `string` | Yes | - |
 | `message_type` | [`MessageType`](#messagetype).RegisterTrigger | Yes | - |
+| `metadata` | `Record<string, unknown>` | No | - |
 | `type` | `string` | Yes | - |
 
 ### RegisterTriggerTypeInput
@@ -693,6 +694,7 @@ Information about a registered trigger.
 | `config` | `unknown` | No | Trigger-specific configuration. |
 | `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
 | `id` | `string` | Yes | Unique trigger identifier. |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger. |
 | `trigger_type` | `string` | Yes | Type of the trigger (e.g. `http`, `cron`, `queue`). |
 
 ### TriggerRequest

@@ -169,16 +169,7 @@ let logger = Logger::new(Some("my-function".to_string()));
 logger.info("Processing started", None);
 ```
 
-The `Logger` struct emits OTel `LogRecord`s when OTel is active, otherwise falls back to the `tracing` crate.
-
-### OpenTelemetry
-
-Enable the `otel` feature for full tracing and metrics support:
-
-```toml
-[dependencies]
-iii-sdk = { version = "0.3", features = ["otel"] }
-```
+The `Logger` struct emits OTel `LogRecord`s, falling back to the `tracing` crate when OTel is not initialized.
 
 ## Modules
 
@@ -187,7 +178,7 @@ iii-sdk = { version = "0.3", features = ["otel"] }
 | `iii_sdk`            | Core SDK (`III`, `register_worker`, `TriggerRequest`, etc.) |
 | `iii_sdk::stream`    | Stream update builder (`UpdateBuilder`)                     |
 | `iii_sdk::logger`    | Structured logging (`Logger`)                               |
-| `iii_sdk::telemetry` | OpenTelemetry integration (requires `otel` feature)         |
+| `iii_sdk::telemetry` | OpenTelemetry integration                                   |
 | `iii_sdk::types`     | Shared types (`UpdateOp`, `Channel`, `ApiRequest`, etc.)    |
 
 ## Resources

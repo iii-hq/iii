@@ -413,18 +413,20 @@ export type TriggerTypeRef<TConfig = unknown> = {
    *
    * @param functionId - The function to invoke when the trigger fires.
    * @param config - Trigger-specific configuration.
+   * @param metadata - Optional arbitrary metadata attached to the trigger.
    * @returns A {@link Trigger} handle with an `unregister()` method.
    */
-  registerTrigger(functionId: string, config: TConfig): Trigger
+  registerTrigger(functionId: string, config: TConfig, metadata?: Record<string, unknown>): Trigger
   /**
    * Register a function and immediately bind it to this trigger type.
    *
    * @param func - Function registration input.
    * @param handler - Local function handler.
    * @param config - Trigger-specific configuration.
+   * @param metadata - Optional arbitrary metadata attached to the trigger.
    * @returns A {@link FunctionRef} handle.
    */
-  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler, config: TConfig): FunctionRef
+  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler, config: TConfig, metadata?: Record<string, unknown>): FunctionRef
   /**
    * Unregister this trigger type from the engine.
    */

@@ -39,6 +39,7 @@ async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, String> 
 mod cron_trigger_example;
 mod custom_trigger_example;
 mod http_example;
+mod logger_example;
 mod trigger_type_example;
 
 #[tokio::main]
@@ -51,6 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
     );
+
+    // Logger demo (all log levels with structured data)
+    logger_example::setup(&iii);
 
     // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
     http_example::setup(&iii);
@@ -86,6 +90,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     println!("Echo result: {result}");
+
+    // Invoke logger demo to exercise all log levels
+    let logger_result = iii
+        .trigger(TriggerRequest {
+            function_id: "example::logger_demo".to_string(),
+            payload: json!({"test": true}),
+            action: None,
+            timeout_ms: None,
+        })
+        .await?;
+    println!("Logger demo result: {logger_result}");
 
     // =========================================================================
     // Stream Atomic Update Examples
