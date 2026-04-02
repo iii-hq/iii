@@ -171,6 +171,7 @@ pub(crate) fn do_link(
 
     #[cfg(target_os = "linux")]
     {
+        let inode_fd = inode::get_inode_fd(fs, inode_num)?;
         let mut buf = [0u8; 32];
         use std::io::Write;
         let mut cursor = std::io::Cursor::new(&mut buf[..]);
