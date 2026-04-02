@@ -9,11 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{
-    EngineBuilder, logging,
-    modules::config::EngineConfig,
-    modules::worker::DEFAULT_PORT,
-};
+use iii::{EngineBuilder, logging, modules::config::EngineConfig, modules::worker::DEFAULT_PORT};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -272,12 +268,21 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         logging::init_log_from_config(Some(&cli.config));
     }
 
-    EngineBuilder::new()
+    let engine = EngineBuilder::new()
         .with_config(config)
         .build()
-        .await?
-        .serve()
         .await?;
+
+    // Start managed workers in background so engine boot is not blocked by image pulls (D-01, D-07).
+    let engine_url = format!("ws://localhost:{}", DEFAULT_PORT);
+    tokio::spawn(async move {
+        cli::managed::start_managed_workers(&engine_url).await;
+    });
+
+    engine.serve().await?;
+
+    // Engine shutdown complete (modules destroyed). Stop managed worker VMs (D-02).
+    cli::managed::stop_managed_workers().await;
 
     Ok(())
 }
@@ -333,16 +338,12 @@ async fn main() -> anyhow::Result<()> {
                     runtime,
                     address,
                     port,
-                } => {
-                    cli::managed::handle_managed_add(worker_name, runtime, address, *port).await
-                }
+                } => cli::managed::handle_managed_add(worker_name, runtime, address, *port).await,
                 WorkerCommands::Remove {
                     worker_name,
                     address,
                     port,
-                } => {
-                    cli::managed::handle_managed_remove(worker_name, address, *port).await
-                }
+                } => cli::managed::handle_managed_remove(worker_name, address, *port).await,
                 WorkerCommands::Start {
                     worker_name,
                     address,
@@ -360,7 +361,17 @@ async fn main() -> anyhow::Result<()> {
                     rebuild,
                     address,
                     port,
-                } => cli::managed::handle_worker_dev(path, name.as_deref(), runtime.as_deref(), *rebuild, address, *port).await,
+                } => {
+                    cli::managed::handle_worker_dev(
+                        path,
+                        name.as_deref(),
+                        runtime.as_deref(),
+                        *rebuild,
+                        address,
+                        *port,
+                    )
+                    .await
+                }
                 WorkerCommands::List => cli::managed::handle_worker_list().await,
                 WorkerCommands::Logs {
                     worker_name,
@@ -555,7 +566,9 @@ mod tests {
             .expect("should parse worker add with worker name");
         match cli.command {
             Some(Commands::Worker(WorkerCommands::Add {
-                worker_name, runtime, ..
+                worker_name,
+                runtime,
+                ..
             })) => {
                 assert_eq!(worker_name, "pdfkit@1.0.0");
                 assert_eq!(runtime, "libkrun");

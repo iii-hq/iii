@@ -130,4 +130,3 @@ pub enum StateError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
-

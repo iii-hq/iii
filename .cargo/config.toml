@@ -1,0 +1,10 @@
+# Linker configuration for init binary musl cross-compilation.
+# rust-lld is bundled with the Rust toolchain -- no system packages needed.
+# D-01 specified musl-tools/aarch64-linux-gnu-gcc, but rust-lld achieves
+# the same static musl linking with zero external deps (see RESEARCH.md).
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
