@@ -1,7 +1,6 @@
 import type { ChannelReader, ChannelWriter } from './channels'
 import type {
   FunctionInfo,
-  HttpInvocationConfig,
   RegisterFunctionMessage,
   RegisterServiceMessage,
   RegisterTriggerMessage,
@@ -110,23 +109,11 @@ export interface ISdk {
    *   { description: 'Returns a greeting' },
    * )
    *
-   * // HTTP invocation
-   * const lambdaRef = iii.registerFunction(
-   *   'external::my-lambda',
-   *   {
-   *     url: 'https://abc123.lambda-url.us-east-1.on.aws',
-   *     method: 'POST',
-   *     timeout_ms: 30_000,
-   *     auth: { type: 'bearer', token_key: 'LAMBDA_AUTH_TOKEN' },
-   *   },
-   *   { description: 'Proxied Lambda function' },
-   * )
-   *
    * // Later, remove the function
    * ref.unregister()
    * ```
    */
-  registerFunction(functionId: string, handler: RemoteFunctionHandler | HttpInvocationConfig, options?: RegisterFunctionOptions): FunctionRef
+  registerFunction(functionId: string, handler: RemoteFunctionHandler, options?: RegisterFunctionOptions): FunctionRef
 
   /**
    * Invokes a function using a request object.
@@ -354,14 +341,13 @@ export type FunctionRef = {
  * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
  *
  * // Register a function and bind a trigger in one call
-   * cron.registerFunction(
-   *   'my-fn',
-   *   async (data) => { return { ok: true } },
-   *   { schedule: '* * * * *' },
-   *   { description: 'Cron-triggered function' },
-   * )
-   * ```
-   */
+ * cron.registerFunction(
+ *   'my-fn',
+ *   async (data) => { return { ok: true } },
+ *   { description: 'Cron-triggered function' },
+ * )
+ * ```
+ */
 export type TriggerTypeRef<TConfig = unknown> = {
   /** The trigger type identifier. */
   id: string

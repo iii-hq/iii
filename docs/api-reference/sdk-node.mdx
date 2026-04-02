@@ -198,21 +198,47 @@ unsubscribe()
 
 ### registerFunction
 
-
+Registers a new function with a local handler or an HTTP invocation config.
 
 **Signature**
 
 ```typescript
-registerFunction(functionId: string, handler: RemoteFunctionHandler | HttpInvocationConfig, options?: RegisterFunctionOptions) => FunctionRef
+registerFunction(functionId: string, handler: HttpInvocationConfig | RemoteFunctionHandler<any, any>, options: RegisterFunctionOptions) => FunctionRef
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `functionId` | `string` | Yes | The unique function identifier (use `::` for namespacing, e.g. `external::my_lambda`). |
-| `handler` | [`RemoteFunctionHandler`](#remotefunctionhandler) \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A handler function or HTTP invocation config. |
-| `options` | [`RegisterFunctionOptions`](#registerfunctionoptions) | No | Optional metadata such as `description`, `metadata`, `request_format`, `response_format`. |
+| `functionId` | `string` | Yes | Unique function identifier |
+| `handler` | [`HttpInvocationConfig`](#httpinvocationconfig) \| [`RemoteFunctionHandler`](#remotefunctionhandler)&lt;any, any&gt; | Yes | Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.) |
+| `options` | [`RegisterFunctionOptions`](#registerfunctionoptions) | Yes | Optional function registration options (description, request/response formats, metadata) |
+
+#### Example
+
+```typescript
+// Local handler
+const ref = iii.registerFunction(
+  'greet',
+  async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
+  { description: 'Returns a greeting' },
+)
+
+// HTTP invocation
+const lambdaRef = iii.registerFunction(
+  'external::my-lambda',
+  {
+    url: 'https://abc123.lambda-url.us-east-1.on.aws',
+    method: 'POST',
+    timeout_ms: 30_000,
+    auth: { type: 'bearer', token_key: 'LAMBDA_AUTH_TOKEN' },
+  },
+  { description: 'Proxied Lambda function' },
+)
+
+// Later, remove the function
+ref.unregister()
+```
 
 ### registerService
 
@@ -496,7 +522,7 @@ logger.warn('Retry attempt', { attempt: 3, maxRetries: 5, endpoint: '/api/charge
 
 ## Types
 
-[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`FunctionInfo`](#functioninfo) · [`FunctionsAvailableCallback`](#functionsavailablecallback) · [`RegisterFunctionFormat`](#registerfunctionformat)
+[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`OtelConfig`](#otelconfig) · [`ReconnectionConfig`](#reconnectionconfig) · [`FunctionInfo`](#functioninfo) · [`FunctionsAvailableCallback`](#functionsavailablecallback) · [`RegisterFunctionFormat`](#registerfunctionformat)
 
 ### MessageType
 
@@ -592,17 +618,6 @@ Configuration options passed to registerWorker.
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
 | `workerName` | `string` | No | Display name for this worker. Defaults to `hostname:pid`. |
 
-### RegisterFunctionOptions
-
-Optional configuration passed as the third argument to `registerFunction`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `string` | No | The description of the function |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
-
 ### RegisterFunctionMessage
 
 | Name | Type | Required | Description |
@@ -614,6 +629,12 @@ Optional configuration passed as the third argument to `registerFunction`.
 | `metadata` | `Record<string, unknown>` | No | - |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function |
+
+### RegisterFunctionOptions
+
+```typescript
+type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id">
+```
 
 ### RegisterServiceInput
 

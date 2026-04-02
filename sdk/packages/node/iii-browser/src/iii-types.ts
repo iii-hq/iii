@@ -54,35 +54,6 @@ export type RegisterServiceMessage = {
   parent_service_id?: string
 }
 
-/**
- * Authentication configuration for HTTP-invoked functions.
- *
- * - `hmac` -- HMAC signature verification using a shared secret.
- * - `bearer` -- Bearer token authentication.
- * - `api_key` -- API key sent via a custom header.
- */
-export type HttpAuthConfig =
-  | { type: 'hmac'; secret_key: string }
-  | { type: 'bearer'; token_key: string }
-  | { type: 'api_key'; header: string; value_key: string }
-
-/**
- * Configuration for registering an HTTP-invoked function (Lambda, Cloudflare
- * Workers, etc.) instead of a local handler.
- */
-export type HttpInvocationConfig = {
-  /** URL to invoke. */
-  url: string
-  /** HTTP method. Defaults to `POST`. */
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-  /** Timeout in milliseconds. */
-  timeout_ms?: number
-  /** Custom headers to send with the request. */
-  headers?: Record<string, string>
-  /** Authentication configuration. */
-  auth?: HttpAuthConfig
-}
-
 export type RegisterFunctionFormat = {
   /**
    * The name of the parameter
@@ -95,19 +66,20 @@ export type RegisterFunctionFormat = {
   /**
    * The type of the parameter
    */
-  type: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map'
+  type?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' | 'map' | 'integer'
   /**
-   * The body of the parameter
+   * The body of the parameter (for objects)
    */
-  properties?: Record<string, RegisterFunctionFormat>
+  properties?: Record<string, unknown>
   /**
-   * The items of the parameter
+   * The items of the parameter (for arrays)
    */
-  items?: RegisterFunctionFormat
+  items?: unknown
   /**
    * Whether the parameter is required
    */
   required?: string[]
+  [key: string]: unknown
 }
 
 export type RegisterFunctionMessage = {
@@ -129,10 +101,6 @@ export type RegisterFunctionMessage = {
    */
   response_format?: RegisterFunctionFormat
   metadata?: Record<string, unknown>
-  /**
-   * HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.)
-   */
-  invocation?: HttpInvocationConfig
 }
 
 /**

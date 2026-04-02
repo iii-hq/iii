@@ -6,8 +6,6 @@ export type {
   AuthInput,
   AuthResult,
   EnqueueResult,
-  HttpAuthConfig,
-  HttpInvocationConfig,
   MessageType,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,

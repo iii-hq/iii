@@ -9,7 +9,6 @@ import {
 } from './iii-constants'
 import {
   type FunctionInfo,
-  type HttpInvocationConfig,
   type IIIMessage,
   type InvocationResultMessage,
   type InvokeFunctionMessage,
@@ -237,7 +236,7 @@ class Sdk implements ISdk {
    */
   registerFunction = (
     functionId: string,
-    handlerOrInvocation: RemoteFunctionHandler | HttpInvocationConfig,
+    handlerOrInvocation: RemoteFunctionHandler,
     options?: RegisterFunctionOptions,
   ): FunctionRef => {
     if (!functionId || functionId.trim() === '') {
@@ -247,36 +246,21 @@ class Sdk implements ISdk {
       throw new Error(`function id already registered: ${functionId}`)
     }
 
-    const isHandler = typeof handlerOrInvocation === 'function'
-
-    const fullMessage: RegisterFunctionMessage = isHandler
-      ? { ...options, id: functionId, message_type: MessageType.RegisterFunction }
-      : {
-          ...options,
-          id: functionId,
-          message_type: MessageType.RegisterFunction,
-          invocation: {
-            url: handlerOrInvocation.url,
-            method: handlerOrInvocation.method ?? 'POST',
-            timeout_ms: handlerOrInvocation.timeout_ms,
-            headers: handlerOrInvocation.headers,
-            auth: handlerOrInvocation.auth,
-          },
-        }
+    const fullMessage: RegisterFunctionMessage = {
+      ...options,
+      id: functionId,
+      message_type: MessageType.RegisterFunction,
+    }
 
     this.sendMessage(MessageType.RegisterFunction, fullMessage, true)
 
-    if (isHandler) {
-      const handler = handlerOrInvocation as RemoteFunctionHandler
-      this.functions.set(functionId, {
-        message: fullMessage,
-        handler: async (input, _traceparent?: string, _baggage?: string) => {
-          return await handler(input)
-        },
-      })
-    } else {
-      this.functions.set(functionId, { message: fullMessage })
-    }
+    const handler = handlerOrInvocation as RemoteFunctionHandler
+    this.functions.set(functionId, {
+      message: fullMessage,
+      handler: async (input, _traceparent?: string, _baggage?: string) => {
+        return await handler(input)
+      },
+    })
 
     return {
       id: functionId,

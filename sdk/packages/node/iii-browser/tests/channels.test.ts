@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ChannelReader, ChannelWriter } from '../src/channels'
 import type { StreamChannelRef } from '../src/iii-types'
-import { MockEngine, MockWebSocket } from './mock-websocket'
+import { MockEngine } from './mock-websocket'
 
 function makeRef(direction: 'read' | 'write'): StreamChannelRef {
   return {
@@ -162,9 +162,7 @@ describe('Channels', () => {
       writer.sendMessage('init')
 
       const socket = engine.sockets[0]
-      expect(socket.url).toBe(
-        'ws://engine:49135/ws/channels/my-channel?key=secret%20key%26value&dir=write',
-      )
+      expect(socket.url).toBe('ws://engine:49135/ws/channels/my-channel?key=secret%20key%26value&dir=write')
     })
   })
 })

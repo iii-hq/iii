@@ -154,7 +154,11 @@ export interface ISdk {
    * ref.unregister()
    * ```
    */
-  registerFunction(functionId: string, handler: RemoteFunctionHandler | HttpInvocationConfig, options?: RegisterFunctionOptions): FunctionRef
+  registerFunction(
+    functionId: string,
+    handler: RemoteFunctionHandler | HttpInvocationConfig,
+    options?: RegisterFunctionOptions,
+  ): FunctionRef
 
   /**
    * Invokes a function using a request object.
@@ -247,7 +251,10 @@ export interface ISdk {
    * )
    * ```
    */
-  registerTriggerType<TConfig>(triggerType: RegisterTriggerTypeInput, handler: TriggerHandler<TConfig>): TriggerTypeRef<TConfig>
+  registerTriggerType<TConfig>(
+    triggerType: RegisterTriggerTypeInput,
+    handler: TriggerHandler<TConfig>,
+  ): TriggerTypeRef<TConfig>
 
   /**
    * Unregisters a trigger type.
@@ -394,14 +401,12 @@ export type FunctionRef = {
  * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
  *
  * // Register a function and bind a trigger in one call
-   * cron.registerFunction(
-   *   'my-fn',
-   *   async (data) => { return { ok: true } },
-   *   { schedule: '* * * * *' },
-   *   { description: 'Cron-triggered function' },
-   * )
-   * ```
-   */
+ * cron.registerFunction(
+ *   'my-fn',
+ *   async (data) => { return { ok: true } },
+ * )
+ * ```
+ */
 export type TriggerTypeRef<TConfig = unknown> = {
   /** The trigger type identifier. */
   id: string
@@ -423,7 +428,12 @@ export type TriggerTypeRef<TConfig = unknown> = {
    * @param metadata - Optional arbitrary metadata attached to the trigger.
    * @returns A {@link FunctionRef} handle.
    */
-  registerFunction(functionId: string, handler: RemoteFunctionHandler, config: TConfig, metadata?: Record<string, unknown>): FunctionRef
+  registerFunction(
+    functionId: string,
+    handler: RemoteFunctionHandler,
+    config: TConfig,
+    metadata?: Record<string, unknown>,
+  ): FunctionRef
   /**
    * Unregister this trigger type from the engine.
    */

@@ -3,6 +3,10 @@ import { registerWorker } from '../src/iii'
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
 
+const empty = async () => {
+  //
+}
+
 describe('Trigger Types', () => {
   let engine: MockEngine
   let sdk: ISdk
@@ -22,19 +26,19 @@ describe('Trigger Types', () => {
   it('should send registertriggertype message', () => {
     sdk.registerTriggerType(
       { id: 'webhook', description: 'Incoming webhook trigger' },
-      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+      { registerTrigger: empty, unregisterTrigger: empty },
     )
 
     const msg = engine.findSent('registertriggertype')
     expect(msg).toBeDefined()
-    expect(msg!.id).toBe('webhook')
-    expect(msg!.description).toBe('Incoming webhook trigger')
+    expect(msg?.id).toBe('webhook')
+    expect(msg?.description).toBe('Incoming webhook trigger')
   })
 
   it('should return TriggerTypeRef with convenience methods', () => {
     const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
-      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+      { registerTrigger: empty, unregisterTrigger: empty },
     )
 
     expect(ref.id).toBe('webhook')
@@ -46,29 +50,28 @@ describe('Trigger Types', () => {
   it('should register trigger with correct type via ref.registerTrigger', () => {
     const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
-      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+      { registerTrigger: empty, unregisterTrigger: empty },
     )
 
     ref.registerTrigger('my-handler', { url: '/hooks/test' })
 
     const triggerMsg = engine.findSent('registertrigger')
     expect(triggerMsg).toBeDefined()
-    expect(triggerMsg!.trigger_type).toBe('webhook')
-    expect(triggerMsg!.function_id).toBe('my-handler')
-    expect(triggerMsg!.config).toEqual({ url: '/hooks/test' })
+    expect(triggerMsg?.trigger_type).toBe('webhook')
+    expect(triggerMsg?.function_id).toBe('my-handler')
+    expect(triggerMsg?.config).toEqual({ url: '/hooks/test' })
   })
 
   it('should register function + trigger via ref.registerFunction', () => {
     const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
-      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+      { registerTrigger: empty, unregisterTrigger: empty },
     )
 
-    const fnRef = ref.registerFunction(
-      'webhook::handler',
-      async (data) => ({ received: data }),
-      { url: '/hooks/handler', methods: ['POST'] },
-    )
+    const fnRef = ref.registerFunction('webhook::handler', async (data) => ({ received: data }), {
+      url: '/hooks/handler',
+      methods: ['POST'],
+    })
 
     expect(fnRef.id).toBe('webhook::handler')
 
@@ -77,31 +80,28 @@ describe('Trigger Types', () => {
 
     const triggerMsg = engine.findSent('registertrigger')
     expect(triggerMsg).toBeDefined()
-    expect(triggerMsg!.trigger_type).toBe('webhook')
-    expect(triggerMsg!.function_id).toBe('webhook::handler')
+    expect(triggerMsg?.trigger_type).toBe('webhook')
+    expect(triggerMsg?.function_id).toBe('webhook::handler')
   })
 
   it('should unregister trigger type via ref.unregister', () => {
     const ref = sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
-      { registerTrigger: async () => {}, unregisterTrigger: async () => {} },
+      { registerTrigger: empty, unregisterTrigger: empty },
     )
 
     ref.unregister()
 
     const msg = engine.findSent('unregistertriggertype')
     expect(msg).toBeDefined()
-    expect(msg!.id).toBe('webhook')
+    expect(msg?.id).toBe('webhook')
   })
 
   it('should call handler.registerTrigger when engine sends RegisterTrigger', async () => {
     const registerTrigger = vi.fn().mockResolvedValue(undefined)
     const unregisterTrigger = vi.fn().mockResolvedValue(undefined)
 
-    sdk.registerTriggerType(
-      { id: 'webhook', description: 'Webhook' },
-      { registerTrigger, unregisterTrigger },
-    )
+    sdk.registerTriggerType({ id: 'webhook', description: 'Webhook' }, { registerTrigger, unregisterTrigger })
 
     engine.sendRegisterTrigger('webhook', 'trigger-1', 'handler-fn', { url: '/test' })
 
@@ -115,17 +115,19 @@ describe('Trigger Types', () => {
 
     const resultMsg = engine.findSent('triggerregistrationresult')
     expect(resultMsg).toBeDefined()
-    expect(resultMsg!.id).toBe('trigger-1')
-    expect(resultMsg!.trigger_type).toBe('webhook')
-    expect(resultMsg!.error).toBeUndefined()
+    expect(resultMsg?.id).toBe('trigger-1')
+    expect(resultMsg?.trigger_type).toBe('webhook')
+    expect(resultMsg?.error).toBeUndefined()
   })
 
   it('should send error result when handler throws', async () => {
     sdk.registerTriggerType(
       { id: 'webhook', description: 'Webhook' },
       {
-        registerTrigger: async () => { throw new Error('invalid config') },
-        unregisterTrigger: async () => {},
+        registerTrigger: async () => {
+          throw new Error('invalid config')
+        },
+        unregisterTrigger: empty,
       },
     )
 
@@ -135,7 +137,7 @@ describe('Trigger Types', () => {
 
     const resultMsg = engine.findSent('triggerregistrationresult')
     expect(resultMsg).toBeDefined()
-    const error = resultMsg!.error as Record<string, unknown>
+    const error = resultMsg?.error as Record<string, unknown>
     expect(error.code).toBe('trigger_registration_failed')
     expect(error.message).toBe('invalid config')
   })
@@ -147,7 +149,7 @@ describe('Trigger Types', () => {
 
     const resultMsg = engine.findSent('triggerregistrationresult')
     expect(resultMsg).toBeDefined()
-    const error = resultMsg!.error as Record<string, unknown>
+    const error = resultMsg?.error as Record<string, unknown>
     expect(error.code).toBe('trigger_type_not_found')
   })
 })
