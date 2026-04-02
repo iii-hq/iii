@@ -6,7 +6,7 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{ItemFn, Meta, Token, parse::Parser, parse_macro_input, punctuated::Punctuated};
 
 type AttrArgs = Punctuated<Meta, Token![,]>;
@@ -182,6 +182,51 @@ fn type_contains_ident(ty: &syn::Type, name: &str) -> bool {
     }
 }
 
+/// Checks whether `ty` is exactly `Option<Arc<Session>>`, tolerating
+/// fully-qualified paths such as `std::sync::Arc` or `::std::sync::Arc`.
+fn is_option_arc_session(ty: &syn::Type) -> bool {
+    let type_path = match ty {
+        syn::Type::Path(tp) => tp,
+        _ => return false,
+    };
+
+    let option_seg = match type_path.path.segments.last() {
+        Some(seg) if seg.ident == "Option" => seg,
+        _ => return false,
+    };
+
+    let option_args = match &option_seg.arguments {
+        syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => args,
+        _ => return false,
+    };
+
+    let arc_ty = match option_args.args.first() {
+        Some(syn::GenericArgument::Type(syn::Type::Path(tp))) => tp,
+        _ => return false,
+    };
+
+    let arc_seg = match arc_ty.path.segments.last() {
+        Some(seg) if seg.ident == "Arc" => seg,
+        _ => return false,
+    };
+
+    let arc_args = match &arc_seg.arguments {
+        syn::PathArguments::AngleBracketed(args) if args.args.len() == 1 => args,
+        _ => return false,
+    };
+
+    let session_ty = match arc_args.args.first() {
+        Some(syn::GenericArgument::Type(syn::Type::Path(tp))) => tp,
+        _ => return false,
+    };
+
+    session_ty
+        .path
+        .segments
+        .last()
+        .map_or(false, |seg| seg.ident == "Session")
+}
+
 #[proc_macro_attribute]
 pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -234,13 +279,23 @@ pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
                         _ => quote! { () },
                     };
 
-                    let has_session_param = non_self_params.get(1).map_or(false, |arg| {
-                        if let syn::FnArg::Typed(pat_type) = arg {
-                            type_contains_ident(&pat_type.ty, "Session")
+                    let has_session_param =
+                        if let Some(syn::FnArg::Typed(pat_type)) = non_self_params.get(1) {
+                            if is_option_arc_session(&pat_type.ty) {
+                                true
+                            } else if type_contains_ident(&pat_type.ty, "Session") {
+                                let actual = pat_type.ty.to_token_stream().to_string();
+                                panic!(
+                                    "Session parameter on `{}` must be typed as \
+                                 `Option<Arc<Session>>`, found: `{}`",
+                                    method_ident, actual
+                                );
+                            } else {
+                                false
+                            }
                         } else {
                             false
-                        }
-                    });
+                        };
 
                     // Extract return type
                     let return_type = match &method.sig.output {

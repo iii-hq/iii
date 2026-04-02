@@ -29,9 +29,7 @@ npm install iii-browser-sdk
 ```typescript
 import { registerWorker } from 'iii-browser-sdk'
 
-const iii = registerWorker('ws://localhost:49135', {
-  workerName: 'browser-client',
-})
+const iii = registerWorker('ws://localhost:49135')
 
 iii.registerFunction(
   { id: 'ui::show-notification' },

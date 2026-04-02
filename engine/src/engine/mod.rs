@@ -137,6 +137,32 @@ pub struct RegisterFunctionRequest {
     pub metadata: Option<Value>,
 }
 
+pub type HandlerOutput = FunctionResult<Option<Value>, ErrorBody>;
+
+pub trait HandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> HandlerFn<F> for H
+where
+    H: Fn(Value) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
+pub trait SessionHandlerFn<F: Future<Output = HandlerOutput> + Send + 'static>:
+    Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static
+{
+}
+
+impl<H, F> SessionHandlerFn<F> for H
+where
+    H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
+{
+}
+
 pub struct Handler<H> {
     pub f: H,
 }
@@ -144,7 +170,7 @@ pub struct Handler<H> {
 impl<H, F> Handler<H>
 where
     H: Fn(Value) -> F + Send + Sync + 'static,
-    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
 {
     pub fn new(f: H) -> Self {
         Self { f }
@@ -162,7 +188,7 @@ pub struct SessionHandler<H> {
 impl<H, F> SessionHandler<H>
 where
     H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
-    F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+    F: Future<Output = HandlerOutput> + Send + 'static,
 {
     pub fn new(f: H) -> Self {
         Self { f }
@@ -187,15 +213,15 @@ pub trait EngineTrait: Send + Sync {
         request: RegisterFunctionRequest,
         handler: Handler<H>,
     ) where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
     fn register_function_handler_with_session<H, F>(
         &self,
         request: RegisterFunctionRequest,
         handler: SessionHandler<H>,
     ) where
-        H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static;
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static;
 }
 
 #[derive(Clone)]
@@ -1383,8 +1409,8 @@ impl EngineTrait for Engine {
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
     where
-        H: Fn(Value) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+        H: HandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
@@ -1409,8 +1435,8 @@ impl EngineTrait for Engine {
         request: RegisterFunctionRequest,
         handler: SessionHandler<H>,
     ) where
-        H: Fn(Value, Option<Arc<Session>>) -> F + Send + Sync + 'static,
-        F: Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static,
+        H: SessionHandlerFn<F>,
+        F: Future<Output = HandlerOutput> + Send + 'static,
     {
         let handler_arc: Arc<H> = Arc::new(handler.f);
 
