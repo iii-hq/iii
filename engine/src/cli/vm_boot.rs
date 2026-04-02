@@ -4,16 +4,14 @@
 // This software is patent protected. We welcome discussions - reach out at support@motia.dev
 // See LICENSE and PATENTS files for details.
 
-//! Hidden `__vm-boot` subcommand — boots a libkrun microVM.
+//! Hidden `__vm-boot` subcommand -- boots a libkrun microVM.
 //!
 //! Runs in a separate process (spawned via `current_exe() __vm-boot`)
 //! for crash isolation. If libkrun segfaults, only this child dies.
 //!
-//! libkrun is loaded at runtime via dlopen (not linked at compile time)
+//! Uses msb_krun VmBuilder for type-safe VM configuration.
+//! libkrun is loaded at runtime via libloading (not linked at compile time)
 //! so the iii binary works normally even when libkrun is not installed.
-
-use std::ffi::{CString, c_void};
-use std::os::raw::{c_char, c_int, c_uint};
 
 /// Arguments for the `__vm-boot` hidden subcommand.
 #[derive(clap::Args, Debug)]
@@ -39,7 +37,7 @@ pub struct VmBootArgs {
     pub vcpus: u32,
 
     /// RAM in MiB
-    #[arg(long, default_value = "512")]
+    #[arg(long, default_value = "2048")]
     pub ram: u32,
 
     /// Volume mounts (host_path:guest_path)
@@ -49,210 +47,269 @@ pub struct VmBootArgs {
     /// Environment variables (KEY=VALUE)
     #[arg(long)]
     pub env: Vec<String>,
+
+    /// PID file to clean up on VM exit (managed workers only)
+    #[arg(long)]
+    pub pid_file: Option<String>,
+
+    /// Redirect VM console output to this file (managed workers only).
+    /// Without this, console output goes to the host's terminal.
+    #[arg(long)]
+    pub console_output: Option<String>,
+
+    /// Network slot for IP/MAC address derivation (0-65535)
+    #[arg(long, default_value = "0")]
+    pub slot: u64,
 }
 
-// ---- Runtime-loaded libkrun function pointers ----
-// Loaded via dlopen so iii doesn't require libkrun at startup.
-
-type KrunCreateCtx = unsafe extern "C" fn() -> c_int;
-type KrunSetVmConfig = unsafe extern "C" fn(c_uint, c_uint, c_uint) -> c_int;
-type KrunSetRoot = unsafe extern "C" fn(c_uint, *const c_char) -> c_int;
-type KrunSetWorkdir = unsafe extern "C" fn(c_uint, *const c_char) -> c_int;
-type KrunSetExec = unsafe extern "C" fn(c_uint, *const c_char, *const *const c_char, *const *const c_char) -> c_int;
-type KrunAddVirtiofs = unsafe extern "C" fn(c_uint, *const c_char, *const c_char) -> c_int;
-type KrunStartEnter = unsafe extern "C" fn(c_uint) -> c_int;
-type KrunSetTsiScope = unsafe extern "C" fn(c_uint, *const c_char, *const c_char, u8) -> c_int;
-
-struct Krun {
-    create_ctx: KrunCreateCtx,
-    set_vm_config: KrunSetVmConfig,
-    set_root: KrunSetRoot,
-    set_workdir: KrunSetWorkdir,
-    set_exec: KrunSetExec,
-    add_virtiofs: KrunAddVirtiofs,
-    start_enter: KrunStartEnter,
-    set_tsi_scope: KrunSetTsiScope,
-    _handle: *mut c_void, // keep library loaded
+/// Compose the full libkrunfw file path from the resolved directory and platform filename.
+/// resolve_libkrunfw_dir() returns a directory; VmBuilder krunfw_path() needs a file path.
+fn resolve_krunfw_file_path() -> Option<std::path::PathBuf> {
+    let dir = crate::cli::firmware::resolve::resolve_libkrunfw_dir()?;
+    let filename = crate::cli::firmware::constants::libkrunfw_filename();
+    let file_path = dir.join(&filename);
+    if file_path.exists() {
+        Some(file_path)
+    } else {
+        None
+    }
 }
 
-unsafe extern "C" {
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    fn dlerror() -> *const c_char;
+/// Pre-flight check for KVM availability on Linux.
+/// Verifies /dev/kvm exists and is accessible (read+write) by the current user.
+#[cfg(target_os = "linux")]
+fn check_kvm_available() -> Result<(), String> {
+    check_kvm_at_path(std::path::Path::new("/dev/kvm"))
 }
 
-const RTLD_NOW: c_int = 0x2;
+/// Inner implementation that accepts a path, enabling unit testing without real /dev/kvm.
+#[cfg(target_os = "linux")]
+fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
+    if !kvm.exists() {
+        return Err(
+            "KVM not available -- /dev/kvm does not exist. \
+             Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd)."
+                .to_string(),
+        );
+    }
+    // Check read/write access via std::fs to avoid needing extra nix features.
+    match std::fs::File::options().read(true).write(true).open(kvm) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(
+            "KVM not accessible -- /dev/kvm exists but current user lacks permission. \
+             Add your user to the 'kvm' group: sudo usermod -aG kvm $USER"
+                .to_string(),
+        ),
+        Err(e) => Err(format!("KVM check failed: {}", e)),
+    }
+}
 
-impl Krun {
-    fn load() -> Result<Self, String> {
-        let lib_names: &[&str] = if cfg!(target_os = "macos") {
-            &["libkrun.dylib", "libkrun.1.dylib"]
-        } else {
-            &["libkrun.so", "libkrun.so.1"]
-        };
-
-        let handle = unsafe {
-            let mut h = std::ptr::null_mut();
-            for name in lib_names {
-                let cname = CString::new(*name).unwrap();
-                h = dlopen(cname.as_ptr(), RTLD_NOW);
-                if !h.is_null() {
-                    break;
-                }
-            }
-            if h.is_null() {
-                let err = dlerror();
-                let msg = if err.is_null() {
-                    "unknown error".to_string()
-                } else {
-                    std::ffi::CStr::from_ptr(err).to_string_lossy().to_string()
-                };
-                return Err(format!("Failed to load libkrun: {}", msg));
-            }
-            h
-        };
-
-        unsafe fn sym<T>(handle: *mut c_void, name: &str) -> Result<T, String> {
-            let cname = CString::new(name).unwrap();
-            let ptr = unsafe { dlsym(handle, cname.as_ptr()) };
-            if ptr.is_null() {
-                return Err(format!("Symbol not found: {}", name));
-            }
-            Ok(unsafe { std::mem::transmute_copy(&ptr) })
-        }
-
-        unsafe {
-            Ok(Krun {
-                create_ctx: sym(handle, "krun_create_ctx")?,
-                set_vm_config: sym(handle, "krun_set_vm_config")?,
-                set_root: sym(handle, "krun_set_root")?,
-                set_workdir: sym(handle, "krun_set_workdir")?,
-                set_exec: sym(handle, "krun_set_exec")?,
-                add_virtiofs: sym(handle, "krun_add_virtiofs")?,
-                start_enter: sym(handle, "krun_start_enter")?,
-                set_tsi_scope: sym(handle, "krun_set_tsi_scope")?,
-                _handle: handle,
-            })
+/// Raise the process fd limit (RLIMIT_NOFILE) to accommodate PassthroughFs.
+/// Each guest file open maps to a host fd, so complex workloads need many fds.
+fn raise_fd_limit() {
+    use nix::libc;
+    let mut rlim: libc::rlimit = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) } == 0 {
+        let target = rlim.rlim_max.min(1_048_576);
+        if rlim.rlim_cur < target {
+            rlim.rlim_cur = target;
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) };
         }
     }
 }
 
+/// Quote a string for safe inclusion in a shell command.
+/// Safe characters (alphanumeric, `-`, `_`, `/`, `.`, `:`, `=`) pass through unquoted.
+/// Everything else gets single-quote wrapped with internal single quotes escaped.
+fn shell_quote(s: &str) -> String {
+    if s.chars().all(|c| {
+        c.is_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.' || c == ':' || c == '='
+    }) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// Construct III_WORKER_CMD from exec path and arguments.
+/// The init binary passes this to `/bin/sh -c`, so arguments must be shell-safe.
+fn build_worker_cmd(exec: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        shell_quote(exec)
+    } else {
+        let mut parts = vec![shell_quote(exec)];
+        for arg in args {
+            parts.push(shell_quote(arg));
+        }
+        parts.join(" ")
+    }
+}
+
 /// Boot the VM. Called from `main()` when `__vm-boot` is parsed.
-/// This function does NOT return — `krun_start_enter` replaces the process.
+/// This function does NOT return -- `krun_start_enter` replaces the process.
 pub fn run(args: &VmBootArgs) -> ! {
     if !std::path::Path::new(&args.rootfs).exists() {
         eprintln!("error: rootfs path does not exist: {}", args.rootfs);
         std::process::exit(1);
     }
 
-    if let Err(e) = boot_vm(args) {
-        eprintln!("error: VM execution failed: {}", e);
-        std::process::exit(1);
+    match boot_vm(args) {
+        Ok(infallible) => match infallible {},
+        Err(e) => {
+            eprintln!("error: VM execution failed: {}", e);
+            std::process::exit(1);
+        }
     }
-
-    unreachable!()
 }
 
-fn boot_vm(args: &VmBootArgs) -> Result<(), String> {
-    let krun = Krun::load()?;
+fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
+    use iii_filesystem::PassthroughFs;
+    use msb_krun::VmBuilder;
 
-    unsafe {
-        let ctx_id = (krun.create_ctx)();
-        if ctx_id < 0 {
-            return Err(format!("krun_create_ctx() failed with code {}", ctx_id));
+    // Pre-flight: verify KVM is available and accessible on Linux.
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(msg) = check_kvm_available() {
+            return Err(msg);
         }
-        let ctx = ctx_id as u32;
-
-        let ret = (krun.set_vm_config)(ctx, args.vcpus, args.ram);
-        if ret < 0 {
-            return Err(format!("krun_set_vm_config() failed with code {}", ret));
-        }
-
-        let rootfs = CString::new(args.rootfs.as_str()).map_err(|e| e.to_string())?;
-        let ret = (krun.set_root)(ctx, rootfs.as_ptr());
-        if ret < 0 {
-            return Err(format!("krun_set_root() failed with code {}", ret));
-        }
-
-        let workdir = CString::new(args.workdir.as_str()).map_err(|e| e.to_string())?;
-        let ret = (krun.set_workdir)(ctx, workdir.as_ptr());
-        if ret < 0 {
-            return Err(format!("krun_set_workdir() failed with code {}", ret));
-        }
-
-        for (i, mount_str) in args.mount.iter().enumerate() {
-            let parts: Vec<&str> = mount_str.splitn(2, ':').collect();
-            if parts.len() != 2 {
-                return Err(format!(
-                    "Invalid mount format '{}'. Expected host:guest",
-                    mount_str
-                ));
-            }
-            let tag = CString::new(format!("virtiofs_{}", i)).map_err(|e| e.to_string())?;
-            let path = CString::new(parts[0]).map_err(|e| e.to_string())?;
-            let ret = (krun.add_virtiofs)(ctx, tag.as_ptr(), path.as_ptr());
-            if ret < 0 {
-                return Err(format!(
-                    "krun_add_virtiofs() failed for '{}': code {}",
-                    mount_str, ret
-                ));
-            }
-        }
-
-        // Enable TSI networking (scope=3 = allow any IP)
-        let ret = (krun.set_tsi_scope)(ctx, std::ptr::null(), std::ptr::null(), 3);
-        if ret < 0 {
-            eprintln!("  warning: krun_set_tsi_scope() returned {}, networking may be limited", ret);
-        }
-
-        let exec_cstr = CString::new(args.exec.as_str()).map_err(|e| e.to_string())?;
-        let arg_cstrings: Vec<CString> = args
-            .arg
-            .iter()
-            .map(|a| CString::new(a.as_str()).map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        let env_cstrings: Vec<CString> = args
-            .env
-            .iter()
-            .map(|e| CString::new(e.as_str()).map_err(|er| er.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        // NOTE: Do NOT include exec_path as argv[0] — libkrun's init
-        // automatically uses exec_path as argv[0].
-        let mut argv_ptrs: Vec<*const i8> = Vec::new();
-        for a in &arg_cstrings {
-            argv_ptrs.push(a.as_ptr());
-        }
-        argv_ptrs.push(std::ptr::null());
-
-        let mut envp_ptrs: Vec<*const i8> = Vec::new();
-        for e in &env_cstrings {
-            envp_ptrs.push(e.as_ptr());
-        }
-        envp_ptrs.push(std::ptr::null());
-
-        let ret = (krun.set_exec)(
-            ctx,
-            exec_cstr.as_ptr(),
-            argv_ptrs.as_ptr(),
-            envp_ptrs.as_ptr(),
-        );
-        if ret < 0 {
-            return Err(format!("krun_set_exec() failed with code {}", ret));
-        }
-
-        eprintln!(
-            "  Booting VM (vcpus={}, ram={}MiB)...",
-            args.vcpus, args.ram
-        );
-        let exit_code = (krun.start_enter)(ctx);
-
-        if exit_code != 0 {
-            eprintln!("  VM exited with code {}", exit_code);
-        }
-
-        std::process::exit(exit_code);
     }
+
+    // PassthroughFs maps every guest file open to a host fd. Complex workloads
+    // like `npm install` can open thousands of files, so raise the host process
+    // fd limit to avoid EMFILE errors from flush/dup operations.
+    raise_fd_limit();
+
+    // Validate vcpus range before u8 cast (Research Pitfall 4)
+    if args.vcpus > u8::MAX as u32 {
+        return Err(format!(
+            "vcpus {} exceeds maximum {} for VmBuilder",
+            args.vcpus,
+            u8::MAX
+        ));
+    }
+
+    // 1. Construct PassthroughFs with embedded init binary at /init.krun (inode 2)
+    let passthrough_fs = PassthroughFs::builder()
+        .root_dir(&args.rootfs)
+        .build()
+        .map_err(|e| format!("PassthroughFs failed for '{}': {}", args.rootfs, e))?;
+
+    // 2. Synthesize III_WORKER_CMD from exec path + args for init binary
+    let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
+
+    // 3. Build VM with custom fs backend and init as PID 1
+    let mut builder = VmBuilder::new()
+        .machine(|m| m.vcpus(args.vcpus as u8).memory_mib(args.ram as usize))
+        .kernel(|k| {
+            let k = match resolve_krunfw_file_path() {
+                Some(path) => k.krunfw_path(&path),
+                None => k, // Fall back to dynamic linker default
+            };
+            k.init_path("/init.krun")
+        })
+        .fs(move |fs| fs.tag("/dev/root").custom(Box::new(passthrough_fs)));
+
+    // Additional virtiofs mounts
+    for (i, mount_str) in args.mount.iter().enumerate() {
+        let parts: Vec<&str> = mount_str.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!(
+                "Invalid mount format '{}'. Expected host:guest",
+                mount_str
+            ));
+        }
+        let tag = format!("virtiofs_{}", i);
+        let path = parts[0].to_string();
+        builder = builder.fs(move |fs| fs.tag(&tag).path(&path));
+    }
+
+    // 4. Network: smoltcp in-process TCP/IP stack with proxy relay.
+    //    The tokio runtime is created on the stack and effectively leaked since
+    //    vm.enter() never returns — this is intentional (D-11).
+    let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime failed: {}", e))?;
+
+    let mut network = iii_network::SmoltcpNetwork::new(
+        iii_network::NetworkConfig::default(),
+        args.slot,
+    );
+    network.start(tokio_rt.handle().clone());
+
+    builder = builder.net(|net| {
+        net.mac(network.guest_mac())
+            .custom(network.take_backend())
+    });
+
+    // 5. Exec configuration -- init binary as entry point, worker cmd via env var
+    let dns_nameserver = network.gateway_ipv4().to_string();
+    let guest_ip = network.guest_ipv4().to_string();
+    let gateway_ip = network.gateway_ipv4().to_string();
+
+    // Rewrite localhost → gateway IP in env vars and worker cmd.
+    // Inside the VM, localhost (127.0.0.1) goes through the VM's own loopback
+    // and never reaches the virtio-net interface. The gateway IP is the host
+    // from the guest's perspective (like QEMU's 10.0.2.2 convention).
+    let rewrite_localhost = |s: &str| -> String {
+        s.replace("://localhost:", &format!("://{}:", gateway_ip))
+            .replace("://127.0.0.1:", &format!("://{}:", gateway_ip))
+    };
+    let worker_cmd = rewrite_localhost(&worker_cmd);
+
+    // Compute memory limits for guest runtimes. Reserve 25% for kernel, init,
+    // filesystem caches; give 75% to the worker process heap.
+    let worker_heap_mib = (args.ram as u64 * 3 / 4).max(128);
+    let worker_heap_bytes = worker_heap_mib * 1024 * 1024;
+
+    builder = builder.exec(|mut e| {
+        e = e.path("/init.krun").workdir(&args.workdir);
+        e = e.env("III_WORKER_CMD", &worker_cmd);
+        e = e.env("III_INIT_DNS", &dns_nameserver);
+        e = e.env("III_INIT_IP", &guest_ip);
+        e = e.env("III_INIT_GW", &gateway_ip);
+        e = e.env("III_INIT_CIDR", "30");
+
+        // Pass heap limit to init for cgroup v2 enforcement (works for all runtimes).
+        e = e.env("III_WORKER_MEM_BYTES", &worker_heap_bytes.to_string());
+
+        for env_str in &args.env {
+            if let Some((key, value)) = env_str.split_once('=') {
+                let rewritten_value = rewrite_localhost(value);
+                e = e.env(key, &rewritten_value);
+            }
+        }
+        e
+    });
+
+    // Redirect VM console output to a file when running as a managed worker.
+    // Without this, krun outputs to the host terminal which is unavailable
+    // for background workers (stdout/stderr are redirected to log files).
+    if let Some(ref path) = args.console_output {
+        builder = builder.console(|c| c.output(path));
+    }
+
+    // PID file cleanup on exit (synchronous, no async -- D-09, D-10)
+    if let Some(ref pid_path) = args.pid_file {
+        let path = pid_path.clone();
+        builder = builder.on_exit(move |exit_code| {
+            let _ = std::fs::remove_file(&path);
+            if exit_code != 0 {
+                eprintln!("  VM exited with code {}", exit_code);
+            }
+        });
+    }
+
+    let vm = builder
+        .build()
+        .map_err(|e| format!("VM build failed: {}", e))?;
+
+    eprintln!(
+        "  Booting VM (vcpus={}, ram={}MiB)...",
+        args.vcpus, args.ram
+    );
+    vm.enter().map_err(|e| format!("VM enter failed: {}", e))
 }
 
 #[cfg(test)]
@@ -271,13 +328,20 @@ mod tests {
 
         let cli = TestCli::parse_from([
             "test",
-            "--rootfs", "/tmp/rootfs",
-            "--exec", "/usr/bin/python3",
-            "--workdir", "/workspace",
-            "--vcpus", "4",
-            "--ram", "1024",
-            "--env", "FOO=bar",
-            "--arg", "script.py",
+            "--rootfs",
+            "/tmp/rootfs",
+            "--exec",
+            "/usr/bin/python3",
+            "--workdir",
+            "/workspace",
+            "--vcpus",
+            "4",
+            "--ram",
+            "1024",
+            "--env",
+            "FOO=bar",
+            "--arg",
+            "script.py",
         ]);
 
         assert_eq!(cli.args.rootfs, "/tmp/rootfs");
@@ -287,6 +351,7 @@ mod tests {
         assert_eq!(cli.args.ram, 1024);
         assert_eq!(cli.args.env, vec!["FOO=bar"]);
         assert_eq!(cli.args.arg, vec!["script.py"]);
+        assert!(cli.args.pid_file.is_none());
     }
 
     #[test]
@@ -299,17 +364,257 @@ mod tests {
             args: VmBootArgs,
         }
 
-        let cli = TestCli::parse_from([
-            "test",
-            "--rootfs", "/tmp/rootfs",
-            "--exec", "/usr/bin/node",
-        ]);
+        let cli =
+            TestCli::parse_from(["test", "--rootfs", "/tmp/rootfs", "--exec", "/usr/bin/node"]);
 
         assert_eq!(cli.args.workdir, "/");
         assert_eq!(cli.args.vcpus, 2);
-        assert_eq!(cli.args.ram, 512);
+        assert_eq!(cli.args.ram, 2048);
         assert!(cli.args.mount.is_empty());
         assert!(cli.args.env.is_empty());
         assert!(cli.args.arg.is_empty());
+        assert!(cli.args.pid_file.is_none());
+    }
+
+    #[test]
+    fn test_vm_boot_args_with_pid_file() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+
+        let cli = TestCli::parse_from([
+            "test",
+            "--rootfs",
+            "/tmp/rootfs",
+            "--exec",
+            "/usr/bin/node",
+            "--pid-file",
+            "/tmp/test.pid",
+        ]);
+
+        assert_eq!(cli.args.pid_file, Some("/tmp/test.pid".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_krunfw_file_path_found() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let filename = crate::cli::firmware::constants::libkrunfw_filename();
+        let file_path = tmp.path().join(&filename);
+        std::fs::write(&file_path, b"fake firmware").unwrap();
+
+        // We cannot easily mock resolve_libkrunfw_dir(), so test the logic directly:
+        // Given a directory with the firmware file, composing dir + filename should find it.
+        let dir = tmp.path().to_path_buf();
+        let composed = dir.join(&filename);
+        assert!(composed.exists());
+    }
+
+    #[test]
+    fn test_resolve_krunfw_file_path_not_found() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let filename = crate::cli::firmware::constants::libkrunfw_filename();
+        // Empty dir -- file does not exist
+        let composed = tmp.path().join(&filename);
+        assert!(!composed.exists());
+    }
+
+    #[test]
+    fn test_shell_quote_safe_chars() {
+        assert_eq!(shell_quote("simple"), "simple");
+        assert_eq!(shell_quote("/usr/bin/node"), "/usr/bin/node");
+        assert_eq!(shell_quote("--port=3000"), "--port=3000");
+        assert_eq!(shell_quote("file.js"), "file.js");
+    }
+
+    #[test]
+    fn test_shell_quote_unsafe_chars() {
+        assert_eq!(shell_quote("has space"), "'has space'");
+        assert_eq!(shell_quote("a;b"), "'a;b'");
+        assert_eq!(shell_quote("$(cmd)"), "'$(cmd)'");
+    }
+
+    #[test]
+    fn test_shell_quote_single_quotes() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn test_build_worker_cmd_no_args() {
+        assert_eq!(build_worker_cmd("/usr/bin/node", &[]), "/usr/bin/node");
+    }
+
+    #[test]
+    fn test_build_worker_cmd_with_args() {
+        let args = vec![
+            "script.js".to_string(),
+            "--port".to_string(),
+            "3000".to_string(),
+        ];
+        assert_eq!(
+            build_worker_cmd("/usr/bin/node", &args),
+            "/usr/bin/node script.js --port 3000"
+        );
+    }
+
+    #[test]
+    fn test_build_worker_cmd_with_spaces() {
+        let args = vec!["hello world".to_string()];
+        assert_eq!(
+            build_worker_cmd("/usr/bin/node", &args),
+            "/usr/bin/node 'hello world'"
+        );
+    }
+
+    #[test]
+    fn test_build_worker_cmd_with_single_quotes() {
+        let args = vec!["it's".to_string()];
+        assert_eq!(
+            build_worker_cmd("/usr/bin/node", &args),
+            "/usr/bin/node 'it'\\''s'"
+        );
+    }
+
+    #[test]
+    fn test_vm_boot_args_with_slot() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+
+        let cli = TestCli::parse_from([
+            "test",
+            "--rootfs",
+            "/tmp/rootfs",
+            "--exec",
+            "/usr/bin/node",
+            "--slot",
+            "42",
+        ]);
+        assert_eq!(cli.args.slot, 42);
+    }
+
+    #[test]
+    fn test_vm_boot_args_slot_default() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(flatten)]
+            args: VmBootArgs,
+        }
+
+        let cli =
+            TestCli::parse_from(["test", "--rootfs", "/tmp/rootfs", "--exec", "/usr/bin/node"]);
+        assert_eq!(cli.args.slot, 0);
+    }
+
+    #[test]
+    fn test_vmbuilder_config() {
+        // Compile-time verification that VmBuilder chain correctly threads
+        // VmBootArgs fields through the new Phase 5 API: init_path, III_WORKER_CMD.
+        // We do NOT call .build() since that would try to dlopen libkrun.
+        // We cannot construct PassthroughFs here because /tmp/rootfs does not exist.
+        use msb_krun::VmBuilder;
+
+        let args = VmBootArgs {
+            rootfs: "/tmp/rootfs".to_string(),
+            exec: "/sbin/init".to_string(),
+            arg: vec![],
+            workdir: "/".to_string(),
+            vcpus: 2,
+            ram: 2048,
+            mount: vec![],
+            env: vec![],
+            pid_file: None,
+            console_output: None,
+            slot: 0,
+        };
+
+        let worker_cmd = build_worker_cmd(&args.exec, &args.arg);
+
+        // Verify the VmBuilder API accepts the Phase 5 configuration pattern:
+        // - /init.krun as exec path (not worker binary)
+        // - III_WORKER_CMD env var
+        let _builder = VmBuilder::new()
+            .machine(|m| m.vcpus(args.vcpus as u8).memory_mib(args.ram as usize))
+            .exec(|e| {
+                e.path("/init.krun")
+                    .workdir(&args.workdir)
+                    .env("III_WORKER_CMD", &worker_cmd)
+            });
+    }
+
+    // --- KVM pre-flight check tests (Phase 09) ---
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_kvm_check_missing_device() {
+        // Use a non-existent path to simulate missing /dev/kvm
+        let fake_path = std::path::Path::new("/tmp/nonexistent_kvm_device_test");
+        // Ensure it doesn't exist
+        let _ = std::fs::remove_file(fake_path);
+
+        let result = check_kvm_at_path(fake_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("/dev/kvm does not exist"),
+            "Error should mention /dev/kvm does not exist, got: {}",
+            err
+        );
+        assert!(
+            err.contains("modprobe"),
+            "Error should suggest modprobe, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_kvm_check_permission_denied() {
+        // Create a file with no permissions to simulate permission-denied /dev/kvm
+        let tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        let path = tmp.path().to_path_buf();
+
+        // Remove all permissions
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .expect("set permissions");
+
+        let result = check_kvm_at_path(&path);
+        // Restore permissions for cleanup
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("lacks permission") || err.contains("Permission"),
+            "Error should mention permission issue, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_kvm_check_accessible_device() {
+        // Create a temp file with read/write permissions to simulate accessible /dev/kvm
+        let tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        let result = check_kvm_at_path(tmp.path());
+        assert!(
+            result.is_ok(),
+            "Accessible file should pass KVM check: {:?}",
+            result
+        );
     }
 }

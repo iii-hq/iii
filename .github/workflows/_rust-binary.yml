@@ -35,6 +35,16 @@ on:
         required: false
         type: string
         default: ''
+      features:
+        description: 'Cargo features to enable (e.g., iii-filesystem/embed-init)'
+        required: false
+        type: string
+        default: ''
+      init_artifacts:
+        description: 'Download iii-init cross-compiled artifacts for embedding'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Build binaries without uploading or creating releases'
         required: false
@@ -161,6 +171,20 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_dest }}
 
+      - name: Download iii-init (x86_64-musl)
+        if: inputs.init_artifacts == true
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-init-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/
+
+      - name: Download iii-init (aarch64-musl)
+        if: inputs.init_artifacts == true
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-init-aarch64-unknown-linux-musl
+          path: target/aarch64-unknown-linux-musl/release/
+
       - name: Install cross-compilation tools
         if: runner.os == 'Linux'
         env:
@@ -194,6 +218,7 @@ jobs:
         with:
           bin: ${{ inputs.bin_name }}
           target: ${{ matrix.target }}
+          features: ${{ inputs.features }}
           ref: refs/tags/${{ inputs.tag_name }}
           tar: unix
           zip: windows

@@ -108,12 +108,100 @@ jobs:
           generate_release_notes: true
 
   # ──────────────────────────────────────────────────────────────
+  # Init Binary (cross-compiled for VM guests)
+  # ──────────────────────────────────────────────────────────────
+
+  init-build:
+    name: Build iii-init (${{ matrix.target }})
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            publish_aliases: 'x86_64-apple-darwin'
+          - target: aarch64-unknown-linux-musl
+            publish_aliases: 'aarch64-unknown-linux-gnu aarch64-apple-darwin'
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools
+              ;;
+            aarch64-unknown-linux-musl)
+              sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+              ;;
+          esac
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: iii-init-${{ matrix.target }}
+
+      - name: Build iii-init
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build -p iii-init --target ${{ matrix.target }} --release
+
+      - name: Upload init binary as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iii-init-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/iii-init
+          retention-days: 1
+
+      - name: Package and upload to release
+        if: needs.setup.outputs.dry_run != 'true'
+        run: |
+          cd target/${{ matrix.target }}/release
+
+          # Primary asset (matches the build target)
+          tar czf iii-init-${{ matrix.target }}.tar.gz iii-init
+          sha256sum iii-init-${{ matrix.target }}.tar.gz | awk '{print $1}' > iii-init-${{ matrix.target }}.sha256
+
+          # Alias assets (e.g., aarch64-musl binary published under gnu name
+          # so that `iii update` on aarch64-unknown-linux-gnu finds a match)
+          ALIASES="${{ matrix.publish_aliases }}"
+          for alias in $ALIASES; do
+            cp iii-init-${{ matrix.target }}.tar.gz "iii-init-${alias}.tar.gz"
+            sha256sum "iii-init-${alias}.tar.gz" | awk '{print $1}' > "iii-init-${alias}.sha256"
+          done
+
+      - name: Upload release assets
+        if: needs.setup.outputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          tag_name: ${{ needs.setup.outputs.tag }}
+          files: target/${{ matrix.target }}/release/iii-init-*.tar.gz,target/${{ matrix.target }}/release/iii-init-*.sha256
+
+  # ──────────────────────────────────────────────────────────────
   # Engine Binary
   # ──────────────────────────────────────────────────────────────
 
   engine-release:
     name: Engine Binary Release
-    needs: [setup, create-iii-release]
+    needs: [setup, create-iii-release, init-build]
     if: ${{ !failure() && !cancelled() }}
     uses: ./.github/workflows/_rust-binary.yml
     with:
@@ -123,6 +211,8 @@ jobs:
       is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
       skip_create_release: true
       dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      features: iii-filesystem/embed-init,embed-libkrunfw
+      init_artifacts: true
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Engine Binary
     secrets:
@@ -329,6 +419,7 @@ jobs:
     name: Release Complete
     needs:
       - setup
+      - init-build
       - engine-release
       - console-release
       - sdk-npm
@@ -347,6 +438,7 @@ jobs:
           VERSION: ${{ needs.setup.outputs.version }}
           IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
           DRY_RUN: ${{ needs.setup.outputs.dry_run }}
+          INIT_RESULT: ${{ needs.init-build.result }}
           ENGINE_RESULT: ${{ needs.engine-release.result }}
           CONSOLE_RESULT: ${{ needs.console-release.result }}
           SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
@@ -368,6 +460,7 @@ jobs:
           LINES=""
           OVERALL="success"
 
+          LINES="$LINES$(icon "$INIT_RESULT") Init Binary\n"
           LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
           LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
           LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
@@ -381,7 +474,7 @@ jobs:
             LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
           fi
 
-          for r in "$ENGINE_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
+          for r in "$INIT_RESULT" "$ENGINE_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

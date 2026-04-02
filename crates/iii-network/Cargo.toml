@@ -1,0 +1,22 @@
+[package]
+name = "iii-network"
+version = "0.1.0"
+edition = "2024"
+authors = ["Motia LLC"]
+description = "Userspace TCP/IP networking for iii worker VM sandboxes"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+smoltcp = { version = "0.13", default-features = false, features = [
+    "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp", "alloc"
+] }
+crossbeam-queue = "0.3"
+msb_krun = { version = "0.1.9", features = ["net"] }
+libc = "0.2"
+tracing = "0.1"
+bytes = "1"
+tokio = { version = "1", features = ["sync", "net", "io-util", "time", "rt"] }
+hickory-resolver = "0.25"
+hickory-proto = "0.25"

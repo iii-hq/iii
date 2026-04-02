@@ -8,6 +8,7 @@ pub mod advisory;
 pub mod download;
 pub mod error;
 pub mod exec;
+pub mod firmware;
 pub mod github;
 pub mod managed;
 pub mod platform;
@@ -179,7 +180,6 @@ pub async fn handle_dispatch(command: &str, args: &[String], no_update_check: bo
     }
 }
 
-
 /// Handle the update command.
 pub async fn handle_update(target: Option<&str>) -> i32 {
     let client = match github::build_client() {
@@ -265,4 +265,3 @@ pub async fn handle_update(target: Option<&str>) -> i32 {
         0
     }
 }
-

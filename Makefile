@@ -16,6 +16,8 @@ export III_TELEMETRY_ENABLED := false
 .PHONY: install install-node install-python install-motia-py \
         engine-build engine-test engine-fmt-check \
         engine-up engine-up-bridges engine-down \
+        init-build-x86 init-build-aarch64 init-build-all \
+        sandbox sandbox-debug \
         test-sdk-node test-sdk-python test-sdk-rust test-sdk-all \
         test-motia-js test-motia-py \
         lint-python lint-rust lint-console lint \
@@ -63,6 +65,36 @@ engine-up-bridges: engine-up
 
 engine-down:
 	$(STOP_SCRIPT) /tmp/iii-engine.pid /tmp/iii-backend.pid /tmp/iii-bridge.pid
+
+# ── Init Binary Cross-Compilation ────────────────────────────────────────────
+
+INIT_CRATE := iii-init
+
+init-build-x86:
+	cargo build -p $(INIT_CRATE) --target x86_64-unknown-linux-musl --release
+
+init-build-aarch64:
+	cargo build -p $(INIT_CRATE) --target aarch64-unknown-linux-musl --release
+
+init-build-all: init-build-x86 init-build-aarch64
+
+# ── Sandbox (init + engine with embedded init) ───────────────────────────────
+# Auto-detects host arch for the correct musl init target.
+
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),x86_64)
+  INIT_TARGET := x86_64-unknown-linux-musl
+else
+  INIT_TARGET := aarch64-unknown-linux-musl
+endif
+
+sandbox: ## Release build: cross-compile init, embed into iii
+	cargo build -p $(INIT_CRATE) --target $(INIT_TARGET) --release
+	cargo build --release -p iii -F iii-filesystem/embed-init
+
+sandbox-debug: ## Debug build: cross-compile init, embed into iii
+	cargo build -p $(INIT_CRATE) --target $(INIT_TARGET) --release
+	cargo build -p iii -F iii-filesystem/embed-init
 
 # ── SDK Tests ─────────────────────────────────────────────────────────────────
 
