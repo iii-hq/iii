@@ -132,8 +132,8 @@ fn container_hostname() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn find_project_ini_device_id() -> Option<String> {
-    let root = std::env::var("III_PROJECT_ROOT")
+fn find_project_root() -> Option<std::path::PathBuf> {
+    std::env::var("III_PROJECT_ROOT")
         .ok()
         .filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from)
@@ -148,8 +148,11 @@ fn find_project_ini_device_id() -> Option<String> {
                 }
             }
             None
-        })?;
+        })
+}
 
+fn find_project_ini_device_id() -> Option<String> {
+    let root = find_project_root()?;
     let contents = std::fs::read_to_string(root.join(".iii").join("project.ini")).ok()?;
     contents.lines().find_map(|line| {
         line.trim()
@@ -157,6 +160,25 @@ fn find_project_ini_device_id() -> Option<String> {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
     })
+}
+
+fn write_device_id_to_project_ini(device_id: &str) {
+    let Some(root) = find_project_root() else {
+        return;
+    };
+    let path = root.join(".iii").join("project.ini");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // Already has a device_id line — don't overwrite
+    if contents.lines().any(|l| l.trim().starts_with("device_id=")) {
+        return;
+    }
+
+    let new_contents = format!("{}device_id={}\n", contents, device_id);
+    write_atomic(&path, &new_contents);
 }
 
 fn salted_sha256(input: &str) -> String {
@@ -248,12 +270,18 @@ pub fn get_or_create_device_id() -> String {
     if let Some(existing) = state.identity.device_id.clone()
         && !existing.is_empty()
     {
+        if !is_container_environment() {
+            write_device_id_to_project_ini(&existing);
+        }
         return existing;
     }
 
     let id = generate_new_device_id();
     state.identity.device_id = Some(id.clone());
     write_telemetry_yaml(&state);
+    if !is_container_environment() {
+        write_device_id_to_project_ini(&id);
+    }
     id
 }
 
