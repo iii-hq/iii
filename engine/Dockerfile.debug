@@ -22,6 +22,9 @@ WORKDIR /app
 COPY --from=builder --chown=iii:iii /build/target/release/iii /app/iii
 USER iii
 
+ENV III_EXECUTION_CONTEXT=docker
+ENV III_ENV=debug
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -sf http://localhost:3111/health || /app/iii --version
 

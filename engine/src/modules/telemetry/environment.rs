@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use machineid_rs::{Encryption, HWIDComponent, IdBuilder};
+use sha2::{Digest, Sha256};
 
 const TELEMETRY_SCHEMA_VERSION: u8 = 2;
 const DEVICE_ID_SALT: &str = "iii-machine-id";
@@ -107,7 +108,86 @@ fn machine_id_from_machineid_rs() -> Option<String> {
         .filter(|id| !id.trim().is_empty())
 }
 
+fn is_container_environment() -> bool {
+    if detect_container_runtime() != "none" {
+        return true;
+    }
+    let ctx = std::env::var(EXECUTION_CONTEXT_ENV).unwrap_or_default();
+    matches!(
+        normalize_execution_context(&ctx).as_str(),
+        "docker" | "container" | "kubernetes"
+    )
+}
+
+fn container_hostname() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn find_project_ini_device_id() -> Option<String> {
+    let root = std::env::var("III_PROJECT_ROOT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let mut dir = std::env::current_dir().ok()?;
+            loop {
+                if dir.join(".iii").join("project.ini").exists() {
+                    return Some(dir);
+                }
+                if !dir.pop() {
+                    break;
+                }
+            }
+            None
+        })?;
+
+    let contents = std::fs::read_to_string(root.join(".iii").join("project.ini")).ok()?;
+    contents.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("device_id=")
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+fn salted_sha256(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input);
+    hasher.update(DEVICE_ID_SALT);
+    format!("{:x}", hasher.finalize())
+}
+
+fn generate_container_device_id() -> String {
+    let hostname = container_hostname();
+
+    if let Some(host_device_id) = find_project_ini_device_id() {
+        return salted_sha256(&format!("{host_device_id}-{hostname}"));
+    }
+
+    let base = match std::env::var("III_HOST_USER_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(host_id) => format!("{host_id}-{hostname}"),
+        None => hostname,
+    };
+
+    format!("docker-{}", salted_sha256(&base))
+}
+
 fn generate_new_device_id() -> String {
+    if is_container_environment() {
+        return generate_container_device_id();
+    }
     if let Some(machine_id) = machine_id_from_machineid_rs() {
         return machine_id;
     }
