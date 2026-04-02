@@ -2,6 +2,8 @@
 
 iii is a single engine that replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability pipeline with three primitives: **Function**, **Trigger**, and **Worker**. You write functions, declare what triggers them, connect a worker, and the engine handles routing, retries, and observability.
 
+The SDKs give you durable orchestration, interoperable execution across languages, live discovery of functions across workers, live extensibility without redeployment, and live observability across the connected stack — all from three primitives.
+
 See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
 
 ## SDKs

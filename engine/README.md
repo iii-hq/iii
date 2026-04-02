@@ -1,5 +1,7 @@
 # Engine
 
+The iii engine is a single binary that provides durable orchestration, interoperable execution across languages, live discovery of functions, live extensibility, and live observability — all from three primitives: Function, Trigger, and Worker.
+
 For complete documentation on iii please visit [iii.dev/docs](https://iii.dev/docs).
 
 ## Install
