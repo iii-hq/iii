@@ -178,14 +178,14 @@ pub fn get_or_create_device_id() -> String {
 }
 
 pub fn resolve_execution_context() -> String {
+    if is_ci_environment() {
+        return "ci".to_string();
+    }
+
     if let Ok(env_ctx) = std::env::var(EXECUTION_CONTEXT_ENV)
         && !env_ctx.is_empty()
     {
         return normalize_execution_context(&env_ctx);
-    }
-
-    if is_ci_environment() {
-        return "ci".to_string();
     }
 
     let runtime = detect_container_runtime();
@@ -503,6 +503,20 @@ state:
         }
         assert_eq!(resolve_execution_context(), "ci");
         unsafe {
+            env::remove_var("CI");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_execution_context_ci_overrides_env_var() {
+        unsafe {
+            env::set_var(EXECUTION_CONTEXT_ENV, "docker");
+            env::set_var("CI", "true");
+        }
+        assert_eq!(resolve_execution_context(), "ci");
+        unsafe {
+            env::remove_var(EXECUTION_CONTEXT_ENV);
             env::remove_var("CI");
         }
     }
