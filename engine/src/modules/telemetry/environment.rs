@@ -324,6 +324,7 @@ pub struct EnvironmentInfo {
     pub cpu_cores: usize,
     pub os: String,
     pub arch: String,
+    pub host_user_id: Option<String>,
 }
 
 impl EnvironmentInfo {
@@ -337,18 +338,25 @@ impl EnvironmentInfo {
                 .unwrap_or(1),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
+            host_user_id: std::env::var("III_HOST_USER_ID")
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut obj = serde_json::json!({
             "machine_id": self.machine_id,
             "iii_execution_context": self.iii_execution_context,
             "timezone": self.timezone,
             "cpu_cores": self.cpu_cores,
             "os": self.os,
             "arch": self.arch,
-        })
+        });
+        if let Some(ref id) = self.host_user_id {
+            obj["host_user_id"] = serde_json::json!(id);
+        }
+        obj
     }
 }
 
