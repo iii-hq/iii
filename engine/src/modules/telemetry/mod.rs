@@ -521,10 +521,13 @@ impl TelemetryContext {
             "iii_version": env!("CARGO_PKG_VERSION"),
         });
 
-        if let Ok(host_user_id) = std::env::var("III_HOST_USER_ID") {
-            if !host_user_id.is_empty() {
-                props["host_user_id"] = serde_json::Value::String(host_user_id);
-            }
+        let host_user_id = std::env::var("III_HOST_USER_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(environment::find_project_ini_device_id);
+
+        if let Some(id) = host_user_id {
+            props["host_user_id"] = serde_json::Value::String(id);
         }
 
         if let Some(project_id) = project.project_id {

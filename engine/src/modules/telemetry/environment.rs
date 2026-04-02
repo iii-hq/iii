@@ -151,7 +151,7 @@ fn find_project_root() -> Option<std::path::PathBuf> {
         })
 }
 
-fn find_project_ini_device_id() -> Option<String> {
+pub fn find_project_ini_device_id() -> Option<String> {
     let root = find_project_root()?;
     let contents = std::fs::read_to_string(root.join(".iii").join("project.ini")).ok()?;
     contents.lines().find_map(|line| {
