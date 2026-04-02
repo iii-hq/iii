@@ -917,6 +917,7 @@ mod tests {
             cpu_cores: 4,
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
+            host_user_id: None,
         }
     }
 
@@ -1263,6 +1264,7 @@ mod tests {
                 cpu_cores: 4,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
+                host_user_id: None,
             },
         };
 
@@ -1363,6 +1365,7 @@ mod tests {
                 cpu_cores: 4,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
+                host_user_id: None,
             },
         };
 
@@ -1390,6 +1393,7 @@ mod tests {
                 cpu_cores: 2,
                 os: "macos".to_string(),
                 arch: "aarch64".to_string(),
+                host_user_id: None,
             },
         };
 
@@ -1516,6 +1520,7 @@ mod tests {
                 cpu_cores: 16,
                 os: "linux".to_string(),
                 arch: "x86_64".to_string(),
+                host_user_id: None,
             },
         };
 

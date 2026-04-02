@@ -573,12 +573,41 @@ state:
     #[test]
     #[serial]
     fn test_resolve_execution_context_prefers_explicit_env() {
+        const CI_VARS: &[&str] = &[
+            "CI",
+            "GITHUB_ACTIONS",
+            "GITLAB_CI",
+            "CIRCLECI",
+            "JENKINS_URL",
+            "TRAVIS",
+            "BUILDKITE",
+            "TF_BUILD",
+            "CODEBUILD_BUILD_ID",
+            "BITBUCKET_BUILD_NUMBER",
+            "DRONE",
+            "TEAMCITY_VERSION",
+        ];
+
+        let saved: Vec<(&str, Option<String>)> =
+            CI_VARS.iter().map(|v| (*v, env::var(v).ok())).collect();
+
         unsafe {
+            for var in CI_VARS {
+                env::remove_var(var);
+            }
             env::set_var(EXECUTION_CONTEXT_ENV, "docker");
         }
+
         assert_eq!(resolve_execution_context(), "docker");
+
         unsafe {
             env::remove_var(EXECUTION_CONTEXT_ENV);
+            for (var, val) in &saved {
+                match val {
+                    Some(v) => env::set_var(var, v),
+                    None => env::remove_var(var),
+                }
+            }
         }
     }
 
@@ -614,7 +643,12 @@ state:
     // =========================================================================
 
     #[test]
+    #[serial]
     fn test_environment_info_collect_returns_valid_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            env::set_var("HOME", dir.path());
+        }
         let info = EnvironmentInfo::collect();
         assert!(!info.machine_id.is_empty());
         assert!(!info.iii_execution_context.is_empty());
@@ -622,6 +656,9 @@ state:
         assert!(!info.os.is_empty());
         assert!(!info.arch.is_empty());
         assert!(!info.timezone.is_empty());
+        unsafe {
+            env::remove_var("HOME");
+        }
     }
 
     // =========================================================================
