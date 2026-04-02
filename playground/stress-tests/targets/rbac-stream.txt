@@ -1,6 +1,0 @@
-POST http://localhost:3000/rbac-stream/stress-test-thread
-Content-Type: application/json
-@targets/rbac-stream-body.json
-
-
-

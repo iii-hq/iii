@@ -1,0 +1,49 @@
+[package]
+name = "iii-console"
+version = "0.10.0"
+edition = "2021"
+description = "Developer console for the iii engine"
+license = "Apache-2.0"
+repository = "https://github.com/MotiaDev/iii-console"
+
+[dependencies]
+# Web framework
+axum = { version = "0.8.8", features = ["ws"] }
+
+# HTTP client for reverse proxy
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# WebSocket proxy (must match workspace: engine uses 0.28)
+tokio-tungstenite = "0.28"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+tower-http = { version = "0.6.8", features = ["cors"] }
+iii-sdk = { workspace = true, features = ["otel"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Static file embedding
+rust-embed = "8"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# MIME type detection
+mime_guess = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"

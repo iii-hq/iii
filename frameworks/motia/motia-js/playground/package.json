@@ -1,0 +1,20 @@
+{
+  "name": "@iii/motia-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "iii",
+    "build": "motia build",
+    "start": "bun run --enable-source-maps dist/index-production.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "motia": "workspace:*",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

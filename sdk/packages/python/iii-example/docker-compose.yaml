@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v0.50.3
+    container_name: iii-openobserve
+    ports:
+      - "5080:5080"
+      - "5081:5080"
+    environment:
+      - ZO_ROOT_USER_EMAIL=root@example.com
+      - ZO_ROOT_USER_PASSWORD=Complexpass#123
+      - ZO_DATA_DIR=/data
+    volumes:
+      - ./data/openobserve:/data
+    networks:
+      - iii-network
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.114.0
+    container_name: iii-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+      - "8889:8889"
+      - "13133:13133"
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    networks:
+      - iii-network
+    depends_on:
+      - openobserve
+    restart: unless-stopped
+
+networks:
+  iii-network:
+    driver: bridge

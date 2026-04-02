@@ -1,0 +1,45 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: ruff-python
+        name: ruff (Python)
+        entry: bash -c 'cd packages/python/iii && ruff check --fix src'
+        language: system
+        types: [python]
+        files: ^packages/python/.*\.py$
+        pass_filenames: false
+        always_run: false
+
+      - id: mypy-python
+        name: mypy (Python)
+        entry: bash -c 'cd packages/python/iii && mypy src'
+        language: system
+        types: [python]
+        files: ^packages/python/.*\.py$
+        pass_filenames: false
+        always_run: false
+
+      - id: biome-node
+        name: biome (Node.js)
+        entry: bash -c 'cd packages/node && npx @biomejs/biome check --write packages/node'
+        language: system
+        files: ^packages/node/.*\.(ts|js|tsx|jsx)$
+        pass_filenames: false
+        always_run: false
+
+      - id: cargo-fmt-rust
+        name: cargo fmt (Rust)
+        entry: bash -c 'cd packages/rust/iii && cargo fmt --all'
+        language: system
+        types: [rust]
+        files: ^packages/rust/.*\.rs$
+        pass_filenames: false
+        always_run: false

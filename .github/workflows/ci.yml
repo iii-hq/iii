@@ -1,0 +1,493 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  III_TELEMETRY_ENABLED: "false"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Engine (test + build + upload artifact for downstream jobs)
+  # ──────────────────────────────────────────────────────────────
+
+  build-engine:
+    name: Build Engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Build and run coverage
+        run: |
+          eval "$(cargo llvm-cov show-env --export-prefix)"
+          cargo build -p iii --all-features
+          cargo test -p iii --all-features
+          cargo llvm-cov report \
+            --ignore-filename-regex \
+            "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # - name: Run clippy
+      #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iii-binary
+          path: target/debug/iii
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine RabbitMQ Integration Tests
+  # ──────────────────────────────────────────────────────────────
+
+  engine-rabbitmq-tests:
+    name: Engine RabbitMQ Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics check_running"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run RabbitMQ integration tests
+        env:
+          RABBITMQ_URL: amqp://localhost:5672
+          RUST_LOG: info
+        run: cargo test -p iii --test rabbitmq_queue_integration -- --nocapture
+
+  engine-build-matrix:
+    name: Engine Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build for target
+        run: cargo build -p iii --release --target ${{ matrix.target }}
+
+  # ──────────────────────────────────────────────────────────────
+  # SDK Node
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-node-ci:
+    name: SDK Node Tests
+    needs: build-engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      #- name: Lint
+      #  run: npx @biomejs/biome check sdk/packages/node
+
+      - name: Type check
+        run: pnpm --filter iii-sdk exec tsc --noEmit
+
+      - name: Build
+        run: pnpm --filter iii-sdk build
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engines
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-bridge-backend.yaml \
+            --port 49198 \
+            --pid-file /tmp/iii-backend.pid \
+            --log-file /tmp/iii-backend.log
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-bridge.yaml \
+            --port 49197 \
+            --pid-file /tmp/iii-bridge.pid \
+            --log-file /tmp/iii-bridge.log
+
+      - name: Run tests with coverage
+        env:
+          III_URL: ws://localhost:49199
+          III_HTTP_URL: http://localhost:3199
+        run: pnpm --filter iii-sdk test:coverage
+
+      - name: Stop III Engines
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid /tmp/iii-backend.pid /tmp/iii-bridge.pid
+
+  # ──────────────────────────────────────────────────────────────
+  # SDK Node Browser
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-node-browser-ci:
+    name: SDK Browser Tests
+    needs: build-engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm --filter iii-sdk-browser exec tsc --noEmit
+
+      - name: Build
+        run: pnpm --filter iii-sdk-browser build
+
+      - name: Run unit tests
+        run: pnpm --filter iii-sdk-browser test
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Run integration tests
+        env:
+          III_URL: ws://localhost:49199
+          III_HTTP_URL: http://localhost:3199
+        run: pnpm --filter iii-sdk-browser test:integration
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
+  # ──────────────────────────────────────────────────────────────
+  # SDK Python
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-python-ci:
+    name: SDK Python (${{ matrix.python-version }})
+    needs: build-engine
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'sdk/packages/python/iii/uv.lock'
+
+      - name: Install dependencies
+        working-directory: sdk/packages/python/iii
+        run: uv sync --extra dev
+
+      - name: Lint
+        working-directory: sdk/packages/python/iii
+        run: uv run ruff check src
+
+      - name: Type check
+        working-directory: sdk/packages/python/iii
+        run: uv run mypy src
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Run tests with coverage
+        working-directory: sdk/packages/python/iii
+        env:
+          III_URL: ws://localhost:49199
+          III_HTTP_URL: http://localhost:3199
+        run: uv run pytest -q
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
+  # ──────────────────────────────────────────────────────────────
+  # SDK Rust
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-rust-ci:
+    name: SDK Rust Tests
+    needs: build-engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt -p iii-sdk -- --check
+
+      - name: Run clippy
+        run: cargo clippy -p iii-sdk --all-targets --all-features -- -D warnings
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Run tests
+        env:
+          III_URL: ws://localhost:49199
+          III_HTTP_URL: http://localhost:3199
+        run: cargo test -p iii-sdk --all-features
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
+  # ──────────────────────────────────────────────────────────────
+  # Motia JS (depends on engine + SDK Node)
+  # ──────────────────────────────────────────────────────────────
+
+  motia-js-ci:
+    name: Motia JS Tests
+    needs: [build-engine, sdk-node-ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SDK
+        run: pnpm --filter iii-sdk build
+
+      - name: Build Motia
+        run: pnpm --filter motia build
+
+      # - name: Lint
+      #   working-directory: motia/motia-js
+      #   run: npx @biomejs/biome ci . --diagnostic-level=error --no-errors-on-unmatched
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Run tests
+        run: pnpm --filter motia test:ci
+        env:
+          III_URL: ws://localhost:49199
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
+  # ──────────────────────────────────────────────────────────────
+  # Motia Python (depends on engine + SDK Python)
+  # ──────────────────────────────────────────────────────────────
+
+  motia-py-ci:
+    name: Motia Python (${{ matrix.python-version }})
+    needs: [build-engine, sdk-python-ci]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: '**/motia-py/**/uv.lock'
+
+      - name: Install dependencies
+        working-directory: frameworks/motia/motia-py/packages/motia
+        run: uv sync --extra dev
+
+      - name: Lint
+        working-directory: frameworks/motia/motia-py/packages/motia
+        run: uv run ruff check src
+
+      - name: Type check
+        working-directory: frameworks/motia/motia-py/packages/motia
+        run: uv run mypy src
+
+      - name: Download III binary
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-binary
+
+      - name: Start III Engine
+        run: |
+          chmod +x ./iii
+          bash scripts/start-iii.sh \
+            --config sdk/fixtures/config-test.yaml \
+            --port 49199
+
+      - name: Run tests
+        working-directory: frameworks/motia/motia-py/packages/motia
+        run: uv run pytest --cov=src --cov-report=term-missing
+
+      - name: Stop III Engine
+        if: always()
+        run: bash scripts/stop-iii.sh /tmp/iii-engine.pid
+
+  # ──────────────────────────────────────────────────────────────
+  # Console
+  # ──────────────────────────────────────────────────────────────
+
+  console-ci:
+    name: Console Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint frontend
+        run: pnpm --filter console-frontend lint
+
+      - name: Build frontend
+        run: pnpm --filter console-frontend build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build console binary
+        run: cargo build -p iii-console --release

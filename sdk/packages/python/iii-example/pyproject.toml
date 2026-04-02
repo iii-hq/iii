@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iii-example"
+version = "0.0.1"
+description = "III SDK Python Example"
+authors = [{ name = "III" }]
+requires-python = ">=3.10"
+dependencies = [
+    "iii-sdk",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+]
+
+[tool.uv.sources]
+iii-sdk = { path = "../iii", editable = true }
+
+[project.scripts]
+iii-example = "src.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

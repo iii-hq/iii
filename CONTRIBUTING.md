@@ -1,228 +1,143 @@
----
-title: How to Contribute
-description: Guide for developers who want to contribute to Motia
----
+# Contributing
 
-# How to Contribute
+This is a unified monorepo containing the iii Engine, SDKs, Motia Framework, Console, documentation, and website.
 
-Thank you for your interest in contributing to Motia! We welcome contributions from the community to help make Motia better. Here are some ways you can contribute:
+## Prerequisites
 
-## Local Setup
+- **Rust** (stable, via [rustup](https://rustup.rs/))
+- **Node.js** >= 20 with **pnpm** >= 10
+- **Python** >= 3.10 with **uv**
 
+## Getting Started
 
-Before contributing, you’ll need to set up the project locally.
+```bash
+# Install JS/TS dependencies
+pnpm install
+
+# Build everything (JS/TS via Turborepo)
+pnpm build
+
+# Build Rust workspace (engine + SDK + console)
+cargo build --release
+```
+
+## Development Commands
+
+### Root-level (orchestrated)
+
+| Command | Description |
+|---|---|
+| `pnpm build` | Build all JS/TS packages (via Turborepo) |
+| `pnpm test` | Run all JS/TS tests |
+| `pnpm lint` | Lint all JS/TS packages |
+| `pnpm fmt` | Format all code (Biome + cargo fmt) |
+| `pnpm fmt:check` | Check formatting without changes |
+
+### Targeted
+
+| Command | Description |
+|---|---|
+| `pnpm test:sdk-node` | Test Node.js SDK only |
+| `pnpm test:motia-js` | Test Motia JS only |
+| `pnpm test:engine` | Test engine (Rust) only |
+| `pnpm test:rust` | Test entire Rust workspace |
+| `cargo test -p iii-sdk` | Test Rust SDK only |
+| `pnpm dev:docs` | Start iii docs dev server from `docs/` with Mintlify |
+| `pnpm dev:motia-docs` | Start Motia docs dev server |
+| `pnpm dev:website` | Start website dev server |
+| `pnpm dev:console` | Start console frontend dev server |
+
+### Python
+
+```bash
+# SDK tests
+cd sdk/packages/python/iii
+uv sync --extra dev
+uv run pytest
+
+# Motia Python tests
+cd motia/motia-py/packages/motia
+uv sync --extra dev
+uv run pytest
+```
+
+## How Dependencies Work
+
+### JavaScript/TypeScript (pnpm workspaces)
+
+The `motia` package depends on `iii-sdk` using the workspace protocol:
+
+```json
+"iii-sdk": "workspace:^"
+```
+
+This resolves to the local `sdk/packages/node/iii` during development. When publishing, pnpm replaces `workspace:^` with the actual version (e.g., `^0.3.0`).
+
+### Rust (Cargo workspace)
+
+The engine and console depend on `iii-sdk` as a workspace dependency:
+
+```toml
+iii-sdk = { workspace = true, features = ["otel"] }
+```
+
+This resolves to the local `sdk/packages/rust/iii` via the root `Cargo.toml` workspace config. When publishing to crates.io, Cargo substitutes the actual version.
+
+### Python (uv editable installs)
+
+Motia Python references the local SDK via `[tool.uv.sources]` in its `pyproject.toml`:
+
+```toml
+[tool.uv.sources]
+iii-sdk = { path = "../../../../sdk/packages/python/iii", editable = true }
+```
+
+This is only used during development. Published packages use the standard PyPI version.
+
+## CI/CD
+
+All CI/CD runs from `.github/workflows/`.
+
+### CI (`ci.yml`)
+
+Runs on every push/PR to `main`. Change detection determines which jobs to run:
+
+- **Engine changes** trigger: engine tests, all SDK tests, all Motia tests, console build
+- **SDK Node changes** trigger: SDK Node tests, Motia JS tests
+- **SDK Python changes** trigger: SDK Python tests, Motia Python tests
+- **SDK Rust changes** trigger: SDK Rust tests, engine tests, console build
+- **Motia/Console/Docs/Website changes** trigger only their own tests/builds
+
+The engine is built from source in CI (not downloaded as a release binary), so SDK and Motia tests always validate against the current engine code.
+
+### Release (`release.yml`)
+
+Triggered by pushing a `release/v*` tag. Executes sequentially:
+
+1. Run all tests
+2. Build and release engine binaries (GitHub Release)
+3. Publish SDKs (npm, PyPI, crates.io)
+4. Publish Motia (npm, PyPI)
+5. Build and release console binaries
+6. Trigger package manager workflows (Homebrew, etc.)
+
+### Creating a Release
+
+```bash
+git tag release/v0.7.0
+git push origin release/v0.7.0
+```
+
+For pre-releases, add a suffix: `release/v0.7.0-alpha`, `release/v0.7.0-beta`, `release/v0.7.0-rc`.
+
+## Licensing
+
+This project uses a dual licensing model. The engine runtime (`engine/`) is licensed under the [Elastic License 2.0](engine/LICENSE). All other components (SDKs, CLI, console, frameworks, docs, website) are licensed under the [Apache License 2.0](sdk/LICENSE).
+
+By submitting a contribution, you agree that your contribution will be licensed under the applicable license for the component you are contributing to.
+
+See [NOTICE.md](NOTICE.md) for the full breakdown.
 
 ## Project Structure
 
-Motia is a pnpm-based monorepo. Key directories:
-
-- **packages/core** — main workflow engine and internal execution logic
-- **packages/server** — backend HTTP API used by the playground and workbench
-- **packages/ui** — reusable UI components
-- **packages/workbench** — local developer tools and debugging interface
-- **packages/snap** — Motia CLI implementation
-- **packages/stream-client*** — client SDKs for streams
-- **plugins/** — official Motia plugins (logs, states, observability, endpoints, etc.)
-- **playground/** — example workspace used during local development
-
-### Prerequisites
-
-- **Node.js** (v16+ recommended)
-- **Python** (LTS recommended)
-- **pnpm** (for managing the monorepo)
-
-### Steps
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/MotiaDev/motia.git
-   cd motia
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   pnpm install
-   ```
-
-   If you see a warning like:
-
-   ```
-   Ignored build scripts...
-   Run "pnpm approve-builds"
-   ```
-
-   Run:
-
-   ```bash
-   pnpm approve-builds
-   ```
-
-   Then press **a** to select all packages, then **Enter**.
-   
-3. Build the project:
-
-   ```bash
-   pnpm build
-   ```
-
-4. Set up the Motia CLI for development:
-
-   Before using the CLI, you must link it globally:
-
-   ```bash
-   pnpm setup
-
-   # Activate pnpm depending on your shell:
-   # Zsh:
-   source ~/.zshrc
-   # Bash:
-   source ~/.bashrc
-   # Fish:
-   source ~/.config/fish/config.fish
-
-   pnpm link ./packages/snap --global
-   ```
-
-   Verify:
-
-   ```bash
-   motia --version
-   ```
-
-   Then install playground dependencies:
-
-   ```bash
-   cd playground
-   motia install
-   ```
-
-5. Set up environment variables:
-
-   - Copy the example `.env` file:
-     ```bash
-     cp playground/.env.example playground/.env
-     ```
-   - Update the `.env` file with your credentials and API keys.
-
-6. Start the development environment:
-
-   This launches MotiaCore, MotiaServer, and all supporting background services.
-
-   Run the full development environment:
-
-   ```bash
-   pnpm run dev
-   ```
-
-   - Run this command at the root of the project to start workbench
-
-   ```bash
-   pnpm dev:workbench
-   ```
-
-   This will start:
-
-   - **MotiaCore** (flow orchestrator)
-   - **MotiaServer** (HTTP endpoints)
-   - **Playground UI** (flow visualization)
-
-   The app runs locally at **[http://localhost:3000](http://localhost:3000)**.
-
-## Running Tests
-
-Run all tests:
-
-```bash
-pnpm test
-```
-
-Run tests for a specific package:
-
-```bash
-pnpm --filter <package-name> test
-```
-----
-
-## Reporting Issues
-
-If you encounter any bugs, have feature requests, or want to discuss improvements, please [open an issue](https://github.com/MotiaDev/motia/issues) on our GitHub repository. When reporting bugs, please provide detailed information about your environment and steps to reproduce the issue.
-
-## Submitting Pull Requests
-
-We appreciate pull requests for bug fixes, enhancements, or new features. To submit a pull request:
-
-1. Fork the [Motia repository](https://github.com/MotiaDev/motia) on GitHub.
-2. Create a new branch from the `main` branch for your changes.
-3. Make your modifications and ensure that the code follows our coding conventions.
-4. Write tests to cover your changes, if applicable.
-5. Commit your changes and push them to your forked repository.
-6. Open a pull request against the `main` branch of the Motia repository.
-
-Please provide a clear description of your changes in the pull request, along with any relevant information or context.
-
-## Troubleshooting
-
-### Error: `command not found: motia`
-Make sure the pnpm global bin directory is created and in PATH:
-
-```bash
-pnpm setup
-
-# Activate pnpm depending on your shell:
-# Zsh:
-source ~/.zshrc
-# Bash:
-source ~/.bashrc
-# Fish:
-source ~/.config/fish/config.fish
-
-pnpm link ./packages/snap --global
-```
-
-### Warning: Ignored build scripts
-Run:
-
-```bash
-pnpm approve-builds
-```
-
-Then press **a** to select all packages.
-
-### pnpm: No global bin directory
-Run:
-
-```bash
-pnpm setup
-
-# Activate pnpm depending on your shell:
-# Zsh:
-source ~/.zshrc
-# Bash:
-source ~/.bashrc
-# Fish:
-source ~/.config/fish/config.fish
-```
-
-### Playground does not start
-Ensure you installed Python dependencies:
-
-```bash
-cd playground
-motia install
-```
-
-## Documentation Improvements
-
-Improving the documentation is a great way to contribute to Motia. If you find any errors, typos, or areas that need clarification, please submit a pull request with the necessary changes. The documentation source files are located in the `packages/docs/content` directory.
-
-## Sharing Examples and Use Cases
-
-If you have built something interesting with Motia or have a real-world use case to share, we would love to showcase it in our [Examples](/docs/examples) section. You can contribute your examples by submitting a pull request to the [Motia Examples repository](https://github.com/MotiaDev/motia-examples).
-
-## Spreading the Word
-
-Help spread the word about Motia by sharing it with your friends, colleagues, and the developer community. You can also star our [GitHub repository](https://github.com/MotiaDev/motia), follow us on [Twitter](https://twitter.com/motiadev), and join our [Discord community](https://discord.gg/nJFfsH5d6v) to stay updated with the latest news and engage with other Motia developers.
-
-We appreciate all forms of contributions and look forward to collaborating with you to make Motia even better!
+See [STRUCTURE.md](STRUCTURE.md) for the full directory layout and dependency chain.

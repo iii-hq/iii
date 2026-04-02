@@ -1,0 +1,567 @@
+---
+title: 'State'
+description: 'Distributed key-value state management with reactive change triggers.'
+---
+
+Distributed key-value state storage with scope-based organization and reactive triggers that fire on any state change.
+
+```
+modules::state::StateModule
+```
+
+## Architecture
+
+```mermaid
+graph LR
+    W1[Worker] -->|state::set| Engine[Engine]
+    Engine -->|Persist| Adapter[State Adapter]
+    Adapter -->|old + new value| Engine
+    Engine -->|Result| W1
+    Engine -->|Match| Triggers[Trigger Registry]
+    Triggers -.->|Fire Handler| W2[Worker]
+```
+
+State is server-side key-value storage with trigger-based reactivity. Unlike streams, state does not push updates to WebSocket clients — it fires triggers that workers handle server-side.
+
+## Sample Configuration
+
+```yaml
+- class: modules::state::StateModule
+  config:
+    adapter:
+      class: modules::state::adapters::KvStore
+      config:
+        store_method: file_based
+        file_path: ./data/state_store
+        save_interval_ms: 5000
+```
+
+## Configuration
+
+<ResponseField name="adapter" type="Adapter">
+  The adapter to use for state persistence and distribution. Defaults to `modules::state::adapters::KvStore` when not specified.
+</ResponseField>
+
+## Adapters
+
+### modules::state::adapters::KvStore
+
+Built-in key-value store. Supports both in-memory and file-based persistence.
+
+```yaml
+class: modules::state::adapters::KvStore
+config:
+  store_method: file_based
+  file_path: ./data/state_store
+  save_interval_ms: 5000
+```
+
+#### Configuration
+
+<ResponseField name="store_method" type="string">
+  Storage method. Options: `in_memory` (lost on restart) or `file_based` (persisted to disk).
+</ResponseField>
+
+<ResponseField name="file_path" type="string">
+  Directory path for file-based storage. Each scope is stored as a separate file.
+</ResponseField>
+
+<ResponseField name="save_interval_ms" type="number">
+  Interval in milliseconds between automatic disk saves. Defaults to `5000`.
+</ResponseField>
+
+### modules::state::adapters::RedisAdapter
+
+Uses Redis as the state backend.
+
+```yaml
+class: modules::state::adapters::RedisAdapter
+config:
+  redis_url: ${REDIS_URL:redis://localhost:6379}
+```
+
+#### Configuration
+
+<ResponseField name="redis_url" type="string">
+  The URL of the Redis instance to use.
+</ResponseField>
+
+### modules::state::adapters::Bridge
+
+Forwards state operations to a remote III Engine instance via the Bridge Client.
+
+```yaml
+class: modules::state::adapters::Bridge
+```
+
+## Functions
+
+<ResponseField name="state::set" type="function">
+  Set a value in state. Fires a `state:created` trigger if the key did not exist, or `state:updated` if it did.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="scope" type="string" required>
+        The scope (namespace) to organize state within.
+      </ResponseField>
+      <ResponseField name="key" type="string" required>
+        The key to store the value under.
+      </ResponseField>
+      <ResponseField name="value" type="any" required>
+        The value to store. Can be any JSON-serializable value. Also accepted as `data` (backward-compatible alias).
+      </ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="old_value" type="any">
+        The previous value, or `null` if the key did not exist.
+      </ResponseField>
+      <ResponseField name="new_value" type="any">
+        The value that was stored.
+      </ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="state::get" type="function">
+  Get a value from state.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="scope" type="string" required>
+        The scope to read from.
+      </ResponseField>
+      <ResponseField name="key" type="string" required>
+        The key to retrieve.
+      </ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="value" type="any">
+        The stored value, or `null` if the key does not exist.
+      </ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="state::delete" type="function">
+  Delete a value from state. Fires a `state:deleted` trigger.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="scope" type="string" required>
+        The scope to delete from.
+      </ResponseField>
+      <ResponseField name="key" type="string" required>
+        The key to delete.
+      </ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="value" type="any">
+        The deleted value, or `null` if the key did not exist.
+      </ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="state::update" type="function">
+  Atomically update a value using one or more operations. Fires `state:created` or `state:updated` depending on whether the key existed.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="scope" type="string" required>
+        The scope to update within.
+      </ResponseField>
+      <ResponseField name="key" type="string" required>
+        The key to update.
+      </ResponseField>
+      <ResponseField name="ops" type="UpdateOp[]" required>
+        Array of update operations applied in order. Each operation is an object with a single key:
+
+        | Operation | Shape | Description |
+        |-----------|-------|-------------|
+        | `set` | `{ "set": value }` | Replace the current value entirely. |
+        | `merge` | `{ "merge": object }` | Shallow-merge an object into the current value. |
+        | `increment` | `{ "increment": { "field": string, "by": number } }` | Add `by` to a numeric field. |
+        | `decrement` | `{ "decrement": { "field": string, "by": number } }` | Subtract `by` from a numeric field. |
+        | `remove` | `{ "remove": field }` | Remove a field from the current object. |
+      </ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      <ResponseField name="old_value" type="any">
+        The value before the operations were applied, or `null` if the key did not exist.
+      </ResponseField>
+      <ResponseField name="new_value" type="any">
+        The value after all operations were applied.
+      </ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="state::list" type="function">
+  List all values within a scope.
+
+  <AccordionGroup>
+    <Accordion iconName="settings" title="Parameters">
+      <ResponseField name="scope" type="string" required>
+        The scope to list entries from.
+      </ResponseField>
+    </Accordion>
+    <Accordion title="Returns">
+      A flat JSON array of all stored values within the scope: `any[]`.
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+<ResponseField name="state::list_groups" type="function">
+  List all scopes that contain state data.
+
+  <AccordionGroup>
+    <Accordion title="Returns">
+      An object with a single `groups` field:
+      <ResponseField name="groups" type="string[]">
+        A sorted, deduplicated array of all scope names that contain at least one key.
+      </ResponseField>
+    </Accordion>
+  </AccordionGroup>
+</ResponseField>
+
+## Trigger Type
+
+This module adds a new Trigger Type: `state`.
+
+When a state value is created, updated, or deleted, all registered `state` triggers are evaluated and fired if they match.
+
+<Expandable title="Trigger Config">
+  <ResponseField name="scope" type="string">
+    Only fire for state changes within this scope. When omitted, fires for all scopes.
+  </ResponseField>
+  <ResponseField name="key" type="string">
+    Only fire for state changes to this specific key. When omitted, fires for all keys.
+  </ResponseField>
+  <ResponseField name="condition_function_id" type="string">
+    Function ID for conditional execution. The engine invokes it with the state event; if it returns `false`, the handler function is not called.
+  </ResponseField>
+</Expandable>
+
+### State Event Payload
+
+When the trigger fires, the handler receives a state event object:
+
+<ResponseField name="type" type="string">
+  Always `"state"`.
+</ResponseField>
+
+<ResponseField name="event_type" type="string">
+  The kind of change: `"state:created"`, `"state:updated"`, or `"state:deleted"`.
+</ResponseField>
+
+<ResponseField name="scope" type="string">
+  The scope where the change occurred.
+</ResponseField>
+
+<ResponseField name="key" type="string">
+  The key that changed.
+</ResponseField>
+
+<ResponseField name="old_value" type="any">
+  The previous value before the change, or `null` for newly created keys.
+</ResponseField>
+
+<ResponseField name="new_value" type="any">
+  The new value after the change. `null` for deleted keys.
+</ResponseField>
+
+### Sample Code
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+const fn = iii.registerFunction(
+  { id: 'state::onUserUpdated' },
+  async (event) => {
+    console.log('State changed:', event.event_type, event.key)
+    console.log('Previous:', event.old_value)
+    console.log('Current:', event.new_value)
+    return {}
+  },
+)
+
+iii.registerTrigger({
+  type: 'state',
+  function_id: fn.id,
+  config: { scope: 'users', key: 'profile' },
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+def on_user_updated(event):
+    print('State changed:', event['event_type'], event['key'])
+    print('Previous:', event.get('old_value'))
+    print('Current:', event.get('new_value'))
+    return {}
+
+iii.register_function({'id': 'state::onUserUpdated'}, on_user_updated)
+iii.register_trigger({'type': 'state', 'function_id': 'state::onUserUpdated', 'config': {'scope': 'users', 'key': 'profile'}})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::RegisterFunctionMessage;
+
+iii.register_function(
+    RegisterFunctionMessage::with_id("state::onUserUpdated".into()),
+    |event| async move {
+        println!("State changed: {} {}", event["event_type"], event["key"]);
+        println!("Previous: {:?}", event.get("old_value"));
+        println!("Current: {:?}", event.get("new_value"));
+        Ok(json!({}))
+    },
+);
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "state".into(),
+    function_id: "state::onUserUpdated".into(),
+    config: json!({
+        "scope": "users",
+        "key": "profile"
+    }),
+})?;
+```
+</Tab>
+</Tabs>
+
+### Usage Example: User Profile with Reactive Sync
+
+Store user profiles in state and react when they change:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+await iii.trigger({
+  function_id: 'state::set',
+  payload: {
+    scope: 'users',
+    key: 'user-123',
+    value: { name: 'Alice', email: 'alice@example.com', preferences: { theme: 'dark' } },
+  },
+  action: TriggerAction.Void(),
+})
+
+const profile = await iii.trigger({
+  function_id: 'state::get',
+  payload: { scope: 'users', key: 'user-123' },
+})
+
+await iii.trigger({
+  function_id: 'state::set',
+  payload: {
+    scope: 'users',
+    key: 'user-123',
+    value: { name: 'Alice', email: 'alice@example.com', preferences: { theme: 'light' } },
+  },
+  action: TriggerAction.Void(),
+})
+
+const allUsers = await iii.trigger({
+  function_id: 'state::list',
+  payload: { scope: 'users' },
+})
+const scopes = await iii.trigger({
+  function_id: 'state::list_groups',
+  payload: {},
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+iii.trigger({
+    'function_id': 'state::set',
+    'payload': {
+        'scope': 'users',
+        'key': 'user-123',
+        'value': {'name': 'Alice', 'email': 'alice@example.com', 'preferences': {'theme': 'dark'}},
+    },
+    'action': {'type': 'void'},
+})
+
+profile = iii.trigger({
+    'function_id': 'state::get',
+    'payload': {'scope': 'users', 'key': 'user-123'},
+})
+
+iii.trigger({
+    'function_id': 'state::set',
+    'payload': {
+        'scope': 'users',
+        'key': 'user-123',
+        'value': {'name': 'Alice', 'email': 'alice@example.com', 'preferences': {'theme': 'light'}},
+    },
+    'action': {'type': 'void'},
+})
+
+all_users = iii.trigger({
+    'function_id': 'state::list',
+    'payload': {'scope': 'users'},
+})
+scopes = iii.trigger({
+    'function_id': 'state::list_groups',
+    'payload': {},
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{TriggerRequest, TriggerAction};
+use serde_json::json;
+
+iii.trigger(TriggerRequest {
+    function_id: "state::set".into(),
+    payload: json!({
+        "scope": "users",
+        "key": "user-123",
+        "value": { "name": "Alice", "email": "alice@example.com", "preferences": { "theme": "dark" } }
+    }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
+
+let profile = iii.trigger(TriggerRequest {
+    function_id: "state::get".into(),
+    payload: json!({ "scope": "users", "key": "user-123" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+
+iii.trigger(TriggerRequest {
+    function_id: "state::set".into(),
+    payload: json!({
+        "scope": "users",
+        "key": "user-123",
+        "value": { "name": "Alice", "email": "alice@example.com", "preferences": { "theme": "light" } }
+    }),
+    action: Some(TriggerAction::Void),
+    timeout_ms: None,
+}).await?;
+
+let all_users = iii.trigger(TriggerRequest {
+    function_id: "state::list".into(),
+    payload: json!({ "scope": "users" }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+
+let scopes = iii.trigger(TriggerRequest {
+    function_id: "state::list_groups".into(),
+    payload: json!({}),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+</Tab>
+</Tabs>
+
+### Usage Example: Conditional Trigger
+
+Only process profile updates when the email field changed:
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+const conditionFn = iii.registerFunction(
+  { id: 'conditions::emailChanged' },
+  async (event) =>
+    event.event_type === 'state:updated' &&
+    event.old_value?.email !== event.new_value?.email,
+)
+
+const fn = iii.registerFunction({ id: 'state::onEmailChange' }, async (event) => {
+  await sendVerificationEmail(event.new_value.email)
+  return {}
+})
+
+iii.registerTrigger({
+  type: 'state',
+  function_id: fn.id,
+  config: {
+    scope: 'users',
+    key: 'profile',
+    condition_function_id: conditionFn.id,
+  },
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+def email_changed(event):
+    if event.get('event_type') != 'state:updated':
+        return False
+    old = event.get('old_value', {})
+    new = event.get('new_value', {})
+    return old.get('email') != new.get('email')
+
+iii.register_function({'id': 'conditions::emailChanged'}, email_changed)
+
+def on_email_change(event):
+    send_verification_email(event['new_value']['email'])
+    return {}
+
+iii.register_function({'id': 'state::onEmailChange'}, on_email_change)
+iii.register_trigger({
+    'type': 'state',
+    'function_id': 'state::onEmailChange',
+    'config': {
+        'scope': 'users',
+        'key': 'profile',
+        'condition_function_id': 'conditions::emailChanged',
+    },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{RegisterFunctionMessage, RegisterTriggerInput};
+use serde_json::json;
+
+iii.register_function(
+    RegisterFunctionMessage::with_id("conditions::emailChanged".into()),
+    |event| async move {
+        let is_update = event["event_type"].as_str() == Some("state:updated");
+        let old_email = event.get("old_value").and_then(|v| v.get("email"));
+        let new_email = event.get("new_value").and_then(|v| v.get("email"));
+        Ok(json!(is_update && old_email != new_email))
+    },
+);
+
+iii.register_function(
+    RegisterFunctionMessage::with_id("state::onEmailChange".into()),
+    |event| async move {
+        let email = event["new_value"]["email"].as_str().unwrap_or("");
+        send_verification_email(email).await?;
+        Ok(json!({}))
+    },
+);
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "state".into(),
+    function_id: "state::onEmailChange".into(),
+    config: json!({
+        "scope": "users",
+        "key": "profile",
+        "condition_function_id": "conditions::emailChanged"
+    }),
+})?;
+```
+</Tab>
+</Tabs>
+
+## State Flow
+
+```mermaid
+graph LR
+    W1[Worker] -->|state::set| E[Engine]
+    E -->|Persist| S[State Adapter]
+    S -->|old + new value| E
+    E -->|Result| W1
+    E -->|Match| T[Trigger Registry]
+    T -.->|state:updated| W2[Handler]
+```

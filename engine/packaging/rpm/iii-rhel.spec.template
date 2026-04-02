@@ -1,0 +1,35 @@
+Name:           iii
+Version:        {{VERSION}}
+Release:        1%{?dist}
+Summary:        WebSocket-based process communication engine
+
+License:        Elastic-2.0
+URL:            https://github.com/iii-hq/iii
+Source0:        https://github.com/iii-hq/iii/releases/download/v%{version}/iii-x86_64-unknown-linux-musl.tar.gz
+
+BuildArch:      x86_64
+BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+
+%description
+III is a WebSocket-based process communication engine. Workers connect over WS,
+register functions and triggers, and the engine routes invocations between
+workers and core modules. Core modules add HTTP APIs, event streaming, cron
+scheduling, and logging.
+
+%prep
+%setup -q -c
+
+%install
+rm -rf %{buildroot}
+mkdir -p %{buildroot}%{_bindir}
+install -m 0755 iii %{buildroot}%{_bindir}/iii
+
+%clean
+rm -rf %{buildroot}
+
+%files
+%{_bindir}/iii
+
+%changelog
+* {{CHANGELOG_DATE}} III CI <ci@iii.dev> - {{VERSION}}-1
+- Update to version {{VERSION}}

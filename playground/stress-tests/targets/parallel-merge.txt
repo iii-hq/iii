@@ -1,6 +1,0 @@
-POST http://localhost:3000/api/parallel-merge
-Content-Type: application/json
-@targets/parallel-merge-body.json
-
-
-

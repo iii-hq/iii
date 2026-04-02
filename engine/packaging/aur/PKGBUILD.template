@@ -1,0 +1,24 @@
+# Maintainer: III Team <support@motia.dev>
+pkgname=iii-bin
+pkgver={{VERSION}}
+pkgrel=1
+pkgdesc="WebSocket-based process communication engine"
+arch=('x86_64' 'aarch64')
+url="https://github.com/iii-hq/iii"
+license=('custom:ELv2')
+depends=('gcc-libs')
+provides=('iii')
+conflicts=('iii')
+source_x86_64=("https://github.com/iii-hq/iii/releases/download/v${pkgver}/iii-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("https://github.com/iii-hq/iii/releases/download/v${pkgver}/iii-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('{{CHECKSUM_X86_64}}')
+sha256sums_aarch64=('{{CHECKSUM_AARCH64}}')
+
+package() {
+    install -Dm755 "${srcdir}/iii" "${pkgdir}/usr/bin/iii"
+
+    # Install license if available
+    if [ -f "${srcdir}/LICENSE" ]; then
+        install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    fi
+}

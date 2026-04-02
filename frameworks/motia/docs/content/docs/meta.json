@@ -1,0 +1,17 @@
+{
+  "title": "Motia",
+  "pages": [
+    "index",
+    "why-motia",
+    "getting-started",
+    "concepts",
+    "development-guide",
+    "advanced-features",
+    "deployment-guide",
+    "product-showcase",
+    "api-reference",
+    "ai-development-guide",
+    "contribution",
+    "community-resources"
+  ]
+}

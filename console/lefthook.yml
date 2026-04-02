@@ -1,0 +1,7 @@
+pre-commit:
+  commands:
+    biome-check:
+      root: "packages/console-frontend/"
+      glob: "*.{ts,tsx,js,json}"
+      run: npx @biomejs/biome check --staged --write --no-errors-on-unmatched
+      stage_fixed: true

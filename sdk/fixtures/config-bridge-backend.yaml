@@ -1,0 +1,29 @@
+modules:
+  - class: modules::worker::WorkerModule
+    config:
+      port: 49198
+
+  - class: modules::stream::StreamModule
+    config:
+      port: 3113
+      host: 0.0.0.0
+      adapter:
+        class: modules::stream::adapters::KvStore
+        config:
+          store_method: in_memory
+
+  - class: modules::state::StateModule
+    config:
+      adapter:
+        class: modules::state::adapters::KvStore
+        config:
+          store_method: in_memory
+
+  - class: modules::pubsub::PubSubModule
+    config:
+      adapter:
+        class: modules::pubsub::LocalAdapter
+
+  - class: modules::observability::OtelModule
+    config:
+      enabled: false

@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iii-sdk"
+version = "0.10.0"
+description = "III SDK for Python"
+authors = [{ name = "III" }]
+license = { text = "Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["iii", "sdk"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "websockets>=12.0",
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/iii-hq/sdk"
+Repository = "https://github.com/iii-hq/sdk"
+
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=6.0",
+    "anyio>=4.0",
+    "aiohttp>=3.9",
+    "mypy>=1.8",
+    "ruff>=0.2",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "griffe>=1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iii"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+[tool.pytest.ini_options]
+addopts = "--cov=src/iii --cov-branch --cov-report=term-missing"
+testpaths = ["tests"]

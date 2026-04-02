@@ -1,0 +1,217 @@
+@import "tailwindcss";
+
+/* === Design System Tokens (DESIGN.md) === */
+:root {
+  /* Core Palette */
+  --background: #000000;
+  --foreground: #F4F4F4;
+  --sidebar: #0A0A0A;
+  --elevated: #111111;
+  --hover: #1A1A1A;
+  --border: #2D2D2D;
+  --border-subtle: #1D1D1D;
+  --muted: #5B5B5B;
+  --secondary: #9CA3AF;
+
+  /* Accent */
+  --accent: #F3F724;
+  --accent-hover: #D4D820;
+  --accent-subtle: rgba(243, 247, 36, 0.08);
+  --accent-text: #000000;
+
+  /* Status */
+  --success: #22C55E;
+  --warning: #F3F724;
+  --error: #EF4444;
+  --info: #3B82F6;
+
+  /* Typography */
+  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  /* Radii (DESIGN.md) */
+  --radius-lg: 10px;
+  --radius-md: 6px;
+  --radius-sm: 2px;
+  --radius-full: 9999px;
+
+  /* Legacy aliases for backward compat */
+  --light-gray: #F4F4F4;
+  --medium-gray: #5B5B5B;
+  --dark-gray: #1D1D1D;
+  --black: #000000;
+  --yellow: #F3F724;
+  --white: #FFFFFF;
+}
+
+/* Light Mode */
+[data-theme="light"] {
+  --background: #FAFAFA;
+  --foreground: #1A1A1A;
+  --sidebar: #FFFFFF;
+  --elevated: #FFFFFF;
+  --hover: #F0F0F0;
+  --border: #E0E0E0;
+  --border-subtle: #EBEBEB;
+  --muted: #6B7280;
+  --secondary: #6B7280;
+  --accent: #C8CC00;
+  --accent-hover: #A8AB00;
+  --accent-subtle: rgba(200, 204, 0, 0.08);
+  --accent-text: #000000;
+  --success: #16A34A;
+  --warning: #C8CC00;
+  --error: #DC2626;
+  --info: #2563EB;
+  --light-gray: #1A1A1A;
+  --medium-gray: #6B7280;
+  --dark-gray: #EBEBEB;
+  --black: #FAFAFA;
+  --yellow: #C8CC00;
+  --white: #1A1A1A;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar);
+  --color-elevated: var(--elevated);
+  --color-hover: var(--hover);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-accent-text: var(--accent-text);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  --color-light-gray: var(--light-gray);
+  --color-dark-gray: var(--dark-gray);
+  --color-yellow: var(--yellow);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-lg: var(--radius-lg);
+  --radius-md: var(--radius-md);
+  --radius-sm: var(--radius-sm);
+}
+
+html {
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Theme transition — only active during theme toggle to avoid interfering with hover animations */
+[data-theme-transitioning],
+[data-theme-transitioning] *,
+[data-theme-transitioning] *::before,
+[data-theme-transitioning] *::after {
+  transition: background-color 200ms ease-in-out, border-color 200ms ease-in-out, color 200ms ease-in-out !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* iii Logo animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.logo-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.logo-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.logo-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* Panel slide-in animation (trace detail & span side panel) */
+@keyframes panelSlideIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.animate-trace-panel-in,
+.animate-panel-in {
+  animation: panelSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* New trace flash animation (yellow highlight on new entries) */
+@keyframes trace-flash {
+  from { background-color: rgba(243, 247, 36, 0.15); }
+  to { background-color: transparent; }
+}
+
+.animate-trace-flash {
+  animation: trace-flash 2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-trace-panel-in,
+  .animate-panel-in,
+  .animate-trace-flash {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+  }
+}
+
+/* Status indicators */
+.status-online {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.status-offline {
+  background: var(--error);
+}
+
+.status-pending {
+  background: var(--accent);
+}
+
+/* Selection styling */
+::selection {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

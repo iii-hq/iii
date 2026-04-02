@@ -1,0 +1,927 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at support@motia.dev
+// See LICENSE and PATENTS files for details.
+
+use std::{
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+use serde_json::Value;
+use tokio::{sync::RwLock, task::JoinHandle};
+
+use super::kv::BuiltinKvStore;
+
+const LISTS_FILE_NAME: &str = "_queue_lists.bin";
+const SORTED_SETS_FILE_NAME: &str = "_queue_sorted_sets.bin";
+
+type SortedSetMap = HashMap<String, BTreeMap<i64, HashSet<String>>>;
+
+#[derive(Archive, RkyvSerialize, RkyvDeserialize)]
+struct KeyStorage(String);
+
+#[derive(Clone, Copy, Debug)]
+enum DirtyOp {
+    Upsert,
+}
+
+fn load_lists_from_dir(dir: &Path) -> HashMap<String, VecDeque<String>> {
+    let list_file = dir.join(LISTS_FILE_NAME);
+    if !list_file.exists() {
+        return HashMap::new();
+    }
+
+    match std::fs::read(&list_file) {
+        Ok(bytes) => match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
+            Ok(storage) => match serde_json::from_str(&storage.0) {
+                Ok(lists) => lists,
+                Err(err) => {
+                    tracing::warn!(error = ?err, "failed to decode queue lists from disk");
+                    HashMap::new()
+                }
+            },
+            Err(err) => {
+                tracing::warn!(error = ?err, "failed to parse queue lists file");
+                HashMap::new()
+            }
+        },
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to read queue lists file");
+            HashMap::new()
+        }
+    }
+}
+
+fn load_sorted_sets_from_dir(dir: &Path) -> SortedSetMap {
+    let sorted_sets_file = dir.join(SORTED_SETS_FILE_NAME);
+    if !sorted_sets_file.exists() {
+        return HashMap::new();
+    }
+
+    match std::fs::read(&sorted_sets_file) {
+        Ok(bytes) => match rkyv::from_bytes::<KeyStorage, rkyv::rancor::Error>(&bytes) {
+            Ok(storage) => match serde_json::from_str(&storage.0) {
+                Ok(sorted_sets) => sorted_sets,
+                Err(err) => {
+                    tracing::warn!(error = ?err, "failed to decode queue sorted_sets from disk");
+                    HashMap::new()
+                }
+            },
+            Err(err) => {
+                tracing::warn!(error = ?err, "failed to parse queue sorted_sets file");
+                HashMap::new()
+            }
+        },
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to read queue sorted_sets file");
+            HashMap::new()
+        }
+    }
+}
+
+async fn persist_lists_to_disk(
+    dir: &Path,
+    lists: &HashMap<String, VecDeque<String>>,
+) -> anyhow::Result<()> {
+    if let Err(err) = tokio::fs::create_dir_all(dir).await {
+        tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+        return Err(err.into());
+    }
+
+    let path = dir.join(LISTS_FILE_NAME);
+    let temp_path = dir.join(format!("{}.tmp", LISTS_FILE_NAME));
+    let json = serde_json::to_string(lists)?;
+    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json))?;
+
+    tokio::fs::write(&temp_path, bytes).await?;
+    tokio::fs::rename(&temp_path, &path).await?;
+
+    Ok(())
+}
+
+async fn persist_sorted_sets_to_disk(dir: &Path, sorted_sets: &SortedSetMap) -> anyhow::Result<()> {
+    if let Err(err) = tokio::fs::create_dir_all(dir).await {
+        tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+        return Err(err.into());
+    }
+
+    let path = dir.join(SORTED_SETS_FILE_NAME);
+    let temp_path = dir.join(format!("{}.tmp", SORTED_SETS_FILE_NAME));
+    let json = serde_json::to_string(sorted_sets)?;
+    let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&KeyStorage(json))?;
+
+    tokio::fs::write(&temp_path, bytes).await?;
+    tokio::fs::rename(&temp_path, &path).await?;
+
+    Ok(())
+}
+
+pub struct QueueKvStore {
+    kv: Arc<BuiltinKvStore>,
+    lists: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
+    sorted_sets: Arc<RwLock<SortedSetMap>>,
+    file_store_dir: Option<PathBuf>,
+    dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+    #[allow(dead_code)]
+    handler: Option<JoinHandle<()>>,
+}
+
+impl QueueKvStore {
+    pub fn new(kv: Arc<BuiltinKvStore>, config: Option<Value>) -> Self {
+        let store_method = config
+            .clone()
+            .and_then(|cfg| {
+                cfg.get("store_method")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "in_memory".to_string());
+
+        let file_path = config
+            .clone()
+            .and_then(|cfg| {
+                cfg.get("file_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "kv_store_data.db".to_string());
+
+        let interval = config
+            .clone()
+            .and_then(|cfg| cfg.get("save_interval_ms").and_then(|v| v.as_u64()))
+            .unwrap_or(5000);
+
+        let file_store_dir = match store_method.as_str() {
+            "file_based" => {
+                let dir = PathBuf::from(&file_path);
+                if let Err(err) = std::fs::create_dir_all(&dir) {
+                    tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
+                }
+                Some(dir)
+            }
+            "in_memory" => None,
+            other => {
+                tracing::warn!(store_method = %other, "Unknown store_method, defaulting to in_memory");
+                None
+            }
+        };
+
+        let lists_from_disk = match &file_store_dir {
+            Some(dir) => load_lists_from_dir(dir),
+            None => HashMap::new(),
+        };
+        let sorted_sets_from_disk = match &file_store_dir {
+            Some(dir) => load_sorted_sets_from_dir(dir),
+            None => HashMap::new(),
+        };
+
+        let lists = Arc::new(RwLock::new(lists_from_disk));
+        let sorted_sets = Arc::new(RwLock::new(sorted_sets_from_disk));
+        let dirty = Arc::new(RwLock::new(HashMap::new()));
+        let handler = file_store_dir.clone().map(|dir| {
+            let lists = Arc::clone(&lists);
+            let sorted_sets = Arc::clone(&sorted_sets);
+            let dirty = Arc::clone(&dirty);
+            tokio::spawn(async move {
+                Self::save_loop(lists, sorted_sets, dirty, interval, dir).await;
+            })
+        });
+
+        Self {
+            kv,
+            lists,
+            sorted_sets,
+            file_store_dir,
+            dirty,
+            handler,
+        }
+    }
+
+    async fn save_loop(
+        lists: Arc<RwLock<HashMap<String, VecDeque<String>>>>,
+        sorted_sets: Arc<RwLock<SortedSetMap>>,
+        dirty: Arc<RwLock<HashMap<String, DirtyOp>>>,
+        polling_interval: u64,
+        dir: PathBuf,
+    ) {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(polling_interval));
+        loop {
+            interval.tick().await;
+            let batch = {
+                let mut dirty = dirty.write().await;
+                if dirty.is_empty() {
+                    continue;
+                }
+                dirty.drain().collect::<Vec<_>>()
+            };
+
+            for (index, _op) in batch {
+                if index == LISTS_FILE_NAME {
+                    let lists_snapshot = {
+                        let lists = lists.read().await;
+                        lists.clone()
+                    };
+                    if let Err(err) = persist_lists_to_disk(&dir, &lists_snapshot).await {
+                        tracing::error!(error = ?err, "failed to persist queue lists");
+                        let mut dirty = dirty.write().await;
+                        dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+                    }
+                } else if index == SORTED_SETS_FILE_NAME {
+                    let sorted_sets_snapshot = {
+                        let sorted_sets = sorted_sets.read().await;
+                        sorted_sets.clone()
+                    };
+                    if let Err(err) = persist_sorted_sets_to_disk(&dir, &sorted_sets_snapshot).await
+                    {
+                        tracing::error!(error = ?err, "failed to persist queue sorted_sets");
+                        let mut dirty = dirty.write().await;
+                        dirty.insert(SORTED_SETS_FILE_NAME.to_string(), DirtyOp::Upsert);
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn set_job(&self, key: &str, value: Value) {
+        self.kv.set(key.to_string(), String::new(), value).await;
+    }
+
+    pub async fn get_job(&self, key: &str) -> Option<Value> {
+        self.kv.get(key.to_string(), String::new()).await
+    }
+
+    pub async fn delete_job(&self, key: &str) {
+        self.kv.delete(key.to_string(), String::new()).await;
+    }
+
+    pub async fn list_job_keys(&self, prefix: &str) -> Vec<String> {
+        self.kv.list_keys_with_prefix(prefix.to_string()).await
+    }
+
+    pub async fn lpush(&self, key: &str, value: String) {
+        let mut lists = self.lists.write().await;
+        lists
+            .entry(key.to_string())
+            .or_insert_with(VecDeque::new)
+            .push_front(value);
+
+        if self.file_store_dir.is_some() {
+            drop(lists);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+    }
+
+    pub async fn rpush(&self, key: &str, value: String) {
+        let mut lists = self.lists.write().await;
+        lists
+            .entry(key.to_string())
+            .or_insert_with(VecDeque::new)
+            .push_back(value);
+
+        if self.file_store_dir.is_some() {
+            drop(lists);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+    }
+
+    pub async fn rpop(&self, key: &str) -> Option<String> {
+        let mut lists = self.lists.write().await;
+        let list = lists.get_mut(key)?;
+        let result = list.pop_back();
+        let should_remove = list.is_empty();
+        if should_remove {
+            lists.remove(key);
+        }
+
+        if self.file_store_dir.is_some() {
+            drop(lists);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+
+        result
+    }
+
+    pub async fn lrem(&self, key: &str, count: i32, value: &str) -> usize {
+        let mut lists = self.lists.write().await;
+        let Some(list) = lists.get_mut(key) else {
+            return 0;
+        };
+
+        let mut removed = 0;
+        if count > 0 {
+            let count = count as usize;
+            list.retain(|item| {
+                if removed < count && item == value {
+                    removed += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        } else if count < 0 {
+            let count = count.unsigned_abs() as usize;
+            let original_len = list.len();
+            let mut indices_to_remove = Vec::new();
+
+            for i in (0..original_len).rev() {
+                if removed >= count {
+                    break;
+                }
+                if list[i] == value {
+                    indices_to_remove.push(i);
+                    removed += 1;
+                }
+            }
+
+            indices_to_remove.sort_unstable();
+            for &idx in indices_to_remove.iter().rev() {
+                list.remove(idx);
+            }
+        } else {
+            let original_len = list.len();
+            list.retain(|item| item != value);
+            removed = original_len - list.len();
+        }
+
+        if list.is_empty() {
+            lists.remove(key);
+        }
+
+        if self.file_store_dir.is_some() {
+            drop(lists);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+
+        removed
+    }
+
+    pub async fn lrange(&self, key: &str, offset: usize, limit: usize) -> Vec<String> {
+        let lists = self.lists.read().await;
+        lists
+            .get(key)
+            .map(|list| list.iter().skip(offset).take(limit).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub async fn llen(&self, key: &str) -> usize {
+        let lists = self.lists.read().await;
+        lists.get(key).map_or(0, |list| list.len())
+    }
+
+    /// Remove the first element from a list where `predicate` returns true.
+    /// Returns the removed element if found.
+    pub async fn lremove_first_by<F>(&self, key: &str, predicate: F) -> Option<String>
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut lists = self.lists.write().await;
+        if let Some(list) = lists.get_mut(key)
+            && let Some(pos) = list.iter().position(|v| predicate(v))
+        {
+            let removed = list.remove(pos);
+            if list.is_empty() {
+                lists.remove(key);
+            }
+            // Mark dirty for file persistence
+            if self.file_store_dir.is_some() {
+                drop(lists);
+                let mut dirty = self.dirty.write().await;
+                dirty.insert(LISTS_FILE_NAME.to_string(), DirtyOp::Upsert);
+            }
+            return removed;
+        }
+        None
+    }
+
+    pub async fn zadd(&self, key: &str, score: i64, member: String) {
+        let mut sorted_sets = self.sorted_sets.write().await;
+        let set = sorted_sets
+            .entry(key.to_string())
+            .or_insert_with(BTreeMap::new);
+
+        for (_, members) in set.iter_mut() {
+            members.remove(&member);
+        }
+
+        set.retain(|_, members| !members.is_empty());
+
+        set.entry(score).or_insert_with(HashSet::new).insert(member);
+
+        if self.file_store_dir.is_some() {
+            drop(sorted_sets);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(SORTED_SETS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+    }
+
+    pub async fn zrem(&self, key: &str, member: &str) -> bool {
+        let mut sorted_sets = self.sorted_sets.write().await;
+        let Some(set) = sorted_sets.get_mut(key) else {
+            return false;
+        };
+
+        let mut found = false;
+        set.retain(|_, members| {
+            if members.remove(member) {
+                found = true;
+            }
+            !members.is_empty()
+        });
+
+        if set.is_empty() {
+            sorted_sets.remove(key);
+        }
+
+        if found && self.file_store_dir.is_some() {
+            drop(sorted_sets);
+            let mut dirty = self.dirty.write().await;
+            dirty.insert(SORTED_SETS_FILE_NAME.to_string(), DirtyOp::Upsert);
+        }
+
+        found
+    }
+
+    pub async fn zrangebyscore(&self, key: &str, min: i64, max: i64) -> Vec<String> {
+        let sorted_sets = self.sorted_sets.read().await;
+        let Some(set) = sorted_sets.get(key) else {
+            return vec![];
+        };
+
+        let mut result = Vec::new();
+        for (_score, members) in set.range(min..=max) {
+            for member in members {
+                result.push(member.clone());
+            }
+        }
+        result
+    }
+
+    pub async fn has_queue_state(&self, prefix: &str) -> bool {
+        let lists = self.lists.read().await;
+        let sorted_sets = self.sorted_sets.read().await;
+
+        let has_lists = lists.keys().any(|k| k.starts_with(prefix));
+        let has_sorted_sets = sorted_sets.keys().any(|k| k.starts_with(prefix));
+
+        has_lists || has_sorted_sets
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("queue_kv_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_queue_kv(config: Option<Value>) -> Arc<QueueKvStore> {
+        let base_kv = Arc::new(BuiltinKvStore::new(config.clone()));
+        Arc::new(QueueKvStore::new(base_kv, config))
+    }
+
+    #[tokio::test]
+    async fn test_list_operations() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_list";
+
+        kv_store.lpush(key, "value1".to_string()).await;
+        kv_store.lpush(key, "value2".to_string()).await;
+        kv_store.lpush(key, "value3".to_string()).await;
+
+        assert_eq!(kv_store.llen(key).await, 3);
+
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value1".to_string()));
+        assert_eq!(kv_store.llen(key).await, 2);
+
+        let removed = kv_store.lrem(key, 1, "value2").await;
+        assert_eq!(removed, 1);
+        assert_eq!(kv_store.llen(key).await, 1);
+
+        let last = kv_store.rpop(key).await;
+        assert_eq!(last, Some("value3".to_string()));
+        assert_eq!(kv_store.llen(key).await, 0);
+
+        let empty = kv_store.rpop(key).await;
+        assert_eq!(empty, None);
+    }
+
+    #[tokio::test]
+    async fn test_rpush_operations() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_rpush";
+
+        // rpush adds to back, rpop removes from back
+        // So the last rpush will be the first rpop
+        kv_store.rpush(key, "value1".to_string()).await;
+        kv_store.rpush(key, "value2".to_string()).await;
+        kv_store.rpush(key, "value3".to_string()).await;
+
+        assert_eq!(kv_store.llen(key).await, 3);
+
+        // rpop removes from back, so value3 (last pushed) comes out first
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value3".to_string()));
+
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value2".to_string()));
+
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("value1".to_string()));
+
+        let empty = kv_store.rpop(key).await;
+        assert_eq!(empty, None);
+    }
+
+    #[tokio::test]
+    async fn test_lpush_rpush_mixed() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_mixed";
+
+        // lpush adds to front, rpush adds to back
+        // With lpush, new items go to front, rpop takes from back (oldest)
+        kv_store.lpush(key, "job1".to_string()).await; // [job1]
+        kv_store.lpush(key, "job2".to_string()).await; // [job2, job1]
+
+        // rpush adds to back (same position as oldest items)
+        kv_store.rpush(key, "retry_job".to_string()).await; // [job2, job1, retry_job]
+
+        // rpop takes from back, so retry_job comes first
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("retry_job".to_string()));
+
+        // Then job1 (oldest lpush)
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("job1".to_string()));
+
+        // Then job2 (newest lpush)
+        let popped = kv_store.rpop(key).await;
+        assert_eq!(popped, Some("job2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_lrange_with_offset_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_offset_zero";
+
+        // lpush adds to front: [c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+
+        // offset=0, limit=2 => first two items
+        let result = kv_store.lrange(key, 0, 2).await;
+        assert_eq!(result, vec!["c".to_string(), "b".to_string()]);
+
+        // offset=0, limit=5 => all items (limit exceeds length)
+        let result = kv_store.lrange(key, 0, 5).await;
+        assert_eq!(
+            result,
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+
+        // offset=0, limit=3 => exactly all items
+        let result = kv_store.lrange(key, 0, 3).await;
+        assert_eq!(
+            result,
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lrange_with_offset() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_offset";
+
+        // lpush adds to front: [d, c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+        kv_store.lpush(key, "d".to_string()).await;
+
+        // offset=1, limit=2 => skip first, take next two
+        let result = kv_store.lrange(key, 1, 2).await;
+        assert_eq!(result, vec!["c".to_string(), "b".to_string()]);
+
+        // offset=2, limit=10 => skip first two, take rest
+        let result = kv_store.lrange(key, 2, 10).await;
+        assert_eq!(result, vec!["b".to_string(), "a".to_string()]);
+
+        // offset=3, limit=1 => skip three, take one (last item)
+        let result = kv_store.lrange(key, 3, 1).await;
+        assert_eq!(result, vec!["a".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_lrange_offset_beyond_length() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_beyond";
+
+        // lpush adds to front: [b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+
+        // offset=2 with 2 items => empty
+        let result = kv_store.lrange(key, 2, 5).await;
+        assert!(result.is_empty());
+
+        // offset=100 => well beyond length => empty
+        let result = kv_store.lrange(key, 100, 10).await;
+        assert!(result.is_empty());
+
+        // non-existent key => empty
+        let result = kv_store.lrange("nonexistent", 0, 10).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_lrange_limit_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrange_limit_zero";
+
+        // lpush adds to front: [c, b, a]
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+
+        // limit=0 always returns empty regardless of offset
+        let result = kv_store.lrange(key, 0, 0).await;
+        assert!(result.is_empty());
+
+        let result = kv_store.lrange(key, 1, 0).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_sorted_set_operations() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_sorted_set";
+
+        kv_store.zadd(key, 100, "member1".to_string()).await;
+        kv_store.zadd(key, 200, "member2".to_string()).await;
+        kv_store.zadd(key, 300, "member3".to_string()).await;
+        kv_store.zadd(key, 150, "member4".to_string()).await;
+
+        let range = kv_store.zrangebyscore(key, 100, 200).await;
+        assert_eq!(range.len(), 3);
+        assert!(range.contains(&"member1".to_string()));
+        assert!(range.contains(&"member2".to_string()));
+        assert!(range.contains(&"member4".to_string()));
+
+        let removed = kv_store.zrem(key, "member2").await;
+        assert!(removed);
+
+        let range_after = kv_store.zrangebyscore(key, 100, 300).await;
+        assert_eq!(range_after.len(), 3);
+        assert!(!range_after.contains(&"member2".to_string()));
+
+        kv_store.zadd(key, 250, "member1".to_string()).await;
+        let updated_range = kv_store.zrangebyscore(key, 100, 200).await;
+        assert!(!updated_range.contains(&"member1".to_string()));
+
+        let high_range = kv_store.zrangebyscore(key, 200, 300).await;
+        assert!(high_range.contains(&"member1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_zadd_prunes_empty_buckets() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_zadd_prune";
+
+        kv_store.zadd(key, 100, "member1".to_string()).await;
+        kv_store.zadd(key, 200, "member2".to_string()).await;
+        kv_store.zadd(key, 300, "member3".to_string()).await;
+
+        kv_store.zadd(key, 400, "member1".to_string()).await;
+
+        let sorted_sets = kv_store.sorted_sets.read().await;
+        let set = sorted_sets.get(key).unwrap();
+
+        assert!(set.get(&100).is_none());
+        assert!(set.get(&400).is_some());
+        assert_eq!(set.get(&400).unwrap().len(), 1);
+        assert!(set.get(&400).unwrap().contains("member1"));
+
+        assert_eq!(set.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_lists_persistence() {
+        let dir = temp_store_dir();
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 5
+        });
+
+        let kv_store = make_queue_kv(Some(config.clone()));
+
+        kv_store
+            .lpush("queue:test:waiting", "job1".to_string())
+            .await;
+        kv_store
+            .lpush("queue:test:waiting", "job2".to_string())
+            .await;
+        kv_store
+            .lpush("queue:test:active", "job3".to_string())
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let lists_file = dir.join(LISTS_FILE_NAME);
+        assert!(lists_file.exists());
+
+        let new_kv_store = make_queue_kv(Some(config));
+
+        assert_eq!(new_kv_store.llen("queue:test:waiting").await, 2);
+        assert_eq!(new_kv_store.llen("queue:test:active").await, 1);
+
+        let popped = new_kv_store.rpop("queue:test:waiting").await;
+        assert_eq!(popped, Some("job1".to_string()));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_sorted_sets_persistence() {
+        let dir = temp_store_dir();
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            "save_interval_ms": 5
+        });
+
+        let kv_store = make_queue_kv(Some(config.clone()));
+
+        kv_store
+            .zadd("queue:test:delayed", 1000, "job1".to_string())
+            .await;
+        kv_store
+            .zadd("queue:test:delayed", 2000, "job2".to_string())
+            .await;
+        kv_store
+            .zadd("queue:test:delayed", 1500, "job3".to_string())
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let sorted_sets_file = dir.join(SORTED_SETS_FILE_NAME);
+        assert!(sorted_sets_file.exists());
+
+        let new_kv_store = make_queue_kv(Some(config));
+
+        let range = new_kv_store
+            .zrangebyscore("queue:test:delayed", 0, 3000)
+            .await;
+        assert_eq!(range.len(), 3);
+        assert!(range.contains(&"job1".to_string()));
+        assert!(range.contains(&"job2".to_string()));
+        assert!(range.contains(&"job3".to_string()));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_lrem_with_count_zero() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrem_zero";
+
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+        kv_store.lpush(key, "a".to_string()).await;
+
+        let removed = kv_store.lrem(key, 0, "a").await;
+        assert_eq!(removed, 3);
+        assert_eq!(kv_store.llen(key).await, 2);
+
+        let next = kv_store.rpop(key).await;
+        assert_eq!(next, Some("b".to_string()));
+        let next = kv_store.rpop(key).await;
+        assert_eq!(next, Some("c".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_removes_matching_element_and_preserves_order() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lremove_first_by";
+
+        // lpush adds to front: [e, d, c, b, a]
+        for val in &["a", "b", "c", "d", "e"] {
+            kv_store.lpush(key, val.to_string()).await;
+        }
+        assert_eq!(kv_store.llen(key).await, 5);
+
+        // Remove "c" (the middle element)
+        let removed = kv_store.lremove_first_by(key, |v| v == "c").await;
+        assert_eq!(
+            removed,
+            Some("c".to_string()),
+            "must return the removed element"
+        );
+        assert_eq!(
+            kv_store.llen(key).await,
+            4,
+            "list length must decrease by 1"
+        );
+
+        // Remaining order: [e, d, b, a]
+        let remaining: Vec<String> = {
+            let mut acc = Vec::new();
+            while let Some(v) = kv_store.rpop(key).await {
+                acc.push(v);
+            }
+            acc.reverse(); // rpop gives back-to-front, flip so we get front-to-back
+            acc
+        };
+        assert_eq!(remaining, vec!["e", "d", "b", "a"]);
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_returns_none_when_predicate_never_matches() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lremove_first_by_nomatch";
+
+        kv_store.lpush(key, "x".to_string()).await;
+        kv_store.lpush(key, "y".to_string()).await;
+
+        let removed = kv_store.lremove_first_by(key, |v| v == "z").await;
+        assert_eq!(
+            removed, None,
+            "must return None when predicate never matches"
+        );
+        assert_eq!(kv_store.llen(key).await, 2, "list must be unchanged");
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_only_removes_first_match() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lremove_first_by_first_only";
+
+        // Push duplicate values: front-to-back order will be [dup, other, dup]
+        kv_store.rpush(key, "dup".to_string()).await;
+        kv_store.rpush(key, "other".to_string()).await;
+        kv_store.rpush(key, "dup".to_string()).await;
+
+        let removed = kv_store.lremove_first_by(key, |v| v == "dup").await;
+        assert_eq!(removed, Some("dup".to_string()));
+        // One "dup" should remain
+        assert_eq!(kv_store.llen(key).await, 2);
+        let range = kv_store.lrange(key, 0, 10).await;
+        let dup_count = range.iter().filter(|v| v.as_str() == "dup").count();
+        assert_eq!(dup_count, 1, "only the first match must be removed");
+    }
+
+    #[tokio::test]
+    async fn test_lremove_first_by_on_nonexistent_key_returns_none() {
+        let kv_store = make_queue_kv(None);
+
+        let removed = kv_store.lremove_first_by("nonexistent_key", |_| true).await;
+        assert_eq!(removed, None);
+    }
+
+    #[tokio::test]
+    async fn test_lrem_with_negative_count() {
+        let kv_store = make_queue_kv(None);
+        let key = "test_lrem_negative";
+
+        kv_store.lpush(key, "d".to_string()).await;
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "b".to_string()).await;
+        kv_store.lpush(key, "a".to_string()).await;
+        kv_store.lpush(key, "c".to_string()).await;
+        kv_store.lpush(key, "a".to_string()).await;
+
+        let removed = kv_store.lrem(key, -2, "a").await;
+        assert_eq!(removed, 2);
+        assert_eq!(kv_store.llen(key).await, 4);
+
+        let mut items: Vec<String> = Vec::new();
+        while let Some(item) = kv_store.rpop(key).await {
+            items.push(item);
+        }
+
+        assert_eq!(
+            items,
+            vec![
+                "d".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "a".to_string()
+            ]
+        );
+    }
+}

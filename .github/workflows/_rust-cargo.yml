@@ -1,0 +1,76 @@
+name: Rust Cargo Publish
+
+on:
+  workflow_call:
+    inputs:
+      package_path:
+        description: 'Path to the crate directory (e.g., sdk/packages/rust/iii)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build and validate without publishing'
+        required: false
+        type: boolean
+        default: false
+      slack_thread_ts:
+        description: 'Slack parent message timestamp for thread replies (optional)'
+        required: false
+        type: string
+        default: ''
+      slack_label:
+        description: 'Label for this step in Slack notifications (optional)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: true
+      SLACK_BOT_TOKEN:
+        required: false
+      SLACK_CHANNEL_ID:
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack — in progress
+        if: inputs.slack_thread_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ inputs.slack_thread_ts }}"
+            text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io
+        working-directory: ${{ inputs.package_path }}
+        run: cargo publish ${{ inputs.dry_run == true && '--dry-run' || '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Notify Slack — result
+        if: always() && steps.slack.outputs.ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ steps.slack.outputs.ts }}"
+            text: "${{ job.status == 'success' && ':large_green_circle:' || ':red_circle:' }} ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — ${{ job.status }}"

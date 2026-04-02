@@ -1,71 +1,39 @@
 {
-  "name": "motia-monorepo",
+  "name": "iii-monorepo",
   "private": true,
+  "license": "SEE LICENSE IN NOTICE.md",
   "scripts": {
-    "prepare": "husky || true",
-    "dev:docs": "pnpm -r --filter=docs dev",
-    "dev": "pnpm run build && pnpm -r --filter=playground dev",
-    "dev:workbench": "pnpm run build && pnpm -r --filter=playground dev:workbench",
-    "build": "pnpm --filter=!docs run -r build",
-    "lint": "biome check . && pnpm run -r --no-bail lint:plugins",
-    "lint:ci": "biome ci . --since=origin/main --changed --diagnostic-level=error --no-errors-on-unmatched && pnpm run -r --no-bail lint:plugins",
-    "lint:fix": "biome check --write . && pnpm run -r --no-bail lint:plugins --fix",
-    "lint:plugins": "pnpm run -r --no-bail lint:plugins",
-    "format": "biome format --write .",
-    "format:check": "biome check .",
-    "test": "pnpm -r run test",
-    "test:e2e": "pnpm --filter=@motiadev/e2e test",
-    "test:e2e:ui": "pnpm --filter=@motiadev/e2e test:ui",
-    "test:e2e:headed": "pnpm --filter=@motiadev/e2e test:headed",
-    "e2e:install": "pnpm --filter=@motiadev/e2e install && pnpm --filter=@motiadev/e2e install:deps",
-    "clean": "rimraf node_modules pnpm-lock.yaml dist .turbo .next"
+    "build": "turbo run build",
+    "build:node": "turbo run build --filter=iii-sdk --filter=motia --filter=console-frontend",
+    "build:rust": "cargo build --release",
+    "build:engine": "cargo build --release -p iii",
+    "build:console": "turbo run build:binary --filter=console-frontend && cargo build --release -p iii-console",
+    "test": "turbo run test",
+    "test:node": "turbo run test --filter=iii-sdk --filter=motia",
+    "test:rust": "cargo test --workspace --all-features",
+    "test:engine": "cargo test -p iii --all-features",
+    "test:sdk-node": "turbo run test --filter=iii-sdk",
+    "test:sdk-rust": "cargo test -p iii-sdk --all-features",
+    "test:motia-js": "turbo run test --filter=motia",
+    "lint": "turbo run lint",
+    "lint:node": "biome check .",
+    "lint:rust": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "fmt": "biome format --write . && cargo fmt --all",
+    "fmt:check": "biome check . && cargo fmt --all -- --check",
+    "type-check": "turbo run type-check",
+    "generate:api-docs": "bash scripts/generate-api-docs.sh",
+    "dev:docs": "cd docs && npx mint dev",
+    "dev:motia-docs": "turbo run dev --filter=motia-docs",
+    "dev:website": "turbo run dev --filter=iii-website",
+    "dev:console": "turbo run dev --filter=console-frontend"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.6",
-    "rimraf": "^6.0.1",
-    "@eslint/js": "^9.28.0",
-    "@jest/globals": "^30.2.0",
-    "@types/jest": "^29.5.14",
-    "@types/node": "^22.18.10",
-    "@typescript-eslint/eslint-plugin": "^8.32.1",
-    "@typescript-eslint/parser": "^8.32.1",
-    "eslint": "^9.26.0",
-    "eslint-config-prettier": "^10.1.5",
-    "eslint-plugin-jest": "^28.11.0",
-    "eslint-plugin-prettier": "^5.4.0",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.20",
-    "globals": "^16.1.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^15.2.0",
-    "prettier": "^3.5.3"
+    "tsx": "^4.21.0",
+    "turbo": "^2.5.0"
   },
-  "lint-staged": {
-    "*.{ts,tsx,js,jsx,json,jsonc}": [
-      "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true"
-    ]
-  },
-  "resolutions": {
-    "autoprefixer": "^10.4.20",
-    "eslint": "^9.17.0",
-    "postcss": "^8.5.3",
-    "react": "^19.2.3",
-    "react-dom": "^19.2.3",
-    "typescript": "^5.7.3",
-    "@types/node": "^22.15.18",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3"
-  },
-  "packageManager": "pnpm@10.11.0",
-  "volta": {
-    "node": "24.11.1"
-  },
-  "pnpm": {
-    "overrides": {
-      "axe-core": "4.10.3",
-      "dompurify": "3.2.6",
-      "@vercel/analytics": "1.5.0"
-    }
-  },
-  "version": "0.0.7"
+  "packageManager": "pnpm@10.19.0",
+  "engines": {
+    "node": ">=20"
+  }
 }

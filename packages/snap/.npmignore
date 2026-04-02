@@ -1,5 +1,0 @@
-src/
-scripts/
-tsconfig.json
-dist/**/__tests__/
-index.ts

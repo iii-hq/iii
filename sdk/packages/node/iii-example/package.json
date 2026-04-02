@@ -1,0 +1,17 @@
+{
+  "name": "@iii-hq/iii-example",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "III",
+  "scripts": {
+    "dev": "bun src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,7 +1,0 @@
-export const BUNDLE_SIZE_LIMITS = {
-  STEP_MAX_MB: 250,
-  ROUTER_MAX_MB: 150,
-  STEP_NAME_MAX_LENGTH: 40,
-}
-
-export const BYTES_TO_MB = 1024 * 1024

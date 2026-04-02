@@ -1,0 +1,220 @@
+name: Rust Binary Release
+
+on:
+  workflow_call:
+    inputs:
+      bin_name:
+        description: 'Binary name (e.g., iii, iii-console)'
+        required: true
+        type: string
+      manifest_path:
+        description: 'Path to Cargo.toml (e.g., engine/Cargo.toml)'
+        required: true
+        type: string
+      tag_name:
+        description: 'Git tag for the GitHub Release (e.g., iii/v1.0.0)'
+        required: true
+        type: string
+      is_prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+      skip_create_release:
+        description: 'Skip GH release creation (assumes release already exists for the tag)'
+        required: false
+        type: boolean
+        default: false
+      artifact_name:
+        description: 'Pre-built artifact to download before building (optional)'
+        required: false
+        type: string
+        default: ''
+      artifact_dest:
+        description: 'Destination path for the downloaded artifact (optional)'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Build binaries without uploading or creating releases'
+        required: false
+        type: boolean
+        default: false
+      slack_thread_ts:
+        description: 'Slack parent message timestamp for thread replies (optional)'
+        required: false
+        type: string
+        default: ''
+      slack_label:
+        description: 'Label for this step in Slack notifications (optional)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      III_CI_APP_ID:
+        required: true
+      III_CI_APP_PRIVATE_KEY:
+        required: true
+      SLACK_BOT_TOKEN:
+        required: false
+      SLACK_CHANNEL_ID:
+        required: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+
+jobs:
+  pre-build:
+    name: Pre-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      slack_ts: ${{ steps.slack.outputs.ts }}
+    steps:
+      - name: Notify Slack — in progress
+        if: inputs.slack_thread_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ inputs.slack_thread_ts }}"
+            text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
+
+      - name: Generate token
+        if: inputs.skip_create_release != true && inputs.dry_run != true
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        if: inputs.skip_create_release != true && inputs.dry_run != true
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Create GitHub Release
+        if: inputs.skip_create_release != true && inputs.dry_run != true
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          tag_name: ${{ inputs.tag_name }}
+          name: ${{ inputs.bin_name }} ${{ inputs.tag_name }}
+          draft: false
+          prerelease: ${{ inputs.is_prerelease }}
+          generate_release_notes: true
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [pre-build]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      SKIP_FRONTEND_BUILD: ${{ inputs.artifact_name != '' && '1' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-22.04
+
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Download pre-built artifact
+        if: inputs.artifact_name != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_dest }}
+
+      - name: Install cross-compilation tools
+        if: runner.os == 'Linux'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update
+          case "$BUILD_TARGET" in
+            x86_64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools
+              ;;
+            aarch64-unknown-linux-gnu)
+              sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+              ;;
+            armv7-unknown-linux-gnueabihf)
+              sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+              ;;
+          esac
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.bin_name }}-${{ matrix.target }}
+
+      - name: Build and upload binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: ${{ inputs.bin_name }}
+          target: ${{ matrix.target }}
+          ref: refs/tags/${{ inputs.tag_name }}
+          tar: unix
+          zip: windows
+          checksum: sha256
+          manifest-path: ${{ inputs.manifest_path }}
+          token: ${{ steps.generate_token.outputs.token }}
+          dry-run: ${{ inputs.dry_run }}
+
+  notify-result:
+    name: Notify Result
+    needs: [pre-build, build]
+    if: always() && needs.pre-build.outputs.slack_ts != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update thread message
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ needs.pre-build.outputs.slack_ts }}"
+            text: "${{ needs.build.result == 'success' && ':large_green_circle:' || ':red_circle:' }} ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — ${{ needs.build.result }}"

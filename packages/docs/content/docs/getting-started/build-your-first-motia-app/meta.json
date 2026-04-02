@@ -1,5 +1,0 @@
-{
-  "title": "Build Your First Motia App",
-  "defaultOpen": false,
-  "pages": ["api-endpoints", "background-jobs", "workflows", "ai-agents", "streaming-agents"]
-}

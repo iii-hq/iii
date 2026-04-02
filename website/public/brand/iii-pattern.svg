@@ -1,0 +1,12 @@
+<svg viewBox="0 0 120 160" xmlns="http://www.w3.org/2000/svg" fill="currentColor" opacity="0.03">
+  <!-- Simplified iii pattern element for backgrounds -->
+  <!-- First i -->
+  <rect width="30" height="30"/>
+  <rect y="45" width="30" height="90"/>
+  <!-- Second i -->
+  <rect x="45" width="30" height="30"/>
+  <rect x="45" y="45" width="30" height="90"/>
+  <!-- Third i -->
+  <rect x="90" width="30" height="30"/>
+  <rect x="90" y="45" width="30" height="90"/>
+</svg>

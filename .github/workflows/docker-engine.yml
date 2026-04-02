@@ -1,0 +1,263 @@
+name: Docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to build from (e.g., iii/v1.2.3)'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Release tag to build from (e.g., iii/v1.2.3)'
+        required: true
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_PASSWORD:
+        required: true
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  DOCKERHUB_REPO: iiidev/iii
+
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+    steps:
+      - name: Extract version from tag
+        id: meta
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          VERSION="${TAG##*/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "::notice::Docker build for iii v$VERSION (tag=$TAG)"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: [setup]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            docker_arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            docker_arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download pre-built binary
+        env:
+          RELEASE_TAG: ${{ needs.setup.outputs.release_tag }}
+          BIN_NAME: iii
+          TARGET: ${{ matrix.target }}
+        run: |
+          TARBALL="${BIN_NAME}-${TARGET}.tar.gz"
+          curl -L --fail -o "$TARBALL" \
+            "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${TARBALL}"
+          tar -xzf "$TARBALL"
+          chmod +x "$BIN_NAME"
+          mv "$BIN_NAME" "engine/iii-${{ matrix.docker_arch }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_REPO }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: engine
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.DOCKERHUB_REPO }}:build-${{ matrix.docker_arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+
+  publish:
+    name: Publish multi-platform image
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_REPO }}
+          tags: |
+            type=raw,value=${{ needs.setup.outputs.version }}
+            type=raw,value=latest
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Create and push multi-platform manifest
+        run: |
+          for tag in "${{ needs.setup.outputs.version }}" "latest"; do
+            docker buildx imagetools create \
+              -t "${{ env.DOCKERHUB_REPO }}:$tag" \
+              "${{ env.DOCKERHUB_REPO }}:build-amd64" \
+              "${{ env.DOCKERHUB_REPO }}:build-arm64"
+          done
+
+      - name: Run Trivy vulnerability scanner
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.DOCKERHUB_REPO }}:${{ needs.setup.outputs.version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+      - name: Upload Trivy scan results to GitHub Security
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Check for critical vulnerabilities
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.DOCKERHUB_REPO }}:${{ needs.setup.outputs.version }}
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Remove intermediate build tags
+        continue-on-error: true
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+        run: |
+          REPO="${{ env.DOCKERHUB_REPO }}"
+          TOKEN=$(curl -s -u "${DOCKERHUB_USERNAME}:${DOCKERHUB_PASSWORD}" \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO}:delete" \
+            | jq -r .token)
+          for arch in amd64 arm64; do
+            tag="build-${arch}"
+            DIGEST=$(curl -s -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+              "https://registry-1.docker.io/v2/${REPO}/manifests/${tag}" \
+              -I | grep -i docker-content-digest | awk '{print $2}' | tr -d '\r')
+            if [ -n "$DIGEST" ]; then
+              curl -s -X DELETE -H "Authorization: Bearer ${TOKEN}" \
+                "https://registry-1.docker.io/v2/${REPO}/manifests/${DIGEST}" || true
+            fi
+          done
+
+      - name: Generate image summary
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Docker Image Published
+
+          | Registry | Repository |
+          |----------|------------|
+          | DockerHub | `${{ env.DOCKERHUB_REPO }}` |
+
+          **Platforms:** linux/amd64, linux/arm64 (pre-built binaries)
+          **Security:** Trivy (CRITICAL, HIGH) · Distroless (nonroot)
+          EOF
+
+      - name: Notify Slack
+        if: success()
+        uses: slackapi/slack-github-action@v2.0.0
+        continue-on-error: true
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Docker image published: iii v${{ needs.setup.outputs.version }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Docker Image Published*\n\nVersion: `${{ needs.setup.outputs.version }}`\nPlatforms: `linux/amd64`, `linux/arm64`\nRuntime: Distroless (nonroot)\n\n*Image:*\n\u2022 `${{ env.DOCKERHUB_REPO }}:${{ needs.setup.outputs.version }}`"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Build>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+  notify-failure:
+    name: Notify Failure
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v2.0.0
+        continue-on-error: true
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Docker build failed: ${{ inputs.release_tag }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Docker Build Failed*\n\nTag: `${{ inputs.release_tag }}`\nTriggered by: ${{ github.actor }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                    }
+                  ]
+                }
+              ]
+            }

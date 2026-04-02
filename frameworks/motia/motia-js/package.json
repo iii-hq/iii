@@ -1,0 +1,32 @@
+{
+  "name": "motia-monorepo",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm run build && pnpm --filter=@iii/motia-example dev",
+    "test": "pnpm -r --filter motia test",
+    "test:coverage": "pnpm -r --filter motia test:coverage",
+    "test:ci": "pnpm -r --filter motia test:ci",
+    "lint": "biome check .",
+    "lint:ci": "biome ci . --since=origin/main --changed --diagnostic-level=error --no-errors-on-unmatched",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "format:check": "biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.6",
+    "globals": "^16.1.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.0",
+    "prettier": "^3.5.3"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,jsonc}": [
+      "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true"
+    ]
+  },
+  "volta": {
+    "node": "24.11.1"
+  }
+}

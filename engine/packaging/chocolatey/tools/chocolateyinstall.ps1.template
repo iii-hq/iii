@@ -1,0 +1,24 @@
+$ErrorActionPreference = 'Stop'
+
+$packageName = 'iii'
+$toolsDir = "$(Split-Path -parent $MyInvocation.MyCommand.Definition)"
+$version = '{{VERSION}}'
+
+$packageArgs = @{
+  packageName   = $packageName
+  unzipLocation = $toolsDir
+  url64bit      = 'https://github.com/iii-hq/iii/releases/download/v{{VERSION}}/iii-x86_64-pc-windows-msvc.zip'
+  checksum64    = '{{CHECKSUM_X64}}'
+  checksumType64= 'sha256'
+}
+
+Install-ChocolateyZipPackage @packageArgs
+
+# Add to PATH
+$exePath = Join-Path $toolsDir 'iii.exe'
+if (Test-Path $exePath) {
+  Write-Host "iii installed successfully to $exePath"
+  Write-Host "Run 'iii --version' to verify installation"
+} else {
+  throw "Installation failed: iii.exe not found at $exePath"
+}

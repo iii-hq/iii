@@ -1,0 +1,289 @@
+name: Homebrew Publish
+
+on:
+  workflow_call:
+    inputs:
+      bin_name:
+        description: 'Binary name (e.g., iii, iii-console)'
+        required: true
+        type: string
+      formula_class:
+        description: 'Ruby class name for the formula (e.g., Iii, IiiConsole)'
+        required: true
+        type: string
+      formula_path:
+        description: 'Path inside homebrew-tap repo (e.g., Formula/iii.rb)'
+        required: true
+        type: string
+      description:
+        description: 'Formula description'
+        required: true
+        type: string
+      homepage:
+        description: 'Homepage URL for the formula'
+        required: true
+        type: string
+      release_repo:
+        description: 'GitHub repo hosting the release assets (e.g., iii-hq/iii)'
+        required: true
+        type: string
+      release_tag:
+        description: 'GitHub release tag for downloading assets (e.g., iii/v1.0.0)'
+        required: true
+        type: string
+      version:
+        description: 'Version number without v prefix (e.g., 1.0.0)'
+        required: true
+        type: string
+      include_linux:
+        description: 'Whether to include Linux targets in the formula'
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Run in dry-run mode (skip actual publish)'
+        required: false
+        type: boolean
+        default: false
+      slack_thread_ts:
+        description: 'Slack parent message timestamp for thread replies (optional)'
+        required: false
+        type: string
+        default: ''
+      slack_label:
+        description: 'Label for this step in Slack notifications (optional)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      III_CI_APP_ID:
+        required: true
+      III_CI_APP_PRIVATE_KEY:
+        required: true
+      SLACK_BOT_TOKEN:
+        required: false
+      SLACK_CHANNEL_ID:
+        required: false
+
+env:
+  TAP_REPO: iii-hq/homebrew-tap
+
+jobs:
+  publish-homebrew:
+    name: Update Homebrew Formula
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Notify Slack — in progress
+        if: inputs.slack_thread_ts != ''
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            thread_ts: "${{ inputs.slack_thread_ts }}"
+            text: ":large_yellow_circle: ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — in progress"
+
+      - name: Validate version format
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format. Expected: X.Y.Z (got $VERSION)"
+            exit 1
+          fi
+          echo "Version validated: $VERSION"
+
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ steps.generate_token.outputs.token }}
+          path: homebrew-tap
+
+      - name: Download release assets
+        env:
+          RELEASE_REPO: ${{ inputs.release_repo }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BIN_NAME: ${{ inputs.bin_name }}
+          INCLUDE_LINUX: ${{ inputs.include_linux }}
+        run: |
+          BASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}"
+
+          curl -L --fail -o "${BIN_NAME}-x86_64-apple-darwin.tar.gz" \
+            "${BASE_URL}/${BIN_NAME}-x86_64-apple-darwin.tar.gz"
+          curl -L --fail -o "${BIN_NAME}-aarch64-apple-darwin.tar.gz" \
+            "${BASE_URL}/${BIN_NAME}-aarch64-apple-darwin.tar.gz"
+
+          REQUIRED_FILES="${BIN_NAME}-x86_64-apple-darwin.tar.gz ${BIN_NAME}-aarch64-apple-darwin.tar.gz"
+
+          if [[ "$INCLUDE_LINUX" == "true" ]]; then
+            curl -L --fail -o "${BIN_NAME}-x86_64-unknown-linux-gnu.tar.gz" \
+              "${BASE_URL}/${BIN_NAME}-x86_64-unknown-linux-gnu.tar.gz"
+            curl -L --fail -o "${BIN_NAME}-aarch64-unknown-linux-gnu.tar.gz" \
+              "${BASE_URL}/${BIN_NAME}-aarch64-unknown-linux-gnu.tar.gz"
+            REQUIRED_FILES="$REQUIRED_FILES ${BIN_NAME}-x86_64-unknown-linux-gnu.tar.gz ${BIN_NAME}-aarch64-unknown-linux-gnu.tar.gz"
+          fi
+
+          for file in $REQUIRED_FILES; do
+            if [ ! -s "$file" ]; then
+              echo "::error::$file is missing or empty"
+              exit 1
+            fi
+          done
+          ls -lh *.tar.gz
+
+      - name: Calculate SHA256 checksums
+        id: checksums
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          INCLUDE_LINUX: ${{ inputs.include_linux }}
+        run: |
+          MACOS_X86_SHA=$(shasum -a 256 "${BIN_NAME}-x86_64-apple-darwin.tar.gz" | awk '{print $1}')
+          MACOS_ARM_SHA=$(shasum -a 256 "${BIN_NAME}-aarch64-apple-darwin.tar.gz" | awk '{print $1}')
+          echo "macos_x86_64_sha256=${MACOS_X86_SHA}" >> "$GITHUB_OUTPUT"
+          echo "macos_aarch64_sha256=${MACOS_ARM_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [[ "$INCLUDE_LINUX" == "true" ]]; then
+            LINUX_X86_SHA=$(shasum -a 256 "${BIN_NAME}-x86_64-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+            LINUX_ARM_SHA=$(shasum -a 256 "${BIN_NAME}-aarch64-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+            echo "linux_x86_64_sha256=${LINUX_X86_SHA}" >> "$GITHUB_OUTPUT"
+            echo "linux_aarch64_sha256=${LINUX_ARM_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate formula
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          FORMULA_CLASS: ${{ inputs.formula_class }}
+          FORMULA_FILE: ${{ inputs.formula_path }}
+          DESCRIPTION: ${{ inputs.description }}
+          HOMEPAGE: ${{ inputs.homepage }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_REPO: ${{ inputs.release_repo }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          INCLUDE_LINUX: ${{ inputs.include_linux }}
+          MACOS_X86_SHA: ${{ steps.checksums.outputs.macos_x86_64_sha256 }}
+          MACOS_ARM_SHA: ${{ steps.checksums.outputs.macos_aarch64_sha256 }}
+          LINUX_X86_SHA: ${{ steps.checksums.outputs.linux_x86_64_sha256 }}
+          LINUX_ARM_SHA: ${{ steps.checksums.outputs.linux_aarch64_sha256 }}
+        run: |
+          cd homebrew-tap
+          mkdir -p "$(dirname "$FORMULA_FILE")"
+
+          BASE_URL="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}"
+
+          {
+            echo "class ${FORMULA_CLASS} < Formula"
+            echo "  desc \"${DESCRIPTION}\""
+            echo "  homepage \"${HOMEPAGE}\""
+            echo "  version \"${VERSION}\""
+            echo "  license \"Apache-2.0\""
+            echo ""
+            echo "  on_macos do"
+            echo "    if Hardware::CPU.arm?"
+            echo "      url \"${BASE_URL}/${BIN_NAME}-aarch64-apple-darwin.tar.gz\""
+            echo "      sha256 \"${MACOS_ARM_SHA}\""
+            echo "    else"
+            echo "      url \"${BASE_URL}/${BIN_NAME}-x86_64-apple-darwin.tar.gz\""
+            echo "      sha256 \"${MACOS_X86_SHA}\""
+            echo "    end"
+            echo "  end"
+
+            if [[ "$INCLUDE_LINUX" == "true" ]]; then
+              echo ""
+              echo "  on_linux do"
+              echo "    if Hardware::CPU.arm?"
+              echo "      url \"${BASE_URL}/${BIN_NAME}-aarch64-unknown-linux-gnu.tar.gz\""
+              echo "      sha256 \"${LINUX_ARM_SHA}\""
+              echo "    else"
+              echo "      url \"${BASE_URL}/${BIN_NAME}-x86_64-unknown-linux-gnu.tar.gz\""
+              echo "      sha256 \"${LINUX_X86_SHA}\""
+              echo "    end"
+              echo "  end"
+            fi
+
+            echo ""
+            echo "  def install"
+            echo "    bin.install \"${BIN_NAME}\""
+            echo "  end"
+            echo ""
+            echo "  test do"
+            echo "    assert_match version.to_s, shell_output(\"\#{bin}/${BIN_NAME} --version\")"
+            echo "  end"
+            echo "end"
+          } > "$FORMULA_FILE"
+
+          echo "Formula generated:"
+          cat "$FORMULA_FILE"
+
+      - name: Test formula locally
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          FORMULA_FILE: ${{ inputs.formula_path }}
+        run: |
+          brew tap iii-hq/tap
+          cp "$GITHUB_WORKSPACE/homebrew-tap/${FORMULA_FILE}" \
+            "$(brew --repo iii-hq/tap)/${FORMULA_FILE}"
+          brew audit --new "iii-hq/tap/${BIN_NAME}" || true
+          brew install "iii-hq/tap/${BIN_NAME}"
+          "${BIN_NAME}" --version
+          brew uninstall "${BIN_NAME}"
+          brew untap iii-hq/tap
+
+      - name: Commit and push changes
+        if: inputs.dry_run != true
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          VERSION: ${{ inputs.version }}
+          FORMULA_FILE: ${{ inputs.formula_path }}
+        run: |
+          cd homebrew-tap
+
+          git config user.name "iii-ci[bot]"
+          git config user.email "iii-ci[bot]@users.noreply.github.com"
+
+          git add "$FORMULA_FILE"
+          git commit -m "chore: update ${BIN_NAME} to v${VERSION}
+
+          Automated update from release workflow."
+
+          git push origin main
+
+          echo "Formula published to homebrew-tap!"
+
+      - name: Dry-run summary
+        if: inputs.dry_run == true
+        env:
+          BIN_NAME: ${{ inputs.bin_name }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "DRY RUN MODE - No changes pushed"
+          echo ""
+          echo "Formula validated successfully for ${BIN_NAME} v${VERSION}"
+          echo "Set dry_run=false to publish for real."
+
+      - name: Notify Slack — result
+        if: always() && steps.slack.outputs.ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: "${{ steps.slack.outputs.ts }}"
+            text: "${{ job.status == 'success' && ':large_green_circle:' || ':red_circle:' }} ${{ inputs.slack_label }}${{ inputs.dry_run == true && ' (dry run)' || '' }} — ${{ job.status }}"

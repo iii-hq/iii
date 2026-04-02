@@ -1,0 +1,40 @@
+{
+  "name": "@motiadev/stream-client-browser",
+  "description": "Motia Stream Client Package – Responsible for managing streams of data.",
+  "version": "0.17.11-beta.193",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "lint": "eslint --config ../../eslint.config.js"
+  },
+  "dependencies": {
+    "uuid": "^13.0.0",
+    "@motiadev/stream-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/ws": "^8.18.1",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.5",
+    "tsdown": "^0.16.6",
+    "typescript": "^5.9.3"
+  },
+  "exports": {
+    ".": {
+      "development": "./index.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": "./dist/index.js",
+      "./package.json": "./package.json"
+    }
+  }
+}

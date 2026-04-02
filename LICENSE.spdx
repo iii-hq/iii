@@ -1,0 +1,22 @@
+SPDXVersion: SPDX-2.1
+DataLicense: CC0-1.0
+PackageName: iii
+DataFormat: SPDXRef-1
+PackageSupplier: Organization: Motia LLC
+PackageHomePage: https://iii.dev
+PackageLicenseDeclared: Elastic-2.0
+PackageLicenseDeclared: Apache-2.0
+PackageCopyrightText: 2024-present, Motia LLC
+PackageSummary: <text>iii is a single engine with three primitives (Function, Trigger, Discovery)
+that replaces API frameworks, task queues, cron schedulers, pub/sub, state stores,
+and observability pipelines.
+                </text>
+PackageComment: <text>The engine runtime (engine/) is licensed under Elastic License 2.0.
+All other components (sdk/, cli/, console/, frameworks/, docs/, website/)
+are licensed under Apache License 2.0.
+                </text>
+Created: 2024-01-01T00:00:00Z
+PackageDownloadLocation: git://github.com/iii-hq/iii
+PackageDownloadLocation: git+https://github.com/iii-hq/iii.git
+PackageDownloadLocation: git+ssh://github.com/iii-hq/iii.git
+Creator: Organization: Motia LLC

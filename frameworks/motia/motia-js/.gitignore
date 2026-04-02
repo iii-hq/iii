@@ -1,0 +1,100 @@
+# Dependencies
+node_modules/
+python_modules/
+.pnpm-store/
+.npm
+.npmrc
+package-lock.json
+yarn.lock
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+**/*.tsbuildinfo
+reports/
+
+# Ingore my scripts that I run
+bs.sh
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+**/storybook-static/
+
+# Builds and outputs
+**/dist
+dist/
+out/
+.next/
+.nuxt/
+.output/
+.vite/
+.turbo
+
+# Testing and coverage
+coverage/
+.nyc_output/
+test-results/*
+playground/reports/unit/
+
+# IDEs and editors
+.idea/
+.vscode/
+.cursor/
+*.sublime-project
+*.sublime-workspace
+.project
+.settings/
+*.swp
+*.swo
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and debugging
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# Cache and temp files
+.cache/
+.temp/
+.tmp/
+.eslintcache
+.stylelintcache
+tsconfig.tsbuildinfo
+
+# Python cache files
+*/__pycache__/*
+*.py[cod]
+*.pyo
+
+# Virtual environment
+venv/
+.env/
+
+# Ignore deployed components in endpoints
+agents/**/components/
+
+
+.aider*
+
+**/tsconfig.app.tsbuildinfo
+.motia/
+.mermaid/
+
+playground/motia-workbench.json
+playground/openapi.json
+playground/types.d.ts
+playground/data

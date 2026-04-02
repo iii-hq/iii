@@ -1,8 +1,0 @@
-config = {
-    "type": "noop",
-    "name": "{{STEP_NAME}}",
-    "description": "{{DESCRIPTION}}",
-    "virtualEmits": {{VIRTUAL_EMITS}},
-    "virtualSubscribes": {{VIRTUAL_SUBSCRIBES}},
-    "flows": {{FLOWS}}
-}

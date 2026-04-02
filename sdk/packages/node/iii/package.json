@@ -1,0 +1,68 @@
+{
+  "name": "iii-sdk",
+  "version": "0.10.0",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "index.js",
+  "author": "III",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "III SDK for Node.js",
+  "keywords": [
+    "iii",
+    "sdk"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "docs:json": "typedoc",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./stream": {
+      "types": "./dist/stream.d.ts",
+      "import": "./dist/stream.mjs",
+      "require": "./dist/stream.cjs"
+    },
+    "./state": {
+      "types": "./dist/state.d.ts",
+      "import": "./dist/state.mjs",
+      "require": "./dist/state.cjs"
+    },
+    "./telemetry": {
+      "types": "./dist/telemetry.d.ts",
+      "import": "./dist/telemetry.mjs",
+      "require": "./dist/telemetry.cjs"
+    }
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.57.0",
+    "@opentelemetry/core": "^1.30.0",
+    "@opentelemetry/instrumentation": "^0.57.0",
+    "@opentelemetry/otlp-transformer": "^0.57.0",
+    "@opentelemetry/resources": "^1.30.0",
+    "@opentelemetry/sdk-logs": "^0.57.0",
+    "@opentelemetry/sdk-metrics": "^1.30.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0",
+    "@opentelemetry/sdk-trace-node": "^1.30.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^2.1.0",
+    "tsdown": "^0.21.4",
+    "typedoc": "^0.28.17",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0"
+  }
+}

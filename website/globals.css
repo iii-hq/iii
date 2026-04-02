@@ -1,0 +1,479 @@
+/* ChivoMono Brand Font - Variable Weight */
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/fonts/ChivoMono-VariableFont_wght.ttf')
+    format('truetype-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/fonts/ChivoMono-Italic-VariableFont_wght.ttf')
+    format('truetype-variations');
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Fallback for browsers that don't support variable fonts */
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/fonts/ChivoMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Chivo Mono';
+  src: url('/fonts/ChivoMono-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+html {
+  zoom: 100%;
+}
+
+/* Prevent horizontal scroll on mobile. Use clip (not hidden) so position:sticky
+   still works site-wide — overflow-x:hidden breaks vertical sticky in WebKit/Blink. */
+html,
+body {
+  overflow-x: clip;
+  max-width: 100vw;
+}
+
+/* CSS Variables for theme colors */
+:root {
+  /* Light mode SVG colors */
+  --svg-fill: #f4f4f4;
+  --svg-stroke: #000000;
+  --svg-text: #000000;
+  --svg-cluster-fill: #f4f4f4;
+
+  /* Light mode Grid/Canvas colors */
+  --grid-bg: #f4f4f4;
+  --grid-line-color: rgba(0, 0, 0, 0.06);
+  --arrow-light-color: #cccccc;
+  --arrow-highlight-color: #aaaaaa;
+
+  /* Base colors - Brand Guidelines */
+  --color-black: #000000;
+  --color-dark: #1d1d1d;
+  --color-medium: #848484; /* Medium Gray */
+  --color-medium-dark: #848484;
+  --color-medium-light: #848484;
+  --color-light: #f4f4f4; /* Light Cool Gray */
+  --color-accent: #f3f724; /* Yellow iii */
+  --color-accent-light: #2f7fff; /* Blue iii */
+
+  /* Semantic colors */
+  --color-info: #42e7e7;
+  --color-warn: #f3943d;
+  --color-alert: #e52e61;
+  --color-success: #1ce669;
+
+  /* Scrollbar colors (Light Default) — blue accent */
+  --scrollbar-track: var(--color-light);
+  --scrollbar-thumb: var(--color-accent-light);
+  --scrollbar-thumb-hover: var(--color-accent-light);
+}
+
+/* Dark mode colors */
+.dark {
+  --svg-fill: #000000;
+  --svg-stroke: #ffffff;
+  --svg-text: #ffffff;
+  --svg-cluster-fill: transparent;
+
+  --grid-bg: #000000;
+  --grid-line-color: rgba(255, 255, 255, 0.04);
+  --arrow-light-color: #555555;
+  --arrow-highlight-color: #666666;
+
+  /* Scrollbar colors (Dark) — yellow accent */
+  --scrollbar-track: var(--color-black);
+  --scrollbar-thumb: var(--color-accent);
+  --scrollbar-thumb-hover: var(--color-accent);
+}
+
+/* Apply to body based on isDarkMode */
+body.dark-mode {
+  --svg-fill: #000000;
+  --svg-stroke: #ffffff;
+  --svg-text: #ffffff;
+  --svg-cluster-fill: transparent;
+
+  --grid-bg: #000000;
+  --grid-line-color: rgba(255, 255, 255, 0.04);
+  --arrow-light-color: #555555;
+  --arrow-highlight-color: #666666;
+
+  /* Scrollbar colors (Dark) — yellow accent */
+  --scrollbar-track: var(--color-black);
+  --scrollbar-thumb: var(--color-accent);
+  --scrollbar-thumb-hover: var(--color-accent);
+}
+
+body.light-mode {
+  --svg-fill: var(--color-light);
+  --svg-stroke: var(--color-black);
+  --svg-text: var(--color-black);
+  --svg-cluster-fill: var(--color-light);
+
+  --grid-bg: var(--color-light);
+  --grid-line-color: rgba(0, 0, 0, 0.06);
+  --arrow-light-color: #cccccc;
+  --arrow-highlight-color: #aaaaaa;
+
+  /* Scrollbar colors (Light) — blue accent */
+  --scrollbar-track: var(--color-light);
+  --scrollbar-thumb: var(--color-accent-light);
+  --scrollbar-thumb-hover: var(--color-accent-light);
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* CRT Effect for Terminal */
+.crt::before {
+  content: ' ';
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  background:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
+    linear-gradient(
+      90deg,
+      rgba(255, 0, 0, 0.06),
+      rgba(0, 255, 0, 0.02),
+      rgba(0, 0, 255, 0.06)
+    );
+  z-index: 2;
+  background-size:
+    100% 2px,
+    3px 100%;
+  pointer-events: none;
+}
+
+/* Hide scrollbar utility */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Brand scrollbar for dark mode (subtle accent) */
+.scrollbar-brand-dark {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+.scrollbar-brand-dark::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.scrollbar-brand-dark::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 2px;
+}
+
+.scrollbar-brand-dark::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.scrollbar-brand-dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Brand scrollbar for light mode (blue accent) */
+.scrollbar-brand-light {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-accent-light) var(--color-light);
+}
+
+.scrollbar-brand-light::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-brand-light::-webkit-scrollbar-track {
+  background: #e8e8e8;
+  border-radius: 3px;
+}
+
+.scrollbar-brand-light::-webkit-scrollbar-thumb {
+  background: var(--color-accent-light);
+  border-radius: 3px;
+}
+
+.scrollbar-brand-light::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent-light);
+}
+
+/* Energy flow animations for dependency connection lines */
+@keyframes flowDown {
+  0% {
+    background-position: 0% -100%;
+  }
+  100% {
+    background-position: 0% 200%;
+  }
+}
+
+@keyframes flowRight {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+@keyframes orbTravel {
+  0% {
+    top: -8px;
+    opacity: 0;
+    transform: translateX(-50%) scale(0.5);
+  }
+  15% {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+  85% {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+  100% {
+    top: calc(100% + 8px);
+    opacity: 0;
+    transform: translateX(-50%) scale(0.5);
+  }
+}
+
+/* Pulsing glow effect on connected elements */
+@keyframes connectedGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 5px 2px currentColor;
+  }
+  50% {
+    box-shadow: 0 0 15px 5px currentColor;
+  }
+}
+
+/* Horizontal orb travel for output connection */
+@keyframes orbTravelHorizontal {
+  0% {
+    left: -8px;
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  85% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    left: calc(100% - 8px);
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+/* Bidirectional orb travel - right direction */
+@keyframes orbTravelRight {
+  0% {
+    left: -4px;
+    opacity: 0;
+    transform: translateY(-50%) scale(0.5);
+  }
+  10% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  90% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  100% {
+    left: calc(100% - 4px);
+    opacity: 0;
+    transform: translateY(-50%) scale(0.5);
+  }
+}
+
+/* Bidirectional orb travel - left direction */
+@keyframes orbTravelLeft {
+  0% {
+    left: calc(100% - 4px);
+    opacity: 0;
+    transform: translateY(-50%) scale(0.5);
+  }
+  10% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  90% {
+    opacity: 1;
+    transform: translateY(-50%) scale(1);
+  }
+  100% {
+    left: -4px;
+    opacity: 0;
+    transform: translateY(-50%) scale(0.5);
+  }
+}
+
+/* Socket/port pulsing animation (centered variant for absolutely-positioned elements) */
+@keyframes socketPulse {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.3);
+    opacity: 0.2;
+  }
+}
+
+/* Socket/port pulsing animation (inline variant for flow-positioned buttons) */
+@keyframes socketPulseInline {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(var(--color-accent-rgb, 224, 255, 0), 0.4);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 8px 2px rgba(var(--color-accent-rgb, 224, 255, 0), 0.15);
+  }
+}
+
+/* Core glow breathing animation */
+@keyframes coreGlow {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.2);
+    filter: brightness(1.5);
+  }
+}
+
+/* Particles orbiting around the socket */
+@keyframes particleOrbit {
+  0% {
+    transform: rotate(0deg) translateX(10px) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(360deg) translateX(10px) rotate(-360deg);
+    opacity: 0;
+  }
+}
+
+/* Dashed border animation for decoupled elements */
+@keyframes dashMove {
+  0% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 24;
+  }
+}
+
+/* Category switch animation for code examples */
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-slide-in {
+  animation: fadeSlideIn 200ms ease-out;
+}
+
+/* Three Primitives - sequential card highlight */
+@keyframes primitiveHighlight {
+  0%,
+  100% {
+    border-color: rgba(243, 247, 36, 0.1);
+  }
+  50% {
+    border-color: rgba(243, 247, 36, 0.5);
+  }
+}
+
+/* Stat counter entrance */
+@keyframes statCount {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Legend item pulse animation */
+@keyframes legendPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    transform: scale(1.1);
+    box-shadow: 0 0 12px 4px currentColor;
+  }
+}

@@ -1,0 +1,414 @@
+name: Release iii
+
+on:
+  push:
+    tags:
+      - 'iii/v*'
+
+permissions:
+  contents: write
+  id-token: write
+  actions: write
+  security-events: write
+
+concurrency:
+  group: release-iii-${{ github.repository }}
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # Setup: Parse tag metadata & notify
+  # ──────────────────────────────────────────────────────────────
+
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ github.ref_name }}
+      version: ${{ steps.meta.outputs.version }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
+      dry_run: ${{ steps.meta.outputs.dry_run }}
+      slack_ts: ${{ steps.slack.outputs.ts }}
+    steps:
+      - name: Extract metadata from tag
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#iii/v}"
+
+          if [[ "$VERSION" =~ -dry-run\.[0-9]+$ ]]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=dry-run" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" =~ -([a-z]+)\.[0-9]+$ ]]; then
+            LABEL="${BASH_REMATCH[1]}"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=$LABEL" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "::notice::iii release — tag=$TAG version=$VERSION"
+
+      - name: Post initial Slack message
+        id: slack
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "Release started"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "${{ steps.meta.outputs.dry_run == 'true' && ':test_tube: *Release Pipeline (Dry Run)* :hourglass_flowing_sand:' || '*Release Pipeline* :hourglass_flowing_sand:' }}\niii v${{ steps.meta.outputs.version }}"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"
+
+  # ──────────────────────────────────────────────────────────────
+  # GitHub Release
+  # ──────────────────────────────────────────────────────────────
+
+  create-iii-release:
+    name: Create iii GitHub Release
+    needs: [setup]
+    if: needs.setup.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Generate token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ steps.generate_token.outputs.token }}
+          tag_name: ${{ needs.setup.outputs.tag }}
+          name: iii ${{ needs.setup.outputs.version }}
+          draft: false
+          prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+          generate_release_notes: true
+
+  # ──────────────────────────────────────────────────────────────
+  # Engine Binary
+  # ──────────────────────────────────────────────────────────────
+
+  engine-release:
+    name: Engine Binary Release
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: iii
+      manifest_path: engine/Cargo.toml
+      tag_name: ${{ needs.setup.outputs.tag }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      skip_create_release: true
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Engine Binary
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Console Binary
+  # ──────────────────────────────────────────────────────────────
+
+  console-frontend:
+    name: Build Console Frontend
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend for binary embedding
+        run: pnpm --filter console-frontend build:binary
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-frontend-dist
+          path: console/packages/console-frontend/dist-binary/
+          retention-days: 1
+
+  console-release:
+    name: Console Binary Release
+    needs: [setup, create-iii-release, console-frontend]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-binary.yml
+    with:
+      bin_name: iii-console
+      manifest_path: console/packages/console-rust/Cargo.toml
+      tag_name: ${{ needs.setup.outputs.tag }}
+      is_prerelease: ${{ needs.setup.outputs.is_prerelease == 'true' }}
+      skip_create_release: true
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      artifact_name: console-frontend-dist
+      artifact_dest: console/packages/console-rust/assets/
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Console Binary
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  # ──────────────────────────────────────────────────────────────
+  # SDK Publish
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-npm:
+    name: SDK Node Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/iii
+      npm_tag: ${{ needs.setup.outputs.npm_tag }}
+      build_filter: iii-sdk
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: SDK Node (npm)
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  sdk-npm-browser:
+    name: SDK Browser Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_npm.yml
+    with:
+      package_path: sdk/packages/node/iii-browser
+      npm_tag: ${{ needs.setup.outputs.npm_tag }}
+      build_filter: iii-sdk-browser
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: SDK Browser (npm)
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  sdk-py:
+    name: SDK Python Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_py.yml
+    with:
+      package_path: sdk/packages/python/iii
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: SDK Python (pypi)
+    secrets:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  sdk-rust:
+    name: SDK Rust Publish
+    needs: [setup, create-iii-release]
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/_rust-cargo.yml
+    with:
+      package_path: sdk/packages/rust/iii
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: SDK Rust (cargo)
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Docker
+  # ──────────────────────────────────────────────────────────────
+
+  docker-engine:
+    name: Docker Engine
+    needs: [setup, engine-release]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.is_prerelease != 'true' }}
+    uses: ./.github/workflows/docker-engine.yml
+    with:
+      release_tag: ${{ needs.setup.outputs.tag }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Homebrew
+  # ──────────────────────────────────────────────────────────────
+
+  homebrew-engine:
+    name: Homebrew Engine
+    needs: [setup, engine-release]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.is_prerelease != 'true' }}
+    uses: ./.github/workflows/_homebrew.yml
+    with:
+      bin_name: iii
+      formula_class: Iii
+      formula_path: Formula/iii.rb
+      description: WebSocket-based process communication engine
+      homepage: https://github.com/iii-hq/iii
+      release_repo: ${{ github.repository }}
+      release_tag: ${{ needs.setup.outputs.tag }}
+      version: ${{ needs.setup.outputs.version }}
+      include_linux: false
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Homebrew (iii)
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  homebrew-console:
+    name: Homebrew Console
+    needs: [setup, console-release]
+    if: ${{ !failure() && !cancelled() && needs.setup.outputs.is_prerelease != 'true' }}
+    uses: ./.github/workflows/_homebrew.yml
+    with:
+      bin_name: iii-console
+      formula_class: IiiConsole
+      formula_path: Formula/iii-console.rb
+      description: Developer console for the iii engine
+      homepage: https://github.com/iii-hq/iii
+      release_repo: ${{ github.repository }}
+      release_tag: ${{ needs.setup.outputs.tag }}
+      version: ${{ needs.setup.outputs.version }}
+      include_linux: true
+      dry_run: ${{ needs.setup.outputs.dry_run == 'true' }}
+      slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
+      slack_label: Homebrew (iii-console)
+    secrets:
+      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
+      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+
+  # ──────────────────────────────────────────────────────────────
+  # Notification: Complete
+  # ──────────────────────────────────────────────────────────────
+
+  notify-complete:
+    name: Release Complete
+    needs:
+      - setup
+      - engine-release
+      - console-release
+      - sdk-npm
+      - sdk-npm-browser
+      - sdk-py
+      - sdk-rust
+      - docker-engine
+      - homebrew-engine
+      - homebrew-console
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Determine overall status
+        id: status
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          IS_PRERELEASE: ${{ needs.setup.outputs.is_prerelease }}
+          DRY_RUN: ${{ needs.setup.outputs.dry_run }}
+          ENGINE_RESULT: ${{ needs.engine-release.result }}
+          CONSOLE_RESULT: ${{ needs.console-release.result }}
+          SDK_NPM_RESULT: ${{ needs.sdk-npm.result }}
+          SDK_NPM_BROWSER_RESULT: ${{ needs.sdk-npm-browser.result }}
+          SDK_PY_RESULT: ${{ needs.sdk-py.result }}
+          SDK_RUST_RESULT: ${{ needs.sdk-rust.result }}
+          DOCKER_RESULT: ${{ needs.docker-engine.result }}
+          BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
+          BREW_CONSOLE_RESULT: ${{ needs.homebrew-console.result }}
+        run: |
+          icon() {
+            case "$1" in
+              success) echo ":large_green_circle:" ;;
+              skipped) echo ":fast_forward:" ;;
+              *) echo ":red_circle:" ;;
+            esac
+          }
+
+          LINES=""
+          OVERALL="success"
+
+          LINES="$LINES$(icon "$ENGINE_RESULT") Engine Binary\n"
+          LINES="$LINES$(icon "$CONSOLE_RESULT") Console Binary\n"
+          LINES="$LINES$(icon "$SDK_NPM_RESULT") SDK Node\n"
+          LINES="$LINES$(icon "$SDK_NPM_BROWSER_RESULT") SDK Browser\n"
+          LINES="$LINES$(icon "$SDK_PY_RESULT") SDK Python\n"
+          LINES="$LINES$(icon "$SDK_RUST_RESULT") SDK Rust\n"
+
+          if [[ "$IS_PRERELEASE" != "true" ]]; then
+            LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
+            LINES="$LINES$(icon "$BREW_ENGINE_RESULT") Homebrew (iii)\n"
+            LINES="$LINES$(icon "$BREW_CONSOLE_RESULT") Homebrew (iii-console)\n"
+          fi
+
+          for r in "$ENGINE_RESULT" "$CONSOLE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT"; do
+            [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
+          done
+
+          SUMMARY="iii v${VERSION}"
+          [[ "$DRY_RUN" == "true" ]] && SUMMARY="[DRY RUN] $SUMMARY"
+
+          echo "lines=$LINES" >> "$GITHUB_OUTPUT"
+          echo "overall=$OVERALL" >> "$GITHUB_OUTPUT"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Update Slack parent message
+        if: needs.setup.outputs.slack_ts != ''
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.update
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            ts: ${{ needs.setup.outputs.slack_ts }}
+            text: "Release ${{ steps.status.outputs.overall }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "${{ needs.setup.outputs.dry_run == 'true' && ':test_tube: *Release Pipeline (Dry Run)*' || '*Release Pipeline*' }} ${{ steps.status.outputs.overall == 'success' && ':large_green_circle:' || ':red_circle:' }}\n${{ steps.status.outputs.summary }}\n\n${{ steps.status.outputs.lines }}"
+              - type: "context"
+                elements:
+                  - type: "mrkdwn"
+                    text: "Triggered by ${{ github.actor }} | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Workflow>"

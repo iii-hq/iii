@@ -1,0 +1,167 @@
+[package]
+name = "iii"
+version = "0.10.0"
+edition = "2024"
+license = "Elastic-2.0"
+
+[lib]
+name = "iii"
+path = "src/lib.rs"
+
+[[bin]]
+name = "iii"
+path = "src/main.rs"
+
+[[example]]
+name = "custom_queue_adapter"
+path = "examples/custom_queue_adapter.rs"
+
+[[bench]]
+name = "startup_bench"
+harness = false
+
+[[bench]]
+name = "core_runtime_bench"
+harness = false
+
+[[bench]]
+name = "invoke_function_payload_sizes_bench"
+harness = false
+
+[[bench]]
+name = "concurrent_invocation_bench"
+harness = false
+
+[[bench]]
+name = "trigger_fanout_bench"
+harness = false
+
+[[bench]]
+name = "control_plane_churn_bench"
+harness = false
+
+[[bench]]
+name = "http_single_route_loopback_bench"
+harness = false
+
+[[bench]]
+name = "http_many_routes_loopback_bench"
+harness = false
+
+[[bench]]
+name = "http_concurrency_loopback_bench"
+harness = false
+
+[[bench]]
+name = "protocol_serde_bench"
+harness = false
+
+[[bench]]
+name = "kv_store_bench"
+harness = false
+
+[[bench]]
+name = "worker_cleanup_bench"
+harness = false
+
+[[bench]]
+name = "pubsub_fanout_bench"
+harness = false
+
+[[bench]]
+name = "ws_roundtrip_bench"
+harness = false
+
+[[bench]]
+name = "queue_enqueue_bench"
+harness = false
+
+[[bench]]
+name = "state_adapter_bench"
+harness = false
+
+[[bench]]
+name = "worker_invocation_tracking_bench"
+harness = false
+
+[features]
+default = ["rabbitmq"]
+rabbitmq = ["lapin"]
+
+[dependencies]
+oci-client = "0.16"
+oci-spec = "0.9"
+function-macros = { path = "function-macros" }
+iii-sdk = { workspace = true, features = ["otel"] }
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
+tower = { version = "0.5", features = ["util", "timeout", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "timeout"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json", "registry"] }
+tracing-opentelemetry = "0.32"
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["tonic", "grpc-tonic", "logs", "tls-roots"] }
+opentelemetry-semantic-conventions = "0.31"
+futures = "0.3"
+futures-util = "0.3"
+http-body-util = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+
+axum = { version = "0.8", features = ["ws", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+serde_yaml = "0.9"
+
+anyhow = "1.0.100"
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "6"
+indexmap = { version = "2", features = ["serde"] }
+redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
+lapin = { version = "3", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+async-trait = "0.1.89"
+colored = "3.0.0"
+cron = "0.15"
+once_cell = "1.21.3"
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+hex = "0.4"
+notify = "8.2.0"
+inventory = "0.3"
+rand = "0.8"
+rkyv = "0.8.12"
+nix = { version = "0.30.1", features = ["signal", "process"] }
+winapi = { version = "0.3.9", features = ["minwindef", "wincon", "winbase", "consoleapi"] }
+dirs = "6"
+hostname = "0.4"
+sha2 = "0.10"
+iana-time-zone = "0.1"
+ring = "0.17.14"
+glob = "0.3.3"
+base64 = "0.22.1"
+subtle = "2.6"
+toml = "1.0.7"
+toml_edit = "0.22"
+indicatif = "0.17"
+semver = { version = "1", features = ["serde"] }
+flate2 = "1"
+tar = "0.4"
+data-encoding = "2"
+zip = "2"
+serde_yml = "0.0.12"
+thiserror = "2"
+tokio-tungstenite = "0.28"
+which = "6"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+mockall = "0.13"
+serial_test = "3"
+temp-env = "0.3"
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+tempfile = "3"
+wiremock = "0.6"
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }

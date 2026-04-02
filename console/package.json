@@ -1,0 +1,30 @@
+{
+  "name": "iii-console-workspace",
+  "private": true,
+  "description": "Workspace for iii developer console",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MotiaDev/iii-console.git"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "pnpm --filter console-frontend dev",
+    "build": "pnpm build:binary && pnpm build:rust",
+    "build:binary": "pnpm --filter console-frontend build:binary",
+    "build:rust": "cd packages/console-rust && cargo build --release",
+    "build:rust:debug": "cd packages/console-rust && REBUILD_FRONTEND=1 cargo build",
+    "lint": "pnpm --filter console-frontend lint",
+    "prepare": "lefthook install",
+    "start:rust": "./packages/console-rust/target/release/iii-console --engine-host localhost",
+    "start:rust:debug": "./packages/console-rust/target/debug/iii-console --engine-host localhost"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "lefthook": "^2.0.16"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1"
+  }
+}

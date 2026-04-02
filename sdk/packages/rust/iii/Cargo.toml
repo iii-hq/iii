@@ -1,0 +1,60 @@
+[package]
+name = "iii-sdk"
+version = "0.10.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+authors = ["Motia LLC"]
+description = "SDK for III Engine - a platform for building distributed applications"
+repository = "https://github.com/iii-hq/sdk"
+homepage = "https://github.com/iii-hq/sdk"
+keywords = ["iii", "sdk", "engine", "distributed"]
+categories = ["api-bindings", "asynchronous", "development-tools"]
+
+[lib]
+name = "iii_sdk"
+path = "src/lib.rs"
+
+[features]
+default = []
+otel = [
+    "opentelemetry",
+    "opentelemetry_sdk",
+    "opentelemetry-proto",
+    "prost",
+    "sysinfo",
+    "reqwest",
+    "opentelemetry-http",
+]
+
+[dependencies]
+async-trait = "0.1"
+futures-util = "0.3"
+hostname = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# OpenTelemetry (optional, behind "otel" feature)
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs", "metrics", "trace"], optional = true }
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "trace", "metrics", "logs", "with-serde"], optional = true }
+prost = { version = "0.14", optional = true }
+sysinfo = { version = "0.38", optional = true }
+
+# HTTP client tracing (optional, behind "otel" feature)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+opentelemetry-http = { version = "0.31", features = ["reqwest"], optional = true }
+
+[dev-dependencies]
+ctor = "0.6.3"
+opentelemetry = { version = "0.31" }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "trace", "testing"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+serial_test = "3"
+tokio = { version = "1", features = ["test-util"] }
