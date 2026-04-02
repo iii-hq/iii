@@ -55,9 +55,7 @@ const logger = new Logger()
 
 const tools = await iii.listFunctions()
 
-iii.registerFunction(
-  { id: "agent::research" },
-  async ({ query }) => {
+iii.registerFunction("agent::research", async ({ query }) => {
     const response = await callLLM(query, { tools })
 
     while (response.toolCall) {
@@ -95,7 +93,7 @@ let logger = Logger::new();
 let tools = iii.list_functions().await?;
 
 iii.register_function(
-    RegisterFunctionInput { id: "agent::research".into(), ..Default::default() },
+    RegisterFunctionOptions { id: "agent::research".into(), ..Default::default() },
     |input| async move {
         let mut response = call_llm(&input.query, &tools).await?;
 
@@ -114,17 +112,17 @@ iii.register_function(
     code: {
       typescript: `import { TriggerAction } from "iii-sdk"
 
-iii.registerFunction({ id: "agents::researcher" }, async ({ topic }) => {
+iii.registerFunction("agents::researcher", async ({ topic }) => {
   const sources = await iii.trigger({ function_id: "tools::webSearch", payload: { query: topic } })
   return iii.trigger({ function_id: "agents::analyzer", payload: { sources, topic } })
 })
 
-iii.registerFunction({ id: "agents::analyzer" }, async ({ sources, topic }) => {
+iii.registerFunction("agents::analyzer", async ({ sources, topic }) => {
   const insights = await callLLM("Analyze these sources", { sources })
   return iii.trigger({ function_id: "agents::writer", payload: { insights, topic } })
 })
 
-iii.registerFunction({ id: "agents::writer" }, async ({ insights, topic }) => {
+iii.registerFunction("agents::writer", async ({ insights, topic }) => {
   const draft = await callLLM("Write a report", { insights })
   await iii.trigger({ function_id: "state::set", payload: {
     scope: "reports", key: topic, value: draft
@@ -184,7 +182,7 @@ iii.register_function(
   {
     name: "Durable Workflows",
     code: {
-      typescript: `iii.registerFunction({ id: "orders::process" }, async ({ orderId }) => {
+      typescript: `iii.registerFunction("orders::process", async ({ orderId }) => {
   const logger = new Logger()
 
   const step = await iii.trigger({ function_id: "state::get", payload: {
@@ -265,7 +263,7 @@ iii.register_function(
       typescript: `import { registerWorker, TriggerAction } from "iii-sdk"
 const iii = registerWorker(process.env.III_BRIDGE_URL ?? "ws://localhost:49134")
 
-iii.registerFunction({ id: "api::users" }, async (req) => {
+iii.registerFunction("api::users", async (req) => {
   const user = await db.createUser(req)
   iii.trigger({ function_id: "publish", payload: { topic: "user.created", data: user }, action: TriggerAction.Void() })
   return user
@@ -326,7 +324,7 @@ iii.register_function(
   {
     name: "Real-Time Streaming",
     code: {
-      typescript: `iii.registerFunction({ id: "chat::send" }, async ({ roomId, message }) => {
+      typescript: `iii.registerFunction("chat::send", async ({ roomId, message }) => {
   const logger = new Logger()
 
   await iii.trigger({ function_id: "stream::set", payload: {
@@ -409,7 +407,7 @@ iii.on_functions_available(|fns| {
   {
     name: "Deep Research Agent",
     code: {
-      typescript: `iii.registerFunction({ id: "research::deep" }, async ({ question, depth = 3 }) => {
+      typescript: `iii.registerFunction("research::deep", async ({ question, depth = 3 }) => {
   const logger = new Logger()
   let context: string[] = []
 
@@ -498,7 +496,7 @@ iii.register_function(
     code: {
       typescript: `import { TriggerAction } from "iii-sdk"
 
-iii.registerFunction({ id: "pipeline::onUserCreated" }, async ({ user }) => {
+iii.registerFunction("pipeline::onUserCreated", async ({ user }) => {
   const logger = new Logger()
 
   await Promise.all([
@@ -588,7 +586,7 @@ iii.register_trigger(
   {
     name: "Scheduled Intelligence",
     code: {
-      typescript: `iii.registerFunction({ id: "monitor::anomalies" }, async () => {
+      typescript: `iii.registerFunction("monitor::anomalies", async () => {
   const logger = new Logger()
 
   const metrics = await iii.trigger({ function_id: "metrics::getLast24h", payload: {} })

@@ -183,7 +183,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'github::push' }, async (payload) => {
+iii.registerFunction('github::push', async (payload) => {
   const logger = new Logger()
   logger.info('Push event received', { repo: payload.repository?.full_name })
   return { ok: true }

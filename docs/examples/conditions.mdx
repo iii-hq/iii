@@ -73,8 +73,8 @@ def orders_premium(data) -> ApiResponse:
     logger.info("Processing premium order", {"amount": (req.body or {}).get("amount")})
     return ApiResponse(status_code=200, body={"message": "Premium order processed"})
 
-iii.register_function({"id": "conditions::is_premium"}, is_premium)
-iii.register_function({"id": "orders::premium"}, orders_premium)
+iii.register_function("conditions::is_premium", is_premium)
+iii.register_function("orders::premium", orders_premium)
 
 iii.register_trigger({
     "type": "http",
@@ -189,8 +189,8 @@ def orders_high_value(data: dict) -> None:
     })
 
 
-iii.register_function({"id": "conditions::is_high_value"}, is_high_value)
-iii.register_function({"id": "orders::high_value"}, orders_high_value)
+iii.register_function("conditions::is_high_value", is_high_value)
+iii.register_function("orders::high_value", orders_high_value)
 
 iii.register_trigger({
     "type": "queue",
@@ -280,8 +280,8 @@ def orders_on_update(event: dict) -> None:
     logger = Logger()
     logger.info("Order updated", {"scope": event.get("scope"), "key": event.get("key")})
 
-iii.register_function({"id": "conditions::is_update"}, is_update)
-iii.register_function({"id": "orders::on_update"}, orders_on_update)
+iii.register_function("conditions::is_update", is_update)
+iii.register_function("orders::on_update", orders_on_update)
 
 iii.register_trigger({
     "type": "state",

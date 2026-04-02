@@ -70,7 +70,7 @@ const webhook: TriggerTypeRef<WebhookTriggerConfig> = iii.registerTriggerType(
 
 // registerFunction on the handle: registers function + trigger in one call
 webhook.registerFunction(
-  { id: 'example::webhook_handler' },
+  'example::webhook_handler',
   async (data: WebhookCallRequest) => ({
     processed: true,
     method: data.method,
@@ -92,14 +92,14 @@ const schedule: TriggerTypeRef<ScheduleTriggerConfig> = iii.registerTriggerType(
 )
 
 schedule.registerFunction(
-  { id: 'example::send_report' },
+  'example::send_report',
   async () => ({ sent: true }),
   { at: '2026-03-25T09:00:00Z', timezone: 'America/Sao_Paulo', repeat_daily: true },
 )
 
 // 3. Built-in trigger types (cron, state, subscribe) — use iii directly
 
-iii.registerFunction({ id: 'example::scheduled_cleanup' }, async (data: { job_id?: string }) => ({
+iii.registerFunction('example::scheduled_cleanup', async (data: { job_id?: string }) => ({
   cleaned: true,
   job_id: data.job_id,
 }))
@@ -109,7 +109,7 @@ iii.registerTrigger({
   config: { expression: '0 * * * * *' },
 })
 
-iii.registerFunction({ id: 'example::on_user_updated' }, async (data: { event_type?: string }) => ({
+iii.registerFunction('example::on_user_updated', async (data: { event_type?: string }) => ({
   processed: true,
   event: data.event_type,
 }))
@@ -119,7 +119,7 @@ iii.registerTrigger({
   config: { scope: 'users' },
 })
 
-iii.registerFunction({ id: 'example::on_order_created' }, async (data: Record<string, unknown>) => ({
+iii.registerFunction('example::on_order_created', async (data: Record<string, unknown>) => ({
   processed: true,
   order: data,
 }))

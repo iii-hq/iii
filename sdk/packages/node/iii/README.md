@@ -18,7 +18,7 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-iii.registerFunction({ id: 'greet' }, async (input) => {
+iii.registerFunction('greet', async (input) => {
   return { message: `Hello, ${input.name}!` }
 })
 
@@ -36,7 +36,7 @@ const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world
 | Operation                | Signature                                            | Description                                                  |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------ |
 | Initialize               | `registerWorker(url, options?)`                      | Create and connect to the engine. Returns an `ISdk` instance |
-| Register function        | `iii.registerFunction({ id }, handler)`              | Register a function that can be invoked by name              |
+| Register function        | `iii.registerFunction(id, handler, options?)`        | Register a function that can be invoked by name              |
 | Register trigger         | `iii.registerTrigger({ type, function_id, config })` | Bind a trigger (HTTP, cron, queue, etc.) to a function       |
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`       | Invoke a function and wait for the result                    |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Invoke without waiting |
@@ -44,7 +44,7 @@ const result = await iii.trigger({ function_id: 'greet', payload: { name: 'world
 ### Registering Functions
 
 ```javascript
-iii.registerFunction({ id: 'orders.create' }, async (input) => {
+iii.registerFunction('orders.create', async (input) => {
   return { status_code: 201, body: { id: '123', item: input.body.item } }
 })
 ```

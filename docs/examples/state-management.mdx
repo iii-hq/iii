@@ -86,7 +86,7 @@ def update_user_status(data) -> ApiResponse:
 
     return ApiResponse(status_code=200, body={"userId": user_id, "status": new_status})
 
-iii.register_function({"id": "users.update_status"}, update_user_status)
+iii.register_function("users.update_status", update_user_status)
 iii.register_trigger({
     "type": "http", "function_id": "users.update_status",
     "config": {"api_path": "users/:id/status", "http_method": "POST"},
@@ -201,7 +201,7 @@ def get_user_status(data) -> ApiResponse:
     logger.info("Got user status", {"userId": user_id, "status": user.get("status")})
     return ApiResponse(status_code=200, body=user)
 
-iii.register_function({"id": "users.get_status"}, get_user_status)
+iii.register_function("users.get_status", get_user_status)
 iii.register_trigger({
     "type": "http", "function_id": "users.get_status",
     "config": {"api_path": "users/:id/status", "http_method": "GET"},
@@ -315,7 +315,7 @@ def orders_audit(_data) -> None:
             })
 
 
-iii.register_function({"id": "cron.orders_audit"}, orders_audit)
+iii.register_function("cron.orders_audit", orders_audit)
 iii.register_trigger({"type": "cron", "function_id": "cron.orders_audit", "config": {"expression": "*/5 * * * *"}})
 ```
 

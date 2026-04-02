@@ -499,7 +499,7 @@ const iiiBuiltInPrefixes = ['state::', 'stream::', 'engine::'];
 const extractWorkerServiceDependencies = (code: string): string[] => {
   const localFunctionIds = new Set<string>();
   const functionIdPattern = /function_id\s*:\s*["']([^"']+)["']/g;
-  const localIdPattern = /registerFunction\(\s*\{\s*id:\s*["']([^"']+)["']/g;
+  const localIdPattern = /registerFunction\(\s*["']([^"']+)["']/g;
 
   for (const match of code.matchAll(localIdPattern)) {
     localFunctionIds.add(match[1]);

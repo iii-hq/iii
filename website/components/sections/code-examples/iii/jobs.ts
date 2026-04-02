@@ -8,7 +8,7 @@ const iii = registerWorker(
 );
 
 iii.registerFunction(
-  { id: "video::enqueue-transcode" },
+  "video::enqueue-transcode",
   async (request: any) => {
     const logger = new Logger();
     const jobId = request.body.jobId ?? `job-${Date.now()}`;
@@ -44,7 +44,7 @@ iii.registerFunction(
   },
 );
 
-iii.registerFunction({ id: "video::transcode" }, async (data: any) => {
+iii.registerFunction("video::transcode", async (data: any) => {
   const logger = new Logger();
   logger.info("jobs.video_transcode.started", {
     jobId: data.jobId,
@@ -72,7 +72,7 @@ iii.registerFunction({ id: "video::transcode" }, async (data: any) => {
   return result;
 });
 
-iii.registerFunction({ id: "video::job-status" }, async (request: any) => {
+iii.registerFunction("video::job-status", async (request: any) => {
   const logger = new Logger();
   let job = await iii.trigger({
     function_id: "state::get",

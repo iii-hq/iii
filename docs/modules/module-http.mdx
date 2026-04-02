@@ -101,7 +101,7 @@ This module adds a new Trigger Type: `http`.
 ### Sample code
 
 ```typescript
-const fn = iii.registerFunction({ id: 'api.getUsers' }, handler)
+const fn = iii.registerFunction('api.getUsers', handler)
 iii.registerTrigger({
   type: 'http',
   function_id: fn.id,
@@ -291,7 +291,7 @@ async function getUser(req: ApiRequest): Promise<ApiResponse> {
   }
 }
 
-const fn = iii.registerFunction({ id: 'api.getUser' }, getUser)
+const fn = iii.registerFunction('api.getUser', getUser)
 iii.registerTrigger({
   type: 'http',
   function_id: fn.id,

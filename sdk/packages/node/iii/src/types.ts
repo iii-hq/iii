@@ -92,6 +92,7 @@ export type RemoteTriggerTypeData = {
 export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id'>
 export type RegisterServiceInput = Omit<RegisterServiceMessage, 'message_type'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
+export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'>
 export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
 export type FunctionsAvailableCallback = (functions: FunctionInfo[]) => void
 
@@ -116,49 +117,44 @@ export interface ISdk {
   registerTrigger(trigger: RegisterTriggerInput): Trigger
 
   /**
-   * Registers a new function with a local handler.
-   * @param func - The function to register
-   * @param handler - The handler for local execution
-   * @returns A handle that can be used to unregister the function
-   *
-   * @example
-   * ```typescript
-   * const ref = iii.registerFunction(
-   *   { id: 'greet', description: 'Returns a greeting' },
-   *   async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
-   * )
-   *
-   * // Later, remove the function
-   * ref.unregister()
-   * ```
-   */
-  /**
    * Registers a new service.
    * @param message - The service to register
    */
   registerService(message: RegisterServiceInput): void
 
-  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler): FunctionRef
   /**
-   * Registers a new function with an HTTP invocation config (Lambda, Cloudflare Workers, etc.).
-   * @param func - The function to register
-   * @param invocation - HTTP invocation config
+   * Registers a new function with a local handler or an HTTP invocation config.
+   * @param functionId - Unique function identifier
+   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.)
+   * @param options - Optional function registration options (description, request/response formats, metadata)
    * @returns A handle that can be used to unregister the function
    *
    * @example
    * ```typescript
+   * // Local handler
    * const ref = iii.registerFunction(
-   *   { id: 'external::my-lambda', description: 'Proxied Lambda function' },
+   *   'greet',
+   *   async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
+   *   { description: 'Returns a greeting' },
+   * )
+   *
+   * // HTTP invocation
+   * const lambdaRef = iii.registerFunction(
+   *   'external::my-lambda',
    *   {
    *     url: 'https://abc123.lambda-url.us-east-1.on.aws',
    *     method: 'POST',
    *     timeout_ms: 30_000,
    *     auth: { type: 'bearer', token_key: 'LAMBDA_AUTH_TOKEN' },
    *   },
+   *   { description: 'Proxied Lambda function' },
    * )
+   *
+   * // Later, remove the function
+   * ref.unregister()
    * ```
    */
-  registerFunction(func: RegisterFunctionInput, invocation: HttpInvocationConfig): FunctionRef
+  registerFunction(functionId: string, handler: RemoteFunctionHandler | HttpInvocationConfig, options?: RegisterFunctionOptions): FunctionRef
 
   /**
    * Invokes a function using a request object.
@@ -398,13 +394,14 @@ export type FunctionRef = {
  * cron.registerTrigger('my-fn', { schedule: '* * * * *' })
  *
  * // Register a function and bind a trigger in one call
- * cron.registerFunction(
- *   { id: 'my-fn', description: 'Cron-triggered function' },
- *   async (data) => { return { ok: true } },
- *   { schedule: '* * * * *' },
- * )
- * ```
- */
+   * cron.registerFunction(
+   *   'my-fn',
+   *   async (data) => { return { ok: true } },
+   *   { schedule: '* * * * *' },
+   *   { description: 'Cron-triggered function' },
+   * )
+   * ```
+   */
 export type TriggerTypeRef<TConfig = unknown> = {
   /** The trigger type identifier. */
   id: string
@@ -420,13 +417,13 @@ export type TriggerTypeRef<TConfig = unknown> = {
   /**
    * Register a function and immediately bind it to this trigger type.
    *
-   * @param func - Function registration input.
+   * @param functionId - Unique function identifier.
    * @param handler - Local function handler.
    * @param config - Trigger-specific configuration.
    * @param metadata - Optional arbitrary metadata attached to the trigger.
    * @returns A {@link FunctionRef} handle.
    */
-  registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler, config: TConfig, metadata?: Record<string, unknown>): FunctionRef
+  registerFunction(functionId: string, handler: RemoteFunctionHandler, config: TConfig, metadata?: Record<string, unknown>): FunctionRef
   /**
    * Unregister this trigger type from the engine.
    */

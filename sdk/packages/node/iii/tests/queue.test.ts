@@ -8,7 +8,7 @@ describe('Queue Integration', () => {
     const received: any[] = []
 
     const consumer = iii.registerFunction(
-      { id: 'test.queue.consumer' },
+      'test.queue.consumer',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         received.push(input)
@@ -46,7 +46,7 @@ describe('Queue Integration', () => {
     const calls: any[] = []
 
     const consumer = iii.registerFunction(
-      { id: 'test.queue.void-consumer' },
+      'test.queue.void-consumer',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         calls.push(input)
@@ -84,7 +84,7 @@ describe('Queue Integration', () => {
     const messageCount = 5
 
     const consumer = iii.registerFunction(
-      { id: 'test.queue.multi-consumer' },
+      'test.queue.multi-consumer',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         received.push(input)
@@ -124,7 +124,7 @@ describe('Queue Integration', () => {
     const messageCount = 5
 
     const consumer = iii.registerFunction(
-      { id: 'test.queue.sequential-consumer' },
+      'test.queue.sequential-consumer',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         received.push(input.index)
@@ -161,7 +161,7 @@ describe('Queue Integration', () => {
     const messagesPerGroup = 5
 
     const consumer = iii.registerFunction(
-      { id: 'test.queue.fifo-groups-consumer' },
+      'test.queue.fifo-groups-consumer',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         received.push({ group_id: input.group_id, index: input.index })
@@ -212,7 +212,7 @@ describe('Queue Integration', () => {
     const chainedReceived: any[] = []
 
     const functionB = iii.registerFunction(
-      { id: 'test.queue.chain-b' },
+      'test.queue.chain-b',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         chainedReceived.push(input)
@@ -221,7 +221,7 @@ describe('Queue Integration', () => {
     )
 
     const functionA = iii.registerFunction(
-      { id: 'test.queue.chain-a' },
+      'test.queue.chain-a',
       // biome-ignore lint/suspicious/noExplicitAny: test code
       async (input: any) => {
         await iii.trigger({

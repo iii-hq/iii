@@ -9,7 +9,7 @@ const logger = new Logger(undefined, 'middleware-example')
 
 // Auth middleware: checks for a valid API key in the Authorization header.
 // Returns 401 if missing or invalid, otherwise continues to the next step.
-iii.registerFunction({ id: 'middleware::auth' }, async (req) => {
+iii.registerFunction('middleware::auth', async (req) => {
   const authHeader = req.request?.headers?.authorization
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     logger.warn('Auth middleware rejected request: missing or invalid token')
@@ -26,7 +26,7 @@ iii.registerFunction({ id: 'middleware::auth' }, async (req) => {
 })
 
 // Request logger middleware: logs method and path, then continues.
-iii.registerFunction({ id: 'middleware::request-logger' }, async (req) => {
+iii.registerFunction('middleware::request-logger', async (req) => {
   logger.info('Incoming request', {
     method: req.request?.method,
     path: Object.keys(req.request?.path_params ?? {}).length > 0 ? req.request.path_params : 'none',
@@ -40,7 +40,7 @@ iii.registerFunction({ id: 'middleware::request-logger' }, async (req) => {
 // ─────────────────────────────────────────────────────────────────────
 
 // Public endpoint: no middleware
-iii.registerFunction({ id: 'api::health' }, async () => ({
+iii.registerFunction('api::health', async () => ({
   status_code: 200,
   body: { status: 'ok', timestamp: new Date().toISOString() },
 }))
@@ -55,7 +55,7 @@ iii.registerTrigger({
 })
 
 // Protected endpoint: auth + logger middleware
-iii.registerFunction({ id: 'api::users-list' }, async () => ({
+iii.registerFunction('api::users-list', async () => ({
   status_code: 200,
   body: {
     users: [
@@ -76,7 +76,7 @@ iii.registerTrigger({
 })
 
 // Protected endpoint: auth only
-iii.registerFunction({ id: 'api::users-create' }, async (req) => {
+iii.registerFunction('api::users-create', async (req) => {
   const { name, email } = req.body ?? {}
   if (!name || !email) {
     return { status_code: 400, body: { error: 'name and email are required' } }

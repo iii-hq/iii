@@ -128,7 +128,7 @@ def create_order(data) -> ApiResponse:
 
     return ApiResponse(status_code=201, body={"orderId": order_id, "status": "processing"})
 
-iii.register_function({"id": "orders.create"}, create_order)
+iii.register_function("orders.create", create_order)
 iii.register_trigger({
     "type": "http", "function_id": "orders.create",
     "config": {"api_path": "orders", "http_method": "POST"},
@@ -277,7 +277,7 @@ def process_order(data: dict) -> None:
 
     logger.info("Order processed", {"orderId": order_id, "traceId": current_trace_id()})
 
-iii.register_function({"id": "order.process"}, process_order)
+iii.register_function("order.process", process_order)
 iii.register_trigger({"type": "queue", "function_id": "order.process", "config": {"topic": "order.process"}})
 ```
 
@@ -365,7 +365,7 @@ def notify_order(data: dict) -> None:
     # integrate with your notification service here
     logger.info("Order notification sent", {"orderId": order_id, "traceId": current_trace_id()})
 
-iii.register_function({"id": "order.notify"}, notify_order)
+iii.register_function("order.notify", notify_order)
 iii.register_trigger({"type": "queue", "function_id": "order.notify", "config": {"topic": "order.notify"}})
 ```
 

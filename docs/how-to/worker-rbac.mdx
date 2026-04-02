@@ -36,7 +36,7 @@ import { registerWorker } from 'iii-sdk'
 const iii = registerWorker('ws://localhost:49134')
 
 iii.registerFunction(
-  { id: 'my-project::auth-function' },
+  'my-project::auth-function',
   async (input: AuthInput): Promise<AuthResult> => {
     const token = input.headers?.['authorization']?.replace(/^Bearer\s+/i, '')
     const apiKey = input.query_params?.['api_key']?.[0]
@@ -95,7 +95,7 @@ async def auth_function(data: dict) -> dict:
         },
     ).model_dump()
 
-iii.register_function({'id': 'my-project::auth-function'}, auth_function)
+iii.register_function("my-project::auth-function", auth_function)
 ```
 </Tab>
 <Tab title="Rust">
@@ -168,7 +168,7 @@ A middleware sits between the worker and the target function. Use it for validat
 import type { MiddlewareFunctionInput } from 'iii-sdk'
 
 iii.registerFunction(
-  { id: 'my-project::middleware-function' },
+  'my-project::middleware-function',
   async (input: MiddlewareFunctionInput) => {
     console.log(`[audit] user=${input.context.user_id} invoking ${input.function_id}`)
 
@@ -206,7 +206,7 @@ async def middleware_function(data: dict) -> dict:
         'payload': enriched_payload,
     })
 
-iii.register_function({'id': 'my-project::middleware-function'}, middleware_function)
+iii.register_function("my-project::middleware-function", middleware_function)
 ```
 </Tab>
 <Tab title="Rust">
@@ -380,7 +380,7 @@ import type {
 } from 'iii-sdk'
 
 iii.registerFunction(
-  { id: 'my-project::on-trigger-reg' },
+  'my-project::on-trigger-reg',
   async (input: OnTriggerRegistrationInput): Promise<OnTriggerRegistrationResult> => {
     const role = input.context.role as string
     if (!input.function_id.startsWith(`${role}::`)) {
@@ -391,7 +391,7 @@ iii.registerFunction(
 )
 
 iii.registerFunction(
-  { id: 'my-project::on-trigger-type-reg' },
+  'my-project::on-trigger-type-reg',
   async (input: OnTriggerTypeRegistrationInput): Promise<OnTriggerTypeRegistrationResult> => {
     if (input.context.role !== 'admin') {
       throw new Error('Only admins can register trigger types')
@@ -401,7 +401,7 @@ iii.registerFunction(
 )
 
 iii.registerFunction(
-  { id: 'my-project::on-function-reg' },
+  'my-project::on-function-reg',
   async (input: OnFunctionRegistrationInput): Promise<OnFunctionRegistrationResult> => {
     if (input.function_id.startsWith('internal::')) {
       throw new Error('Cannot register internal functions')
@@ -445,9 +445,9 @@ async def on_function_reg(data: dict) -> dict:
         function_id=inp.function_id,
     ).model_dump()
 
-iii.register_function({'id': 'my-project::on-trigger-reg'}, on_trigger_reg)
-iii.register_function({'id': 'my-project::on-trigger-type-reg'}, on_trigger_type_reg)
-iii.register_function({'id': 'my-project::on-function-reg'}, on_function_reg)
+iii.register_function("my-project::on-trigger-reg", on_trigger_reg)
+iii.register_function("my-project::on-trigger-type-reg", on_trigger_type_reg)
+iii.register_function("my-project::on-function-reg", on_function_reg)
 ```
 </Tab>
 <Tab title="Rust">
@@ -508,20 +508,14 @@ If your functions register metadata, you can use metadata filters instead of (or
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-iii.registerFunction({
-  id: 'api::users::list',
-  metadata: { public: true, tier: 'free' },
-}, async (input) => {
+iii.registerFunction('api::users::list', async (input) => {
   // ...
-})
+}, { metadata: { public: true, tier: 'free' } })
 ```
 </Tab>
 <Tab title="Python">
 ```python
-iii.register_function({
-    'id': 'api::users::list',
-    'metadata': {'public': True, 'tier': 'free'},
-}, list_users)
+iii.register_function("api::users::list", list_users, metadata={'public': True, 'tier': 'free'})
 ```
 </Tab>
 <Tab title="Rust">

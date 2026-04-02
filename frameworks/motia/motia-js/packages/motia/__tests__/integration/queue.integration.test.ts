@@ -20,7 +20,7 @@ describe('queue integration', () => {
     const topic = `test-topic-${Date.now()}`
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
     })
     sdk.registerTrigger({
@@ -43,7 +43,7 @@ describe('queue integration', () => {
     const payload = { id: 'x1', count: 42, nested: { a: 1 } }
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
     })
     sdk.registerTrigger({
@@ -65,7 +65,7 @@ describe('queue integration', () => {
     const topic = `test-topic-infra-${Date.now()}`
     let received: unknown = null
 
-    sdk.registerFunction({ id: functionId }, async (data: unknown) => {
+    sdk.registerFunction(functionId, async (data: unknown) => {
       received = data
     })
     sdk.registerTrigger({
@@ -96,10 +96,10 @@ describe('queue integration', () => {
     const received1: unknown[] = []
     const received2: unknown[] = []
 
-    sdk.registerFunction({ id: functionId1 }, async (data: unknown) => {
+    sdk.registerFunction(functionId1, async (data: unknown) => {
       received1.push(data)
     })
-    sdk.registerFunction({ id: functionId2 }, async (data: unknown) => {
+    sdk.registerFunction(functionId2, async (data: unknown) => {
       received2.push(data)
     })
     sdk.registerTrigger({
@@ -134,10 +134,10 @@ describe('queue integration', () => {
     const conditionPath = `${functionId}::conditions::0`
     let handlerCalls = 0
 
-    sdk.registerFunction({ id: functionId }, async (_data: unknown) => {
+    sdk.registerFunction(functionId, async (_data: unknown) => {
       handlerCalls += 1
     })
-    sdk.registerFunction({ id: conditionPath }, async (input: { accept?: boolean }) => {
+    sdk.registerFunction(conditionPath, async (input: { accept?: boolean }) => {
       return input?.accept === true
     })
     sdk.registerTrigger({

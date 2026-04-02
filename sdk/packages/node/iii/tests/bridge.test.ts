@@ -12,7 +12,7 @@ describe('Bridge Operations', () => {
   it('should register and invoke a function', async () => {
     let receivedData: Record<string, unknown> | undefined
 
-    const fn = iii.registerFunction({ id: 'test.echo' }, async (data: Record<string, unknown>) => {
+    const fn = iii.registerFunction('test.echo', async (data: Record<string, unknown>) => {
       receivedData = data
       return { echoed: data }
     })
@@ -39,7 +39,7 @@ describe('Bridge Operations', () => {
     })
 
     const fn = iii.registerFunction(
-      { id: 'test.receiver' },
+      'test.receiver',
       async (data: Record<string, unknown>) => {
         receivedData = data
         resolveReceived?.()
@@ -64,8 +64,8 @@ describe('Bridge Operations', () => {
   })
 
   it('should list registered functions', async () => {
-    const fn1 = iii.registerFunction({ id: 'test.list.func1' }, async () => ({}))
-    const fn2 = iii.registerFunction({ id: 'test.list.func2' }, async () => ({}))
+    const fn1 = iii.registerFunction('test.list.func1', async () => ({}))
+    const fn2 = iii.registerFunction('test.list.func2', async () => ({}))
 
     await sleep(300)
 

@@ -65,7 +65,7 @@ describe('Trigger Types', () => {
     )
 
     const fnRef = ref.registerFunction(
-      { id: 'webhook::handler' },
+      'webhook::handler',
       async (data) => ({ received: data }),
       { url: '/hooks/handler', methods: ['POST'] },
     )

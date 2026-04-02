@@ -309,7 +309,7 @@ export function useTodos() {
       .then(({ items }) => setTodos(items))
 
     const funcRef = iii.registerFunction(
-      { id: 'ui::on-todo-change' },
+      'ui::on-todo-change',
       async (input: StreamChangeEvent) => {
         const todo = input.event.data as Todo
 

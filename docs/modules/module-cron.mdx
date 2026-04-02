@@ -136,7 +136,7 @@ def cleanup_old_data(event):
     print('Running cleanup scheduled at:', event['scheduled_time'])
     return {}
 
-iii.register_function({'id': 'jobs::cleanupOldData'}, cleanup_old_data)
+iii.register_function("jobs::cleanupOldData", cleanup_old_data)
 iii.register_trigger({'type': 'cron', 'function_id': 'jobs::cleanupOldData', 'config': {'expression': '0 0 2 * * *'}})
 ```
 </Tab>

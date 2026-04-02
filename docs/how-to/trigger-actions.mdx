@@ -304,7 +304,7 @@ import { registerWorker, TriggerAction, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'orders::create' }, async (req) => {
+iii.registerFunction('orders::create', async (req) => {
   const logger = new Logger()
   const order = { id: crypto.randomUUID(), ...req.body }
 
@@ -455,7 +455,7 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'users::register' }, async (req) => {
+iii.registerFunction('users::register', async (req) => {
   const { email, name } = req.body
 
   // Synchronous — need the validation result before proceeding
@@ -620,7 +620,7 @@ import { registerWorker, TriggerAction, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'etl::extract' }, async () => {
+iii.registerFunction('etl::extract', async () => {
   const logger = new Logger()
   const rawData = await fetchFromSource()
 
@@ -762,7 +762,7 @@ import { registerWorker, TriggerAction, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'checkout::process' }, async (cart) => {
+iii.registerFunction('checkout::process', async (cart) => {
   const logger = new Logger()
 
   // 1. Synchronous — validate inventory before charging

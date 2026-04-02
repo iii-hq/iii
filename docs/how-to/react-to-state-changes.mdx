@@ -33,7 +33,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'orders::on-status-change' }, async (event) => {
+iii.registerFunction('orders::on-status-change', async (event) => {
   const logger = new Logger()
   logger.info('Order status changed', { key: event.key, new_value: event.new_value })
   // ...react to the change here...

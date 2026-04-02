@@ -189,15 +189,16 @@ unsubscribe()
 **Signature**
 
 ```typescript
-registerFunction(func: RegisterFunctionInput, handler: RemoteFunctionHandler) => FunctionRef
+registerFunction(functionId: string, handler: RemoteFunctionHandler | HttpInvocationConfig, options?: RegisterFunctionOptions) => FunctionRef
 ```
 
 #### Parameters
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `func` | [`RegisterFunctionInput`](#registerfunctioninput) | Yes | - |
-| `handler` | [`RemoteFunctionHandler`](#remotefunctionhandler) | Yes | - |
+| `functionId` | `string` | Yes | The unique function identifier (use `::` for namespacing, e.g. `external::my_lambda`). |
+| `handler` | [`RemoteFunctionHandler`](#remotefunctionhandler) \| [`HttpInvocationConfig`](#httpinvocationconfig) | Yes | A handler function or HTTP invocation config. |
+| `options` | [`RegisterFunctionOptions`](#registerfunctionoptions) | No | Optional metadata such as `description`, `metadata`, `request_format`, `response_format`. |
 
 ### registerService
 
@@ -373,7 +374,7 @@ The `iii-sdk` package provides additional entry points:
 
 ## Types
 
-[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult)
+[`MessageType`](#messagetype) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`Channel`](#channel) · [`FunctionRef`](#functionref) · [`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`InitOptions`](#initoptions) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterServiceInput`](#registerserviceinput) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeInput`](#registertriggertypeinput) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`StreamChannelRef`](#streamchannelref) · [`Trigger`](#trigger) · [`TriggerHandler`](#triggerhandler) · [`TriggerInfo`](#triggerinfo) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeInfo`](#triggertypeinfo) · [`TriggerTypeRef`](#triggertyperef) · [`IStream`](#istream) · [`DeleteResult`](#deleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`DeleteResult`](#deleteresult)
 
 ### MessageType
 
@@ -456,11 +457,16 @@ Configuration options passed to registerWorker.
 | `invocationTimeoutMs` | `number` | No | Default timeout for `trigger()` in milliseconds. Defaults to `30000`. |
 | `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
 
-### RegisterFunctionInput
+### RegisterFunctionOptions
 
-```typescript
-type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
-```
+Optional configuration passed as the third argument to `registerFunction`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | `string` | No | The description of the function |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function |
+| `request_format` | `RegisterFunctionFormat` | No | The request format of the function |
+| `response_format` | `RegisterFunctionFormat` | No | The response format of the function |
 
 ### RegisterFunctionMessage
 

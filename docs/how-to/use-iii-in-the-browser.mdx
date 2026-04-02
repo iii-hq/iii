@@ -95,7 +95,7 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-iii.registerFunction({ id: 'metrics::collect' }, async () => {
+iii.registerFunction('metrics::collect', async () => {
   const metrics = await collectSystemMetrics()
 
   // Push to every browser that registered ui::update-dashboard

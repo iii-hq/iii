@@ -24,7 +24,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should send registerfunction message', () => {
-    sdk.registerFunction({ id: 'test.echo' }, async (data) => ({ echoed: data }))
+    sdk.registerFunction('test.echo', async (data) => ({ echoed: data }))
 
     const msg = engine.findSent('registerfunction')
     expect(msg).toBeDefined()
@@ -33,20 +33,20 @@ describe('Bridge Operations', () => {
 
   it('should throw on empty function id', () => {
     expect(() =>
-      sdk.registerFunction({ id: '' }, async () => ({})),
+      sdk.registerFunction('', async () => ({})),
     ).toThrow('id is required')
   })
 
   it('should throw on duplicate function id', () => {
-    sdk.registerFunction({ id: 'test.dup' }, async () => ({}))
+    sdk.registerFunction('test.dup', async () => ({}))
     expect(() =>
-      sdk.registerFunction({ id: 'test.dup' }, async () => ({})),
+      sdk.registerFunction('test.dup', async () => ({})),
     ).toThrow('function id already registered: test.dup')
   })
 
   it('should register HTTP invocation function', () => {
     sdk.registerFunction(
-      { id: 'external::my-lambda' },
+      'external::my-lambda',
       { url: 'https://example.com/invoke', method: 'POST', timeout_ms: 5000 },
     )
 
@@ -83,7 +83,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should trigger void and return undefined', async () => {
-    sdk.registerFunction({ id: 'test.void-target' }, async () => ({}))
+    sdk.registerFunction('test.void-target', async () => ({}))
 
     const result = await sdk.trigger({
       function_id: 'test.void-target',
@@ -137,7 +137,7 @@ describe('Bridge Operations', () => {
 
   it('should handle engine-initiated function invocation', async () => {
     let receivedData: unknown
-    sdk.registerFunction({ id: 'test.handler' }, async (data) => {
+    sdk.registerFunction('test.handler', async (data) => {
       receivedData = data
       return { processed: true }
     })
@@ -157,7 +157,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should send error result when handler throws', async () => {
-    sdk.registerFunction({ id: 'test.failing' }, async () => {
+    sdk.registerFunction('test.failing', async () => {
       throw new Error('handler exploded')
     })
 
@@ -188,7 +188,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should send unregister message on unregister', () => {
-    const fn = sdk.registerFunction({ id: 'test.removable' }, async () => ({}))
+    const fn = sdk.registerFunction('test.removable', async () => ({}))
     fn.unregister()
 
     const msg = engine.findSent('unregisterfunction')
@@ -210,7 +210,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should re-register functions and triggers on reconnect', async () => {
-    sdk.registerFunction({ id: 'test.persist' }, async () => ({ ok: true }))
+    sdk.registerFunction('test.persist', async () => ({ ok: true }))
     sdk.registerTrigger({
       type: 'cron',
       function_id: 'test.persist',

@@ -300,7 +300,7 @@ def on_user_updated(event):
     print('Current:', event.get('new_value'))
     return {}
 
-iii.register_function({'id': 'state::onUserUpdated'}, on_user_updated)
+iii.register_function("state::onUserUpdated", on_user_updated)
 iii.register_trigger({'type': 'state', 'function_id': 'state::onUserUpdated', 'config': {'scope': 'users', 'key': 'profile'}})
 ```
 </Tab>
@@ -475,7 +475,7 @@ const conditionFn = iii.registerFunction(
     event.old_value?.email !== event.new_value?.email,
 )
 
-const fn = iii.registerFunction({ id: 'state::onEmailChange' }, async (event) => {
+const fn = iii.registerFunction('state::onEmailChange', async (event) => {
   await sendVerificationEmail(event.new_value.email)
   return {}
 })
@@ -500,13 +500,13 @@ def email_changed(event):
     new = event.get('new_value', {})
     return old.get('email') != new.get('email')
 
-iii.register_function({'id': 'conditions::emailChanged'}, email_changed)
+iii.register_function("conditions::emailChanged", email_changed)
 
 def on_email_change(event):
     send_verification_email(event['new_value']['email'])
     return {}
 
-iii.register_function({'id': 'state::onEmailChange'}, on_email_change)
+iii.register_function("state::onEmailChange", on_email_change)
 iii.register_trigger({
     'type': 'state',
     'function_id': 'state::onEmailChange',

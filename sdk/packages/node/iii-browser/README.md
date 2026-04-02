@@ -32,7 +32,7 @@ import { registerWorker } from 'iii-browser-sdk'
 const iii = registerWorker('ws://localhost:49135')
 
 iii.registerFunction(
-  { id: 'ui::show-notification' },
+  'ui::show-notification',
   async (data: { title: string; body: string }) => {
     showToast(data.title, data.body)
     return { displayed: true }
@@ -50,7 +50,7 @@ const users = await iii.trigger({
 | Operation                | Signature                                                             | Description                                                  |
 | ------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------ |
 | Initialize               | `registerWorker(url, options?)`                                       | Connect to the engine via browser WebSocket. Returns `ISdk`  |
-| Register function        | `iii.registerFunction({ id }, handler)`                               | Register a function the engine (or backend) can invoke       |
+| Register function        | `iii.registerFunction(id, handler, options?)`                         | Register a function the engine (or backend) can invoke       |
 | Register trigger         | `iii.registerTrigger({ type, function_id, config })`                  | Bind a trigger to a function                                 |
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`                         | Invoke a function and wait for the result                    |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Invoke without waiting                                       |
@@ -64,7 +64,7 @@ Register a function in the browser that backend workers can call:
 
 ```typescript
 iii.registerFunction(
-  { id: 'ui::show-notification' },
+  'ui::show-notification',
   async (data: { title: string; body: string }) => {
     showToast(data.title, data.body)
     return { displayed: true }
@@ -89,7 +89,7 @@ Backend workers can push data to the browser in real time. No polling required:
 
 ```typescript
 iii.registerFunction(
-  { id: 'ui::update-dashboard' },
+  'ui::update-dashboard',
   async (metrics: { cpu: number; memory: number; requests: number }) => {
     document.getElementById('cpu')!.textContent = `${metrics.cpu}%`
     document.getElementById('memory')!.textContent = `${metrics.memory}MB`

@@ -32,6 +32,7 @@ import type {
   FunctionsAvailableCallback,
   Invocation,
   ISdk,
+  RegisterFunctionOptions,
   RemoteFunctionData,
   RemoteFunctionHandler,
   RemoteTriggerTypeData,
@@ -142,11 +143,11 @@ class Sdk implements ISdk {
           config,
         })
       },
-      registerFunction: (func, handler, config) => {
-        const ref = this.registerFunction(func, handler)
+      registerFunction: (functionId, handler, config) => {
+        const ref = this.registerFunction(functionId, handler)
         this.registerTrigger({
           type: triggerType.id,
-          function_id: func.id,
+          function_id: functionId,
           config,
         })
         return ref
@@ -212,45 +213,47 @@ class Sdk implements ISdk {
   }
 
   /**
-   * Registers a function with the engine. The `id` is the unique identifier
+   * Registers a function with the engine. The `functionId` is the unique identifier
    * used by triggers and invocations.
    *
    * Pass a handler for local execution, or an {@link HttpInvocationConfig}
    * for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
    *
-   * @param message - Function registration input.
-   * @param message.id - Unique function identifier.
-   * @param message.description - Human-readable description.
+   * @param functionId - Unique function identifier.
    * @param handlerOrInvocation - Async handler or HTTP invocation config.
+   * @param options - Optional function registration options (description, request/response formats, metadata).
    * @returns A {@link FunctionRef} with `id` and `unregister()`.
    *
    * @example
    * ```typescript
    * const fn = iii.registerFunction(
-   *   { id: 'greet', description: 'Greets a user' },
+   *   'greet',
    *   async (input: { name: string }) => {
    *     return { message: `Hello, ${input.name}!` }
    *   },
+   *   { description: 'Greets a user' },
    * )
    * ```
    */
   registerFunction = (
-    message: Omit<RegisterFunctionMessage, 'message_type'>,
+    functionId: string,
     handlerOrInvocation: RemoteFunctionHandler | HttpInvocationConfig,
+    options?: RegisterFunctionOptions,
   ): FunctionRef => {
-    if (!message.id || message.id.trim() === '') {
+    if (!functionId || functionId.trim() === '') {
       throw new Error('id is required')
     }
-    if (this.functions.has(message.id)) {
-      throw new Error(`function id already registered: ${message.id}`)
+    if (this.functions.has(functionId)) {
+      throw new Error(`function id already registered: ${functionId}`)
     }
 
     const isHandler = typeof handlerOrInvocation === 'function'
 
     const fullMessage: RegisterFunctionMessage = isHandler
-      ? { ...message, message_type: MessageType.RegisterFunction }
+      ? { ...options, id: functionId, message_type: MessageType.RegisterFunction }
       : {
-          ...message,
+          ...options,
+          id: functionId,
           message_type: MessageType.RegisterFunction,
           invocation: {
             url: handlerOrInvocation.url,
@@ -265,21 +268,21 @@ class Sdk implements ISdk {
 
     if (isHandler) {
       const handler = handlerOrInvocation as RemoteFunctionHandler
-      this.functions.set(message.id, {
+      this.functions.set(functionId, {
         message: fullMessage,
         handler: async (input, _traceparent?: string, _baggage?: string) => {
           return await handler(input)
         },
       })
     } else {
-      this.functions.set(message.id, { message: fullMessage })
+      this.functions.set(functionId, { message: fullMessage })
     }
 
     return {
-      id: message.id,
+      id: functionId,
       unregister: () => {
-        this.sendMessage(MessageType.UnregisterFunction, { id: message.id }, true)
-        this.functions.delete(message.id)
+        this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
+        this.functions.delete(functionId)
       },
     }
   }
@@ -469,11 +472,11 @@ class Sdk implements ISdk {
    * ```
    */
   createStream = <TData>(streamName: string, stream: IStream<TData>): void => {
-    this.registerFunction({ id: `stream::get(${streamName})` }, stream.get.bind(stream))
-    this.registerFunction({ id: `stream::set(${streamName})` }, stream.set.bind(stream))
-    this.registerFunction({ id: `stream::delete(${streamName})` }, stream.delete.bind(stream))
-    this.registerFunction({ id: `stream::list(${streamName})` }, stream.list.bind(stream))
-    this.registerFunction({ id: `stream::list_groups(${streamName})` }, stream.listGroups.bind(stream))
+    this.registerFunction(`stream::get(${streamName})`, stream.get.bind(stream))
+    this.registerFunction(`stream::set(${streamName})`, stream.set.bind(stream))
+    this.registerFunction(`stream::delete(${streamName})`, stream.delete.bind(stream))
+    this.registerFunction(`stream::list(${streamName})`, stream.list.bind(stream))
+    this.registerFunction(`stream::list_groups(${streamName})`, stream.listGroups.bind(stream))
   }
 
   /**
@@ -503,7 +506,7 @@ class Sdk implements ISdk {
 
       const function_id = this.functionsAvailableFunctionPath
       if (!this.functions.has(function_id)) {
-        this.registerFunction({ id: function_id }, async ({ functions }: { functions: FunctionInfo[] }) => {
+        this.registerFunction(function_id, async ({ functions }: { functions: FunctionInfo[] }) => {
           this.functionsAvailableCallbacks.forEach((handler) => {
             handler(functions)
           })

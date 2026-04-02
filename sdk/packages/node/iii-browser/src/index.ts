@@ -35,6 +35,7 @@ export type {
   FunctionRef,
   ISdk,
   RegisterFunctionInput,
+  RegisterFunctionOptions,
   RegisterServiceInput,
   RegisterTriggerInput,
   RegisterTriggerTypeInput,

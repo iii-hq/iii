@@ -5,7 +5,7 @@ import { iii, sleep } from './utils'
 describe('Data Channels', () => {
   it('should create a channel and send text messages between functions', async () => {
     const receiver = iii.registerFunction(
-      { id: 'browser.test.channel.receiver' },
+      'browser.test.channel.receiver',
       async (input: { reader: ChannelReader }) => {
         const messages: string[] = []
 
@@ -20,7 +20,7 @@ describe('Data Channels', () => {
       },
     )
 
-    const sender = iii.registerFunction({ id: 'browser.test.channel.sender' }, async (input: { items: string[] }) => {
+    const sender = iii.registerFunction('browser.test.channel.sender', async (input: { items: string[] }) => {
       const channel = await iii.createChannel()
 
       const resultPromise = iii.trigger({
@@ -55,7 +55,7 @@ describe('Data Channels', () => {
 
   it('should create a channel and send binary data using sendBinary', async () => {
     const processor = iii.registerFunction(
-      { id: 'browser.test.channel.binary.processor' },
+      'browser.test.channel.binary.processor',
       async (input: { reader: ChannelReader }) => {
         const data = await input.reader.readAll()
         const text = new TextDecoder().decode(data)
@@ -64,7 +64,7 @@ describe('Data Channels', () => {
     )
 
     const sender = iii.registerFunction(
-      { id: 'browser.test.channel.binary.sender' },
+      'browser.test.channel.binary.sender',
       async (input: { text: string }) => {
         const channel = await iii.createChannel()
 
@@ -102,7 +102,7 @@ describe('Data Channels', () => {
     type Record = { name: string; value: number }
 
     const processor = iii.registerFunction(
-      { id: 'browser.test.channel.json.processor' },
+      'browser.test.channel.json.processor',
       async (input: { reader: ChannelReader }) => {
         const data = await input.reader.readAll()
         const records: Record[] = JSON.parse(new TextDecoder().decode(data))
@@ -117,7 +117,7 @@ describe('Data Channels', () => {
     )
 
     const sender = iii.registerFunction(
-      { id: 'browser.test.channel.json.sender' },
+      'browser.test.channel.json.sender',
       async (input: { records: Record[] }) => {
         const channel = await iii.createChannel()
 
@@ -159,7 +159,7 @@ describe('Data Channels', () => {
   })
 
   it('should send progress messages through a channel writer', async () => {
-    const coordinator = iii.registerFunction({ id: 'browser.test.channel.progress' }, async () => {
+    const coordinator = iii.registerFunction('browser.test.channel.progress', async () => {
       const channel = await iii.createChannel()
 
       const messages: unknown[] = []

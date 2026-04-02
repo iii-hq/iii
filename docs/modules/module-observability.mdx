@@ -470,7 +470,7 @@ Register a function to react to log entries as they are produced.
 
 ```typescript
 const fn = iii.registerFunction(
-  { id: 'monitoring::onError' },
+  'monitoring::onError',
   async (logEntry) => {
     await sendAlert({
       message: logEntry.body,

@@ -31,7 +31,7 @@ import { registerWorker, Logger } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'users::create' }, async (input) => {
+iii.registerFunction('users::create', async (input) => {
   const logger = new Logger()
   const userId = crypto.randomUUID()
   const user = { id: userId, name: input.name, email: input.email }
@@ -147,7 +147,7 @@ println!("Created user: {}", result["userId"]);
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="state-reader.ts"
-iii.registerFunction({ id: 'users::get' }, async (input) => {
+iii.registerFunction('users::get', async (input) => {
   const logger = new Logger()
 
   const user = await iii.trigger({
@@ -240,7 +240,7 @@ Use `state::update` with update operations for safe concurrent modifications:
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript title="state-update.ts"
-iii.registerFunction({ id: 'users::record-login' }, async (input) => {
+iii.registerFunction('users::record-login', async (input) => {
   const logger = new Logger()
 
   await iii.trigger({

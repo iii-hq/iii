@@ -7,7 +7,7 @@ const iii = registerWorker(
   },
 );
 
-iii.registerFunction({ id: "stream::publish-room-score" }, async (request: any) => {
+iii.registerFunction("stream::publish-room-score", async (request: any) => {
   const logger = new Logger();
   const score = {
     roomId: request.params.roomId,
@@ -30,7 +30,7 @@ iii.registerFunction({ id: "stream::publish-room-score" }, async (request: any) 
   return { accepted: true, roomId: score.roomId };
 });
 
-iii.registerFunction({ id: "stream::consume-room-score" }, async (event: any) => {
+iii.registerFunction("stream::consume-room-score", async (event: any) => {
   const logger = new Logger();
   const score = event.data ?? event.payload?.data ?? event;
   logger.info("stream.consume_room_score", {
