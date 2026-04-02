@@ -44,8 +44,8 @@ impl WorkersFile {
 
     /// Save to iii.workers.yaml.
     pub fn save(&self) -> Result<()> {
-        let data = serde_yaml::to_string(self)
-            .with_context(|| "failed to serialize workers file")?;
+        let data =
+            serde_yaml::to_string(self).with_context(|| "failed to serialize workers file")?;
         std::fs::write(WORKERS_FILE, data)
             .with_context(|| format!("failed to write {}", WORKERS_FILE))?;
         Ok(())
@@ -63,4 +63,3 @@ impl WorkersFile {
         self.workers.get(name)
     }
 }
-

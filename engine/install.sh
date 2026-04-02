@@ -458,6 +458,61 @@ installed_version=$("$bin_dir/$BIN_NAME" --version 2>/dev/null | awk '{print $NF
 
 printf 'installed %s to %s\n' "$BIN_NAME" "$bin_dir/$BIN_NAME"
 
+# ---------------------------------------------------------------------------
+# Install iii-init (VM init binary for sandbox workers)
+# The init binary is a Linux ELF that runs inside VMs, but macOS hosts also
+# need it for libkrun/Hypervisor.framework guests.
+# ---------------------------------------------------------------------------
+init_target=""
+case "$uname_s" in
+  Linux)
+    case "$arch" in
+      x86_64)  init_target="x86_64-unknown-linux-musl" ;;
+      aarch64) init_target="aarch64-unknown-linux-gnu" ;;
+    esac
+    ;;
+  Darwin)
+    case "$arch" in
+      x86_64)  init_target="x86_64-apple-darwin" ;;
+      aarch64) init_target="aarch64-apple-darwin" ;;
+    esac
+    ;;
+esac
+
+if [ -n "$init_target" ]; then
+  init_asset_name="iii-init-${init_target}.tar.gz"
+
+  if command -v jq >/dev/null 2>&1; then
+    init_asset_url=$(printf '%s' "$json" \
+      | jq -r --arg name "$init_asset_name" \
+        '.assets[] | select(.name == $name) | .browser_download_url' \
+      | head -n 1)
+  else
+    init_asset_url=$(printf '%s' "$json" \
+      | grep -oE '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]+"' \
+      | sed -E 's/.*"([^"]+)".*/\1/' \
+      | grep -F "$init_asset_name" \
+      | head -n 1)
+  fi
+
+  if [ -n "$init_asset_url" ]; then
+    curl -fsSL -L "$init_asset_url" -o "$tmpdir/$init_asset_name" 2>/dev/null
+    if [ $? -eq 0 ]; then
+      tar -xzf "$tmpdir/$init_asset_name" -C "$tmpdir" 2>/dev/null
+      init_bin_file=$(find "$tmpdir" -type f -name "iii-init" | head -n 1)
+      if [ -n "$init_bin_file" ] && [ -f "$init_bin_file" ]; then
+        if command -v install >/dev/null 2>&1; then
+          install -m 755 "$init_bin_file" "$bin_dir/iii-init"
+        else
+          cp "$init_bin_file" "$bin_dir/iii-init"
+          chmod 755 "$bin_dir/iii-init"
+        fi
+        printf 'installed %s to %s\n' "iii-init" "$bin_dir/iii-init"
+      fi
+    fi
+  fi
+fi
+
 if [ "$install_event_prefix" = "upgrade" ]; then
   iii_send_event "upgrade_succeeded" \
     "\"install_id\":\"${install_id}\",\"from_version\":\"${from_version}\",\"to_version\":\"${installed_version}\",\"install_method\":\"sh\",\"target_binary\":\"${BIN_NAME}\"" \

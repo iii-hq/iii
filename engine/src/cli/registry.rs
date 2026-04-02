@@ -48,6 +48,19 @@ pub static SELF_SPEC: BinarySpec = BinarySpec {
 /// The compiled-in binary registry
 pub static REGISTRY: &[BinarySpec] = &[
     BinarySpec {
+        name: "iii-init",
+        repo: "iii-hq/iii",
+        has_checksum: true,
+        supported_targets: &[
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+        ],
+        commands: &[],
+        tag_prefix: Some("iii"),
+    },
+    BinarySpec {
         name: "iii-console",
         repo: "iii-hq/iii",
         has_checksum: true,

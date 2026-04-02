@@ -1,0 +1,21 @@
+[package]
+name = "iii-filesystem"
+version = "0.1.0"
+edition = "2024"
+authors = ["Motia LLC"]
+description = "Filesystem backends for iii worker VM sandboxes"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"
+msb_krun = "0.1.9"
+scopeguard = "1.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = "3"
+
+[features]
+default = []
+embed-init = []

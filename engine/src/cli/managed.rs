@@ -10,6 +10,7 @@
 //! No external dependencies (Podman, Docker) needed.
 
 use colored::Colorize;
+use futures::future::join_all;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -146,15 +147,14 @@ pub async fn handle_managed_add(
     };
 
     // 3. Extract manifest for display
-    let manifest: Option<serde_json::Value> = match adapter.extract_file(&image_ref, MANIFEST_PATH).await {
-        Ok(bytes) => {
-            match String::from_utf8(bytes) {
+    let manifest: Option<serde_json::Value> =
+        match adapter.extract_file(&image_ref, MANIFEST_PATH).await {
+            Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(yaml_str) => serde_yaml::from_str(&yaml_str).ok(),
                 Err(_) => None,
-            }
-        }
-        Err(_) => None,
-    };
+            },
+            Err(_) => None,
+        };
 
     // 4. Display info and extract defaults
     let mut memory: Option<String> = None;
@@ -174,8 +174,16 @@ pub async fn handle_managed_add(
         if let Some(size) = pull_info.size_bytes {
             eprintln!("  {}: {:.1} MB", "Size".bold(), size as f64 / 1_048_576.0);
         }
-        memory = m.get("resources").and_then(|r| r.get("memory")).and_then(|v| v.as_str()).map(|s| s.to_string());
-        cpus = m.get("resources").and_then(|r| r.get("cpu")).and_then(|v| v.as_str()).map(|s| s.to_string());
+        memory = m
+            .get("resources")
+            .and_then(|r| r.get("memory"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        cpus = m
+            .get("resources")
+            .and_then(|r| r.get("cpu"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
     } else {
         eprintln!("  {} Image pulled (no manifest found)", "✓".green());
         if let Some(size) = pull_info.size_bytes {
@@ -191,11 +199,14 @@ pub async fn handle_managed_add(
     };
 
     let mut workers_file = WorkersFile::load().unwrap_or_default();
-    workers_file.add_worker(name.clone(), WorkerDef {
-        image: image_ref,
-        env: HashMap::new(),
-        resources,
-    });
+    workers_file.add_worker(
+        name.clone(),
+        WorkerDef {
+            image: image_ref,
+            env: HashMap::new(),
+            resources,
+        },
+    );
     if let Err(e) = workers_file.save() {
         eprintln!("{} Failed to save iii.workers.yaml: {}", "error:".red(), e);
         return 1;
@@ -216,7 +227,11 @@ pub async fn handle_managed_remove(worker_name: &str, _address: &str, _port: u16
     let mut workers_file = WorkersFile::load().unwrap_or_default();
 
     if workers_file.get_worker(worker_name).is_none() {
-        eprintln!("{} Worker '{}' not found in iii.workers.yaml", "error:".red(), worker_name);
+        eprintln!(
+            "{} Worker '{}' not found in iii.workers.yaml",
+            "error:".red(),
+            worker_name
+        );
         return 1;
     }
 
@@ -269,10 +284,29 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
     let worker_def = match workers_file.get_worker(worker_name) {
         Some(w) => w.clone(),
         None => {
-            eprintln!("{} Worker '{}' not found in iii.workers.yaml", "error:".red(), worker_name);
+            eprintln!(
+                "{} Worker '{}' not found in iii.workers.yaml",
+                "error:".red(),
+                worker_name
+            );
             return 1;
         }
     };
+
+    // Ensure libkrunfw (firmware) is available -- extract from embedded bytes if needed.
+    // msb_krun (the VMM) is compiled directly into the iii binary; no external libkrun needed.
+    if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
+        tracing::warn!(error = %e, "failed to ensure libkrunfw availability");
+    }
+
+    if !super::worker_manager::libkrun::libkrun_available() {
+        eprintln!(
+            "{} libkrunfw is not available.\n  \
+             Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/",
+            "error:".red()
+        );
+        return 1;
+    }
 
     let adapter = super::worker_manager::create_adapter("libkrun");
     eprintln!("  Starting {}...", worker_name.bold());
@@ -300,6 +334,26 @@ pub async fn handle_managed_start(worker_name: &str, _address: &str, port: u16) 
             eprintln!("{} Start failed: {}", "error:".red(), e);
             1
         }
+    }
+}
+
+/// Determine display status label for a managed worker given its PID file path.
+/// Returns (status_label, color_name) tuple for display.
+/// - PID file exists + process alive = ("running", "green")
+/// - PID file exists + process dead = ("crashed", "yellow")
+/// - No PID file = ("stopped", "dimmed")
+async fn worker_status_label(
+    pid_file: &std::path::Path,
+    adapter: &dyn super::worker_manager::adapter::RuntimeAdapter,
+) -> (&'static str, &'static str) {
+    if let Ok(pid_str) = std::fs::read_to_string(pid_file) {
+        let pid = pid_str.trim();
+        match adapter.status(pid).await {
+            Ok(cs) if cs.running => ("running", "green"),
+            _ => ("crashed", "yellow"), // PID file exists but process dead
+        }
+    } else {
+        ("stopped", "dimmed") // No PID file = cleanly stopped or never started
     }
 }
 
@@ -336,22 +390,15 @@ pub async fn handle_worker_list() -> i32 {
             .join(name)
             .join("vm.pid");
 
-        let status_str = if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            let pid = pid_str.trim();
-            match adapter.status(pid).await {
-                Ok(cs) if cs.running => "running".green().to_string(),
-                _ => "stopped".red().to_string(),
-            }
-        } else {
-            "not started".dimmed().to_string()
+        let (label, color) = worker_status_label(&pid_file, adapter.as_ref()).await;
+        let status_str = match color {
+            "green" => label.green().to_string(),
+            "yellow" => label.yellow().to_string(),
+            "dimmed" => label.dimmed().to_string(),
+            _ => label.to_string(),
         };
 
-        eprintln!(
-            "  {:25} {:40} {}",
-            name,
-            def.image,
-            status_str,
-        );
+        eprintln!("  {:25} {:40} {}", name, def.image, status_str,);
     }
     eprintln!();
     0
@@ -364,20 +411,73 @@ pub async fn handle_managed_logs(
     _address: &str,
     _port: u16,
 ) -> i32 {
-    let log_file = dirs::home_dir()
+    let worker_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".iii/managed")
-        .join(worker_name)
-        .join("vm.log");
+        .join(worker_name);
 
-    match std::fs::read_to_string(&log_file) {
+    let logs_dir = worker_dir.join("logs");
+    let stdout_path = logs_dir.join("stdout.log");
+    let stderr_path = logs_dir.join("stderr.log");
+
+    // Try new split log format first (Phase 5+)
+    let has_new_logs = stdout_path.exists() || stderr_path.exists();
+
+    if has_new_logs {
+        let mut found_content = false;
+
+        // Print stdout
+        if let Ok(contents) = std::fs::read_to_string(&stdout_path) {
+            if !contents.is_empty() {
+                found_content = true;
+                let lines: Vec<&str> = contents.lines().collect();
+                let start = if lines.len() > 100 {
+                    lines.len() - 100
+                } else {
+                    0
+                };
+                for line in &lines[start..] {
+                    println!("{}", line);
+                }
+            }
+        }
+
+        // Print stderr (to stderr)
+        if let Ok(contents) = std::fs::read_to_string(&stderr_path) {
+            if !contents.is_empty() {
+                found_content = true;
+                let lines: Vec<&str> = contents.lines().collect();
+                let start = if lines.len() > 100 {
+                    lines.len() - 100
+                } else {
+                    0
+                };
+                for line in &lines[start..] {
+                    eprintln!("{}", line);
+                }
+            }
+        }
+
+        if !found_content {
+            eprintln!("  No logs available for {}", worker_name.bold());
+        }
+
+        return 0;
+    }
+
+    // Backward compat: fall back to old vm.log format (pre-Phase 5 workers)
+    let old_log = worker_dir.join("vm.log");
+    match std::fs::read_to_string(&old_log) {
         Ok(contents) => {
             if contents.is_empty() {
                 eprintln!("  No logs available for {}", worker_name.bold());
             } else {
-                // Show last 100 lines
                 let lines: Vec<&str> = contents.lines().collect();
-                let start = if lines.len() > 100 { lines.len() - 100 } else { 0 };
+                let start = if lines.len() > 100 {
+                    lines.len() - 100
+                } else {
+                    0
+                };
                 for line in &lines[start..] {
                     println!("{}", line);
                 }
@@ -590,11 +690,7 @@ async fn detect_lan_ip() -> Option<String> {
         .trim()
         .to_string();
 
-    let ifconfig = Command::new("ifconfig")
-        .arg(&iface)
-        .output()
-        .await
-        .ok()?;
+    let ifconfig = Command::new("ifconfig").arg(&iface).output().await.ok()?;
     let ifconfig_out = String::from_utf8_lossy(&ifconfig.stdout);
     let ip = ifconfig_out
         .lines()
@@ -608,8 +704,35 @@ async fn detect_lan_ip() -> Option<String> {
 
 /// Build engine WebSocket URL for the VM runtime.
 /// libkrun uses TSI — guest TCP appears as local on host, so localhost works.
-fn engine_url_for_runtime(_runtime: &str, _address: &str, port: u16, _lan_ip: &Option<String>) -> String {
+fn engine_url_for_runtime(
+    _runtime: &str,
+    _address: &str,
+    port: u16,
+    _lan_ip: &Option<String>,
+) -> String {
     format!("ws://localhost:{}", port)
+}
+
+/// Ensure the terminal is in cooked mode with proper NL→CRNL translation.
+/// A previous VM run may have left the terminal in raw mode (krun calls
+/// tcsetattr to disable output processing). This restores sanity before
+/// we print any status messages.
+#[cfg(unix)]
+pub fn restore_terminal_cooked_mode() {
+    let stderr = std::io::stderr();
+    if let Ok(mut termios) = nix::sys::termios::tcgetattr(&stderr) {
+        termios
+            .output_flags
+            .insert(nix::sys::termios::OutputFlags::OPOST);
+        termios
+            .output_flags
+            .insert(nix::sys::termios::OutputFlags::ONLCR);
+        let _ = nix::sys::termios::tcsetattr(
+            &stderr,
+            nix::sys::termios::SetArg::TCSANOW,
+            &termios,
+        );
+    }
 }
 
 /// `iii worker dev <path>` — run a worker project inside a VM.
@@ -621,6 +744,9 @@ pub async fn handle_worker_dev(
     address: &str,
     port: u16,
 ) -> i32 {
+    #[cfg(unix)]
+    restore_terminal_cooked_mode();
+
     // 1. Resolve absolute path
     let project_path = match std::fs::canonicalize(path) {
         Ok(p) => p,
@@ -630,13 +756,18 @@ pub async fn handle_worker_dev(
         }
     };
 
-    // 2. Detect runtime: explicit flag > libkrun > error
+    // 2. Ensure libkrunfw (firmware) is available -- extract from embedded bytes if needed.
+    // msb_krun (the VMM) is compiled directly into the iii binary; no external libkrun needed.
+    if let Err(e) = super::firmware::download::ensure_libkrunfw().await {
+        tracing::warn!(error = %e, "failed to ensure libkrunfw");
+    }
+
     let selected_runtime = match detect_dev_runtime(runtime).await {
         Some(rt) => rt,
         None => {
             eprintln!(
                 "{} No dev runtime available.\n  \
-                 Rebuild with: cargo build --features libkrun",
+                 Rebuild with --features embed-libkrunfw or place libkrunfw in ~/.iii/lib/",
                 "error:".red()
             );
             return 1;
@@ -665,7 +796,9 @@ pub async fn handle_worker_dev(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("worker");
-    let sb_name = name.map(|n| n.to_string()).unwrap_or_else(|| format!("iii-dev-{}", dir_name));
+    let sb_name = name
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| format!("iii-dev-{}", dir_name));
     let project_str = project_path.to_string_lossy();
 
     // 4. Detect LAN IP and compute engine URL
@@ -673,14 +806,26 @@ pub async fn handle_worker_dev(
     let engine_url = engine_url_for_runtime(&selected_runtime, address, port, &lan_ip);
 
     eprintln!("  Runtime: {}", selected_runtime.bold());
-    eprintln!("  {} project detected: {}", "✓".green(), project.name.bold());
+    eprintln!(
+        "  {} project detected: {}",
+        "✓".green(),
+        project.name.bold()
+    );
     eprintln!("  Sandbox: {}", sb_name.bold());
     eprintln!("  Path: {}", project_str.dimmed());
     eprintln!("  Engine: {}", engine_url.bold());
     eprintln!();
 
     // run_dev_worker handles Ctrl+C internally (kills the VM child process).
-    let exit_code = run_dev_worker(&selected_runtime, &sb_name, &project_str, &project, &engine_url, rebuild).await;
+    let exit_code = run_dev_worker(
+        &selected_runtime,
+        &sb_name,
+        &project_str,
+        &project,
+        &engine_url,
+        rebuild,
+    )
+    .await;
 
     exit_code
 }
@@ -695,7 +840,7 @@ async fn detect_dev_runtime(explicit: Option<&str>) -> Option<String> {
     }
 
     // Auto-detect libkrun
-    
+
     {
         if super::worker_manager::libkrun::libkrun_available() {
             return Some("libkrun".to_string());
@@ -715,7 +860,6 @@ async fn run_dev_worker(
     rebuild: bool,
 ) -> i32 {
     match runtime {
-        
         "libkrun" => {
             let language = project.language.as_deref().unwrap_or("typescript");
             let env = build_dev_env(engine_url, &project.env);
@@ -759,7 +903,7 @@ async fn run_dev_worker(
             }
 
             // 3. Build script: skip setup+install if already prepared
-            let script = build_libkrun_dev_script(project, engine_url, is_prepared);
+            let script = build_libkrun_dev_script(project, is_prepared);
 
             let script_path = dev_dir.join("tmp").join("iii-dev-run.sh");
             if let Err(e) = std::fs::write(&script_path, &script) {
@@ -769,7 +913,8 @@ async fn run_dev_worker(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+                let _ =
+                    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
             }
 
             // 4. Copy project source into /workspace (always fresh)
@@ -797,7 +942,8 @@ async fn run_dev_worker(
                 vcpus,
                 ram,
                 dev_dir,
-            ).await
+            )
+            .await
         }
         _ => {
             eprintln!("{} Unknown runtime: {}", "error:".red(), runtime);
@@ -809,9 +955,9 @@ async fn run_dev_worker(
 /// Build environment variables for a dev worker session.
 
 /// Parse resource limits (vcpus, memory) from iii.worker.yaml manifest.
-/// Returns (vcpus, ram_mib) with defaults of (1, 512).
+/// Returns (vcpus, ram_mib) with defaults of (2, 2048).
 fn parse_manifest_resources(manifest_path: &std::path::Path) -> (u32, u32) {
-    let default = (1, 512);
+    let default = (2, 2048);
     let content = match std::fs::read_to_string(manifest_path) {
         Ok(c) => c,
         Err(_) => return default,
@@ -820,14 +966,16 @@ fn parse_manifest_resources(manifest_path: &std::path::Path) -> (u32, u32) {
         Ok(v) => v,
         Err(_) => return default,
     };
-    let cpus = yaml.get("resources")
+    let cpus = yaml
+        .get("resources")
         .and_then(|r| r.get("cpus"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(1) as u32;
-    let memory = yaml.get("resources")
+        .unwrap_or(2) as u32;
+    let memory = yaml
+        .get("resources")
         .and_then(|r| r.get("memory"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(512) as u32;
+        .unwrap_or(2048) as u32;
     (cpus, memory)
 }
 
@@ -840,9 +988,9 @@ fn clone_rootfs(base: &std::path::Path, dest: &std::path::Path) -> Result<(), St
     }
     let status = std::process::Command::new("cp")
         .args(if cfg!(target_os = "macos") {
-            vec!["-c", "-a"]  // APFS clone (zero-cost copy-on-write)
+            vec!["-c", "-a"] // APFS clone (zero-cost copy-on-write)
         } else {
-            vec!["--reflink=auto", "-a"]  // btrfs/xfs reflink, fallback to copy
+            vec!["--reflink=auto", "-a"] // btrfs/xfs reflink, fallback to copy
         })
         .arg(base.as_os_str())
         .arg(dest.as_os_str())
@@ -857,8 +1005,17 @@ fn clone_rootfs(base: &std::path::Path, dest: &std::path::Path) -> Result<(), St
 /// Recursively copy directory contents from src to dst.
 /// Skips node_modules, .git, target, and other build artifacts.
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    let skip = ["node_modules", ".git", "target", "__pycache__", ".venv", "dist"];
-    for entry in std::fs::read_dir(src).map_err(|e| format!("Failed to read {}: {}", src.display(), e))? {
+    let skip = [
+        "node_modules",
+        ".git",
+        "target",
+        "__pycache__",
+        ".venv",
+        "dist",
+    ];
+    for entry in
+        std::fs::read_dir(src).map_err(|e| format!("Failed to read {}: {}", src.display(), e))?
+    {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -881,12 +1038,16 @@ fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<(),
 /// Runs the manifest's setup/install/start scripts inside the VM,
 /// with optional caching (skips setup+install if already prepared).
 
-fn build_libkrun_dev_script(project: &ProjectInfo, engine_url: &str, prepared: bool) -> String {
-    let env_exports = build_env_exports(engine_url, &project.env);
+fn build_libkrun_dev_script(project: &ProjectInfo, prepared: bool) -> String {
+    let env_exports = build_env_exports(&project.env);
     let mut parts: Vec<String> = Vec::new();
 
     // Ensure common runtime paths are available inside the VM.
     parts.push("export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string());
+
+    // Move this process into the memory-limited worker cgroup (set up by init).
+    // The supervisor moves the initial child PID, but exec/fork can escape.
+    parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
 
     if !prepared {
         // First run: execute setup + install, then create marker so next run skips them.
@@ -903,10 +1064,13 @@ fn build_libkrun_dev_script(project: &ProjectInfo, engine_url: &str, prepared: b
     parts.join("\n")
 }
 
-
-fn build_dev_env(engine_url: &str, project_env: &HashMap<String, String>) -> HashMap<String, String> {
+fn build_dev_env(
+    engine_url: &str,
+    project_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("III_ENGINE_URL".to_string(), engine_url.to_string());
+    env.insert("III_URL".to_string(), engine_url.to_string());
     for (key, value) in project_env {
         if key != "III_ENGINE_URL" && key != "III_URL" {
             env.insert(key.clone(), value.clone());
@@ -918,23 +1082,26 @@ fn build_dev_env(engine_url: &str, project_env: &HashMap<String, String>) -> Has
 /// Build environment variable export string for worker execution.
 /// Values are shell-escaped (single quotes with `'` → `'\''`).
 /// Keys are validated to contain only `[A-Za-z_][A-Za-z0-9_]*`.
-fn build_env_exports(engine_url: &str, env: &HashMap<String, String>) -> String {
-    let escaped_url = shell_escape(engine_url);
-    let mut exports = format!(
-        "export III_ENGINE_URL='{}' && export III_URL='{}'",
-        escaped_url, escaped_url
-    );
+///
+/// III_ENGINE_URL and III_URL are NOT exported here — they are passed via
+/// `--env` CLI args and rewritten by `vm_boot.rs` (localhost → gateway IP).
+/// Re-exporting them in the script would override the rewritten values.
+fn build_env_exports(env: &HashMap<String, String>) -> String {
+    let mut parts: Vec<String> = Vec::new();
     for (k, v) in env {
         if k == "III_ENGINE_URL" || k == "III_URL" {
             continue;
         }
-        // Skip keys with invalid characters to prevent injection
         if !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || k.is_empty() {
             continue;
         }
-        exports.push_str(&format!(" && export {}='{}'", k, shell_escape(v)));
+        parts.push(format!("export {}='{}'", k, shell_escape(v)));
     }
-    exports
+    if parts.is_empty() {
+        "true".to_string()
+    } else {
+        parts.join(" && ")
+    }
 }
 
 /// Escape a string for safe inclusion inside single quotes in shell.
@@ -959,20 +1126,35 @@ pub async fn stop_managed_workers() {
         return;
     }
 
-    let adapter = super::worker_manager::create_adapter("libkrun");
+    tracing::info!(
+        count = workers_file.workers.len(),
+        "Stopping managed workers..."
+    );
 
-    tracing::info!(count = workers_file.workers.len(), "Stopping managed workers...");
+    // Collect PID strings first, then stop in parallel.
+    // We create one adapter per future to avoid trait object Clone issues (Pitfall 5 from RESEARCH.md).
+    let stop_futures: Vec<_> = workers_file
+        .workers
+        .keys()
+        .filter_map(|name| {
+            let pid_file = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".iii/managed")
+                .join(name)
+                .join("vm.pid");
+            let pid_str = std::fs::read_to_string(&pid_file).ok()?;
+            let pid = pid_str.trim().to_string();
+            let worker_name = name.clone();
+            Some(async move {
+                let adapter = super::worker_manager::create_adapter("libkrun");
+                if let Err(e) = adapter.stop(&pid, 5).await {
+                    tracing::warn!(worker = %worker_name, error = %e, "Failed to stop worker");
+                }
+            })
+        })
+        .collect();
 
-    for name in workers_file.workers.keys() {
-        let pid_file = dirs::home_dir()
-            .unwrap_or_default()
-            .join(".iii/managed")
-            .join(name)
-            .join("vm.pid");
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-            let _ = adapter.stop(pid_str.trim(), 5).await;
-        }
-    }
+    join_all(stop_futures).await;
 
     tracing::info!("Managed workers stopped");
 }
@@ -1042,9 +1224,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_image_with_slash_no_tag() {
-        let (image, name) = resolve_image("ghcr.io/iii-hq/image-resize")
-            .await
-            .unwrap();
+        let (image, name) = resolve_image("ghcr.io/iii-hq/image-resize").await.unwrap();
         assert_eq!(image, "ghcr.io/iii-hq/image-resize");
         assert_eq!(name, "image-resize");
     }
@@ -1094,11 +1274,7 @@ mod tests {
     async fn resolve_image_shorthand_not_found() {
         let dir = tempfile::TempDir::new().unwrap();
         let registry_path = dir.path().join("index.json");
-        std::fs::write(
-            &registry_path,
-            r#"{ "version": 2, "workers": {} }"#,
-        )
-        .unwrap();
+        std::fs::write(&registry_path, r#"{ "version": 2, "workers": {} }"#).unwrap();
 
         unsafe {
             std::env::set_var(
@@ -1187,23 +1363,23 @@ mod tests {
     }
 
     #[test]
-    fn build_env_exports_includes_engine_url() {
-        let env = HashMap::new();
-        let exports = build_env_exports("ws://localhost:49134", &env);
-        assert!(exports.contains("III_ENGINE_URL='ws://localhost:49134'"));
-        assert!(exports.contains("III_URL='ws://localhost:49134'"));
+    fn build_env_exports_excludes_engine_urls() {
+        let mut env = HashMap::new();
+        env.insert("III_ENGINE_URL".to_string(), "ws://localhost:49134".to_string());
+        env.insert("III_URL".to_string(), "ws://localhost:49134".to_string());
+        env.insert("CUSTOM_VAR".to_string(), "custom-val".to_string());
+
+        let exports = build_env_exports(&env);
+        assert!(!exports.contains("III_ENGINE_URL"));
+        assert!(!exports.contains("III_URL"));
+        assert!(exports.contains("CUSTOM_VAR='custom-val'"));
     }
 
     #[test]
-    fn build_env_exports_skips_engine_url_keys() {
-        let mut env = HashMap::new();
-        env.insert("III_ENGINE_URL".to_string(), "should-be-skipped".to_string());
-        env.insert("III_URL".to_string(), "should-be-skipped".to_string());
-        env.insert("CUSTOM_VAR".to_string(), "custom-val".to_string());
-
-        let exports = build_env_exports("ws://localhost:49134", &env);
-        assert!(!exports.contains("should-be-skipped"));
-        assert!(exports.contains("CUSTOM_VAR='custom-val'"));
+    fn build_env_exports_empty_env() {
+        let env = HashMap::new();
+        let exports = build_env_exports(&env);
+        assert_eq!(exports, "true");
     }
 
     #[test]
@@ -1218,4 +1394,167 @@ mod tests {
         assert_eq!(url, "ws://localhost:8080");
     }
 
+    #[test]
+    fn test_log_paths_construction() {
+        // Verify the path construction logic matches the convention
+        // shared with libkrun.rs (D-09)
+        let base = std::path::PathBuf::from("/home/user/.iii/managed/myworker");
+        let logs_dir = base.join("logs");
+        let stdout_path = logs_dir.join("stdout.log");
+        let stderr_path = logs_dir.join("stderr.log");
+
+        assert_eq!(
+            logs_dir.to_string_lossy(),
+            "/home/user/.iii/managed/myworker/logs"
+        );
+        assert!(stdout_path.to_string_lossy().ends_with("logs/stdout.log"));
+        assert!(stderr_path.to_string_lossy().ends_with("logs/stderr.log"));
+    }
+
+    #[test]
+    fn test_log_format_detection_prefers_new_format() {
+        // When logs/ directory with stdout.log exists, new format is detected
+        let dir = tempfile::TempDir::new().unwrap();
+        let logs_dir = dir.path().join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(logs_dir.join("stdout.log"), "hello from stdout\n").unwrap();
+        std::fs::write(logs_dir.join("stderr.log"), "hello from stderr\n").unwrap();
+        // Also create vm.log to confirm new format takes priority
+        std::fs::write(dir.path().join("vm.log"), "old log content\n").unwrap();
+
+        let stdout_path = logs_dir.join("stdout.log");
+        let stderr_path = logs_dir.join("stderr.log");
+        let has_new_logs = stdout_path.exists() || stderr_path.exists();
+
+        assert!(
+            has_new_logs,
+            "new format should be detected when logs/ dir exists"
+        );
+    }
+
+    #[test]
+    fn test_log_fallback_to_vm_log() {
+        // When no logs/ directory exists but vm.log does, fallback is used
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("vm.log"), "old format log\n").unwrap();
+
+        let logs_dir = dir.path().join("logs");
+        let stdout_path = logs_dir.join("stdout.log");
+        let stderr_path = logs_dir.join("stderr.log");
+        let has_new_logs = stdout_path.exists() || stderr_path.exists();
+
+        assert!(
+            !has_new_logs,
+            "new format should NOT be detected when only vm.log exists"
+        );
+
+        let old_log = dir.path().join("vm.log");
+        let contents = std::fs::read_to_string(&old_log).unwrap();
+        assert_eq!(contents, "old format log\n", "fallback should read vm.log");
+    }
+
+    #[test]
+    fn test_log_no_files_at_all() {
+        // When neither new format nor vm.log exists, detection finds nothing
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let logs_dir = dir.path().join("logs");
+        let stdout_path = logs_dir.join("stdout.log");
+        let stderr_path = logs_dir.join("stderr.log");
+        let has_new_logs = stdout_path.exists() || stderr_path.exists();
+
+        assert!(!has_new_logs, "no logs should be detected");
+
+        let old_log = dir.path().join("vm.log");
+        assert!(
+            std::fs::read_to_string(&old_log).is_err(),
+            "vm.log should not exist either"
+        );
+    }
+
+    // --- Lifecycle status tests (Phase 10) ---
+
+    /// Mock adapter for testing status logic without real VMs.
+    /// Implements all 6 methods of RuntimeAdapter trait.
+    struct MockAdapter {
+        running: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::worker_manager::adapter::RuntimeAdapter for MockAdapter {
+        async fn pull(
+            &self,
+            _image: &str,
+        ) -> anyhow::Result<super::super::worker_manager::adapter::ImageInfo> {
+            unimplemented!()
+        }
+        async fn extract_file(&self, _image: &str, _path: &str) -> anyhow::Result<Vec<u8>> {
+            unimplemented!()
+        }
+        async fn start(
+            &self,
+            _spec: &super::super::worker_manager::adapter::ContainerSpec,
+        ) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+        async fn stop(&self, _id: &str, _timeout: u32) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        async fn status(
+            &self,
+            _id: &str,
+        ) -> anyhow::Result<super::super::worker_manager::adapter::ContainerStatus> {
+            Ok(super::super::worker_manager::adapter::ContainerStatus {
+                name: "test".to_string(),
+                container_id: "123".to_string(),
+                running: self.running,
+                exit_code: None,
+            })
+        }
+        async fn remove(&self, _id: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_crashed_status_when_pid_file_exists_but_process_dead() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pid_file = dir.path().join("vm.pid");
+        std::fs::write(&pid_file, "999999").unwrap(); // PID that doesn't exist
+
+        let adapter = MockAdapter { running: false };
+        let (label, color) = worker_status_label(&pid_file, &adapter).await;
+
+        assert_eq!(
+            label, "crashed",
+            "PID file exists + process dead should be 'crashed'"
+        );
+        assert_eq!(color, "yellow");
+    }
+
+    #[tokio::test]
+    async fn test_stopped_status_when_no_pid_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pid_file = dir.path().join("vm.pid");
+        // No PID file written
+
+        let adapter = MockAdapter { running: false };
+        let (label, color) = worker_status_label(&pid_file, &adapter).await;
+
+        assert_eq!(label, "stopped", "No PID file should be 'stopped'");
+        assert_eq!(color, "dimmed");
+    }
+
+    #[tokio::test]
+    async fn test_running_status_when_process_alive() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pid_file = dir.path().join("vm.pid");
+        std::fs::write(&pid_file, "12345").unwrap();
+
+        let adapter = MockAdapter { running: true };
+        let (label, color) = worker_status_label(&pid_file, &adapter).await;
+
+        assert_eq!(label, "running");
+        assert_eq!(color, "green");
+    }
 }
