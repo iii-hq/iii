@@ -165,7 +165,6 @@ Subscribe multiple functions to a topic so that every published message fans out
         topic: 'order.created',
         data: { orderId: 'ord_789', userId: 'usr_42', total: 149.99 },
       },
-      action: TriggerAction.Void(),
     })
     ```
     </Tab>
@@ -179,7 +178,6 @@ Subscribe multiple functions to a topic so that every published message fans out
             "topic": "order.created",
             "data": {"orderId": "ord_789", "userId": "usr_42", "total": 149.99},
         },
-        "action": TriggerAction.Void(),
     })
     ```
     </Tab>
@@ -194,7 +192,6 @@ Subscribe multiple functions to a topic so that every published message fans out
             "topic": "order.created",
             "data": { "orderId": "ord_789", "userId": "usr_42", "total": 149.99 },
         }),
-        action: Some(TriggerAction::Void),
         timeout_ms: None,
     }).await?;
     ```
@@ -328,7 +325,7 @@ Every function subscribed to a topic receives a copy of each published message. 
 
 ### Goal
 
-Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support — all defined centrally in `iii-config.yaml`.
+Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support. All named queues are defined centrally in `iii-config.yaml`.
 
 <Steps>
   <Step title="Define named queues in config">
@@ -350,9 +347,9 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
               message_group_field: transaction_id
             email:
               max_retries: 8
+              backoff_ms: 2000
               concurrency: 5
               type: standard
-              backoff_ms: 2000
           adapter:
             class: modules::queue::BuiltinQueueAdapter
             config:
@@ -361,7 +358,9 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
     ```
 
     <Info title="Full configuration reference">
-      See the [Queue module reference](/modules/module-queue#queue-configuration) for every field, type, and default value.
+      FIFO queues enforce ordering in a queue and they require a `message_group_field` to order on. Queues can also set `backoff_ms` for exponential retry delays. See more on this in the steps below.
+      
+      For full configuration options refer to the [Queue module reference](/modules/module-queue#queue-configuration).
     </Info>
   </Step>
 
@@ -596,7 +595,7 @@ Jobs are enqueued and acknowledged immediately — the caller receives a `messag
 
 ## Real-World Scenarios
 
-### Scenario 1: HTTP API to Queue Pipeline
+### HTTP API to Queue Pipeline
 
 The most common pattern — an HTTP endpoint accepts a request, responds immediately, and offloads the actual work to a queue. This keeps API response times fast regardless of how long downstream processing takes.
 
@@ -789,7 +788,7 @@ iii.register_trigger(RegisterTriggerInput {
 
 This example uses all three [trigger actions](./trigger-actions): **Enqueue** for payment (reliable, ordered) and email (reliable, parallel), and **Void** for analytics (best-effort).
 
-### Scenario 2: Event Fan-Out with Topic Queues
+### Event Fan-Out with Topic Queues
 
 An order system publishes `order.created` events. Multiple independent services — email notifications, inventory updates, and analytics — each need to process every order. Topic-based queues fan out each message to all subscribers with independent retries per function.
 
@@ -977,7 +976,7 @@ iii.register_function(RegisterFunction::new_async("orders::create", move |req: V
 
 All three functions receive every `order.created` event independently. If `inventory::reserve` fails and retries, it does not affect `notify::email` or `analytics::track`.
 
-### Scenario 3: Financial Transaction Ledger (FIFO)
+### Financial Transaction Ledger (FIFO)
 
 Transactions for the same account must be applied in order to prevent balance inconsistencies. Different accounts can process in parallel.
 
@@ -1135,7 +1134,7 @@ iii.register_function(reg);
 
 Because the `ledger` queue is FIFO with `message_group_field: account_id`, the deposit for `acct_A` always completes before the withdrawal. Without FIFO ordering, the withdrawal could execute first and fail with "Insufficient funds" even though the deposit was submitted first.
 
-### Scenario 4: Bulk Email with Rate Limiting
+### Bulk Email with Rate Limiting
 
 A marketing system sends thousands of emails. The SMTP provider has a rate limit. A standard queue with low concurrency prevents overloading the provider while retrying transient failures.
 
