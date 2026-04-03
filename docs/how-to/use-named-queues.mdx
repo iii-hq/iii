@@ -1,11 +1,11 @@
 ---
-title: 'Use Queues'
-description: 'Decouple producers from consumers, process work asynchronously with retries, fan-out delivery, concurrency control, and ordering guarantees.'
+title: 'Use Named Queues'
+description: 'Enqueue jobs to specific functions with configurable retries, concurrency limits, FIFO ordering, and dead-letter support.'
 ---
 
 ## Goal
 
-This guide covers two independent queue modes: topic-based queues which are durable pub-sub, and named queues that queue functions for later execution. For help deciding, see [When to use which](/modules/module-queue#when-to-use-which).
+Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support. All named queues are defined centrally in `iii-config.yaml`. For help deciding between named and topic-based queues, see [When to use which](/modules/module-queue#when-to-use-which).
 
 <Info title="Trigger actions primer">
   Named queues use the `Enqueue` trigger action. Refer to [Trigger Actions](./trigger-actions) to learn more.
@@ -34,294 +34,6 @@ modules:
 </Info>
 
 ---
-
-## Topic-Based Queues
-
-### Goal
-
-Subscribe multiple functions to a topic so that every published message fans out to all subscribers, with each function processing its copy independently.
-
-<Steps>
-  <Step title="Register consumers for a topic">
-    Subscribe one or more functions to the same topic. Each function gets its own internal queue.
-
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from 'iii-sdk'
-
-    const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
-
-    iii.registerFunction('notify::email', async (data) => {
-      await sendEmail(data.userId, `Order ${data.orderId} created`)
-      return {}
-    })
-
-    iii.registerFunction('audit::log', async (data) => {
-      await writeAuditLog('order.created', data)
-      return {}
-    })
-
-    iii.registerTrigger({
-      type: 'queue',
-      function_id: 'notify::email',
-      config: { topic: 'order.created' },
-    })
-
-    iii.registerTrigger({
-      type: 'queue',
-      function_id: 'audit::log',
-      config: { topic: 'order.created' },
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    from iii import register_worker
-
-    iii = register_worker("ws://localhost:49134")
-
-
-    def send_email_notification(data):
-        send_email(data["userId"], f"Order {data['orderId']} created")
-        return {}
-
-
-    def write_audit(data):
-        write_audit_log("order.created", data)
-        return {}
-
-
-    iii.register_function("notify::email", send_email_notification)
-    iii.register_function("audit::log", write_audit)
-
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": "notify::email",
-        "config": {"topic": "order.created"},
-    })
-
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": "audit::log",
-        "config": {"topic": "order.created"},
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerInput};
-    use serde_json::{json, Value};
-
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-    iii.register_function(RegisterFunction::new_async(
-        "notify::email",
-        |data: Value| async move {
-            send_email(data["userId"].as_str().unwrap_or(""), &format!("Order {} created", data["orderId"])).await?;
-            Ok(json!({}))
-        },
-    ));
-
-    iii.register_function(RegisterFunction::new_async(
-        "audit::log",
-        |data: Value| async move {
-            write_audit_log("order.created", &data).await?;
-            Ok(json!({}))
-        },
-    ));
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: "notify::email".into(),
-        config: json!({ "topic": "order.created" }),
-        metadata: None,
-    })?;
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: "audit::log".into(),
-        config: json!({ "topic": "order.created" }),
-        metadata: None,
-    })?;
-    ```
-    </Tab>
-    </Tabs>
-
-    Both `notify::email` and `audit::log` are now subscribed to `order.created`. Every message published to that topic reaches both functions.
-  </Step>
-
-  <Step title="Publish events to the topic">
-    From any function, publish a message using the builtin `enqueue` function. The engine fans it out to every subscribed function.
-
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    await iii.trigger({
-      function_id: 'enqueue',
-      payload: {
-        topic: 'order.created',
-        data: { orderId: 'ord_789', userId: 'usr_42', total: 149.99 },
-      },
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    iii.trigger({
-        "function_id": "enqueue",
-        "payload": {
-            "topic": "order.created",
-            "data": {"orderId": "ord_789", "userId": "usr_42", "total": 149.99},
-        },
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    use iii_sdk::{TriggerRequest};
-    use serde_json::json;
-
-    iii.trigger(TriggerRequest {
-        function_id: "enqueue".into(),
-        payload: json!({
-            "topic": "order.created",
-            "data": { "orderId": "ord_789", "userId": "usr_42", "total": 149.99 },
-        }),
-        timeout_ms: None,
-    }).await?;
-    ```
-    </Tab>
-    </Tabs>
-
-    The producer does not need to know which functions are subscribed — it only knows the topic name.
-  </Step>
-
-  <Step title="Understand fan-out delivery">
-    Topic-based queues use **fan-out per function**:
-
-    - Each distinct function subscribed to a topic receives a **copy** of every message.
-    - If a function has multiple replicas running, they **compete** on a shared per-function queue — only one replica processes each message.
-
-    ```mermaid
-    sequenceDiagram
-        participant P as Producer
-        participant E as Engine
-        participant Q1 as order.created::notify::email
-        participant Q2 as order.created::audit::log
-        participant E1 as notify::email (replica 1)
-        participant E2 as notify::email (replica 2)
-        participant A1 as audit::log
-
-        Note over Q1,Q2: Both functions subscribed to topic "order.created"
-
-        P->>E: enqueue({ topic: "order.created", data })
-
-        par Engine copies message to each function's queue
-            E->>Q1: push(data)
-            E->>Q2: push(data)
-        end
-
-        Note over Q1,E2: Replicas compete — only one processes the message
-        Q1->>E1: deliver
-        E1-->>Q1: Ack
-
-        Q2->>A1: deliver
-        A1-->>Q2: Ack
-
-        P->>E: enqueue({ topic: "order.created", data })
-
-        par
-            E->>Q1: push(data)
-            E->>Q2: push(data)
-        end
-
-        Note over Q1,E2: This time replica 2 wins
-        Q1->>E2: deliver
-        E2-->>Q1: Ack
-
-        Q2->>A1: deliver
-        A1-->>Q2: Ack
-    ```
-
-    This gives you pub/sub-style event distribution with the durability and retry guarantees of a queue.
-  </Step>
-
-  <Step title="Filter messages with conditions (optional)">
-    Attach a condition function to a queue trigger to filter which messages reach the handler. The condition receives the message data and returns `true` or `false`. If `false`, the handler is not called — no error is surfaced.
-
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    iii.registerFunction('conditions::is_high_value', async (data) => data.total > 1000)
-
-    iii.registerTrigger({
-      type: 'queue',
-      function_id: 'notify::vip-team',
-      config: {
-        topic: 'order.created',
-        condition_function_id: 'conditions::is_high_value',
-      },
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    def is_high_value(data):
-        return data.get("total", 0) > 1000
-
-
-    iii.register_function("conditions::is_high_value", is_high_value)
-
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": "notify::vip-team",
-        "config": {
-            "topic": "order.created",
-            "condition_function_id": "conditions::is_high_value",
-        },
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    iii.register_function(RegisterFunction::new_async(
-        "conditions::is_high_value",
-        |data: Value| async move {
-            Ok(json!(data["total"].as_f64().unwrap_or(0.0) > 1000.0))
-        },
-    ));
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: "notify::vip-team".into(),
-        config: json!({
-            "topic": "order.created",
-            "condition_function_id": "conditions::is_high_value",
-        }),
-        metadata: None,
-    })?;
-    ```
-    </Tab>
-    </Tabs>
-
-    <Info title="Conditions guide">
-      See [Conditions](/examples/conditions) for the full pattern including HTTP and state trigger conditions.
-    </Info>
-  </Step>
-</Steps>
-
-### Result
-
-Every function subscribed to a topic receives a copy of each published message. If a function has multiple replicas, they compete on a shared per-function queue — only one replica processes each message. The producer only knows the topic name; it does not need to know which functions are subscribed.
-
----
-
-## Named Queues
-
-### Goal
-
-Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support. All named queues are defined centrally in `iii-config.yaml`.
 
 <Steps>
   <Step title="Define named queues in config">
@@ -372,7 +84,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
 
     const receipt = await iii.trigger({
       function_id: 'orders::process-payment',
-      payload: { orderId: 'ord_789', amount: 149.99, currency: 'USD' },
+      payload: { orderId: 'ord_789', amount: 149.99, currency: 'USD', transaction_id: 'txn-001' },
       action: TriggerAction.Enqueue({ queue: 'payment' }),
     })
 
@@ -387,7 +99,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
 
     receipt = iii.trigger({
         "function_id": "orders::process-payment",
-        "payload": {"orderId": "ord_789", "amount": 149.99, "currency": "USD"},
+        "payload": {"orderId": "ord_789", "amount": 149.99, "currency": "USD", "transaction_id": "txn-001"},
         "action": TriggerAction.Enqueue(queue="payment"),
     })
 
@@ -407,6 +119,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
             "orderId": "ord_789",
             "amount": 149.99,
             "currency": "USD",
+            "transaction_id": "txn-001",
         }),
         action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
         timeout_ms: None,
@@ -429,7 +142,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
     try {
       const receipt = await iii.trigger({
         function_id: 'orders::process-payment',
-        payload: { orderId: 'ord_789', amount: 149.99 },
+        payload: { orderId: 'ord_789', amount: 149.99, transaction_id: 'txn-001' },
         action: TriggerAction.Enqueue({ queue: 'payment' }),
       })
       console.log('Enqueued:', receipt.messageReceiptId)
@@ -445,7 +158,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
     try:
         receipt = iii.trigger({
             "function_id": "orders::process-payment",
-            "payload": {"orderId": "ord_789", "amount": 149.99},
+            "payload": {"orderId": "ord_789", "amount": 149.99, "transaction_id": "txn-001"},
             "action": TriggerAction.Enqueue(queue="payment"),
         })
         print("Enqueued:", receipt["messageReceiptId"])
@@ -457,7 +170,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
     ```rust
     match iii.trigger(TriggerRequest {
         function_id: "orders::process-payment".to_string(),
-        payload: json!({ "orderId": "ord_789", "amount": 149.99 }),
+        payload: json!({ "orderId": "ord_789", "amount": 149.99, "transaction_id": "txn-001" }),
         action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
         timeout_ms: None,
     }).await {
@@ -579,7 +292,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
   </Step>
 </Steps>
 
-### Result
+## Result
 
 Jobs are enqueued and acknowledged immediately — the caller receives a `messageReceiptId` without waiting for processing. The engine delivers each job to the target function, retries failures with exponential backoff, and routes exhausted jobs to the dead-letter queue. Standard queues process jobs concurrently; FIFO queues guarantee per-group ordering.
 
@@ -783,191 +496,6 @@ iii.register_trigger(RegisterTriggerInput {
 </Tabs>
 
 This example uses all three [trigger actions](./trigger-actions): **Enqueue** for payment (reliable, ordered) and email (reliable, parallel), and **Void** for analytics (best-effort).
-
-### Event Fan-Out with Topic Queues
-
-An order system publishes `order.created` events. Multiple independent services — email notifications, inventory updates, and analytics — each need to process every order. Topic-based queues fan out each message to all subscribers with independent retries per function.
-
-```mermaid
-flowchart LR
-    P[orders::create] -->|publish| T((order.created))
-    T --> Q1[notify::email queue]
-    T --> Q2[inventory::reserve queue]
-    T --> Q3[analytics::track queue]
-    Q1 --> F1[notify::email]
-    Q2 --> F2[inventory::reserve]
-    Q3 --> F3[analytics::track]
-```
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript
-import { registerWorker } from 'iii-sdk'
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
-
-iii.registerFunction('notify::email', async (data) => {
-  await sendEmail(data.email, `Your order ${data.orderId} is confirmed!`)
-  return {}
-})
-
-iii.registerFunction('inventory::reserve', async (data) => {
-  for (const item of data.items) {
-    await reserveStock(item.sku, item.quantity)
-  }
-  return {}
-})
-
-iii.registerFunction('analytics::track', async (data) => {
-  await trackEvent('order_created', { orderId: data.orderId, total: data.total })
-  return {}
-})
-
-iii.registerTrigger({
-  type: 'queue',
-  function_id: 'notify::email',
-  config: { topic: 'order.created' },
-})
-
-iii.registerTrigger({
-  type: 'queue',
-  function_id: 'inventory::reserve',
-  config: { topic: 'order.created' },
-})
-
-iii.registerTrigger({
-  type: 'queue',
-  function_id: 'analytics::track',
-  config: { topic: 'order.created' },
-})
-
-iii.registerFunction('orders::create', async (req) => {
-  const order = { id: crypto.randomUUID(), ...req.body }
-
-  await iii.trigger({
-    function_id: 'enqueue',
-    payload: { topic: 'order.created', data: order },
-  })
-
-  return { status_code: 201, body: { orderId: order.id } }
-})
-```
-</Tab>
-<Tab title="Python">
-```python
-from iii import register_worker
-
-iii = register_worker("ws://localhost:49134")
-
-
-def send_email_notification(data):
-    send_email(data["email"], f"Your order {data['orderId']} is confirmed!")
-    return {}
-
-
-def reserve_inventory(data):
-    for item in data["items"]:
-        reserve_stock(item["sku"], item["quantity"])
-    return {}
-
-
-def track_analytics(data):
-    track_event("order_created", {"orderId": data["orderId"], "total": data["total"]})
-    return {}
-
-
-iii.register_function("notify::email", send_email_notification)
-iii.register_function("inventory::reserve", reserve_inventory)
-iii.register_function("analytics::track", track_analytics)
-
-for fid in ["notify::email", "inventory::reserve", "analytics::track"]:
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": fid,
-        "config": {"topic": "order.created"},
-    })
-
-
-def create_order(req):
-    import uuid
-    order = {"id": str(uuid.uuid4()), **req.get("body", {})}
-
-    iii.trigger({
-        "function_id": "enqueue",
-        "payload": {"topic": "order.created", "data": order},
-    })
-
-    return {"status_code": 201, "body": {"orderId": order["id"]}}
-
-
-iii.register_function("orders::create", create_order)
-```
-</Tab>
-<Tab title="Rust">
-```rust
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction,
-    RegisterTriggerInput, TriggerRequest,
-};
-use serde_json::{json, Value};
-
-let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-iii.register_function(RegisterFunction::new_async(
-    "notify::email",
-    |data: Value| async move {
-        send_email(data["email"].as_str().unwrap_or(""), &format!("Your order {} is confirmed!", data["orderId"])).await?;
-        Ok(json!({}))
-    },
-));
-
-iii.register_function(RegisterFunction::new_async(
-    "inventory::reserve",
-    |data: Value| async move {
-        for item in data["items"].as_array().unwrap_or(&vec![]) {
-            reserve_stock(item["sku"].as_str().unwrap_or(""), item["quantity"].as_u64().unwrap_or(0)).await?;
-        }
-        Ok(json!({}))
-    },
-));
-
-iii.register_function(RegisterFunction::new_async(
-    "analytics::track",
-    |data: Value| async move {
-        track_event("order_created", &json!({ "orderId": data["orderId"], "total": data["total"] })).await?;
-        Ok(json!({}))
-    },
-));
-
-for fid in &["notify::email", "inventory::reserve", "analytics::track"] {
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: fid.to_string(),
-        config: json!({ "topic": "order.created" }),
-        metadata: None,
-    })?;
-}
-
-let iii_clone = iii.clone();
-iii.register_function(RegisterFunction::new_async("orders::create", move |req: Value| {
-    let iii = iii_clone.clone();
-    async move {
-        let order_id = uuid::Uuid::new_v4().to_string();
-
-        iii.trigger(TriggerRequest {
-            function_id: "enqueue".into(),
-            payload: json!({ "topic": "order.created", "data": { "id": order_id, "items": req["body"]["items"] } }),
-            timeout_ms: None,
-        }).await?;
-
-        Ok(json!({ "status_code": 201, "body": { "orderId": order_id } }))
-    }
-}));
-```
-</Tab>
-</Tabs>
-
-All three functions receive every `order.created` event independently. If `inventory::reserve` fails and retries, it does not affect `notify::email` or `analytics::track`.
 
 ### Financial Transaction Ledger (FIFO)
 
@@ -1293,11 +821,14 @@ With `concurrency: 3`, at most three emails are in-flight at any time. Failed se
 
 ## Remember
 
-Producers enqueue work and return immediately. The engine delivers each job to the target function, retries failures with exponential backoff, and routes permanently failed jobs to a dead-letter queue. Topic-based queues fan out messages to every subscriber; named queues target a single function with configurable concurrency, FIFO ordering, and per-queue retry policies.
+Jobs are enqueued and acknowledged immediately — the caller receives a `messageReceiptId` without waiting for processing. The engine delivers each job to the target function, retries failures with exponential backoff, and routes permanently failed jobs to a dead-letter queue. Standard queues process jobs concurrently; FIFO queues guarantee per-group ordering.
 
 ## Next Steps
 
 <CardGroup cols={2}>
+  <Card title="Topic-Based Queues" href="/how-to/use-topic-queues" icon="tower-broadcast">
+    Fan out messages to multiple subscribers with durable pub-sub
+  </Card>
   <Card title="Trigger Actions" href="/how-to/trigger-actions" icon="bolt">
     Understand synchronous, Void, and Enqueue invocation modes
   </Card>
@@ -1306,8 +837,5 @@ Producers enqueue work and return immediately. The engine delivers each job to t
   </Card>
   <Card title="Queue Module Reference" href="/modules/module-queue" icon="gear">
     Full configuration reference for queues and adapters
-  </Card>
-  <Card title="Conditions" href="/examples/conditions" icon="filter">
-    Filter queue messages with condition functions
   </Card>
 </CardGroup>

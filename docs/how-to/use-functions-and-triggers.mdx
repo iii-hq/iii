@@ -311,7 +311,7 @@ iii.register_function(reg);
 
 ### Enqueue — `trigger` with `TriggerAction.Enqueue({ queue })`
 
-Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Queues](/how-to/use-queues).
+Enqueue work to a named queue for async processing. The engine acknowledges with `{ messageReceiptId }` when the job is accepted. The target function receives the payload when a worker processes it. Requires queues defined in `iii-config.yaml` — see [Use Named Queues](/how-to/use-named-queues).
 
 <Tabs>
 <Tab title="Node / TypeScript">

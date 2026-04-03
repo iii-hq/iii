@@ -10,7 +10,7 @@ modules::queue::QueueModule
 ```
 
 <Info title="How-to guidance">
-  For step-by-step instructions on configuring and using queues, see [Use Queues](../how-to/use-queues). For DLQ management, see [Manage Failed Triggers](../how-to/dead-letter-queues).
+  For step-by-step instructions, see [Use Topic-Based Queues](../how-to/use-topic-queues) and [Use Named Queues](../how-to/use-named-queues). For DLQ management, see [Manage Failed Triggers](../how-to/dead-letter-queues).
 </Info>
 
 ## Queue Modes
@@ -37,7 +37,7 @@ Define queues in `iii-config.yaml`, then enqueue function calls directly. No tri
 2. **Enqueue a function call** with `trigger({ function_id: 'orders::process', payload, action: TriggerAction.Enqueue({ queue: 'payment' }) })`. The engine routes the job to the named queue and invokes the function when a worker consumes it.
 3. **Action on the trigger**: the target function receives `payload` as its input. Retries, concurrency, and FIFO are configured centrally in `iii-config.yaml`.
 
-The producer targets the function and queue explicitly. Queue configuration is centralized. For a hands-on walkthrough, see [Use Queues](../how-to/use-queues).
+The producer targets the function and queue explicitly. Queue configuration is centralized. For a hands-on walkthrough, see [Use Named Queues](../how-to/use-named-queues).
 
 ### When to use which
 
@@ -293,7 +293,7 @@ RabbitMQ's fanout exchange natively delivers a copy of each published message to
 Regardless of which adapter you choose, retry semantics, concurrency enforcement, and FIFO ordering behave identically — the engine owns these behaviors, not the adapter.
 
 <Info title="How-to guide">
-  For step-by-step queue setup, see [Use Queues](../how-to/use-queues).
+  For step-by-step queue setup, see [Use Named Queues](../how-to/use-named-queues) and [Use Topic-Based Queues](../how-to/use-topic-queues).
 </Info>
 
 ## Builtin Functions
