@@ -51,11 +51,10 @@ pub fn libkrun_available() -> bool {
 /// OCI image to use as rootfs for each language.
 fn oci_image_for_language(language: &str) -> (&'static str, &'static str) {
     match language {
-        "typescript" | "javascript" => ("docker.io/microsandbox/node", "node"),
-        "python" => ("docker.io/microsandbox/python", "python"),
+        "typescript" | "javascript" => ("docker.io/iiidev/node:latest", "node"),
+        "python" => ("docker.io/iiidev/python:latest", "python"),
         "rust" => ("docker.io/library/rust:slim-bookworm", "rust"),
-        "go" => ("docker.io/library/golang:bookworm", "go"),
-        _ => ("docker.io/microsandbox/node", "node"),
+        _ => ("docker.io/iiidev/node:latest", "node"),
     }
 }
 
@@ -255,18 +254,47 @@ async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<
     let client = Client::new(config);
 
     eprintln!("  Pulling image layers...");
-    let media_types = vec![
+    let media_types: Vec<&str> = vec![
         oci_client::manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
         oci_client::manifest::IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE,
         oci_client::manifest::IMAGE_LAYER_MEDIA_TYPE,
     ];
 
-    let image_data = match client
-        .pull(&reference, &RegistryAuth::Anonymous, media_types)
-        .await
-    {
-        Ok(data) => data,
-        Err(e) => {
+    const MAX_PULL_ATTEMPTS: u32 = 3;
+    let mut image_data = None;
+    let mut last_err = None;
+
+    for attempt in 0..MAX_PULL_ATTEMPTS {
+        if attempt > 0 {
+            let delay = std::time::Duration::from_secs(3u64.pow(attempt - 1));
+            eprintln!(
+                "  Retrying in {}s (attempt {}/{})...",
+                delay.as_secs(),
+                attempt + 1,
+                MAX_PULL_ATTEMPTS
+            );
+            tokio::time::sleep(delay).await;
+        }
+
+        match client
+            .pull(&reference, &RegistryAuth::Anonymous, media_types.clone())
+            .await
+        {
+            Ok(data) => {
+                image_data = Some(data);
+                break;
+            }
+            Err(e) => {
+                eprintln!("  Pull attempt {} failed: {}", attempt + 1, e);
+                last_err = Some(e);
+            }
+        }
+    }
+
+    let image_data = match image_data {
+        Some(data) => data,
+        None => {
+            let e = last_err.unwrap();
             let platforms = available_platforms.lock().unwrap();
             if !platforms.is_empty() {
                 anyhow::bail!(
@@ -276,7 +304,10 @@ async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<
                     platforms.join(", ")
                 );
             }
-            return Err(e).context("Failed to pull image. Check image name and network.");
+            return Err(e).context(format!(
+                "Failed to pull image '{}'. Check image name and network connectivity.",
+                image
+            ));
         }
     };
 
@@ -864,7 +895,7 @@ fn read_oci_entrypoint(rootfs: &std::path::Path) -> Option<(String, Vec<String>)
 }
 
 /// Read environment variables from the saved OCI image config.
-fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
+pub(crate) fn read_oci_env(rootfs: &std::path::Path) -> Vec<(String, String)> {
     let config_path = rootfs.join(".oci-config.json");
     let data = match std::fs::read_to_string(&config_path) {
         Ok(d) => d,
@@ -964,14 +995,14 @@ mod tests {
     #[test]
     fn test_oci_image_for_language_defaults_to_node() {
         let (image, name) = oci_image_for_language("unknown_lang");
-        assert_eq!(image, "docker.io/microsandbox/node");
+        assert_eq!(image, "docker.io/iii-hq/node");
         assert_eq!(name, "node");
     }
 
     #[test]
     fn test_oci_image_for_typescript() {
         let (image, name) = oci_image_for_language("typescript");
-        assert_eq!(image, "docker.io/microsandbox/node");
+        assert_eq!(image, "docker.io/iii-hq/node");
         assert_eq!(name, "node");
     }
 
@@ -1092,7 +1123,7 @@ mod tests {
     #[test]
     fn test_oci_image_for_python() {
         let (image, name) = oci_image_for_language("python");
-        assert_eq!(image, "docker.io/microsandbox/python");
+        assert_eq!(image, "docker.io/iii-hq/python");
         assert_eq!(name, "python");
     }
 

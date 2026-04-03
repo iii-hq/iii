@@ -789,7 +789,7 @@ async fn run_dev_worker(
     match runtime {
         "libkrun" => {
             let language = project.language.as_deref().unwrap_or("typescript");
-            let env = build_dev_env(engine_url, &project.env);
+            let mut env = build_dev_env(engine_url, &project.env);
 
             let base_rootfs = match super::worker_manager::libkrun::prepare_rootfs(language).await {
                 Ok(p) => p,
@@ -798,6 +798,11 @@ async fn run_dev_worker(
                     return 1;
                 }
             };
+
+            let oci_env = super::worker_manager::libkrun::read_oci_env(&base_rootfs);
+            for (key, value) in oci_env {
+                env.entry(key).or_insert(value);
+            }
 
             let dev_dir = match dirs::home_dir() {
                 Some(h) => h.join(".iii").join("dev").join(sb_name),
@@ -980,6 +985,7 @@ fn build_libkrun_dev_script(project: &ProjectInfo, prepared: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     parts.push("export PATH=/usr/local/bin:/usr/bin:/bin:$PATH".to_string());
+    parts.push("export LANG=${LANG:-C.UTF-8}".to_string());
     parts.push("echo $$ > /sys/fs/cgroup/worker/cgroup.procs 2>/dev/null || true".to_string());
 
     if !prepared {

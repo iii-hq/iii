@@ -2,7 +2,7 @@
 //!
 //! The firmware library is embedded in the binary at compile time and extracted
 //! to `~/.iii/lib/` on first use. The pre-built libkrunfw binaries are
-//! committed under `engine/firmware/` (sourced from microsandbox v0.3.8).
+//! committed under `engine/firmware/`.
 //! The VMM (msb_krun) is compiled directly as a Rust dependency.
 
 /// libkrunfw release version.

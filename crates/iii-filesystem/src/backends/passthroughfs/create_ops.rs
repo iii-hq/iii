@@ -1,9 +1,9 @@
 //! Creation operations: create, mkdir, symlink, link.
 //!
-//! ## Creation Pattern (Simplified from microsandbox)
+//! ## Creation Pattern
 //!
 //! All create-type operations follow: validate name -> host syscall -> do_lookup.
-//! Unlike microsandbox, iii does not use xattr stat overrides (per D-02), so files
+//! iii does not use xattr stat overrides (per D-02), so files
 //! are created directly with the requested permissions instead of at 0o600 with
 //! xattr-stored permissions.
 

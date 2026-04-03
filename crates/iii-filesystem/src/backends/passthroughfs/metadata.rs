@@ -2,7 +2,7 @@
 //!
 //! ## No Stat Virtualization (D-02)
 //!
-//! Unlike microsandbox, iii does not use xattr-based stat overrides. All stat results
+//! iii-filesystem does not use xattr-based stat overrides. All stat results
 //! return raw host data directly. UID/GID changes use real `fchown`, mode changes use
 //! real `fchmod`. If `fchown` fails with EPERM (host process lacks CAP_CHOWN), the
 //! error is silently swallowed per RESEARCH.md guidance: "no-op that returns success".
