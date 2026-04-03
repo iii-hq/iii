@@ -138,10 +138,7 @@ pub async fn start_managed_workers(engine_url: &str) {
         }
     };
 
-    tracing::info!(
-        count = workers_file.workers.len(),
-        "Starting managed workers from iii.workers.yaml..."
-    );
+    tracing::info!("Starting workers from iii.workers.yaml...");
 
     // Extract port from engine_url for --port flag
     let port = engine_url
@@ -170,7 +167,7 @@ pub async fn start_managed_workers(engine_url: &str) {
                     Ok(Some(line)) => {
                         let msg = line.trim();
                         if !msg.is_empty() {
-                            tracing::info!(worker = %name, source = "iii-worker", "{msg}");
+                            tracing::info!(worker = %name, "{msg}");
                         }
                     }
                     Ok(None) => break,
@@ -187,9 +184,7 @@ pub async fn start_managed_workers(engine_url: &str) {
         let result = child.wait().await;
 
         match result {
-            Ok(status) if status.success() => {
-                tracing::info!(worker = %name, "Managed worker started");
-            }
+            Ok(status) if status.success() => {}
             Ok(status) => {
                 tracing::warn!(worker = %name, exit_code = ?status.code(), "Failed to start managed worker");
             }
