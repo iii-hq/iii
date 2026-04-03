@@ -29,8 +29,7 @@ modules:
   For complete configuration options please refer to [Queue module reference](/modules/module-queue#configuration).
 </Info>
 
----
-
+## Steps
 <Steps>
   <Step title="Register consumers for a topic">
     Subscribe one or more functions to the same topic. Each function gets its own internal queue.
@@ -195,44 +194,29 @@ modules:
     - If a function has multiple replicas running, they **compete** on a shared per-function queue — only one replica processes each message.
 
     ```mermaid
+    flowchart LR
+        P[Producer] -->|publish| E((Engine))
+        E --> Q1[notify::email queue]
+        E --> Q2[audit::log queue]
+        Q1 --> R1[replica 1]
+        Q1 -.->|competes| R2[replica 2]
+        Q2 --> A1[audit::log]
+    ```
+
+    When a function has multiple replicas, they compete on the shared per-function queue — only one replica processes each message:
+
+    ```mermaid
     sequenceDiagram
-        participant P as Producer
-        participant E as Engine
-        participant Q1 as order.created::notify::email
-        participant Q2 as order.created::audit::log
-        participant E1 as notify::email (replica 1)
-        participant E2 as notify::email (replica 2)
-        participant A1 as audit::log
+        participant Q as notify::email queue
+        participant R1 as replica 1
+        participant R2 as replica 2
 
-        Note over Q1,Q2: Both functions subscribed to topic "order.created"
+        Q->>R1: message 1
+        R1-->>Q: Ack
+        Q->>R2: message 2
+        R2-->>Q: Ack
 
-        P->>E: enqueue({ topic: "order.created", data })
-
-        par Engine copies message to each function's queue
-            E->>Q1: push(data)
-            E->>Q2: push(data)
-        end
-
-        Note over Q1,E2: Replicas compete — only one processes the message
-        Q1->>E1: deliver
-        E1-->>Q1: Ack
-
-        Q2->>A1: deliver
-        A1-->>Q2: Ack
-
-        P->>E: enqueue({ topic: "order.created", data })
-
-        par
-            E->>Q1: push(data)
-            E->>Q2: push(data)
-        end
-
-        Note over Q1,E2: This time replica 2 wins
-        Q1->>E2: deliver
-        E2-->>Q1: Ack
-
-        Q2->>A1: deliver
-        A1-->>Q2: Ack
+        Note over Q,R2: Replicas compete — only one wins each message
     ```
 
     This gives you pub/sub-style event distribution with the durability and retry guarantees of a queue.
