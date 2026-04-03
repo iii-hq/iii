@@ -1,0 +1,46 @@
+[package]
+name = "iii-worker"
+version = "0.10.0"
+edition = "2024"
+license = "Elastic-2.0"
+description = "iii managed worker runtime — VM-based isolated worker execution"
+
+[[bin]]
+name = "iii-worker"
+path = "src/main.rs"
+
+[features]
+default = []
+embed-libkrunfw = []
+embed-init = ["iii-filesystem/embed-init"]
+
+[dependencies]
+iii-filesystem = { path = "../iii-filesystem" }
+iii-network = { path = "../iii-network" }
+msb_krun = { version = "0.1.9", features = ["net"] }
+oci-client = "0.16"
+oci-spec = "0.9"
+tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std"] }
+clap = { version = "4", features = ["derive"] }
+colored = "3.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+serde_yml = "0.0.12"
+anyhow = "1.0.100"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+async-trait = "0.1.89"
+nix = { version = "0.30.1", features = ["signal", "process", "term"] }
+dirs = "6"
+sha2 = "0.10"
+hex = "0.4"
+flate2 = "1"
+tar = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+futures = "0.3"
+indicatif = "0.17"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+tempfile = "3"

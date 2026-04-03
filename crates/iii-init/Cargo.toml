@@ -1,0 +1,15 @@
+[package]
+name = "iii-init"
+version = "0.1.0"
+edition = "2024"
+license = "Elastic-2.0"
+description = "PID 1 init binary for iii microVM workers"
+
+[[bin]]
+name = "iii-init"
+path = "src/main.rs"
+
+[dependencies]
+nix = { version = "0.31", features = ["mount", "signal", "process", "fs"] }
+libc = "0.2"
+thiserror = "2"

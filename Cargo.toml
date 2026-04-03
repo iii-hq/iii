@@ -6,6 +6,10 @@ members = [
   "sdk/packages/rust/iii",
   "sdk/packages/rust/iii-example",
   "console/packages/console-rust",
+  "crates/iii-init",
+  "crates/iii-filesystem",
+  "crates/iii-network",
+  "crates/iii-worker",
 ]
 
 [workspace.package]

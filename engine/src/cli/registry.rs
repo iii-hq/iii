@@ -48,6 +48,21 @@ pub static SELF_SPEC: BinarySpec = BinarySpec {
 /// The compiled-in binary registry
 pub static REGISTRY: &[BinarySpec] = &[
     BinarySpec {
+        name: "iii-init",
+        repo: "iii-hq/iii",
+        has_checksum: true,
+        supported_targets: &[
+            "x86_64-unknown-linux-musl",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+        ],
+        commands: &[],
+        tag_prefix: Some("iii"),
+    },
+    BinarySpec {
         name: "iii-console",
         repo: "iii-hq/iii",
         has_checksum: true,
@@ -104,23 +119,21 @@ pub static REGISTRY: &[BinarySpec] = &[
         tag_prefix: None,
     },
     BinarySpec {
-        name: "iii-cloud",
-        repo: "iii-hq/iii-cloud-cli",
+        name: "iii-worker",
+        repo: "iii-hq/iii",
         has_checksum: true,
         supported_targets: &[
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
-            "x86_64-pc-windows-msvc",
-            "aarch64-pc-windows-msvc",
             "x86_64-unknown-linux-gnu",
             "x86_64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
         ],
         commands: &[CommandMapping {
-            cli_command: "cloud",
+            cli_command: "worker",
             binary_subcommand: None,
         }],
-        tag_prefix: Some("cli"),
+        tag_prefix: Some("iii"),
     },
 ];
 
@@ -192,14 +205,6 @@ mod tests {
         let (spec, sub) = resolve_command("motia").unwrap();
         assert_eq!(spec.name, "motia-cli");
         assert_eq!(spec.repo, "MotiaDev/motia-cli");
-        assert!(sub.is_none());
-    }
-
-    #[test]
-    fn test_resolve_cloud() {
-        let (spec, sub) = resolve_command("cloud").unwrap();
-        assert_eq!(spec.name, "iii-cloud");
-        assert_eq!(spec.repo, "iii-hq/iii-cloud-cli");
         assert!(sub.is_none());
     }
 

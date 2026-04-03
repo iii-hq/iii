@@ -9,7 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{EngineBuilder, logging, modules::config::EngineConfig};
+use iii::{EngineBuilder, logging, modules::config::EngineConfig, modules::worker::DEFAULT_PORT};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -100,8 +100,15 @@ enum Commands {
     Sdk(SdkCommands),
 
     /// Manage workers (add, remove, list, info)
-    #[command(subcommand)]
-    Worker(WorkerCommands),
+    #[command(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        disable_help_flag = true
+    )]
+    Worker {
+        #[arg(num_args = 0..)]
+        args: Vec<String>,
+    },
 
     /// Update iii and managed binaries to their latest versions
     Update {
@@ -127,37 +134,6 @@ enum SdkCommands {
     },
 }
 
-#[derive(Subcommand, Debug)]
-enum WorkerCommands {
-    /// Add a worker from the registry (or all workers from iii.toml if no name given)
-    Add {
-        /// Worker name to install, optionally with version (e.g., "pdfkit" or "pdfkit@1.0.0")
-        #[arg(value_name = "WORKER[@VERSION]")]
-        worker_name: Option<String>,
-
-        /// Overwrite existing config.yaml entries without prompting
-        #[arg(long, short)]
-        force: bool,
-    },
-
-    /// Remove a worker (removes binary, manifest entry, and config)
-    Remove {
-        /// Worker name to remove (e.g., "pdfkit")
-        #[arg(value_name = "WORKER")]
-        worker_name: String,
-    },
-
-    /// List installed workers and their versions
-    List,
-
-    /// Show details about a worker from the registry
-    Info {
-        /// Worker name to inspect (e.g., "pdfkit")
-        #[arg(value_name = "WORKER")]
-        worker_name: String,
-    },
-}
-
 fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
     cli.use_default_config
 }
@@ -175,12 +151,18 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         logging::init_log_from_config(Some(&cli.config));
     }
 
-    EngineBuilder::new()
-        .with_config(config)
-        .build()
-        .await?
-        .serve()
-        .await?;
+    let engine = EngineBuilder::new().with_config(config).build().await?;
+
+    // Start managed workers in background so engine boot is not blocked by image pulls.
+    let engine_url = format!("ws://localhost:{}", DEFAULT_PORT);
+    tokio::spawn(async move {
+        cli::managed_shim::start_managed_workers(&engine_url).await;
+    });
+
+    engine.serve().await?;
+
+    // Engine shutdown complete (modules destroyed). Stop managed worker VMs.
+    cli::managed_shim::stop_managed_workers().await;
 
     Ok(())
 }
@@ -229,15 +211,8 @@ async fn main() -> anyhow::Result<()> {
             let exit_code = cli::handle_dispatch("motia", args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
-        Some(Commands::Worker(worker_cmd)) => {
-            let exit_code = match worker_cmd {
-                WorkerCommands::Add { worker_name, force } => {
-                    cli::handle_install(worker_name.as_deref(), *force).await
-                }
-                WorkerCommands::Remove { worker_name } => cli::handle_uninstall(worker_name),
-                WorkerCommands::List => cli::handle_worker_list(),
-                WorkerCommands::Info { worker_name } => cli::handle_info(worker_name).await,
-            };
+        Some(Commands::Worker { args }) => {
+            let exit_code = cli::handle_dispatch("worker", &args, cli_args.no_update_check).await;
             std::process::exit(exit_code);
         }
         Some(Commands::Update { target }) => {
@@ -415,74 +390,60 @@ mod tests {
     }
 
     #[test]
-    fn worker_add_parses_with_worker_name() {
+    fn worker_parses_with_passthrough_args() {
         let cli = Cli::try_parse_from(["iii", "worker", "add", "pdfkit@1.0.0"])
-            .expect("should parse worker add with worker name");
+            .expect("should parse worker with passthrough args");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Add { worker_name, force })) => {
-                assert_eq!(worker_name.as_deref(), Some("pdfkit@1.0.0"));
-                assert!(!force);
+            Some(Commands::Worker { args }) => {
+                assert_eq!(args, vec!["add", "pdfkit@1.0.0"]);
             }
-            _ => panic!("expected Worker Add subcommand"),
+            _ => panic!("expected Worker subcommand"),
         }
     }
 
     #[test]
-    fn worker_add_parses_with_force_flag() {
-        let cli = Cli::try_parse_from(["iii", "worker", "add", "pdfkit", "--force"])
-            .expect("should parse worker add with force flag");
+    fn worker_parses_with_no_args() {
+        let cli = Cli::try_parse_from(["iii", "worker"]).expect("should parse worker with no args");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Add { worker_name, force })) => {
-                assert_eq!(worker_name.as_deref(), Some("pdfkit"));
-                assert!(force);
+            Some(Commands::Worker { args }) => {
+                assert!(args.is_empty());
             }
-            _ => panic!("expected Worker Add subcommand"),
+            _ => panic!("expected Worker subcommand"),
         }
     }
 
     #[test]
-    fn worker_add_parses_without_worker_name() {
-        let cli = Cli::try_parse_from(["iii", "worker", "add"])
-            .expect("should parse worker add without worker");
+    fn worker_dev_parses_passthrough() {
+        let cli = Cli::try_parse_from(["iii", "worker", "dev", ".", "--rebuild", "--port", "5000"])
+            .expect("should parse worker dev with passthrough args");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Add { worker_name, force })) => {
-                assert!(worker_name.is_none());
-                assert!(!force);
+            Some(Commands::Worker { args }) => {
+                assert_eq!(args, vec!["dev", ".", "--rebuild", "--port", "5000"]);
             }
-            _ => panic!("expected Worker Add subcommand"),
+            _ => panic!("expected Worker subcommand"),
         }
     }
 
     #[test]
-    fn worker_remove_parses_worker_name() {
-        let cli = Cli::try_parse_from(["iii", "worker", "remove", "pdfkit"])
-            .expect("should parse worker remove");
-        match cli.command {
-            Some(Commands::Worker(WorkerCommands::Remove { worker_name })) => {
-                assert_eq!(worker_name, "pdfkit");
-            }
-            _ => panic!("expected Worker Remove subcommand"),
-        }
-    }
-
-    #[test]
-    fn worker_list_parses() {
+    fn worker_list_parses_passthrough() {
         let cli = Cli::try_parse_from(["iii", "worker", "list"]).expect("should parse worker list");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::List)) => {}
-            _ => panic!("expected Worker List subcommand"),
+            Some(Commands::Worker { args }) => {
+                assert_eq!(args, vec!["list"]);
+            }
+            _ => panic!("expected Worker subcommand"),
         }
     }
 
     #[test]
-    fn worker_info_parses_worker_name() {
-        let cli = Cli::try_parse_from(["iii", "worker", "info", "pdfkit"])
-            .expect("should parse worker info command");
+    fn worker_logs_parses_passthrough() {
+        let cli = Cli::try_parse_from(["iii", "worker", "logs", "image-resize", "--follow"])
+            .expect("should parse worker logs --follow");
         match cli.command {
-            Some(Commands::Worker(WorkerCommands::Info { worker_name })) => {
-                assert_eq!(worker_name, "pdfkit");
+            Some(Commands::Worker { args }) => {
+                assert_eq!(args, vec!["logs", "image-resize", "--follow"]);
             }
-            _ => panic!("expected Worker Info subcommand"),
+            _ => panic!("expected Worker subcommand"),
         }
     }
 

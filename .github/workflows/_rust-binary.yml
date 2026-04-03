@@ -35,6 +35,16 @@ on:
         required: false
         type: string
         default: ''
+      features:
+        description: 'Cargo features to enable (e.g., iii-filesystem/embed-init)'
+        required: false
+        type: string
+        default: ''
+      init_artifacts:
+        description: 'Download iii-init cross-compiled artifacts for embedding'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Build binaries without uploading or creating releases'
         required: false
@@ -42,6 +52,11 @@ on:
         default: false
       slack_thread_ts:
         description: 'Slack parent message timestamp for thread replies (optional)'
+        required: false
+        type: string
+        default: ''
+      targets:
+        description: 'JSON array of target triples to build. When provided, only matching targets from the default matrix are built. Leave empty for full 9-target matrix.'
         required: false
         type: string
         default: ''
@@ -66,6 +81,32 @@ env:
   CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
 
 jobs:
+  prepare-matrix:
+    name: Prepare Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Compute build matrix
+        id: set-matrix
+        env:
+          TARGETS_INPUT: ${{ inputs.targets }}
+        run: |
+          # Default 9-target matrix
+          DEFAULT='{"include":[{"target":"x86_64-apple-darwin","os":"macos-latest"},{"target":"aarch64-apple-darwin","os":"macos-latest"},{"target":"x86_64-pc-windows-msvc","os":"windows-latest"},{"target":"i686-pc-windows-msvc","os":"windows-latest"},{"target":"aarch64-pc-windows-msvc","os":"windows-latest"},{"target":"x86_64-unknown-linux-gnu","os":"ubuntu-22.04"},{"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest"},{"target":"aarch64-unknown-linux-gnu","os":"ubuntu-22.04"},{"target":"armv7-unknown-linux-gnueabihf","os":"ubuntu-22.04"}]}'
+
+          if [ -z "$TARGETS_INPUT" ]; then
+            echo "matrix=$DEFAULT" >> "$GITHUB_OUTPUT"
+            echo "Using default 9-target matrix"
+          else
+            # Filter default matrix to only include targets in the provided JSON array
+            FILTERED=$(echo "$DEFAULT" | jq -c --argjson targets "$TARGETS_INPUT" '
+              .include |= [ .[] | select(.target as $t | $targets | index($t)) ]
+            ')
+            echo "matrix=$FILTERED" >> "$GITHUB_OUTPUT"
+            echo "Filtered matrix to targets: $TARGETS_INPUT"
+          fi
+
   pre-build:
     name: Pre-build
     runs-on: ubuntu-latest
@@ -113,7 +154,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [pre-build]
+    needs: [prepare-matrix, pre-build]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -121,26 +162,7 @@ jobs:
       SKIP_FRONTEND_BUILD: ${{ inputs.artifact_name != '' && '1' || '' }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-          - target: i686-pc-windows-msvc
-            os: windows-latest
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-22.04
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: Generate token
@@ -160,6 +182,20 @@ jobs:
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_dest }}
+
+      - name: Download iii-init (x86_64-musl)
+        if: inputs.init_artifacts == true
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-init-x86_64-unknown-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/
+
+      - name: Download iii-init (aarch64-musl)
+        if: inputs.init_artifacts == true
+        uses: actions/download-artifact@v4
+        with:
+          name: iii-init-aarch64-unknown-linux-musl
+          path: target/aarch64-unknown-linux-musl/release/
 
       - name: Install cross-compilation tools
         if: runner.os == 'Linux'
@@ -194,6 +230,7 @@ jobs:
         with:
           bin: ${{ inputs.bin_name }}
           target: ${{ matrix.target }}
+          features: ${{ inputs.features }}
           ref: refs/tags/${{ inputs.tag_name }}
           tar: unix
           zip: windows
