@@ -147,7 +147,7 @@ iii.registerFunction(
     logger.info('Processing high-value order', { amount: data.amount })
 
     await iii.trigger({
-      function_id: 'enqueue',
+      function_id: 'durable::publish',
       payload: { topic: 'order.processed', data: { ...data, processedAt: new Date().toISOString() } },
       action: TriggerAction.Void(),
     })
@@ -155,7 +155,7 @@ iii.registerFunction(
 )
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'orders::high_value',
   config: { topic: 'order.created', condition_function_id: 'conditions::is_high_value' },
 })
@@ -183,7 +183,7 @@ def orders_high_value(data: dict) -> None:
         return
 
     iii.trigger({
-        "function_id": "enqueue",
+        "function_id": "durable::publish",
         "payload": {"topic": "order.processed", "data": {**data, "processedAt": datetime.now(timezone.utc).isoformat()}},
         "action": TriggerAction.Void(),
     })
@@ -193,7 +193,7 @@ iii.register_function("conditions::is_high_value", is_high_value)
 iii.register_function("orders::high_value", orders_high_value)
 
 iii.register_trigger({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "orders::high_value",
     "config": {"topic": "order.created", "condition_function_id": "conditions::is_high_value"},
 })
@@ -218,7 +218,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders::high_value".int
     let amount = input["amount"].as_f64().unwrap_or(0.0);
     logger.info("Processing high-value order", Some(json!({ "amount": amount })));
 
-    iii.trigger(TriggerRequest::new("enqueue", json!({
+    iii.trigger(TriggerRequest::new("durable::publish", json!({
         "topic": "order.processed",
         "data": { "amount": amount, "processedAt": chrono::Utc::now().to_rfc3339() },
     })).action(TriggerAction::void())).await?;
@@ -226,7 +226,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders::high_value".int
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders::high_value".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "orders::high_value".into(), config: json!({
     "topic": "order.created",
     "condition_function_id": "conditions::is_high_value",
 }), metadata: None })?;

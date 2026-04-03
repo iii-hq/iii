@@ -12,11 +12,11 @@ def test_trigger_info_state_type():
 def test_trigger_info_queue_type():
     """Test TriggerInfo supports queue type with topic."""
     meta = TriggerInfo(
-        type="queue",
+        type="durable:subscriber",
         index=0,
         topic="test.topic",
     )
-    assert meta.type == "queue"
+    assert meta.type == "durable:subscriber"
     assert meta.topic == "test.topic"
 
 

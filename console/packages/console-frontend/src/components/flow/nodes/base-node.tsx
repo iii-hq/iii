@@ -7,7 +7,7 @@ import { NodeHeader } from './node-header'
 type Props = {
   title: string
   subtitle?: string
-  variant: 'event' | 'http' | 'noop' | 'cron' | 'queue' | 'state'
+  variant: 'event' | 'http' | 'noop' | 'cron' | 'durable:subscriber' | 'state'
   disableSourceHandle?: boolean
   disableTargetHandle?: boolean
   data: NodeData

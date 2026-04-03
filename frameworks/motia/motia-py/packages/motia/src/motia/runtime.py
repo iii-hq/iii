@@ -408,9 +408,9 @@ class Motia:
         metadata: dict[str, Any],
     ) -> None:
         async def queue_handler(req: Any) -> Any:
-            with step_span(config.name, "queue") as span:
+            with step_span(config.name, "durable:subscriber") as span:
                 try:
-                    trigger_info = TriggerInfo(type="queue", index=index)
+                    trigger_info = TriggerInfo(type="durable:subscriber", index=index)
                     input_data = req
                     if trigger.input:
                         input_data = _validate_input_schema(trigger.input, input_data, f"queue:{config.name}")
@@ -435,10 +435,10 @@ class Motia:
 
         if trigger.condition:
             condition_path = f"{function_id}::conditions::{index}"
-            self._register_condition(trigger, condition_path, "queue", index)
+            self._register_condition(trigger, condition_path, "durable:subscriber", index)
             trigger_config[CONDITION_PATH_KEY] = condition_path
 
-        get_instance().register_trigger({"type": "queue", "function_id": function_id, "config": trigger_config})
+        get_instance().register_trigger({"type": "durable:subscriber", "function_id": function_id, "config": trigger_config})
 
     def _register_cron_trigger(
         self,
@@ -611,7 +611,7 @@ class Motia:
 
                 config = self._stream_configs.get(stream_name)
                 if config and config.on_join:
-                    trigger_info = TriggerInfo(type="queue")
+                    trigger_info = TriggerInfo(type="stream")
                     context = _flow_context(trigger_info)
                     subscription = StreamSubscription(group_id=group_id, id=client_id)
                     result = config.on_join(subscription, context, auth_context)
@@ -634,7 +634,7 @@ class Motia:
 
                 config = self._stream_configs.get(stream_name)
                 if config and config.on_leave:
-                    trigger_info = TriggerInfo(type="queue")
+                    trigger_info = TriggerInfo(type="stream")
                     context = _flow_context(trigger_info)
                     subscription = StreamSubscription(group_id=group_id, id=client_id)
                     result = config.on_leave(subscription, context, auth_context)
@@ -657,7 +657,7 @@ class Motia:
             addr=data.get("addr", ""),
         )
 
-        trigger_info = TriggerInfo(type="queue")
+        trigger_info = TriggerInfo(type="stream")
         context = _flow_context(trigger_info, input_data)
         result = self._authenticate(input_data, context)
         if inspect.iscoroutine(result):

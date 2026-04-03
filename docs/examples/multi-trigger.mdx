@@ -46,7 +46,7 @@ iii.registerFunction(
       })
 
       await iii.trigger({
-        function_id: 'enqueue',
+        function_id: 'durable::publish',
         payload: { topic: 'order.processed', data: { orderId, source: 'api' } },
         action: TriggerAction.Void(),
       })
@@ -72,7 +72,7 @@ iii.registerFunction(
       })
 
       await iii.trigger({
-        function_id: 'enqueue',
+        function_id: 'durable::publish',
         payload: { topic: 'order.processed', data: { orderId, amount, source: 'queue' } },
         action: TriggerAction.Void(),
       })
@@ -90,7 +90,7 @@ iii.registerFunction(
 
     for (const order of pendingOrders ?? []) {
       await iii.trigger({
-        function_id: 'enqueue',
+        function_id: 'durable::publish',
         payload: { topic: 'order.processed', data: { orderId: order.id, amount: order.amount, source: 'cron' } },
         action: TriggerAction.Void(),
       })
@@ -108,7 +108,7 @@ iii.registerTrigger({
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'orders.handle',
   config: { topic: 'order.created' },
 })
@@ -147,7 +147,7 @@ def orders_handle(data) -> dict | None:
             "action": TriggerAction.Void(),
         })
         iii.trigger({
-            "function_id": "enqueue",
+            "function_id": "durable::publish",
             "payload": {
                 "topic": "order.processed",
                 "data": {"orderId": order_id, "source": "api"},
@@ -176,7 +176,7 @@ def orders_handle(data) -> dict | None:
             "action": TriggerAction.Void(),
         })
         iii.trigger({
-            "function_id": "enqueue",
+            "function_id": "durable::publish",
             "payload": {
                 "topic": "order.processed",
                 "data": {"orderId": order_id, "source": "queue"},
@@ -194,7 +194,7 @@ def orders_handle(data) -> dict | None:
     }) or []
     for order in pending:
         iii.trigger({
-            "function_id": "enqueue",
+            "function_id": "durable::publish",
             "payload": {
                 "topic": "order.processed",
                 "data": {"orderId": order["id"], "source": "cron"},
@@ -209,7 +209,7 @@ iii.register_function("orders.handle", orders_handle)
 
 iii.register_trigger({"type": "http", "function_id": "orders.handle",
                       "config": {"api_path": "orders/manual", "http_method": "POST"}})
-iii.register_trigger({"type": "queue", "function_id": "orders.handle",
+iii.register_trigger({"type": "durable:subscriber", "function_id": "orders.handle",
                       "config": {"topic": "order.created"}})
 iii.register_trigger({"type": "cron", "function_id": "orders.handle",
                       "config": {"expression": "* * * * *"}})
@@ -255,7 +255,7 @@ iii.register_function(
                 }).await?;
 
                 iii.trigger(TriggerRequest {
-                    function_id: "enqueue".into(),
+                    function_id: "durable::publish".into(),
                     payload: json!({
                         "topic": "order.processed",
                         "data": { "orderId": order_id, "source": "api" },
@@ -275,7 +275,7 @@ iii.register_function(
                 logger.info("Processing order from queue", Some(json!({ "amount": amount })));
 
                 iii.trigger(TriggerRequest {
-                    function_id: "enqueue".into(),
+                    function_id: "durable::publish".into(),
                     payload: json!({
                         "topic": "order.processed",
                         "data": { "orderId": order_id, "source": "queue" },
@@ -300,7 +300,7 @@ iii.register_function(
 
             for order in &orders {
                 iii.trigger(TriggerRequest {
-                    function_id: "enqueue".into(),
+                    function_id: "durable::publish".into(),
                     payload: json!({
                         "topic": "order.processed",
                         "data": { "orderId": order["id"], "source": "cron" },
@@ -323,7 +323,7 @@ iii.register_trigger(RegisterTriggerInput {
     metadata: None,
 })?;
 iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "queue".into(),
+    trigger_type: "durable:subscriber".into(),
     function_id: "orders.handle".into(),
     config: json!({ "topic": "order.created" }),
     metadata: None,
@@ -347,7 +347,7 @@ When you only need two trigger types, the pattern is identical — just skip the
   <Tab title="Node / TypeScript">
 
 ```typescript
-iii.registerTrigger({ type: 'queue', function_id: 'my.fn', config: { topic: 'events' } })
+iii.registerTrigger({ type: 'durable:subscriber', function_id: 'my.fn', config: { topic: 'events' } })
 iii.registerTrigger({ type: 'http', function_id: 'my.fn', config: { api_path: 'events', http_method: 'POST' } })
 ```
 
@@ -355,7 +355,7 @@ iii.registerTrigger({ type: 'http', function_id: 'my.fn', config: { api_path: 'e
   <Tab title="Python">
 
 ```python
-iii.register_trigger({"type": "queue", "function_id": "my.fn", "config": {"topic": "events"}})
+iii.register_trigger({"type": "durable:subscriber", "function_id": "my.fn", "config": {"topic": "events"}})
 iii.register_trigger({"type": "http", "function_id": "my.fn", "config": {"api_path": "events", "http_method": "POST"}})
 ```
 
@@ -364,7 +364,7 @@ iii.register_trigger({"type": "http", "function_id": "my.fn", "config": {"api_pa
 
 ```rust
 iii.register_trigger(RegisterTriggerInput {
-    trigger_type: "queue".into(),
+    trigger_type: "durable:subscriber".into(),
     function_id: "my.fn".into(),
     config: json!({ "topic": "events" }),
     metadata: None,

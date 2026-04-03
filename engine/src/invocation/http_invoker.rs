@@ -781,7 +781,7 @@ mod tests {
             .deliver_webhook(
                 "svc.webhook",
                 &endpoint,
-                "queue",
+                "durable:subscriber",
                 "trigger-1",
                 payload.clone(),
             )
@@ -796,7 +796,7 @@ mod tests {
             .expect("timestamp should parse");
         assert_eq!(
             headers.get("x-iii-trigger-type"),
-            Some(&"queue".to_string())
+            Some(&"durable:subscriber".to_string())
         );
         assert_eq!(
             headers.get("x-iii-trigger-id"),
@@ -840,7 +840,13 @@ mod tests {
         };
 
         let error = invoker
-            .deliver_webhook("svc.webhook", &endpoint, "queue", "trigger-1", json!({}))
+            .deliver_webhook(
+                "svc.webhook",
+                &endpoint,
+                "durable:subscriber",
+                "trigger-1",
+                json!({}),
+            )
             .await
             .expect_err("plain error response should fail");
         assert_eq!(error.code, "http_error");

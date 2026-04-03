@@ -78,12 +78,12 @@ Configure a trigger that maps to a function:
 {
   type: 'registertrigger',
   id: 'unique-trigger-id',
-  trigger_type: 'http' | 'queue' | 'cron' | 'log',
+  trigger_type: 'http' | 'durable:subscriber' | 'cron' | 'log',
   function_id: 'service::function',
   config: {
     // Trigger-specific configuration
     // For 'http': { api_path: '/path', http_method: 'GET' }
-    // For 'queue': { topic: 'topic.name' }
+    // For 'durable:subscriber': { topic: 'topic.name' }
     // For 'cron': { expression: '0 * * * *' }
     // For 'log': { level: 'error' }
   }

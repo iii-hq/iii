@@ -64,7 +64,7 @@ export function multiTriggerStep<const TConfig extends StepConfig>(config: TConf
 
   const createUnifiedHandler = (): Handlers<TConfig> => {
     return (async (input: any, ctx: any) => {
-      if (ctx.trigger.type === 'queue' && collectedHandlers.queue) {
+      if (ctx.trigger.type === 'durable:subscriber' && collectedHandlers.queue) {
         return collectedHandlers.queue(input, ctx)
       }
       if (ctx.trigger.type === 'http' && collectedHandlers.http) {

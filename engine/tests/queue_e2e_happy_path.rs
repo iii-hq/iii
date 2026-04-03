@@ -98,20 +98,20 @@ async fn condition_based_filtering_routes_matching_messages_only() {
     let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueCoreModule::create should succeed");
-    // register_functions must be called to make the "enqueue" service function
-    // available on the engine (topic-based enqueue path uses engine.call("enqueue", ...))
+    // register_functions must be called to make the "durable::publish" service function
+    // available on the engine (topic-based enqueue path uses engine.call("durable::publish", ...))
     module.register_functions(engine.clone());
     module.initialize().await.expect("init should succeed");
 
     let topic = format!("cond-test-{}", uuid::Uuid::new_v4());
 
     // Register trigger WITH condition_function_id AFTER initialize
-    // (the "queue" trigger type is registered during initialize)
+    // (the "durable:subscriber" trigger type is registered during initialize)
     engine
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", uuid::Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::filtered_handler".to_string(),
             config: json!({
                 "topic": &topic,

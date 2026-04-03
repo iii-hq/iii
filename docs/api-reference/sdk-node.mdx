@@ -722,7 +722,7 @@ Information about a registered trigger.
 | `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
 | `id` | `string` | Yes | Unique trigger identifier. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger. |
-| `trigger_type` | `string` | Yes | Type of the trigger (e.g. `http`, `cron`, `queue`). |
+| `trigger_type` | `string` | Yes | Type of the trigger (e.g. `http`, `cron`, `durable:subscriber`). |
 
 ### TriggerRequest
 
@@ -743,7 +743,7 @@ Information about a registered trigger type, returned by `ISdk.listTriggerTypes`
 | --- | --- | --- | --- |
 | `call_request_format` | `unknown` | No | JSON Schema for the call request payload. |
 | `description` | `string` | Yes | Human-readable description of the trigger type. |
-| `id` | `string` | Yes | Trigger type identifier (e.g. `http`, `cron`, `queue`). |
+| `id` | `string` | Yes | Trigger type identifier (e.g. `http`, `cron`, `durable:subscriber`). |
 | `trigger_request_format` | `unknown` | No | JSON Schema for the trigger configuration. |
 
 ### TriggerTypeRef

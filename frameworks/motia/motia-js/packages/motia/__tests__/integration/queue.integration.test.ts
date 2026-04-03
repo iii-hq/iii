@@ -30,7 +30,7 @@ describe('queue integration', () => {
     })
 
     await waitForRegistration(sdk, functionId)
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { order: 'abc' } } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: { order: 'abc' } } })
     await sleep(1500)
 
     expect(received).toEqual({ order: 'abc' })
@@ -53,7 +53,7 @@ describe('queue integration', () => {
     })
 
     await waitForRegistration(sdk, functionId)
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: payload } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: payload } })
     await sleep(1500)
 
     expect(received).toEqual(payload)
@@ -82,7 +82,7 @@ describe('queue integration', () => {
     })
 
     await waitForRegistration(sdk, functionId)
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { infra: true } } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: { infra: true } } })
     await sleep(1500)
 
     expect(received).toEqual({ infra: true })
@@ -115,8 +115,8 @@ describe('queue integration', () => {
 
     await waitForRegistration(sdk, functionId1)
     await waitForRegistration(sdk, functionId2)
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { msg: 1 } } })
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { msg: 2 } } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: { msg: 1 } } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: { msg: 2 } } })
     await sleep(2000)
 
     expect(received1.length).toBe(2)
@@ -151,8 +151,8 @@ describe('queue integration', () => {
 
     await waitForRegistration(sdk, functionId)
     await waitForRegistration(sdk, conditionPath)
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { accept: false } } })
-    await sdk.trigger({ function_id: 'enqueue', payload: { topic, data: { accept: true } } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: { accept: false } } })
+    await sdk.trigger({ function_id: 'durable::publish', payload: { topic, data: { accept: true } } })
     await sleep(2000)
 
     expect(handlerCalls).toBe(1)
