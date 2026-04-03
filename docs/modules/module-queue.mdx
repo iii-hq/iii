@@ -19,8 +19,8 @@ modules::queue::QueueModule
 
 Register a consumer for a topic and emit events to it.
 
-1. **Register a consumer** with `registerTrigger({ type: 'queue', function_id: 'my::handler', config: { topic: 'order.created' } })`. This subscribes the handler to that topic.
-2. **Emit events** by calling `trigger({ function_id: 'enqueue', payload: { topic: 'order.created', data: payload } })` or `trigger({ function_id: 'enqueue', payload: { topic, data }, action: TriggerAction.Void() })` for fire-and-forget. The `enqueue` function routes the payload to all subscribers of that topic.
+1. **Register a consumer** with `registerTrigger({ type: 'durable:subscriber', function_id: 'my::handler', config: { topic: 'order.created' } })`. This subscribes the handler to that topic.
+2. **Emit events** by calling `trigger({ function_id: 'durable::publish', payload: { topic: 'order.created', data: payload } })` or `trigger({ function_id: 'durable::publish', payload: { topic, data }, action: TriggerAction.Void() })` for fire-and-forget. The `durable::publish` function routes the payload to all subscribers of that topic.
 3. **Action on the trigger**: the handler receives the `data` as its input. Optional `queue_config` on the trigger controls per-subscriber retries and concurrency.
 
 The producer knows the topic name; consumers register to receive it. Queue settings can live at the trigger registration site.
@@ -39,8 +39,8 @@ The producer targets the function and queue explicitly. Queue configuration is c
 
 | | Topic-based | Named queues |
 |---|---|---|
-| **Producer** | Calls `trigger({ function_id: 'enqueue', payload: { topic, data } })` | Calls `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` |
-| **Consumer** | Registers `registerTrigger({ type: 'queue', config: { topic } })` | No registration — function is the target |
+| **Producer** | Calls `trigger({ function_id: 'durable::publish', payload: { topic, data } })` | Calls `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` |
+| **Consumer** | Registers `registerTrigger({ type: 'durable:subscriber', config: { topic } })` | No registration — function is the target |
 | **Config** | Optional `queue_config` on trigger | `queue_configs` in `iii-config.yaml` |
 | **Use case** | Pub/sub, multiple subscribers per topic | Direct function invocation with retries, FIFO, DLQ |
 

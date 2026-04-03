@@ -65,7 +65,7 @@ const flowContext = <EnqueueData, TInput = unknown>(
     trigger,
 
     is: {
-      queue: (inp: TInput): inp is ExtractQueueInput<TInput> => trigger.type === 'queue',
+      queue: (inp: TInput): inp is ExtractQueueInput<TInput> => trigger.type === 'durable:subscriber',
       http: (inp: TInput): inp is ExtractApiInput<TInput> => trigger.type === 'http',
       cron: (inp: TInput): inp is never => trigger.type === 'cron',
       state: (inp: TInput): inp is ExtractStateInput<TInput> => trigger.type === 'state',
@@ -82,7 +82,7 @@ const flowContext = <EnqueueData, TInput = unknown>(
     match: async <TResult = unknown>(
       handlers: MatchHandlers<TInput, EnqueueData, TResult>,
     ): Promise<TResult | undefined> => {
-      if (trigger.type === 'queue' && handlers.queue) {
+      if (trigger.type === 'durable:subscriber' && handlers.queue) {
         await handlers.queue(input as ExtractQueueInput<TInput>)
         return undefined
       }
@@ -272,7 +272,7 @@ export class Motia {
         })
       } else if (isQueueTrigger(trigger)) {
         getInstance().registerFunction(function_id, async (req) => {
-          const triggerInfo: TriggerInfo = { type: 'queue', index }
+          const triggerInfo: TriggerInfo = { type: 'durable:subscriber', index }
           const context = flowContext(triggerInfo, req)
           return step.handler(req, context)
         }, { metadata })
@@ -287,7 +287,7 @@ export class Motia {
           const conditionPath = `${function_id}::conditions::${index}`
 
           getInstance().registerFunction(conditionPath, async (input: unknown) => {
-            const triggerInfo: TriggerInfo = { type: 'queue', index }
+            const triggerInfo: TriggerInfo = { type: 'durable:subscriber', index }
 
             return trigger.condition?.(input, flowContext(triggerInfo, input))
           })
@@ -296,7 +296,7 @@ export class Motia {
         }
 
         getInstance().registerTrigger({
-          type: 'queue',
+          type: 'durable:subscriber',
           function_id,
           config: triggerConfig,
         })
@@ -410,7 +410,7 @@ export class Motia {
 
       getInstance().registerFunction(function_id, async (req: StreamAuthInput) => {
         if (this.authenticateStream) {
-          const triggerInfo: TriggerInfo = { type: 'queue' }
+          const triggerInfo: TriggerInfo = { type: 'stream' }
           const context = flowContext(triggerInfo)
           const input: MotiaStreamAuthInput = {
             headers: req.headers,
@@ -430,7 +430,7 @@ export class Motia {
       getInstance().registerFunction(function_id, async (req: StreamJoinLeaveEvent) => {
         const { stream_name, group_id, id, context: authContext } = req
         const stream = this.streams[stream_name]
-        const triggerInfo: TriggerInfo = { type: 'queue' }
+        const triggerInfo: TriggerInfo = { type: 'stream' }
         const context = flowContext(triggerInfo)
 
         if (stream?.config.onJoin) {
@@ -451,7 +451,7 @@ export class Motia {
       getInstance().registerFunction(function_id, async (req: StreamJoinLeaveEvent) => {
         const { stream_name, group_id, id, context: authContext } = req
         const stream = this.streams[stream_name]
-        const triggerInfo: TriggerInfo = { type: 'queue' }
+        const triggerInfo: TriggerInfo = { type: 'stream' }
         const context = flowContext(triggerInfo)
 
         if (stream?.config.onLeave) {

@@ -166,8 +166,8 @@ async def test_enqueue_creates_child_span(otel_exporter, patch_motia_bridge, api
     assert len(step_spans) >= 1, f"Expected at least one step span, got: {[s.name for s in spans]}"
 
     # Verify enqueue child span exists
-    enqueue_spans = [s for s in spans if s.name == "enqueue"]
-    assert len(enqueue_spans) >= 1, f"Expected at least one 'enqueue' span, got: {[s.name for s in spans]}"
+    enqueue_spans = [s for s in spans if s.name == "durable::publish"]
+    assert len(enqueue_spans) >= 1, f"Expected at least one 'durable::publish' span, got: {[s.name for s in spans]}"
 
 
 def test_engine_receives_traceparent(bridge):

@@ -104,9 +104,9 @@ mod tests {
 
     #[test]
     fn trigger_metadata_deserialize() {
-        let json = json!({"type": "queue", "path": "/events", "method": "POST"});
+        let json = json!({"type": "durable:subscriber", "path": "/events", "method": "POST"});
         let meta: TriggerMetadata = serde_json::from_value(json).unwrap();
-        assert_eq!(meta.trigger_type, "queue");
+        assert_eq!(meta.trigger_type, "durable:subscriber");
         assert_eq!(meta.path, Some("/events".to_string()));
         assert_eq!(meta.method, Some("POST".to_string()));
     }

@@ -9,7 +9,7 @@ Triggers are entrypoints into a iii system. Each trigger defines the conditions 
 
 A trigger consists of three parts:
 
-1. **Trigger Type**: The mechanism that initiates execution (http, queue, cron, log, stream)
+1. **Trigger Type**: The mechanism that initiates execution (http, durable:subscriber, cron, log, stream)
 2. **Configuration**: Type-specific settings (path, schedule, topics)
 3. **Function ID**: The function to invoke when triggered
 
@@ -83,7 +83,7 @@ sequenceDiagram
 ```mermaid
 graph LR
     HTTP[HTTP Request] -->|http| Engine
-    Event[Event Bus] -->|queue| Engine
+    Event[Event Bus] -->|durable:subscriber| Engine
     Schedule[Cron Schedule] -->|cron| Engine
     Logs[Log Entry] -->|log| Engine
     Stream[Stream Join/Leave] -->|streams| Engine
@@ -535,7 +535,7 @@ Executes functions when events are published to subscribed topics.
 <Tab title="Node / TypeScript">
 ```typescript
 {
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: fn.id,
   config: {
     topic: 'user.created'
@@ -546,7 +546,7 @@ Executes functions when events are published to subscribed topics.
 <Tab title="Python">
 ```python
 {
-    'type': 'queue',
+    'type': 'durable:subscriber',
     'function_id': fn.id,
     'config': {
         'topic': 'user.created',
@@ -557,7 +557,7 @@ Executes functions when events are published to subscribed topics.
 <Tab title="Rust">
 ```rust
 json!({
-    "type": "queue",
+    "type": "durable:subscriber",
     "function_id": "users.on_created",
     "config": {
         "topic": "user.created"
@@ -842,7 +842,7 @@ sequenceDiagram
 
     E->>M: Initialize Module
     M->>R: RegisterTriggerType("http")
-    M->>R: RegisterTriggerType("queue")
+    M->>R: RegisterTriggerType("durable:subscriber")
     M->>R: RegisterTriggerType("cron")
 
     Note over R: Trigger types available for workers
@@ -866,7 +866,7 @@ iii.registerTrigger({
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: fn.id,
   config: { topic: 'user.created' },
 })
@@ -892,7 +892,7 @@ iii.register_trigger({
 })
 
 iii.register_trigger({
-    'type': 'queue',
+    'type': 'durable:subscriber',
     'function_id': fn.id,
     'config': {'topic': 'user.created'},
 })
@@ -919,7 +919,7 @@ iii.register_trigger(RegisterTriggerInput { trigger_type: "http".into(), functio
     "http_method": "POST"
 }), metadata: None })?;
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "users.notify".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "users.notify".into(), config: json!({
     "topic": "user.created"
 }), metadata: None })?;
 
@@ -1033,7 +1033,7 @@ const fn = iii.registerFunction('orders::processHighValue', async (order) => {
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: fn.id,
   config: {
     topic: 'order.placed',
@@ -1056,7 +1056,7 @@ def process_high_value(order):
 fn = iii.register_function("orders::processHighValue", process_high_value)
 
 iii.register_trigger({
-    'type': 'queue',
+    'type': 'durable:subscriber',
     'function_id': fn.id,
     'config': {
         'topic': 'order.placed',
@@ -1081,7 +1081,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders::processHighValu
     Ok(json!({}))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders::processHighValue".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "orders::processHighValue".into(), config: json!({
     "topic": "order.placed",
     "condition_function_id": "conditions::highValue"
 }), metadata: None })?;
@@ -1282,7 +1282,7 @@ const processFn = iii.registerFunction('orders.process', async (order) => {
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: processFn.id,
   config: { topic: 'order.placed' },
 })
@@ -1292,7 +1292,7 @@ const confirmFn = iii.registerFunction('orders.sendConfirmation', async (order) 
 })
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: confirmFn.id,
   config: { topic: 'order.processed' },
 })
@@ -1316,7 +1316,7 @@ def process_order(order):
 process_fn = iii.register_function("orders.process", process_order)
 
 iii.register_trigger({
-    'type': 'queue',
+    'type': 'durable:subscriber',
     'function_id': process_fn.id,
     'config': {'topic': 'order.placed'},
 })
@@ -1327,7 +1327,7 @@ def send_confirmation(order):
 confirm_fn = iii.register_function("orders.sendConfirmation", send_confirmation)
 
 iii.register_trigger({
-    'type': 'queue',
+    'type': 'durable:subscriber',
     'function_id': confirm_fn.id,
     'config': {'topic': 'order.processed'},
 })
@@ -1355,7 +1355,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.process".into())
     }
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders.process".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "orders.process".into(), config: json!({
     "topic": "order.placed"
 }), metadata: None })?;
 
@@ -1364,7 +1364,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.sendConfirmation
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "orders.sendConfirmation".into(), config: json!({
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "orders.sendConfirmation".into(), config: json!({
     "topic": "order.processed"
 }), metadata: None })?;
 ```

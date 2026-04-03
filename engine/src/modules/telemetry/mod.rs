@@ -155,7 +155,7 @@ fn is_iii_builtin_function_id(id: &str) -> bool {
     id.starts_with("engine::")
         || id.starts_with("state::")
         || id.starts_with("stream::")
-        || id == "enqueue"
+        || id == "durable::publish"
         || id == "publish"
         || id.starts_with("bridge.")
         || id.starts_with("iii::")
@@ -1780,7 +1780,7 @@ mod tests {
         assert!(is_iii_builtin_function_id("engine::x"));
         assert!(is_iii_builtin_function_id("state::get"));
         assert!(is_iii_builtin_function_id("stream::list"));
-        assert!(is_iii_builtin_function_id("enqueue"));
+        assert!(is_iii_builtin_function_id("durable::publish"));
         assert!(is_iii_builtin_function_id("publish"));
         assert!(is_iii_builtin_function_id("bridge.invoke"));
         assert!(is_iii_builtin_function_id("iii::queue::redrive"));
@@ -2076,7 +2076,7 @@ mod tests {
         engine
             .trigger_registry
             .register_trigger_type(TriggerType::new(
-                "queue",
+                "durable:subscriber",
                 "Queue",
                 Box::new(NoopRegistrator),
                 None,
@@ -2087,7 +2087,7 @@ mod tests {
             .trigger_registry
             .register_trigger(Trigger {
                 id: "queue-trigger-1".to_string(),
-                trigger_type: "queue".to_string(),
+                trigger_type: "durable:subscriber".to_string(),
                 function_id: "svc::worker".to_string(),
                 config: serde_json::json!({ "topic": "orders" }),
                 worker_id: None,

@@ -1194,7 +1194,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::rmq_fan_a".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -1207,7 +1207,7 @@ async fn rmq_fanout_two_functions_same_topic_both_receive() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::rmq_fan_b".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -1259,7 +1259,7 @@ async fn rmq_fanout_replicas_compete_within_function() {
             .trigger_registry
             .register_trigger(Trigger {
                 id: format!("trig-{}", Uuid::new_v4()),
-                trigger_type: "queue".to_string(),
+                trigger_type: "durable:subscriber".to_string(),
                 function_id: "test::rmq_replica_fn".to_string(),
                 config: json!({ "topic": &topic }),
                 worker_id: None,
@@ -1313,7 +1313,7 @@ async fn rmq_fanout_dlq_per_function() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::rmq_dlq_success".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,
@@ -1326,7 +1326,7 @@ async fn rmq_fanout_dlq_per_function() {
         .trigger_registry
         .register_trigger(Trigger {
             id: format!("trig-{}", Uuid::new_v4()),
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: "test::rmq_dlq_fail".to_string(),
             config: json!({ "topic": &topic }),
             worker_id: None,

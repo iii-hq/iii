@@ -89,7 +89,7 @@ export interface FlowContext<TEnqueueData = never, TInput = unknown> {
 
 export type Enqueue = string | { topic: string; label?: string; conditional?: boolean }
 
-type TriggerType = 'http' | 'queue' | 'cron' | 'state' | 'stream'
+type TriggerType = 'http' | 'durable:subscriber' | 'cron' | 'state' | 'stream'
 
 export type TriggerInfo = {
   type: TriggerType
@@ -186,7 +186,7 @@ export type StreamTrigger<TSchema extends StepSchemaInput | undefined = any> = {
 
 // biome-ignore lint/suspicious/noExplicitAny: we need any to allow trigger assignment to TriggerConfig
 export type QueueTrigger<TSchema extends StepSchemaInput | undefined = any> = {
-  type: 'queue'
+  type: 'durable:subscriber'
   topic: string
   input?: TSchema
   condition?: TriggerCondition<TSchema extends ZodInput ? z.infer<TSchema> : unknown>
@@ -323,7 +323,7 @@ export type InferSchema<T, TFallback = unknown> =
 
 type InferBodySchema<S> = S extends ZodInput ? z.infer<S> : S extends StepSchemaInput ? InferSchema<S> : unknown
 
-type TriggerToInput<TTrigger> = TTrigger extends { type: 'queue'; input?: infer S }
+type TriggerToInput<TTrigger> = TTrigger extends { type: 'durable:subscriber'; input?: infer S }
   ? S extends ZodInput
     ? z.infer<S>
     : S extends StepSchemaInput

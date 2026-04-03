@@ -8,5 +8,5 @@ from .tracing import operation_span
 
 def enqueue(event: dict[str, Any]) -> None:
     """Enqueue an event to a topic."""
-    with operation_span("enqueue", **{"motia.step.name": ""}):
-        get_instance().trigger({"function_id": "enqueue", "payload": event})
+    with operation_span("durable::publish", **{"motia.step.name": ""}):
+        get_instance().trigger({"function_id": "durable::publish", "payload": event})

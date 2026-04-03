@@ -98,7 +98,7 @@ async def test_event_handler_creates_span(otel_exporter, mock_bridge):
 
     config = StepConfig(
         name="my-queue-step",
-        triggers=[QueueTrigger(type="queue", topic="test-topic")],
+        triggers=[QueueTrigger(type="durable:subscriber", topic="test-topic")],
     )
 
     async def handler(input_data, ctx):
@@ -122,7 +122,7 @@ async def test_event_handler_creates_span(otel_exporter, mock_bridge):
 
     span = step_spans[0]
     assert span.attributes["motia.step.name"] == "my-queue-step"
-    assert span.attributes["motia.trigger.type"] == "queue"
+    assert span.attributes["motia.trigger.type"] == "durable:subscriber"
     assert span.status.status_code == StatusCode.OK
 
 
@@ -133,7 +133,7 @@ async def test_handler_error_records_on_span(otel_exporter, mock_bridge):
 
     config = StepConfig(
         name="error-step",
-        triggers=[QueueTrigger(type="queue", topic="fail-topic")],
+        triggers=[QueueTrigger(type="durable:subscriber", topic="fail-topic")],
     )
 
     async def handler(input_data, ctx):
