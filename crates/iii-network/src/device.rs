@@ -133,3 +133,126 @@ impl<'a> phy::TxToken for SmoltcpTxToken<'a> {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::SharedState;
+    use smoltcp::phy::Device;
+
+    fn make_device(mtu: usize, capacity: usize) -> SmoltcpDevice {
+        let shared = Arc::new(SharedState::new(capacity));
+        SmoltcpDevice::new(shared, mtu)
+    }
+
+    #[test]
+    fn capabilities_mtu_includes_ethernet_header() {
+        let device = make_device(1500, 16);
+        let caps = device.capabilities();
+        assert_eq!(caps.max_transmission_unit, 1514); // 1500 + 14
+    }
+
+    #[test]
+    fn capabilities_medium_is_ethernet() {
+        let device = make_device(1500, 16);
+        let caps = device.capabilities();
+        assert_eq!(caps.medium, Medium::Ethernet);
+    }
+
+    #[test]
+    fn capabilities_custom_mtu() {
+        let device = make_device(9000, 16);
+        let caps = device.capabilities();
+        assert_eq!(caps.max_transmission_unit, 9014); // 9000 + 14
+    }
+
+    #[test]
+    fn stage_next_frame_returns_none_when_empty() {
+        let mut device = make_device(1500, 16);
+        assert!(device.stage_next_frame().is_none());
+    }
+
+    #[test]
+    fn stage_next_frame_returns_frame_data() {
+        let shared = Arc::new(SharedState::new(16));
+        shared.tx_ring.push(vec![1, 2, 3, 4]).unwrap();
+        let mut device = SmoltcpDevice::new(shared, 1500);
+
+        let frame = device.stage_next_frame();
+        assert_eq!(frame, Some(&[1u8, 2, 3, 4][..]));
+    }
+
+    #[test]
+    fn stage_next_frame_returns_same_frame_on_repeat() {
+        let shared = Arc::new(SharedState::new(16));
+        shared.tx_ring.push(vec![10, 20]).unwrap();
+        shared.tx_ring.push(vec![30, 40]).unwrap();
+        let mut device = SmoltcpDevice::new(shared, 1500);
+
+        // First call pops frame from queue
+        let frame1 = device.stage_next_frame().map(|f| f.to_vec());
+        // Second call should return the same staged frame
+        let frame2 = device.stage_next_frame().map(|f| f.to_vec());
+        assert_eq!(frame1, frame2);
+        assert_eq!(frame1, Some(vec![10, 20]));
+    }
+
+    #[test]
+    fn drop_staged_frame_clears_slot() {
+        let shared = Arc::new(SharedState::new(16));
+        shared.tx_ring.push(vec![1, 2]).unwrap();
+        shared.tx_ring.push(vec![3, 4]).unwrap();
+        let mut device = SmoltcpDevice::new(shared, 1500);
+
+        device.stage_next_frame();
+        device.drop_staged_frame();
+
+        // Next stage should get the second frame
+        let frame = device.stage_next_frame().map(|f| f.to_vec());
+        assert_eq!(frame, Some(vec![3, 4]));
+    }
+
+    #[test]
+    fn receive_returns_none_without_staged_frame() {
+        let mut device = make_device(1500, 16);
+        let result = device.receive(Instant::from_millis(0));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn receive_consumes_staged_frame() {
+        let shared = Arc::new(SharedState::new(16));
+        shared.tx_ring.push(vec![0xAA, 0xBB]).unwrap();
+        let mut device = SmoltcpDevice::new(shared, 1500);
+
+        device.stage_next_frame();
+        let result = device.receive(Instant::from_millis(0));
+        assert!(result.is_some());
+
+        // After receive, staging should return None (frame consumed)
+        assert!(device.pending_rx.is_none());
+    }
+
+    #[test]
+    fn transmit_returns_some_when_rx_ring_not_full() {
+        let mut device = make_device(1500, 16);
+        let result = device.transmit(Instant::from_millis(0));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn transmit_returns_none_when_rx_ring_full() {
+        let shared = Arc::new(SharedState::new(1));
+        shared.rx_ring.push(vec![0]).unwrap();
+        let mut device = SmoltcpDevice::new(shared, 1500);
+
+        let result = device.transmit(Instant::from_millis(0));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn frames_emitted_flag_initially_false() {
+        let device = make_device(1500, 16);
+        assert!(!device.frames_emitted.load(Ordering::Relaxed));
+    }
+}

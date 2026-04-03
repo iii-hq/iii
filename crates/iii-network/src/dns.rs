@@ -186,3 +186,64 @@ async fn resolve_query(
 
     Some(Bytes::from(response_bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dns_port_is_53() {
+        assert_eq!(DNS_PORT, 53);
+    }
+
+    #[test]
+    fn dns_max_size_is_4096() {
+        assert_eq!(DNS_MAX_SIZE, 4096);
+    }
+
+    #[test]
+    fn dns_query_struct_holds_data() {
+        let query = DnsQuery {
+            data: Bytes::from_static(b"\x00\x01\x02"),
+            source: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345),
+        };
+        assert_eq!(query.data.len(), 3);
+        assert_eq!(query.source.port, 12345);
+    }
+
+    #[test]
+    fn dns_response_struct_holds_data() {
+        let response = DnsResponse {
+            data: Bytes::from_static(b"\x00\x01"),
+            dest: IpEndpoint::new(smoltcp::wire::IpAddress::v4(10, 0, 2, 100), 12345),
+        };
+        assert_eq!(response.data.len(), 2);
+        assert_eq!(response.dest.port, 12345);
+    }
+
+    #[test]
+    fn resolve_query_rejects_garbage_input() {
+        // resolve_query calls Message::from_bytes which should fail on invalid data.
+        // We need a tokio runtime to call the async fn.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let resolver = hickory_resolver::Resolver::builder_tokio()
+                .map(|b| b.build())
+                .unwrap();
+            let result = resolve_query(b"not a valid dns message", &resolver).await;
+            assert!(result.is_none());
+        });
+    }
+
+    #[test]
+    fn resolve_query_rejects_empty_input() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let resolver = hickory_resolver::Resolver::builder_tokio()
+                .map(|b| b.build())
+                .unwrap();
+            let result = resolve_query(b"", &resolver).await;
+            assert!(result.is_none());
+        });
+    }
+}

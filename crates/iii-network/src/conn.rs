@@ -222,6 +222,121 @@ impl ConnectionTracker {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 2, 100)), port)
+    }
+
+    fn dst_addr(port: u16) -> SocketAddr {
+        SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), port)
+    }
+
+    #[test]
+    fn new_tracker_default_max() {
+        let tracker = ConnectionTracker::new(None);
+        assert_eq!(tracker.max_connections, DEFAULT_MAX_CONNECTIONS);
+        assert!(!tracker.has_socket_for(&addr(1234), &dst_addr(80)));
+    }
+
+    #[test]
+    fn new_tracker_custom_max() {
+        let tracker = ConnectionTracker::new(Some(10));
+        assert_eq!(tracker.max_connections, 10);
+    }
+
+    #[test]
+    fn has_socket_for_empty_tracker() {
+        let tracker = ConnectionTracker::new(None);
+        assert!(!tracker.has_socket_for(&addr(5000), &dst_addr(443)));
+    }
+
+    #[test]
+    fn create_tcp_socket_registers_connection() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        let src = addr(5000);
+        let dst = dst_addr(80);
+
+        let ok = tracker.create_tcp_socket(src, dst, &mut sockets);
+        assert!(ok);
+        assert!(tracker.has_socket_for(&src, &dst));
+        assert_eq!(tracker.connections.len(), 1);
+        assert_eq!(tracker.connection_keys.len(), 1);
+    }
+
+    #[test]
+    fn create_tcp_socket_rejects_ipv6() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        let src = addr(5000);
+        let dst_v6 = SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 80);
+
+        let ok = tracker.create_tcp_socket(src, dst_v6, &mut sockets);
+        assert!(!ok);
+        assert!(!tracker.has_socket_for(&src, &dst_v6));
+    }
+
+    #[test]
+    fn create_tcp_socket_respects_max_connections() {
+        let mut tracker = ConnectionTracker::new(Some(2));
+        let mut sockets = SocketSet::new(vec![]);
+
+        assert!(tracker.create_tcp_socket(addr(1000), dst_addr(80), &mut sockets));
+        assert!(tracker.create_tcp_socket(addr(1001), dst_addr(80), &mut sockets));
+        // Third should be rejected
+        assert!(!tracker.create_tcp_socket(addr(1002), dst_addr(80), &mut sockets));
+        assert_eq!(tracker.connections.len(), 2);
+    }
+
+    #[test]
+    fn take_new_connections_returns_empty_when_no_established() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        tracker.create_tcp_socket(addr(5000), dst_addr(80), &mut sockets);
+
+        // Socket is in Listen state, not Established
+        let new = tracker.take_new_connections(&mut sockets);
+        assert!(new.is_empty());
+    }
+
+    #[test]
+    fn cleanup_closed_removes_closed_sockets() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+        let src = addr(5000);
+        let dst = dst_addr(80);
+        tracker.create_tcp_socket(src, dst, &mut sockets);
+
+        // The socket is in Listen state (not Closed), so cleanup should keep it
+        tracker.cleanup_closed(&mut sockets);
+        assert_eq!(tracker.connections.len(), 1);
+        assert!(tracker.has_socket_for(&src, &dst));
+    }
+
+    #[test]
+    fn multiple_connections_tracked_independently() {
+        let mut tracker = ConnectionTracker::new(None);
+        let mut sockets = SocketSet::new(vec![]);
+
+        let src1 = addr(5000);
+        let dst1 = dst_addr(80);
+        let src2 = addr(5001);
+        let dst2 = dst_addr(443);
+
+        assert!(tracker.create_tcp_socket(src1, dst1, &mut sockets));
+        assert!(tracker.create_tcp_socket(src2, dst2, &mut sockets));
+
+        assert!(tracker.has_socket_for(&src1, &dst1));
+        assert!(tracker.has_socket_for(&src2, &dst2));
+        assert!(!tracker.has_socket_for(&src1, &dst2));
+        assert_eq!(tracker.connections.len(), 2);
+    }
+}
+
 fn write_proxy_data(socket: &mut tcp::Socket<'_>, conn: &mut Connection) {
     if let Some((data, offset)) = &mut conn.write_buf {
         if socket.can_send() {
