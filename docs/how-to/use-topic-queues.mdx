@@ -30,261 +30,260 @@ modules:
 </Info>
 
 ## Steps
-<Steps>
-  <Step title="Register consumers for a topic">
-    Subscribe one or more functions to the same topic. Each function gets its own internal queue.
 
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from 'iii-sdk'
+### 1. Register consumers for a topic
 
-    const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+Subscribe one or more functions to the same topic. Each function gets its own internal queue.
 
-    iii.registerFunction('notify::email', async (data) => {
-      await sendEmail(data.userId, `Order ${data.orderId} created`)
-      return {}
-    })
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import { registerWorker } from 'iii-sdk'
 
-    iii.registerFunction('audit::log', async (data) => {
-      await writeAuditLog('order.created', data)
-      return {}
-    })
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-    iii.registerTrigger({
-      type: 'queue',
-      function_id: 'notify::email',
-      config: { topic: 'order.created' },
-    })
+iii.registerFunction('notify::email', async (data) => {
+  await sendEmail(data.userId, `Order ${data.orderId} created`)
+  return {}
+})
 
-    iii.registerTrigger({
-      type: 'queue',
-      function_id: 'audit::log',
-      config: { topic: 'order.created' },
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    from iii import register_worker
+iii.registerFunction('audit::log', async (data) => {
+  await writeAuditLog('order.created', data)
+  return {}
+})
 
-    iii = register_worker("ws://localhost:49134")
+iii.registerTrigger({
+  type: 'queue',
+  function_id: 'notify::email',
+  config: { topic: 'order.created' },
+})
 
+iii.registerTrigger({
+  type: 'queue',
+  function_id: 'audit::log',
+  config: { topic: 'order.created' },
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker
 
-    def send_email_notification(data):
-        send_email(data["userId"], f"Order {data['orderId']} created")
-        return {}
+iii = register_worker("ws://localhost:49134")
 
 
-    def write_audit(data):
-        write_audit_log("order.created", data)
-        return {}
+def send_email_notification(data):
+    send_email(data["userId"], f"Order {data['orderId']} created")
+    return {}
 
 
-    iii.register_function("notify::email", send_email_notification)
-    iii.register_function("audit::log", write_audit)
-
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": "notify::email",
-        "config": {"topic": "order.created"},
-    })
-
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": "audit::log",
-        "config": {"topic": "order.created"},
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerInput, IIIError};
-    use serde_json::{json, Value};
-
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-    iii.register_function(RegisterFunction::new_async(
-        "notify::email",
-        |data: Value| async move {
-            send_email(data["userId"].as_str().unwrap_or(""), &format!("Order {} created", data["orderId"])).await?;
-            Ok(json!({}))
-        },
-    ));
-
-    iii.register_function(RegisterFunction::new_async(
-        "audit::log",
-        |data: Value| async move {
-            write_audit_log("order.created", &data).await?;
-            Ok(json!({}))
-        },
-    ));
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: "notify::email".into(),
-        config: json!({ "topic": "order.created" }),
-        metadata: None,
-    })?;
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: "audit::log".into(),
-        config: json!({ "topic": "order.created" }),
-        metadata: None,
-    })?;
-    ```
-    </Tab>
-    </Tabs>
-
-    Both `notify::email` and `audit::log` are now subscribed to `order.created`. Every message published to that topic reaches both functions.
-  </Step>
-
-  <Step title="Publish events to the topic">
-    From any function, publish a message using the builtin `enqueue` function. The engine fans it out to every subscribed function.
-
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    await iii.trigger({
-      function_id: 'enqueue',
-      payload: {
-        topic: 'order.created',
-        data: { orderId: 'ord_789', userId: 'usr_42', total: 149.99 },
-      },
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    iii.trigger({
-        "function_id": "enqueue",
-        "payload": {
-            "topic": "order.created",
-            "data": {"orderId": "ord_789", "userId": "usr_42", "total": 149.99},
-        },
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    use iii_sdk::{TriggerRequest};
-    use serde_json::json;
-
-    iii.trigger(TriggerRequest {
-        function_id: "enqueue".into(),
-        payload: json!({
-            "topic": "order.created",
-            "data": { "orderId": "ord_789", "userId": "usr_42", "total": 149.99 },
-        }),
-        action: None,
-        timeout_ms: None,
-    }).await?;
-    ```
-    </Tab>
-    </Tabs>
-
-    The producer does not need to know which functions are subscribed — it only knows the topic name.
-  </Step>
-
-  <Step title="Understand fan-out delivery">
-    Topic-based queues use **fan-out per function**:
-
-    - Each distinct function subscribed to a topic receives a **copy** of every message.
-    - If a function has multiple replicas running, they **compete** on a shared per-function queue — only one replica processes each message.
-
-    ```mermaid
-    flowchart LR
-        P[Producer] -->|publish| E((Engine))
-        E --> Q1[notify::email queue]
-        E --> Q2[audit::log queue]
-        Q1 --> R1[replica 1]
-        Q1 -.->|competes| R2[replica 2]
-        Q2 --> A1[audit::log]
-    ```
-
-    When a function has multiple replicas, they compete on the shared per-function queue — only one replica processes each message:
-
-    ```mermaid
-    sequenceDiagram
-        participant Q as notify::email queue
-        participant R1 as replica 1
-        participant R2 as replica 2
-
-        Q->>R1: message 1
-        R1-->>Q: Ack
-        Q->>R2: message 2
-        R2-->>Q: Ack
-
-        Note over Q,R2: Replicas compete — only one wins each message
-    ```
-
-    This gives you pub/sub-style event distribution with the durability and retry guarantees of a queue.
-  </Step>
-
-  <Step title="Filter messages with conditions (optional)">
-    Attach a condition function to a queue trigger to filter which messages reach the handler. The condition receives the message data and returns `true` or `false`. If `false`, the handler is not called — no error is surfaced.
-
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    iii.registerFunction('conditions::is_high_value', async (data) => data.total > 1000)
-
-    iii.registerTrigger({
-      type: 'queue',
-      function_id: 'notify::vip-team',
-      config: {
-        topic: 'order.created',
-        condition_function_id: 'conditions::is_high_value',
-      },
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    def is_high_value(data):
-        return data.get("total", 0) > 1000
+def write_audit(data):
+    write_audit_log("order.created", data)
+    return {}
 
 
-    iii.register_function("conditions::is_high_value", is_high_value)
+iii.register_function("notify::email", send_email_notification)
+iii.register_function("audit::log", write_audit)
 
-    iii.register_trigger({
-        "type": "queue",
-        "function_id": "notify::vip-team",
-        "config": {
-            "topic": "order.created",
-            "condition_function_id": "conditions::is_high_value",
-        },
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    iii.register_function(RegisterFunction::new_async(
-        "conditions::is_high_value",
-        |data: Value| async move {
-            Ok::<_, IIIError>(json!(data["total"].as_f64().unwrap_or(0.0) > 1000.0))
-        },
-    ));
+iii.register_trigger({
+    "type": "queue",
+    "function_id": "notify::email",
+    "config": {"topic": "order.created"},
+})
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "queue".into(),
-        function_id: "notify::vip-team".into(),
-        config: json!({
-            "topic": "order.created",
-            "condition_function_id": "conditions::is_high_value",
-        }),
-        metadata: None,
-    })?;
-    ```
-    </Tab>
-    </Tabs>
+iii.register_trigger({
+    "type": "queue",
+    "function_id": "audit::log",
+    "config": {"topic": "order.created"},
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, RegisterTriggerInput, IIIError};
+use serde_json::{json, Value};
 
-    <Info title="Conditions guide">
-      See [Conditions](/examples/conditions) for the full pattern including HTTP and state trigger conditions.
-    </Info>
-  </Step>
-</Steps>
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+iii.register_function(RegisterFunction::new_async(
+    "notify::email",
+    |data: Value| async move {
+        send_email(data["userId"].as_str().unwrap_or(""), &format!("Order {} created", data["orderId"])).await?;
+        Ok(json!({}))
+    },
+));
+
+iii.register_function(RegisterFunction::new_async(
+    "audit::log",
+    |data: Value| async move {
+        write_audit_log("order.created", &data).await?;
+        Ok(json!({}))
+    },
+));
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "queue".into(),
+    function_id: "notify::email".into(),
+    config: json!({ "topic": "order.created" }),
+    metadata: None,
+})?;
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "queue".into(),
+    function_id: "audit::log".into(),
+    config: json!({ "topic": "order.created" }),
+    metadata: None,
+})?;
+```
+</Tab>
+</Tabs>
+
+Both `notify::email` and `audit::log` are now subscribed to `order.created`. Every message published to that topic reaches both functions.
+
+### 2. Publish events to the topic
+
+From any function, publish a message using the builtin `enqueue` function. The engine fans it out to every subscribed function.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+await iii.trigger({
+  function_id: 'enqueue',
+  payload: {
+    topic: 'order.created',
+    data: { orderId: 'ord_789', userId: 'usr_42', total: 149.99 },
+  },
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+iii.trigger({
+    "function_id": "enqueue",
+    "payload": {
+        "topic": "order.created",
+        "data": {"orderId": "ord_789", "userId": "usr_42", "total": 149.99},
+    },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{TriggerRequest};
+use serde_json::json;
+
+iii.trigger(TriggerRequest {
+    function_id: "enqueue".into(),
+    payload: json!({
+        "topic": "order.created",
+        "data": { "orderId": "ord_789", "userId": "usr_42", "total": 149.99 },
+    }),
+    action: None,
+    timeout_ms: None,
+}).await?;
+```
+</Tab>
+</Tabs>
+
+The producer does not need to know which functions are subscribed — it only knows the topic name.
+
+### 3. Understand fan-out delivery
+
+Topic-based queues use **fan-out per function**:
+
+- Each distinct function subscribed to a topic receives a **copy** of every message.
+- If a function has multiple replicas running, they **compete** on a shared per-function queue — only one replica processes each message.
+
+```mermaid
+flowchart LR
+    P[Producer] -->|publish| E((Engine))
+    E --> Q1[notify::email queue]
+    E --> Q2[audit::log queue]
+    Q1 --> R1[replica 1]
+    Q1 -.->|competes| R2[replica 2]
+    Q2 --> A1[audit::log]
+```
+
+When a function has multiple replicas, they compete on the shared per-function queue — only one replica processes each message:
+
+```mermaid
+sequenceDiagram
+    participant Q as notify::email queue
+    participant R1 as replica 1
+    participant R2 as replica 2
+
+    Q->>R1: message 1
+    R1-->>Q: Ack
+    Q->>R2: message 2
+    R2-->>Q: Ack
+
+    Note over Q,R2: Replicas compete — only one wins each message
+```
+
+This gives you pub/sub-style event distribution with the durability and retry guarantees of a queue.
+
+### 4. Filter messages with conditions (optional)
+
+Attach a condition function to a queue trigger to filter which messages reach the handler. The condition receives the message data and returns `true` or `false`. If `false`, the handler is not called — no error is surfaced.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+iii.registerFunction('conditions::is_high_value', async (data) => data.total > 1000)
+
+iii.registerTrigger({
+  type: 'queue',
+  function_id: 'notify::vip-team',
+  config: {
+    topic: 'order.created',
+    condition_function_id: 'conditions::is_high_value',
+  },
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+def is_high_value(data):
+    return data.get("total", 0) > 1000
+
+
+iii.register_function("conditions::is_high_value", is_high_value)
+
+iii.register_trigger({
+    "type": "queue",
+    "function_id": "notify::vip-team",
+    "config": {
+        "topic": "order.created",
+        "condition_function_id": "conditions::is_high_value",
+    },
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+iii.register_function(RegisterFunction::new_async(
+    "conditions::is_high_value",
+    |data: Value| async move {
+        Ok::<_, IIIError>(json!(data["total"].as_f64().unwrap_or(0.0) > 1000.0))
+    },
+));
+
+iii.register_trigger(RegisterTriggerInput {
+    trigger_type: "queue".into(),
+    function_id: "notify::vip-team".into(),
+    config: json!({
+        "topic": "order.created",
+        "condition_function_id": "conditions::is_high_value",
+    }),
+    metadata: None,
+})?;
+```
+</Tab>
+</Tabs>
+
+<Info title="Conditions guide">
+  See [Conditions](/examples/conditions) for the full pattern including HTTP and state trigger conditions.
+</Info>
 
 ## Result
 
