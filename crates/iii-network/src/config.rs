@@ -16,3 +16,20 @@ impl Default for NetworkConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_enabled() {
+        let cfg = NetworkConfig::default();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn default_config_mtu_1500() {
+        let cfg = NetworkConfig::default();
+        assert_eq!(cfg.mtu, 1500);
+    }
+}

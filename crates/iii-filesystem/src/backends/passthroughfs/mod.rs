@@ -604,3 +604,113 @@ impl DynFileSystem for PassthroughFs {
 //--------------------------------------------------------------------------------------------------
 
 pub use builder::PassthroughFsBuilder;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_policy_default_is_auto() {
+        let cfg = PassthroughConfig::default();
+        assert_eq!(cfg.cache_policy, CachePolicy::Auto);
+    }
+
+    #[test]
+    fn passthrough_config_default_values() {
+        let cfg = PassthroughConfig::default();
+        assert_eq!(cfg.root_dir, std::path::PathBuf::new());
+        assert_eq!(cfg.entry_timeout, Duration::from_secs(5));
+        assert_eq!(cfg.attr_timeout, Duration::from_secs(5));
+        assert!(!cfg.writeback);
+    }
+
+    #[test]
+    fn cache_open_options_never_returns_direct_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .cache_policy(CachePolicy::Never)
+            .build()
+            .unwrap();
+        let opts = fs.cache_open_options();
+        assert!(opts.contains(OpenOptions::DIRECT_IO));
+    }
+
+    #[test]
+    fn cache_open_options_auto_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .cache_policy(CachePolicy::Auto)
+            .build()
+            .unwrap();
+        let opts = fs.cache_open_options();
+        assert!(opts.is_empty());
+    }
+
+    #[test]
+    fn cache_open_options_always_returns_keep_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .cache_policy(CachePolicy::Always)
+            .build()
+            .unwrap();
+        let opts = fs.cache_open_options();
+        assert!(opts.contains(OpenOptions::KEEP_CACHE));
+    }
+
+    #[test]
+    fn cache_dir_options_never_returns_direct_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .cache_policy(CachePolicy::Never)
+            .build()
+            .unwrap();
+        let opts = fs.cache_dir_options();
+        assert!(opts.contains(OpenOptions::DIRECT_IO));
+    }
+
+    #[test]
+    fn cache_dir_options_auto_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .cache_policy(CachePolicy::Auto)
+            .build()
+            .unwrap();
+        let opts = fs.cache_dir_options();
+        assert!(opts.is_empty());
+    }
+
+    #[test]
+    fn cache_dir_options_always_returns_cache_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = PassthroughFs::builder()
+            .root_dir(dir.path())
+            .cache_policy(CachePolicy::Always)
+            .build()
+            .unwrap();
+        let opts = fs.cache_dir_options();
+        assert!(opts.contains(OpenOptions::CACHE_DIR));
+    }
+
+    #[test]
+    fn builder_creates_passthrough_fs() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = PassthroughFs::builder().root_dir(dir.path()).build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn new_creates_passthrough_fs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = PassthroughConfig {
+            root_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let result = PassthroughFs::new(cfg);
+        assert!(result.is_ok());
+    }
+}

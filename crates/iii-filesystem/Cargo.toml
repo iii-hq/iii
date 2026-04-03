@@ -19,3 +19,6 @@ tempfile = "3"
 [features]
 default = []
 embed-init = []
+
+[dev-dependencies]
+tempfile = "3"

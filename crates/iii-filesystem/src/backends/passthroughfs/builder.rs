@@ -154,3 +154,74 @@ impl PassthroughFsBuilder {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_without_root_dir_returns_error() {
+        let result = PassthroughFsBuilder::new().build();
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("root_dir not set"));
+    }
+
+    #[test]
+    fn build_with_nonexistent_root_dir_returns_error() {
+        let result = PassthroughFsBuilder::new()
+            .root_dir("/nonexistent_path_that_should_not_exist_12345")
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_with_valid_root_dir_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = PassthroughFsBuilder::new()
+            .root_dir(dir.path())
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn builder_default_timeouts() {
+        let builder = PassthroughFsBuilder::new();
+        assert_eq!(builder.entry_timeout, Duration::from_secs(5));
+        assert_eq!(builder.attr_timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn builder_custom_timeouts() {
+        let builder = PassthroughFsBuilder::new()
+            .entry_timeout(Duration::from_secs(10))
+            .attr_timeout(Duration::from_secs(20));
+        assert_eq!(builder.entry_timeout, Duration::from_secs(10));
+        assert_eq!(builder.attr_timeout, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn builder_cache_policy() {
+        let builder = PassthroughFsBuilder::new().cache_policy(CachePolicy::Always);
+        assert_eq!(builder.cache_policy, CachePolicy::Always);
+    }
+
+    #[test]
+    fn builder_writeback() {
+        let builder = PassthroughFsBuilder::new().writeback(true);
+        assert!(builder.writeback);
+    }
+
+    #[test]
+    fn builder_default_cache_policy_is_auto() {
+        let builder = PassthroughFsBuilder::new();
+        assert_eq!(builder.cache_policy, CachePolicy::Auto);
+    }
+
+    #[test]
+    fn builder_default_writeback_is_false() {
+        let builder = PassthroughFsBuilder::new();
+        assert!(!builder.writeback);
+    }
+}

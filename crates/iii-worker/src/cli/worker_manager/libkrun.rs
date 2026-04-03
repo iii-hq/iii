@@ -1007,14 +1007,14 @@ mod tests {
     #[test]
     fn test_oci_image_for_language_defaults_to_node() {
         let (image, name) = oci_image_for_language("unknown_lang");
-        assert_eq!(image, "docker.io/iii-hq/node");
+        assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
 
     #[test]
     fn test_oci_image_for_typescript() {
         let (image, name) = oci_image_for_language("typescript");
-        assert_eq!(image, "docker.io/iii-hq/node");
+        assert_eq!(image, "docker.io/iiidev/node:latest");
         assert_eq!(name, "node");
     }
 
@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn test_oci_image_for_python() {
         let (image, name) = oci_image_for_language("python");
-        assert_eq!(image, "docker.io/iii-hq/python");
+        assert_eq!(image, "docker.io/iiidev/python:latest");
         assert_eq!(name, "python");
     }
 
@@ -1147,11 +1147,11 @@ mod tests {
         assert_eq!(name, "rust");
     }
 
-    // --- 4.14: oci_image_for_go ---
+    // --- 4.14: oci_image_for_go (falls through to default node) ---
     #[test]
     fn test_oci_image_for_go() {
         let (image, name) = oci_image_for_language("go");
-        assert_eq!(image, "docker.io/library/golang:bookworm");
-        assert_eq!(name, "go");
+        assert_eq!(image, "docker.io/iiidev/node:latest");
+        assert_eq!(name, "node");
     }
 }

@@ -104,3 +104,56 @@ async fn tcp_proxy_task(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn resolve_host_dst_rewrites_gateway_to_localhost() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V4(gateway), 8080);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(
+            result,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)
+        );
+    }
+
+    #[test]
+    fn resolve_host_dst_preserves_non_gateway_ipv4() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(result, dst);
+    }
+
+    #[test]
+    fn resolve_host_dst_preserves_ipv6() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 80);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(result, dst);
+    }
+
+    #[test]
+    fn resolve_host_dst_preserves_port_on_rewrite() {
+        let gateway = Ipv4Addr::new(10, 0, 2, 2);
+        let dst = SocketAddr::new(IpAddr::V4(gateway), 49134);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(result.port(), 49134);
+        assert_eq!(result.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn resolve_host_dst_different_gateway() {
+        let gateway = Ipv4Addr::new(192, 168, 1, 1);
+        let dst = SocketAddr::new(IpAddr::V4(gateway), 3000);
+        let result = resolve_host_dst(dst, gateway);
+        assert_eq!(
+            result,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 3000)
+        );
+    }
+}
