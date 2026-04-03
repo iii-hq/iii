@@ -3,7 +3,42 @@ title: 'Queues'
 description: 'Why iii queues are structured the way they are — the design decisions behind retry, dead-lettering, and multi-resource topology.'
 ---
 
-When you define a single named queue in `iii-config.yaml` and use the RabbitMQ adapter, iii creates six RabbitMQ objects behind the scenes: three exchanges and three queues. If you have ever opened the RabbitMQ Management UI after starting an iii engine and wondered why a queue called `payment` turned into half a dozen resources, this page explains the reasoning.
+## What Are Queues
+
+A queue sits between the code that **produces** work and the code that **processes** it. Instead of calling a function and waiting for it to finish, you hand the work to a queue. The queue stores the message, delivers it to a consumer, retries on failure, and routes permanently failed messages to a dead-letter queue (DLQ) for later inspection.
+
+```mermaid
+flowchart LR
+    P[Producer] -->|enqueue| Q[(Queue)]
+    Q -->|deliver with retries| C[Consumer]
+    Q -->|exhausted retries| DLQ[(Dead Letter Queue)]
+```
+
+This separation solves three problems:
+
+1. **Speed** — the producer responds immediately instead of blocking on slow downstream work.
+2. **Reliability** — transient failures (network blips, service restarts) are retried automatically instead of being lost.
+3. **Load control** — concurrency limits prevent consumers from overwhelming downstream systems.
+
+## When to Use Queues
+
+| Scenario | Use a queue? | Why |
+|----------|-------------|-----|
+| HTTP handler must respond fast, but downstream work is slow | **Yes** | Enqueue the work and return `202 Accepted` immediately |
+| Multiple functions must react to the same event | **Yes** | Topic-based queues fan out to every subscriber |
+| Work must survive process restarts | **Yes** | Queues persist messages and retry on failure |
+| External API has rate limits | **Yes** | Concurrency control throttles parallel requests |
+| Transactions for the same entity must be ordered | **Yes** | FIFO queues guarantee per-group ordering |
+| You need the function's return value right now | **No** | Use a [synchronous trigger](/how-to/trigger-actions#1-synchronous-no-action) instead |
+| The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](/how-to/trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
+
+<Info title="How-to guide">
+  For step-by-step instructions on setting up queues, see [Use Queues](/how-to/use-queues).
+</Info>
+
+## RabbitMQ Resource Topology
+
+When you define a single named queue in `iii-config.yaml` and use the RabbitMQ adapter, iii creates six RabbitMQ objects behind the scenes: three exchanges and three queues. If you have ever opened the RabbitMQ Management UI after starting an iii engine and wondered why a queue called `payment` turned into half a dozen resources, this section explains the reasoning.
 
 ## Three Lifecycle Stages
 

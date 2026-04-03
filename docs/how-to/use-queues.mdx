@@ -5,48 +5,7 @@ description: 'Decouple producers from consumers, process work asynchronously wit
 
 ## Goal
 
-Use queues to run work asynchronously with built-in retries, dead-letter support, and concurrency control. iii offers two queue modes — **topic-based** (pub/sub fan-out) and **named queues** (direct function targeting) — so you can pick the delivery model that fits your use case.
-
-## What Are Queues
-
-A queue sits between the code that **produces** work and the code that **processes** it. Instead of calling a function and waiting for it to finish, you hand the work to a queue. The queue stores the message, delivers it to a consumer, retries on failure, and routes permanently failed messages to a dead-letter queue (DLQ) for later inspection.
-
-This separation solves three problems:
-
-1. **Speed** — the producer responds immediately instead of blocking on slow downstream work.
-2. **Reliability** — transient failures (network blips, service restarts) are retried automatically instead of being lost.
-3. **Load control** — concurrency limits prevent consumers from overwhelming downstream systems.
-
-```mermaid
-flowchart LR
-    P[Producer] -->|enqueue| Q[(Queue)]
-    Q -->|deliver with retries| C[Consumer]
-    Q -->|exhausted retries| DLQ[(Dead Letter Queue)]
-```
-
-## When to Use Queues
-
-| Scenario | Use a queue? | Why |
-|----------|-------------|-----|
-| HTTP handler must respond fast, but downstream work is slow | **Yes** | Enqueue the work and return `202 Accepted` immediately |
-| Multiple functions must react to the same event | **Yes** | Topic-based queues fan out to every subscriber |
-| Work must survive process restarts | **Yes** | Queues persist messages and retry on failure |
-| External API has rate limits | **Yes** | Concurrency control throttles parallel requests |
-| Transactions for the same entity must be ordered | **Yes** | FIFO queues guarantee per-group ordering |
-| You need the function's return value right now | **No** | Use a [synchronous trigger](./trigger-actions#1-synchronous-no-action) instead |
-| The work is non-critical and losing it is acceptable | **Maybe** | [TriggerAction.Void()](./trigger-actions#2-void-fire-and-forget) is simpler if you don't need retries |
-
-## Two Queue Modes
-
-iii supports two ways to use queues. Both share the same adapter, retry engine, and DLQ infrastructure — they differ in how producers address consumers.
-
-| | Topic-based | Named queues |
-|---|---|---|
-| **Producer** | `trigger({ function_id: 'enqueue', payload: { topic, data } })` | `trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` |
-| **Consumer** | Registers `registerTrigger({ type: 'queue', config: { topic } })` | No registration — function is the target |
-| **Delivery** | Fan-out: each subscribed function gets every message; replicas compete | Single target function per enqueue call |
-| **Config** | Optional `queue_config` on trigger | `queue_configs` in `iii-config.yaml` |
-| **Best for** | Durable pub/sub with retries and fan-out | Direct function invocation with retries, FIFO, DLQ |
+Use queues to run work asynchronously with built-in retries, dead-letter support, and concurrency control. iii offers **topic-based** queues (pub/sub fan-out) and **named queues** (direct function targeting). For background on when and why to use queues, see [Queue Architecture](/architecture/queues). For the full configuration reference, see the [Queue module](/modules/module-queue).
 
 <Info title="Trigger actions primer">
   Named queues use the `Enqueue` trigger action. If you are new to trigger actions, read [Trigger Actions](./trigger-actions) first.
