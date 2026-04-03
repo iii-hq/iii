@@ -34,6 +34,11 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install system dependencies for iii-worker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcap-ng-dev
+
       - name: Build and test iii-worker
         run: |
           cargo build -p iii-worker
