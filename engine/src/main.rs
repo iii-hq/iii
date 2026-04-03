@@ -134,6 +134,10 @@ enum SdkCommands {
     },
 }
 
+fn should_init_logging_from_engine_config(cli: &Cli) -> bool {
+    cli.use_default_config
+}
+
 async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
     let config = if cli.use_default_config {
         EngineConfig::default_config()
