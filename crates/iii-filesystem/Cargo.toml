@@ -2,7 +2,7 @@
 name = "iii-filesystem"
 version = "0.1.0"
 edition = "2024"
-authors = ["Motia LLC"]
+license = "Elastic-2.0"
 description = "Filesystem backends for iii worker VM sandboxes"
 
 [lib]

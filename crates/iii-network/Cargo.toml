@@ -2,7 +2,7 @@
 name = "iii-network"
 version = "0.1.0"
 edition = "2024"
-authors = ["Motia LLC"]
+license = "Elastic-2.0"
 description = "Userspace TCP/IP networking for iii worker VM sandboxes"
 
 [lib]
