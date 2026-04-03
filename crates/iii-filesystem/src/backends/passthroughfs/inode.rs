@@ -625,3 +625,77 @@ pub(crate) fn stat_inode(
         Ok(st)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translate_open_flags_preserves_rdonly() {
+        let flags = translate_open_flags(libc::O_RDONLY);
+        assert_eq!(flags & 0b11, 0); // O_RDONLY = 0
+    }
+
+    #[test]
+    fn translate_open_flags_preserves_rdwr() {
+        let flags = translate_open_flags(libc::O_RDWR);
+        assert_eq!(flags & 0b11, libc::O_RDWR & 0b11);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn translate_open_flags_identity_on_linux() {
+        let input = libc::O_RDWR | libc::O_APPEND | libc::O_CREAT;
+        assert_eq!(translate_open_flags(input), input);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn translate_open_flags_maps_linux_append_to_macos() {
+        // Linux O_APPEND = 0x400 but macOS O_APPEND = 0x8
+        let linux_append = linux_flags::O_APPEND;
+        let result = translate_open_flags(linux_append);
+        assert_ne!(result & libc::O_APPEND, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn translate_open_flags_maps_linux_trunc_to_macos() {
+        let linux_trunc = linux_flags::O_TRUNC;
+        let result = translate_open_flags(linux_trunc);
+        assert_ne!(result & libc::O_TRUNC, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn translate_open_flags_maps_linux_creat_to_macos() {
+        let linux_creat = linux_flags::O_CREAT;
+        let result = translate_open_flags(linux_creat);
+        assert_ne!(result & libc::O_CREAT, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn translate_open_flags_maps_linux_excl_to_macos() {
+        let linux_excl = linux_flags::O_EXCL;
+        let result = translate_open_flags(linux_excl);
+        assert_ne!(result & libc::O_EXCL, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vol_path_format() {
+        let path = vol_path(12345, 67890);
+        assert_eq!(path.to_str().unwrap(), "/.vol/12345/67890");
+    }
+
+    #[test]
+    fn inode_fd_raw_returns_fd() {
+        let fd = InodeFd {
+            fd: 42,
+            #[cfg(target_os = "macos")]
+            owned: false,
+        };
+        assert_eq!(fd.raw(), 42);
+    }
+}

@@ -670,3 +670,170 @@ pub(crate) fn fstatat_nofollow(dirfd: RawFd, name: &std::ffi::CStr) -> io::Resul
         Ok(st)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eio_returns_correct_errno() {
+        let err = eio();
+        assert_eq!(err.raw_os_error(), Some(LINUX_EIO));
+    }
+
+    #[test]
+    fn ebadf_returns_correct_errno() {
+        let err = ebadf();
+        assert_eq!(err.raw_os_error(), Some(LINUX_EBADF));
+    }
+
+    #[test]
+    fn einval_returns_correct_errno() {
+        let err = einval();
+        assert_eq!(err.raw_os_error(), Some(LINUX_EINVAL));
+    }
+
+    #[test]
+    fn eacces_returns_correct_errno() {
+        let err = eacces();
+        assert_eq!(err.raw_os_error(), Some(LINUX_EACCES));
+    }
+
+    #[test]
+    fn eperm_returns_correct_errno() {
+        let err = eperm();
+        assert_eq!(err.raw_os_error(), Some(LINUX_EPERM));
+    }
+
+    #[test]
+    fn enosys_returns_correct_errno() {
+        let err = enosys();
+        assert_eq!(err.raw_os_error(), Some(LINUX_ENOSYS));
+    }
+
+    #[test]
+    fn enoent_returns_correct_errno() {
+        let err = enoent();
+        assert_eq!(err.raw_os_error(), Some(LINUX_ENOENT));
+    }
+
+    #[test]
+    fn eloop_returns_correct_errno() {
+        let err = eloop();
+        assert_eq!(err.raw_os_error(), Some(LINUX_ELOOP));
+    }
+
+    #[test]
+    fn is_enoent_true_for_enoent() {
+        let err = enoent();
+        assert!(is_enoent(&err));
+    }
+
+    #[test]
+    fn is_enoent_false_for_eio() {
+        let err = eio();
+        assert!(!is_enoent(&err));
+    }
+
+    #[test]
+    fn dirent_type_from_mode_reg() {
+        assert_eq!(dirent_type_from_mode(MODE_REG), DIRENT_REG);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_dir() {
+        assert_eq!(dirent_type_from_mode(MODE_DIR), DIRENT_DIR);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_lnk() {
+        assert_eq!(dirent_type_from_mode(MODE_LNK), DIRENT_LNK);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_chr() {
+        assert_eq!(dirent_type_from_mode(MODE_CHR), DIRENT_CHR);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_blk() {
+        assert_eq!(dirent_type_from_mode(MODE_BLK), DIRENT_BLK);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_fifo() {
+        assert_eq!(dirent_type_from_mode(MODE_FIFO), DIRENT_FIFO);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_sock() {
+        assert_eq!(dirent_type_from_mode(MODE_SOCK), DIRENT_SOCK);
+    }
+
+    #[test]
+    fn dirent_type_from_mode_unknown_defaults_to_reg() {
+        assert_eq!(dirent_type_from_mode(0xFFFF), DIRENT_REG);
+    }
+
+    #[test]
+    fn mode_file_type_extracts_type_bits() {
+        let mode = MODE_REG | 0o755;
+        assert_eq!(mode_file_type(mode as libc::mode_t), MODE_REG);
+    }
+
+    #[test]
+    fn fstat_on_valid_fd() {
+        // Use a real fd (stdout)
+        let st = fstat(1);
+        assert!(st.is_ok());
+    }
+
+    #[test]
+    fn fstat_on_invalid_fd() {
+        let st = fstat(-1);
+        assert!(st.is_err());
+    }
+
+    #[test]
+    fn build_timespecs_omit_both() {
+        let attr = unsafe { std::mem::zeroed::<stat64>() };
+        let valid = SetattrValid::empty();
+        let times = build_timespecs(attr, valid);
+        assert_eq!(times[0].tv_nsec, libc::UTIME_OMIT);
+        assert_eq!(times[1].tv_nsec, libc::UTIME_OMIT);
+    }
+
+    #[test]
+    fn build_timespecs_atime_now() {
+        let attr = unsafe { std::mem::zeroed::<stat64>() };
+        let valid = SetattrValid::ATIME | SetattrValid::ATIME_NOW;
+        let times = build_timespecs(attr, valid);
+        assert_eq!(times[0].tv_nsec, libc::UTIME_NOW);
+        assert_eq!(times[1].tv_nsec, libc::UTIME_OMIT);
+    }
+
+    #[test]
+    fn build_timespecs_mtime_now() {
+        let attr = unsafe { std::mem::zeroed::<stat64>() };
+        let valid = SetattrValid::MTIME | SetattrValid::MTIME_NOW;
+        let times = build_timespecs(attr, valid);
+        assert_eq!(times[0].tv_nsec, libc::UTIME_OMIT);
+        assert_eq!(times[1].tv_nsec, libc::UTIME_NOW);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_error_is_identity_on_linux() {
+        let err = io::Error::from_raw_os_error(libc::ENOENT);
+        let mapped = linux_error(err);
+        assert_eq!(mapped.raw_os_error(), Some(libc::ENOENT));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn linux_error_maps_macos_enoent() {
+        let err = io::Error::from_raw_os_error(libc::ENOENT);
+        let mapped = linux_error(err);
+        assert_eq!(mapped.raw_os_error(), Some(LINUX_ENOENT));
+    }
+}
