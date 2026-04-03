@@ -33,11 +33,15 @@ modules:
   See the [Queue module reference](/modules/module-queue#configuration) for every field, adapter option, and default value.
 </Info>
 
+This guide covers two independent queue modes — pick the one that fits your use case, or use both. For help deciding, see [When to use which](/modules/module-queue#when-to-use-which).
+
 ---
 
 ## Topic-Based Queues
 
-Topic-based queues work like durable pub/sub: you publish a message to a **topic**, and every function subscribed to that topic receives a copy. If a function has multiple replicas, they compete on a shared per-function queue — only one replica processes each message.
+### Goal
+
+Subscribe multiple functions to a topic so that every published message fans out to all subscribers, with each function processing its copy independently.
 
 <Steps>
   <Step title="Register consumers for a topic">
@@ -316,11 +320,17 @@ Topic-based queues work like durable pub/sub: you publish a message to a **topic
   </Step>
 </Steps>
 
+### Result
+
+Every function subscribed to a topic receives a copy of each published message. If a function has multiple replicas, they compete on a shared per-function queue — only one replica processes each message. The producer only knows the topic name; it does not need to know which functions are subscribed.
+
 ---
 
 ## Named Queues
 
-Named queues target a specific function directly. You define queue settings in `iii-config.yaml` and reference the queue name when enqueuing work.
+### Goal
+
+Enqueue jobs to a specific function by name with configurable retries, concurrency limits, FIFO ordering, and dead-letter support — all defined centrally in `iii-config.yaml`.
 
 <Steps>
   <Step title="Define named queues in config">
@@ -575,6 +585,10 @@ Named queues target a specific function directly. You define queue settings in `
     Use low concurrency to protect rate-limited APIs. Use high concurrency for embarrassingly parallel work like image resizing.
   </Step>
 </Steps>
+
+### Result
+
+Jobs are enqueued and acknowledged immediately — the caller receives a `messageReceiptId` without waiting for processing. The engine delivers each job to the target function, retries failures with exponential backoff, and routes exhausted jobs to the dead-letter queue. Standard queues process jobs concurrently; FIFO queues guarantee per-group ordering.
 
 <Info title="Standard vs FIFO queues">
   For a detailed comparison of standard and FIFO queue behavior — including processing model, ordering guarantees, and flow diagrams — see the [Queue module reference](/modules/module-queue#standard-vs-fifo-queues). For retry and dead-letter flow, see [Retry and dead-letter flow](/modules/module-queue#retry-and-dead-letter-flow).
