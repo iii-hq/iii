@@ -45,7 +45,7 @@ pub(crate) fn do_setattr(
     handle: Option<u64>,
     valid: SetattrValid,
 ) -> io::Result<(stat64, Duration)> {
-    if ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && ino == init_binary::INIT_INODE {
         return Err(platform::eperm());
     }
 
@@ -157,7 +157,7 @@ pub(crate) fn do_setattr(
 /// For init.krun, checks against 0o755 (r-x for all, no write).
 /// For other inodes, uses `stat_inode` to check real host permissions.
 pub(crate) fn do_access(fs: &PassthroughFs, ctx: Context, ino: u64, mask: u32) -> io::Result<()> {
-    if ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && ino == init_binary::INIT_INODE {
         // init.krun is mode 0o755: readable and executable by all, not writable.
         if mask == platform::ACCESS_F_OK {
             return Ok(());

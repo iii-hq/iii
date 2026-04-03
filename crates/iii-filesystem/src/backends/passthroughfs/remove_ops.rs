@@ -34,8 +34,8 @@ pub(crate) fn do_unlink(
 ) -> io::Result<()> {
     name_validation::validate_name(name)?;
 
-    // Protect init.krun from deletion.
-    if parent == 1 && init_binary::is_init_name(name.to_bytes()) {
+    // Protect init.krun from deletion (only when init is embedded).
+    if init_binary::has_init() && parent == 1 && init_binary::is_init_name(name.to_bytes()) {
         return Err(platform::eperm());
     }
 
@@ -101,7 +101,7 @@ pub(crate) fn do_rmdir(
     name_validation::validate_name(name)?;
 
     // Protect init.krun from deletion (init is a file, not a dir, but reject for safety).
-    if parent == 1 && init_binary::is_init_name(name.to_bytes()) {
+    if init_binary::has_init() && parent == 1 && init_binary::is_init_name(name.to_bytes()) {
         return Err(platform::eperm());
     }
 
@@ -130,9 +130,10 @@ pub(crate) fn do_rename(
     name_validation::validate_name(oldname)?;
     name_validation::validate_name(newname)?;
 
-    // Protect init.krun from being renamed or overwritten.
-    if (olddir == 1 && init_binary::is_init_name(oldname.to_bytes()))
-        || (newdir == 1 && init_binary::is_init_name(newname.to_bytes()))
+    // Protect init.krun from being renamed or overwritten (only when init is embedded).
+    if init_binary::has_init()
+        && ((olddir == 1 && init_binary::is_init_name(oldname.to_bytes()))
+            || (newdir == 1 && init_binary::is_init_name(newname.to_bytes())))
     {
         return Err(platform::eperm());
     }

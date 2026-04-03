@@ -97,8 +97,8 @@ pub(crate) fn do_readdirplus(
             continue;
         }
 
-        // For init.krun, return the synthetic entry.
-        if name_bytes == init_binary::INIT_FILENAME {
+        // For init.krun, return the synthetic entry (only when init is embedded).
+        if init_binary::has_init() && name_bytes == init_binary::INIT_FILENAME {
             let entry = init_binary::init_entry(fs.cfg.entry_timeout, fs.cfg.attr_timeout);
             result.push((de, entry));
             continue;
@@ -141,7 +141,13 @@ pub(crate) fn do_releasedir(
 //--------------------------------------------------------------------------------------------------
 
 /// Inject the init.krun entry into a directory listing if not already present.
+/// Only injects when the init binary is embedded; otherwise the real file on disk
+/// appears naturally in readdir results.
 fn inject_init_entry(entries: &mut Vec<DirEntry<'static>>) {
+    if !init_binary::has_init() {
+        return;
+    }
+
     let already_present = entries.iter().any(|e| e.name == init_binary::INIT_FILENAME);
 
     if !already_present {

@@ -580,8 +580,8 @@ pub(crate) fn stat_inode(
 ) -> io::Result<stat64> {
     use crate::backends::shared::init_binary;
 
-    // Init binary has a synthetic stat.
-    if inode == init_binary::INIT_INODE {
+    // Init binary has a synthetic stat (only when init is embedded).
+    if init_binary::has_init() && inode == init_binary::INIT_INODE {
         return Ok(init_binary::init_stat());
     }
 
