@@ -945,7 +945,7 @@ async fn rmq_fifo_multi_group_ordering() {
     // Build FIFO queue config inline (single queue, not the two-queue helper)
     let config = json!({
         "adapter": {
-            "class": "modules::queue::RabbitMQAdapter",
+            "name": "rabbitmq",
             "config": { "amqp_url": ctx.amqp_url }
         },
         "queue_configs": {

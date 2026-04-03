@@ -23,7 +23,7 @@ use crate::{
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdapterEntry {
-    pub class: String,
+    pub name: String,
     #[serde(default)]
     pub config: Option<Value>,
 }
@@ -94,7 +94,7 @@ pub trait ConfigurableModule: Module + Sized + 'static {
     type Config: DeserializeOwned + Default + Send;
     type Adapter: Send + Sync + 'static + ?Sized;
     type AdapterRegistration: AdapterRegistrationEntry<Self::Adapter> + inventory::Collect;
-    const DEFAULT_ADAPTER_CLASS: &'static str;
+    const DEFAULT_ADAPTER_NAME: &'static str;
 
     async fn register_adapter(
         name: impl Into<String> + Send,
@@ -112,7 +112,7 @@ pub trait ConfigurableModule: Module + Sized + 'static {
             let factory = registration.factory();
             let adapter_factory: AdapterFactory<Self::Adapter> =
                 Arc::new(move |engine, config| (factory)(engine, config));
-            registry.insert(registration.class().to_string(), adapter_factory);
+            registry.insert(registration.name().to_string(), adapter_factory);
         }
         registry
     }
@@ -130,13 +130,13 @@ pub trait ConfigurableModule: Module + Sized + 'static {
     /// Build the module from parsed config and adapter
     fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self;
 
-    /// Default adapter class name
-    fn default_adapter_class() -> &'static str {
-        Self::DEFAULT_ADAPTER_CLASS
+    /// Default adapter name
+    fn default_adapter_name() -> &'static str {
+        Self::DEFAULT_ADAPTER_NAME
     }
 
-    /// Extract adapter class from config (optional override)
-    fn adapter_class_from_config(_config: &Self::Config) -> Option<String> {
+    /// Extract adapter name from config (optional override)
+    fn adapter_name_from_config(_config: &Self::Config) -> Option<String> {
         None
     }
 
@@ -190,25 +190,25 @@ pub trait ConfigurableModule: Module + Sized + 'static {
             .unwrap_or_default();
 
         // 2. Determine which adapter to use
-        let adapter_class = match Self::adapter_class_from_config(&parsed_config) {
-            Some(class) => class,
+        let adapter_name = match Self::adapter_name_from_config(&parsed_config) {
+            Some(name) => name,
             None => {
                 tracing::debug!(
-                    "No adapter class specified in config, using default: '{}'",
-                    Self::default_adapter_class()
+                    "No adapter name specified in config, using default: '{}'",
+                    Self::default_adapter_name()
                 );
-                Self::default_adapter_class().to_string()
+                Self::default_adapter_name().to_string()
             }
         };
         // 3. Get the factory
-        let factory = match Self::get_adapter(&adapter_class).await {
+        let factory = match Self::get_adapter(&adapter_name).await {
             Some(factory) => factory,
             None => {
                 let registry = Self::registry().await;
                 let available: Vec<String> = registry.read().unwrap().keys().cloned().collect();
                 return Err(anyhow::anyhow!(
-                    "Adapter factory '{}' not found. Available: {:?}",
-                    adapter_class,
+                    "Adapter '{}' not found. Available: {:?}",
+                    adapter_name,
                     available
                 ));
             }
@@ -217,8 +217,8 @@ pub trait ConfigurableModule: Module + Sized + 'static {
         // 4. Create adapter
         let adapter_config = Self::adapter_config_from_config(&parsed_config);
         tracing::debug!(
-            "Using adapter class '{}' with config: {:?}",
-            adapter_class,
+            "Using adapter '{}' with config: {:?}",
+            adapter_name,
             &adapter_config
         );
         let adapter = factory(engine.clone(), adapter_config).await?;
@@ -260,7 +260,7 @@ mod tests {
 
     inventory::submit! {
         TestAdapterRegistration {
-            class: "test::inventory",
+            name: "test::inventory",
             factory: inventory_test_factory,
         }
     }
@@ -321,7 +321,7 @@ mod tests {
         type Config = TestModuleConfig;
         type Adapter = dyn TestAdapter;
         type AdapterRegistration = TestAdapterRegistration;
-        const DEFAULT_ADAPTER_CLASS: &'static str = "test::default";
+        const DEFAULT_ADAPTER_NAME: &'static str = "test::default";
 
         async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
             static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn TestAdapter>>>> =
@@ -337,8 +337,8 @@ mod tests {
             }
         }
 
-        fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-            config.adapter.as_ref().map(|entry| entry.class.clone())
+        fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+            config.adapter.as_ref().map(|entry| entry.name.clone())
         }
 
         fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -404,7 +404,7 @@ mod tests {
         type Config = DefaultHooksConfig;
         type Adapter = dyn TestAdapter;
         type AdapterRegistration = TestAdapterRegistration;
-        const DEFAULT_ADAPTER_CLASS: &'static str = "test::inventory";
+        const DEFAULT_ADAPTER_NAME: &'static str = "test::inventory";
 
         async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
             static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn TestAdapter>>>> =
@@ -449,64 +449,64 @@ mod tests {
 
     #[test]
     fn adapter_entry_deserialize_with_config() {
-        let json = r#"{"class": "my::Adapter", "config": {"key": "value"}}"#;
+        let json = r#"{"name": "my-adapter", "config": {"key": "value"}}"#;
         let entry: AdapterEntry = serde_json::from_str(json).unwrap();
-        assert_eq!(entry.class, "my::Adapter");
+        assert_eq!(entry.name, "my-adapter");
         assert!(entry.config.is_some());
         assert_eq!(entry.config.unwrap()["key"], "value");
     }
 
     #[test]
     fn adapter_entry_deserialize_without_config() {
-        let json = r#"{"class": "my::Adapter"}"#;
+        let json = r#"{"name": "my-adapter"}"#;
         let entry: AdapterEntry = serde_json::from_str(json).unwrap();
-        assert_eq!(entry.class, "my::Adapter");
+        assert_eq!(entry.name, "my-adapter");
         assert!(entry.config.is_none());
     }
 
     #[test]
     fn adapter_entry_serialize_roundtrip() {
         let entry = AdapterEntry {
-            class: "test::Adapter".to_string(),
+            name: "test-adapter".to_string(),
             config: Some(serde_json::json!({"port": 8080})),
         };
         let json_str = serde_json::to_string(&entry).unwrap();
         let deserialized: AdapterEntry = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.class, "test::Adapter");
+        assert_eq!(deserialized.name, "test-adapter");
         assert_eq!(deserialized.config.unwrap()["port"], 8080);
     }
 
     #[test]
     fn adapter_entry_serialize_no_config() {
         let entry = AdapterEntry {
-            class: "test::Adapter".to_string(),
+            name: "test-adapter".to_string(),
             config: None,
         };
         let json_str = serde_json::to_string(&entry).unwrap();
         let deserialized: AdapterEntry = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(deserialized.class, "test::Adapter");
+        assert_eq!(deserialized.name, "test-adapter");
         assert!(deserialized.config.is_none());
     }
 
     #[test]
     fn adapter_entry_clone() {
         let entry = AdapterEntry {
-            class: "test::Adapter".to_string(),
+            name: "test-adapter".to_string(),
             config: Some(serde_json::json!({"a": 1})),
         };
         let cloned = entry.clone();
-        assert_eq!(cloned.class, "test::Adapter");
+        assert_eq!(cloned.name, "test-adapter");
         assert_eq!(cloned.config, Some(serde_json::json!({"a": 1})));
     }
 
     #[test]
     fn adapter_entry_debug() {
         let entry = AdapterEntry {
-            class: "test::Adapter".to_string(),
+            name: "test-adapter".to_string(),
             config: None,
         };
         let debug_str = format!("{:?}", entry);
-        assert!(debug_str.contains("test::Adapter"));
+        assert!(debug_str.contains("test-adapter"));
     }
 
     #[tokio::test]
@@ -581,7 +581,7 @@ mod tests {
             .await;
 
         assert_eq!(
-            TestConfigurableModule::default_adapter_class(),
+            TestConfigurableModule::default_adapter_name(),
             "test::default"
         );
         assert!(
@@ -604,7 +604,7 @@ mod tests {
         let inventory_registry = DefaultHooksModule::build_registry();
         assert!(inventory_registry.contains_key("test::inventory"));
         assert_eq!(
-            DefaultHooksModule::default_adapter_class(),
+            DefaultHooksModule::default_adapter_name(),
             "test::inventory"
         );
         assert!(
@@ -655,12 +655,12 @@ mod tests {
 
         let configured = TestModuleConfig {
             adapter: Some(AdapterEntry {
-                class: "test::custom".to_string(),
+                name: "test::custom".to_string(),
                 config: Some(serde_json::json!({ "mode": "custom" })),
             }),
         };
         assert_eq!(
-            TestConfigurableModule::adapter_class_from_config(&configured).as_deref(),
+            TestConfigurableModule::adapter_name_from_config(&configured).as_deref(),
             Some("test::custom")
         );
         assert_eq!(
@@ -716,7 +716,7 @@ mod tests {
         let missing = TestConfigurableModule::create_with_adapters(
             engine,
             Some(serde_json::json!({
-                "adapter": { "class": "test::missing" }
+                "adapter": { "name": "test::missing" }
             })),
         )
         .await;
@@ -738,7 +738,7 @@ mod tests {
         .expect("create module from inventory-backed registry");
         assert_eq!(module.name(), "DefaultHooksModule");
         assert_eq!(
-            DefaultHooksModule::adapter_class_from_config(&DefaultHooksConfig::default()),
+            DefaultHooksModule::adapter_name_from_config(&DefaultHooksConfig::default()),
             None
         );
         assert_eq!(
@@ -772,7 +772,7 @@ mod tests {
         let factory_error = match TestConfigurableModule::create_with_adapters(
             Arc::new(Engine::new()),
             Some(serde_json::json!({
-                "adapter": { "class": "test::failing" }
+                "adapter": { "name": "test::failing" }
             })),
         )
         .await

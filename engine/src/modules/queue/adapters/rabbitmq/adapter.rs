@@ -1205,4 +1205,4 @@ impl QueueAdapter for RabbitMQAdapter {
     }
 }
 
-crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RabbitMQAdapter", make_adapter);
+crate::register_adapter!(<QueueAdapterRegistration> "rabbitmq", make_adapter);

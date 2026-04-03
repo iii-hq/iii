@@ -81,7 +81,7 @@ fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> PubSubAdapterFutu
     })
 }
 
-crate::register_adapter!(<PubSubAdapterRegistration> "modules::pubsub::RedisAdapter", make_adapter);
+crate::register_adapter!(<PubSubAdapterRegistration> "redis", make_adapter);
 
 #[async_trait]
 impl PubSubAdapter for RedisAdapter {

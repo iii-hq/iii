@@ -20,7 +20,7 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 
 ## Prerequisites
 
-- A running iii engine with the **WorkerModule** enabled and RBAC configured (see [Worker RBAC](/how-to/worker-rbac)).
+- A running iii engine with the **worker manager** (`iii-worker-manager`) enabled and RBAC configured (see [Worker RBAC](/how-to/worker-rbac)).
 - `iii-sdk-browser` installed in your frontend project.
 
 ## Steps
@@ -31,15 +31,15 @@ The browser SDK turns your frontend into a **first-class iii worker**:
 npm install iii-sdk-browser
 ```
 
-### 2. Enable the WorkerModule with RBAC
+### 2. Enable the worker manager with RBAC
 
-Browser workers connect through the RBAC port, not the internal bridge. Add a `WorkerModule` to your engine config:
+Browser workers connect through the RBAC port, not the internal bridge. Add an `iii-worker-manager` entry to your engine config:
 
 ```yaml title="iii-config.yaml"
-modules:
-  # ... your existing modules ...
+workers:
+  # ... your existing workers ...
 
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       port: 49135
       rbac:

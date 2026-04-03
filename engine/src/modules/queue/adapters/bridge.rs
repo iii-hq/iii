@@ -485,6 +485,6 @@ fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFutur
 }
 
 crate::register_adapter!(
-    <QueueAdapterRegistration> "modules::queue::adapters::Bridge",
+    <QueueAdapterRegistration> "bridge",
     make_adapter
 );

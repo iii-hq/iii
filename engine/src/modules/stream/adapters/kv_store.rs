@@ -198,7 +198,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
     )
 }
 
-crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::KvStore", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "kv", make_adapter);
 
 #[cfg(test)]
 mod tests {

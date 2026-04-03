@@ -309,4 +309,4 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
     })
 }
 
-crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::Bridge", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "bridge", make_adapter);

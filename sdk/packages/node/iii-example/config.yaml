@@ -1,22 +1,22 @@
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAMS_PORT:3112}
       host: 127.0.0.1
       adapter:
-        class: modules::stream::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: redis://localhost:6379
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/state_store.db
 
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111
       host: 127.0.0.1
@@ -32,7 +32,7 @@ modules:
           - DELETE
           - OPTIONS
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii-engine}
@@ -64,17 +64,17 @@ modules:
         collection_interval_seconds: 5
         history_size: 60
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::LocalAdapter
+        name: local
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -108,16 +108,16 @@ modules:
           type: standard
           backoff_ms: 500
       # adapter:
-      #   class: modules::queue::BuiltinQueueAdapter
+      #   name: builtin
       #   config:
       #     store_method: file_based
       #     file_path: ./data/queue_store
       adapter:
-        class: modules::queue::RabbitMQAdapter
+        name: rabbitmq
         config:
-        amqp_url: amqp://guest:guest@localhost:5672
+          amqp_url: amqp://guest:guest@localhost:5672
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - src/**/*.ts

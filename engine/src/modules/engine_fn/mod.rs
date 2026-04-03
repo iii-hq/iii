@@ -544,7 +544,7 @@ impl EngineFunctionsModule {
 }
 
 crate::register_module!(
-    "modules::engine_fn::EngineFunctionsModule",
+    "iii-engine-fn",
     EngineFunctionsModule,
     mandatory
 );

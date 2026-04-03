@@ -85,7 +85,7 @@ impl ConfigurableModule for StateCoreModule {
     type Config = StateModuleConfig;
     type Adapter = dyn StateAdapter;
     type AdapterRegistration = super::registry::StateAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::state::adapters::KvStore";
+    const DEFAULT_ADAPTER_NAME: &'static str = "kv";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StateAdapter>>>> =
@@ -101,8 +101,8 @@ impl ConfigurableModule for StateCoreModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -407,7 +407,7 @@ impl StateCoreModule {
 }
 
 crate::register_module!(
-    "modules::state::StateModule",
+    "iii-state",
     StateCoreModule,
     enabled_by_default = true
 );

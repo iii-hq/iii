@@ -28,33 +28,27 @@ use tokio::{
 
 use crate::{engine::Engine, modules::module::Module};
 
-/// Resolves an external module class to a binary path.
+/// Resolves an external worker name to a binary path.
 ///
-/// Convention: `modules::image_resize::ImageResizeModule`
-///   -> extract middle segment `image_resize`
-///   -> convert underscores to hyphens: `image-resize`
-///   -> binary at `iii_workers/image-resize`
+/// The name is used directly as the worker key in `iii.toml`
+/// and the binary filename under `iii_workers/`.
 ///
-/// Also checks `iii.toml` to verify the module is actually installed.
+/// Example: `"image-resize"` -> binary at `iii_workers/image-resize`
 
 #[derive(Deserialize)]
 struct ManifestFile {
     workers: Option<BTreeMap<String, String>>,
 }
 
-pub fn resolve_external_module(class: &str) -> Option<ExternalModuleInfo> {
+pub fn resolve_external_module(name: &str) -> Option<ExternalModuleInfo> {
     let base_dir = std::env::current_dir().ok()?;
-    resolve_external_module_in(&base_dir, class)
+    resolve_external_module_in(&base_dir, name)
 }
 
-pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<ExternalModuleInfo> {
-    let parts: Vec<&str> = class.split("::").collect();
-    if parts.len() < 2 {
+pub fn resolve_external_module_in(base_dir: &Path, name: &str) -> Option<ExternalModuleInfo> {
+    if name.is_empty() {
         return None;
     }
-
-    let slug = parts.get(1)?;
-    let binary_name = slug.replace('_', "-");
 
     // Parse iii.toml and check for exact worker key
     let manifest_path = base_dir.join("iii.toml");
@@ -62,7 +56,7 @@ pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<Extern
         let content = std::fs::read_to_string(&manifest_path).ok()?;
         let parsed: ManifestFile = toml::from_str(&content).ok()?;
         let workers = parsed.workers.unwrap_or_default();
-        if !workers.contains_key(&binary_name) {
+        if !workers.contains_key(name) {
             return None;
         }
     } else {
@@ -70,22 +64,22 @@ pub fn resolve_external_module_in(base_dir: &Path, class: &str) -> Option<Extern
     }
 
     let file_name = if cfg!(target_os = "windows") {
-        format!("{}.exe", binary_name)
+        format!("{}.exe", name)
     } else {
-        binary_name.clone()
+        name.to_string()
     };
     let binary_path = base_dir.join("iii_workers").join(&file_name);
     if !binary_path.exists() {
         tracing::warn!(
             "Worker '{}' is in iii.toml but binary not found at {}",
-            binary_name,
+            name,
             binary_path.display()
         );
         return None;
     }
 
     Some(ExternalModuleInfo {
-        name: binary_name,
+        name: name.to_string(),
         binary_path,
     })
 }
@@ -306,24 +300,22 @@ mod tests {
     // ── resolve_external_module (uses cwd, no iii.toml) ─────────────────
 
     #[test]
-    fn resolve_external_module_returns_none_for_builtin_class() {
-        // No iii.toml in test environment
-        assert!(resolve_external_module("modules::stream::StreamModule").is_none());
+    fn resolve_external_module_returns_none_for_builtin_name() {
+        assert!(resolve_external_module("iii-stream").is_none());
     }
 
     #[test]
-    fn resolve_external_module_returns_none_for_short_class() {
-        assert!(resolve_external_module("SomeModule").is_none());
+    fn resolve_external_module_returns_none_for_empty() {
+        assert!(resolve_external_module("").is_none());
     }
 
     // ── resolve_external_module_in: happy paths ─────────────────────────
 
     #[test]
-    fn resolve_happy_path_three_segment_class() {
+    fn resolve_happy_path_direct_name() {
         let dir = setup_manifest(&[("image-resize", "1.0.0")], &["image-resize"]);
 
-        let result =
-            resolve_external_module_in(dir.path(), "modules::image_resize::ImageResizeModule");
+        let result = resolve_external_module_in(dir.path(), "image-resize");
         let info = result.expect("should resolve valid external module");
         assert_eq!(info.name, "image-resize");
         assert_eq!(
@@ -333,65 +325,30 @@ mod tests {
     }
 
     #[test]
-    fn resolve_happy_path_two_segment_class() {
-        let dir = setup_manifest(&[("my-worker", "2.0.0")], &["my-worker"]);
-
-        let result = resolve_external_module_in(dir.path(), "modules::my_worker");
-        let info = result.expect("two-segment class should resolve");
-        assert_eq!(info.name, "my-worker");
-    }
-
-    #[test]
-    fn resolve_underscore_to_hyphen_conversion() {
-        let dir = setup_manifest(&[("data-transform", "0.1.0")], &["data-transform"]);
-
-        let result =
-            resolve_external_module_in(dir.path(), "modules::data_transform::DataTransformModule");
-        let info = result.expect("underscores should convert to hyphens");
-        assert_eq!(info.name, "data-transform");
-    }
-
-    #[test]
     fn resolve_selects_correct_worker_among_multiple() {
         let dir = setup_manifest(
             &[("alpha", "1.0.0"), ("beta", "2.0.0"), ("gamma", "3.0.0")],
             &["alpha", "beta", "gamma"],
         );
 
-        let result = resolve_external_module_in(dir.path(), "modules::beta::BetaModule");
+        let result = resolve_external_module_in(dir.path(), "beta");
         let info = result.expect("should resolve 'beta' among multiple workers");
         assert_eq!(info.name, "beta");
-    }
-
-    #[test]
-    fn resolve_slug_with_no_underscores_passes_through() {
-        let dir = setup_manifest(&[("simple", "1.0.0")], &["simple"]);
-
-        let result = resolve_external_module_in(dir.path(), "modules::simple::SimpleModule");
-        let info = result.expect("slug without underscores should pass through unchanged");
-        assert_eq!(info.name, "simple");
     }
 
     // ── resolve_external_module_in: failure paths ───────────────────────
 
     #[test]
-    fn resolve_returns_none_for_empty_class() {
+    fn resolve_returns_none_for_empty_name() {
         let dir = setup_manifest(&[("x", "1.0.0")], &["x"]);
         assert!(resolve_external_module_in(dir.path(), "").is_none());
     }
 
     #[test]
-    fn resolve_returns_none_for_single_segment_class() {
-        let dir = setup_manifest(&[("x", "1.0.0")], &["x"]);
-        assert!(resolve_external_module_in(dir.path(), "OnlyOneSegment").is_none());
-    }
-
-    #[test]
     fn resolve_returns_none_when_no_iii_toml() {
         let dir = tempfile::TempDir::new().unwrap();
-        // No iii.toml created
         assert!(
-            resolve_external_module_in(dir.path(), "modules::foo::FooModule").is_none(),
+            resolve_external_module_in(dir.path(), "my-worker").is_none(),
             "should return None when iii.toml does not exist"
         );
     }
@@ -401,18 +358,17 @@ mod tests {
         let dir = setup_manifest(&[("other-worker", "1.0.0")], &["other-worker"]);
 
         assert!(
-            resolve_external_module_in(dir.path(), "modules::missing::MissingModule").is_none(),
+            resolve_external_module_in(dir.path(), "missing-worker").is_none(),
             "should return None when worker key is not in iii.toml"
         );
     }
 
     #[test]
     fn resolve_returns_none_when_binary_missing_on_disk() {
-        // Worker is in iii.toml but binary file doesn't exist
-        let dir = setup_manifest(&[("ghost", "1.0.0")], &[]); // no binaries created
+        let dir = setup_manifest(&[("ghost", "1.0.0")], &[]);
 
         assert!(
-            resolve_external_module_in(dir.path(), "modules::ghost::GhostModule").is_none(),
+            resolve_external_module_in(dir.path(), "ghost").is_none(),
             "should return None when binary is not on disk"
         );
     }
@@ -424,7 +380,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("iii_workers")).unwrap();
 
         assert!(
-            resolve_external_module_in(dir.path(), "modules::foo::FooModule").is_none(),
+            resolve_external_module_in(dir.path(), "foo").is_none(),
             "empty workers section should not match anything"
         );
     }
@@ -432,12 +388,11 @@ mod tests {
     #[test]
     fn resolve_returns_none_when_toml_has_no_workers_key() {
         let dir = tempfile::TempDir::new().unwrap();
-        // Valid TOML but no [workers] section
         std::fs::write(dir.path().join("iii.toml"), "[package]\nname = \"test\"\n").unwrap();
         std::fs::create_dir_all(dir.path().join("iii_workers")).unwrap();
 
         assert!(
-            resolve_external_module_in(dir.path(), "modules::foo::FooModule").is_none(),
+            resolve_external_module_in(dir.path(), "foo").is_none(),
             "should return None when iii.toml has no [workers] section"
         );
     }
@@ -446,8 +401,7 @@ mod tests {
     fn resolve_no_false_positive_on_substring() {
         let dir = setup_manifest(&[("image-resize", "1.0.0")], &["image-resize"]);
 
-        // "modules::image::ImageModule" extracts slug "image" which should NOT match "image-resize"
-        let result = resolve_external_module_in(dir.path(), "modules::image::ImageModule");
+        let result = resolve_external_module_in(dir.path(), "image");
         assert!(
             result.is_none(),
             "Should not match 'image' when only 'image-resize' is installed"
@@ -461,7 +415,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("iii_workers")).unwrap();
 
         assert!(
-            resolve_external_module_in(dir.path(), "modules::foo::FooModule").is_none(),
+            resolve_external_module_in(dir.path(), "foo").is_none(),
             "should return None for unparseable iii.toml"
         );
     }

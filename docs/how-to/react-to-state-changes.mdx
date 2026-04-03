@@ -1,6 +1,6 @@
 ---
 title: 'React to State Changes'
-description: 'How to run a Function automatically when a state value changes.'
+description: 'How to run a Function automatically when a state value changes (State worker `iii-state`).'
 ---
 
 ## Goal
@@ -9,14 +9,14 @@ Run a Function whenever a specific state value changes, using a `state` trigger.
 
 ## Steps
 
-### 1. Enable the State module
+### 1. Enable the State worker (`iii-state`)
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::state::StateModule
+workers:
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based  # Options: in_memory, file_based
           file_path: ./data/state_store.db  # required for file_based

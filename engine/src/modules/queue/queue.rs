@@ -771,7 +771,7 @@ impl ConfigurableModule for QueueCoreModule {
     type Config = QueueModuleConfig;
     type Adapter = dyn QueueAdapter;
     type AdapterRegistration = super::registry::QueueAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::queue::BuiltinQueueAdapter";
+    const DEFAULT_ADAPTER_NAME: &'static str = "builtin";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn QueueAdapter>>>> =
@@ -787,8 +787,8 @@ impl ConfigurableModule for QueueCoreModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -797,7 +797,7 @@ impl ConfigurableModule for QueueCoreModule {
 }
 
 crate::register_module!(
-    "modules::queue::QueueModule",
+    "iii-queue",
     QueueCoreModule,
     enabled_by_default = true
 );
@@ -876,10 +876,10 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn default_adapter_class() {
+    fn default_adapter_name() {
         assert_eq!(
-            QueueCoreModule::DEFAULT_ADAPTER_CLASS,
-            "modules::queue::BuiltinQueueAdapter"
+            QueueCoreModule::DEFAULT_ADAPTER_NAME,
+            "builtin"
         );
     }
 
@@ -1399,22 +1399,22 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn adapter_class_from_config_none() {
+    fn adapter_name_from_config_none() {
         let config = super::super::config::QueueModuleConfig::default();
-        assert!(QueueCoreModule::adapter_class_from_config(&config).is_none());
+        assert!(QueueCoreModule::adapter_name_from_config(&config).is_none());
     }
 
     #[test]
-    fn adapter_class_from_config_some() {
+    fn adapter_name_from_config_some() {
         let config = super::super::config::QueueModuleConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "my::CustomAdapter".to_string(),
+                name: "my::CustomAdapter".to_string(),
                 config: None,
             }),
             ..Default::default()
         };
         assert_eq!(
-            QueueCoreModule::adapter_class_from_config(&config),
+            QueueCoreModule::adapter_name_from_config(&config),
             Some("my::CustomAdapter".to_string())
         );
     }
@@ -1429,7 +1429,7 @@ mod tests {
     fn adapter_config_from_config_some() {
         let config = super::super::config::QueueModuleConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "my::Adapter".to_string(),
+                name: "my::Adapter".to_string(),
                 config: Some(json!({"url": "redis://localhost"})),
             }),
             ..Default::default()
@@ -1444,7 +1444,7 @@ mod tests {
     fn adapter_config_from_config_adapter_without_config() {
         let config = super::super::config::QueueModuleConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "my::Adapter".to_string(),
+                name: "my::Adapter".to_string(),
                 config: None,
             }),
             ..Default::default()
@@ -1637,7 +1637,7 @@ mod tests {
 
         let engine = Arc::new(Engine::new());
 
-        let factory = QueueCoreModule::get_adapter("modules::queue::BuiltinQueueAdapter")
+        let factory = QueueCoreModule::get_adapter("builtin")
             .await
             .expect("BuiltinQueueAdapter factory must be registered");
         let adapter = factory(engine.clone(), None)

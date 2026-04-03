@@ -44,7 +44,7 @@ The CLI downloads templates from the [motia-iii-example](https://github.com/Moti
 
 ## iii CLI
 
-The iii engine is the runtime that manages all infrastructure modules (queues, state, streams, cron, HTTP) and your Motia application process.
+The iii engine is the runtime that manages all infrastructure workers (queues, state, streams, cron, HTTP) and your Motia application process.
 
 ### Install iii
 
@@ -78,7 +78,7 @@ iii -v
 ```
 
 <Callout type="info">
-During development, your `package.json` should have `"dev": "iii"` so that `npm run dev` starts the engine, which reads `config.yaml` and boots all configured modules including your Motia application via the ExecModule.
+During development, your `package.json` should have `"dev": "iii"` so that `npm run dev` starts the engine, which reads `config.yaml` and boots all configured workers including your Motia application via the iii-exec worker.
 </Callout>
 
 ---
@@ -114,13 +114,13 @@ This produces:
 - `dist/index-production.js`
 - `dist/index-production.js.map`
 
-Your `config.yaml` should reference the production bundle in the ExecModule (place this under the top-level `modules:` list):
+Your `config.yaml` should reference the production bundle in the iii-exec worker (place this under the top-level `workers:` list):
 
-```yaml title="config.yaml (production ExecModule)"
-modules:
-  # ... other modules (StreamModule, StateModule, etc.) ...
+```yaml title="config.yaml (production iii-exec)"
+workers:
+  # ... other workers (iii-stream, iii-state, etc.) ...
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       exec:
         - bun run --enable-source-maps dist/index-production.js
@@ -128,19 +128,19 @@ modules:
 
 ### `motia dev`
 
-Start the Motia SDK in development mode. This is typically run automatically by the iii engine's ExecModule, not manually.
+Start the Motia SDK in development mode. This is typically run automatically by the iii engine's **iii-exec** worker, not manually.
 
 ```bash
 npx motia dev
 ```
 
-Your `config.yaml` ExecModule for development (place this under the top-level `modules:` list). The `watch` array defines file patterns that trigger a rebuild, and the `exec` commands run sequentially — `npx motia dev` compiles the Steps, then `node dist/index-dev.js` starts the built output:
+Your `config.yaml` iii-exec worker for development (place this under the top-level `workers:` list). The `watch` array defines file patterns that trigger a rebuild, and the `exec` commands run sequentially — `npx motia dev` compiles the Steps, then `node dist/index-dev.js` starts the built output:
 
-```yaml title="config.yaml (development ExecModule)"
-modules:
-  # ... other modules (StreamModule, StateModule, etc.) ...
+```yaml title="config.yaml (development iii-exec)"
+workers:
+  # ... other workers (iii-stream, iii-state, etc.) ...
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:
         - steps/**/*.ts
@@ -168,7 +168,7 @@ cd my-project
 iii                           # Starts the iii engine and your Motia Steps
 ```
 
-The `iii` engine reads `config.yaml`, starts all modules, and uses the ExecModule to build and run your Motia Steps automatically. File changes trigger hot-reload.
+The `iii` engine reads `config.yaml`, starts all workers, and uses the iii-exec worker to build and run your Motia Steps automatically. File changes trigger hot-reload.
 
 ---
 

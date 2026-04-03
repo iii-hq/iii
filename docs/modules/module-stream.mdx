@@ -6,14 +6,14 @@ description: 'Build durable streams for real-time data subscriptions.'
 Durable streams for real-time data subscriptions.
 
 ```
-modules::stream::StreamModule
+iii-stream
 ```
 
 ## Architecture
 
 ```mermaid
 graph LR
-    Client[Client] -->|WebSocket| Stream[StreamModule]
+    Client[Client] -->|WebSocket| Stream[iii-stream]
     Stream -->|Auth| Engine[Engine]
     Engine -->|Context| Stream
     Stream -->|Connected| Client
@@ -28,7 +28,7 @@ graph LR
 
 When a worker triggers `stream::set`, the engine:
 
-1. Persists the data via the configured adapter (Redis or KvStore)
+1. Persists the data via the configured adapter (Redis or kv)
 2. Publishes a notification to all WebSocket clients subscribed to that stream and group
 3. Evaluates registered `stream` triggers and fires matching handlers
 
@@ -47,14 +47,15 @@ Clients subscribe at the group level by connecting to `ws://host:port/stream/{st
 ## Sample Configuration
 
 ```yaml
-- class: modules::stream::StreamModule
-  config:
-    port: ${STREAM_PORT:3112}
-    host: 0.0.0.0
-    adapter:
-      class: modules::stream::adapters::RedisAdapter
-      config:
-        redis_url: ${REDIS_URL:redis://localhost:6379}
+workers:
+  - name: iii-stream
+    config:
+      port: ${STREAM_PORT:3112}
+      host: 0.0.0.0
+      adapter:
+        name: redis
+        config:
+          redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
 
 ## Configuration
@@ -79,12 +80,12 @@ Clients subscribe at the group level by connecting to `ws://host:port/stream/{st
 
 ## Adapters
 
-### modules::stream::adapters::RedisAdapter
+### redis
 
 Uses Redis as the backend for the streams. Stores stream data in Redis and leverages Redis Pub/Sub for real-time event delivery.
 
 ```yaml
-class: modules::stream::adapters::RedisAdapter
+name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -95,12 +96,12 @@ config:
   The URL of the Redis instance to use.
 </ResponseField>
 
-### modules::stream::adapters::KvStore
+### kv
 
 Built-in key-value store. Supports in-memory or file-based persistence. No external dependencies required.
 
 ```yaml
-class: modules::stream::adapters::KvStore
+name: kv
 config:
   store_method: file_based
   file_path: ./data/streams_store.db
@@ -357,16 +358,17 @@ iii.register_function((RegisterFunctionMessage::with_id("onAuth".into()), |_inpu
 2. Make sure you add the function to the configuration file.
 
 ```yaml
-- class: modules::stream::StreamModule
-  config:
-    auth_function: onAuth
+workers:
+  - name: iii-stream
+    config:
+      auth_function: onAuth
 ```
 
 3. Now whenever someone opens a websocket connection, the function `onAuth` will be called with the request data.
 
 ## Trigger Types
 
-This module adds three trigger types: `stream` (item changes), `stream:join` (WebSocket connect), and `stream:leave` (WebSocket disconnect).
+The `iii-stream` worker adds three trigger types: `stream` (item changes), `stream:join` (WebSocket connect), and `stream:leave` (WebSocket disconnect).
 
 ### stream:join and stream:leave
 
@@ -578,19 +580,20 @@ Clients connect via WebSocket to `ws://host:3112/stream/presence/room-1/` and re
 
 ### Usage Example: Join with Auth Context
 
-Configure the stream module with an auth function:
+Configure the `iii-stream` worker with an auth function:
 
 ```yaml
-- class: modules::stream::StreamModule
-  config:
-    port: 3112
-    host: 0.0.0.0
-    auth_function: stream::auth
-    adapter:
-      class: modules::stream::adapters::KvStore
-      config:
-        store_method: file_based
-        file_path: ./data/stream_store
+workers:
+  - name: iii-stream
+    config:
+      port: 3112
+      host: 0.0.0.0
+      auth_function: stream::auth
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/stream_store
 ```
 
 Register the auth function. Clients may send the token via `Authorization: Bearer <token>` (Node.js) or `Sec-WebSocket-Protocol: Authorization,<token>` (browser stream-client):

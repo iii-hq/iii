@@ -3,29 +3,30 @@ title: 'HTTP'
 description: 'Expose functions as HTTP endpoints.'
 ---
 
-The HTTP Module exposes registered functions as HTTP endpoints.
+The `iii-http` worker exposes registered functions as HTTP endpoints.
 
 ```
-modules::api::RestApiModule
+iii-http
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::api::RestApiModule
-  config:
-    port: 3111
-    host: 0.0.0.0
-    cors:
-      allowed_origins:
-        - http://localhost:3000
-        - http://localhost:5173
-      allowed_methods:
-        - GET
-        - POST
-        - PUT
-        - DELETE
-        - OPTIONS
+workers:
+  - name: iii-http
+    config:
+      port: 3111
+      host: 0.0.0.0
+      cors:
+        allowed_origins:
+          - http://localhost:3000
+          - http://localhost:5173
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
 ```
 
 ## Configuration
@@ -81,7 +82,7 @@ modules::api::RestApiModule
 
 ## Trigger Type
 
-This module adds a new Trigger Type: `http`.
+This worker adds a new Trigger Type: `http`.
 
 <Expandable title="Trigger Config">
   <ResponseField name="api_path" type="string" required>
@@ -177,7 +178,7 @@ Functions must return an `ApiResponse` object:
 
 ## Middleware
 
-The HTTP module supports a middleware system that runs functions at defined phases of the request lifecycle. Middleware functions are registered using the `http_middleware` trigger type.
+The `iii-http` worker supports a middleware system that runs functions at defined phases of the request lifecycle. Middleware functions are registered using the `http_middleware` trigger type.
 
 ### Phases
 

@@ -11,16 +11,17 @@ Stream authentication operates at two levels: **connection-level** authenticatio
 
 ### Connection-Level Authentication
 
-Configure the `auth_function` on the Stream module in `config.yaml`. The value uses `<module>.<function>` format — `stream.authenticate` means the iii engine looks for a registered Step whose exported handler is named `authenticate` under the `stream` module namespace. This function runs on every new WebSocket connection before the upgrade completes.
+Configure the `auth_function` on the iii-stream worker in `config.yaml`. The value uses `<module>.<function>` format — `stream.authenticate` means the iii engine looks for a registered Step whose exported handler is named `authenticate` under the `stream` module namespace. This function runs on every new WebSocket connection before the upgrade completes.
 
 ```yaml title="config.yaml"
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: 3112
       host: 0.0.0.0
       auth_function: stream.authenticate
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/stream_store

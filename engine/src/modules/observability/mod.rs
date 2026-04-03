@@ -1667,7 +1667,7 @@ impl Module for OtelModule {
 }
 
 crate::register_module!(
-    "modules::observability::OtelModule",
+    "iii-observability",
     OtelModule,
     enabled_by_default = false
 );

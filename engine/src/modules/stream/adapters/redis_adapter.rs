@@ -675,4 +675,4 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
     })
 }
 
-crate::register_adapter!(<StreamAdapterRegistration> "modules::stream::adapters::RedisAdapter", make_adapter);
+crate::register_adapter!(<StreamAdapterRegistration> "redis", make_adapter);

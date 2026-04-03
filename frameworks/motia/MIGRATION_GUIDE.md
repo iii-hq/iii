@@ -7,7 +7,7 @@ This guide covers migrating from **Motia v0.17.x** to the **Motia 1.0-RC** frame
 ## Table of Contents
 
 1. [Configuration](#1-configuration)
-2. [Module System and Runtime](#2-module-system-and-runtime)
+2. [JavaScript module system and runtime](#2-javascript-module-system-and-runtime)
 3. [Steps and Triggers -- Unified Config Model](#3-steps-and-triggers----unified-config-model)
 4. [HTTP Triggers](#4-http-triggers)
 5. [Queue Triggers (formerly Event Steps)](#5-queue-triggers-formerly-event-steps)
@@ -27,7 +27,7 @@ This guide covers migrating from **Motia v0.17.x** to the **Motia 1.0-RC** frame
 
 ### iii Engine (New Requirement)
 
-Motia now requires the **iii engine** to run. The iii engine is the Rust-powered runtime that manages all modules (streams, state, API, queues, cron, observability) and orchestrates the SDK process. All adapter and infrastructure configuration is done through iii via a `config.yaml` file -- the SDK itself no longer handles any of this.
+Motia now requires the **iii engine** to run. The iii engine is the Rust-powered runtime that manages all workers (streams, state, API, queues, cron, observability) and orchestrates the SDK process. All adapter and infrastructure configuration is done through iii via a `config.yaml` file -- the SDK itself no longer handles any of this.
 
 Install iii from [https://iii.dev](https://iii.dev) before proceeding with the migration.
 
@@ -38,7 +38,7 @@ The old `motia.config.ts` (using `defineConfig`) is replaced by two files manage
 | Concern | Old | New |
 |---|---|---|
 | Project config & plugins | `motia.config.ts` (`defineConfig({...})`) | Removed (handled by iii engine via `config.yaml`) |
-| Module/adapter config | N/A | `config.yaml` (iii engine config) |
+| Worker/adapter config | N/A | `config.yaml` (iii engine config) |
 | Auth & hooks | `streamAuth` in `motia.config.ts` | `motia.config.ts` (simplified, exports only auth hooks) |
 | Build externals | `.esbuildrc.json` | Removed |
 | Workbench UI layout | `motia-workbench.json` | Removed (see [Workbench, Plugins, and Console](#13-workbench-plugins-and-console)) |
@@ -105,37 +105,37 @@ export default defineConfig({
 **New -- `config.yaml` (development):**
 
 ```yaml
-modules:
-  # ── Stream Module ──────────────────────────────────────────────────────
+workers:
+  # ── Stream worker (iii-stream) ───────────────────────────────────────────
   # Manages real-time data streams with WebSocket support.
-  # Adapters: KvStore (file_based | in_memory), RedisAdapter
-  - class: modules::stream::StreamModule
+  # Adapters: kv (file_based | in_memory), redis, bridge
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}       # WebSocket server port (default: 3112)
       host: 0.0.0.0                   # Host address to bind (default: 0.0.0.0)
       # auth_function: motia.stream.authenticate  # Reference to auth fn in motia.config.ts
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based    # "file_based" or "in_memory" (default: in_memory)
           file_path: ./data/stream_store  # Directory for file-based persistence
           # save_interval_ms: 5000    # Disk flush interval in ms (default: 5000)
 
-  # ── State Module ───────────────────────────────────────────────────────
+  # ── State worker (iii-state) ───────────────────────────────────────────
   # Key-value state storage grouped by namespace.
-  # Adapters: KvStore (file_based | in_memory), RedisAdapter
-  - class: modules::state::StateModule
+  # Adapters: kv (file_based | in_memory), redis, bridge
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based    # "file_based" or "in_memory" (default: in_memory)
           file_path: ./data/state_store.db  # Directory for file-based persistence
           # save_interval_ms: 5000    # Disk flush interval in ms (default: 5000)
 
-  # ── REST API Module ────────────────────────────────────────────────────
+  # ── REST API worker (iii-http) ─────────────────────────────────────────
   # Serves HTTP endpoints defined by step triggers.
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111                      # HTTP server port (default: 3111)
       host: 0.0.0.0                   # Host address to bind (default: 0.0.0.0)
@@ -152,12 +152,12 @@ modules:
           - DELETE
           - OPTIONS
 
-  # ── OpenTelemetry Module ───────────────────────────────────────────────
+  # ── OpenTelemetry worker (iii-observability) ───────────────────────────
   # Observability: distributed traces, metrics, and structured logs.
   # Exporter types — traces: "otlp", "memory", "both"
   #                  metrics: "memory", "otlp"
   #                  logs:    "memory", "otlp", "both"
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: true                   # Enable tracing (default: false)
       service_name: my-service        # Service name reported to OTEL collector
@@ -180,41 +180,41 @@ modules:
       # level: info                  # Engine log level: trace, debug, info, warn, error
       # format: default              # Log format: "default" (human-readable) or "json"
 
-  # ── Queue Module ───────────────────────────────────────────────────────
+  # ── Queue worker (iii-queue) ─────────────────────────────────────────────
   # Message queues for async step-to-step communication via enqueue().
-  # Adapters: BuiltinQueueAdapter, RedisAdapter, RabbitMQAdapter
-  - class: modules::queue::QueueModule
+  # Adapters: builtin, redis, rabbitmq
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::BuiltinQueueAdapter  # In-process queue (no external deps)
-        # For Redis:  class: modules::queue::RedisAdapter
-        #             config: { redis_url: "redis://localhost:6379" }
-        # For RabbitMQ: class: modules::queue::RabbitMQAdapter
-        #               config: { amqp_url: "amqp://localhost:5672" }
+        name: builtin  # In-process queue (no external deps)
+        # For Redis:     name: redis
+        #                config: { redis_url: "redis://localhost:6379" }
+        # For RabbitMQ:  name: rabbitmq
+        #                config: { amqp_url: "amqp://localhost:5672" }
 
-  # ── PubSub Module ─────────────────────────────────────────────────────
+  # ── PubSub worker (iii-pubsub) ───────────────────────────────────────────
   # Internal publish/subscribe messaging between engine components.
-  # Adapters: LocalAdapter, RedisAdapter
-  - class: modules::pubsub::PubSubModule
+  # Adapters: local, redis
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::LocalAdapter  # In-process pubsub (no external deps)
-        # For Redis: class: modules::pubsub::RedisAdapter
+        name: local  # In-process pubsub (no external deps)
+        # For Redis: name: redis
         #            config: { redis_url: "redis://localhost:6379" }
 
-  # ── Cron Module ────────────────────────────────────────────────────────
+  # ── Cron worker (iii-cron) ───────────────────────────────────────────────
   # Schedules and executes cron-based triggers.
-  # Adapters: KvCronAdapter, RedisCronAdapter
-  - class: modules::cron::CronModule
+  # Adapters: kv, redis
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter  # KV-based scheduler (no external deps)
-        # For Redis: class: modules::cron::RedisCronAdapter
+        name: kv  # KV-based scheduler (no external deps)
+        # For Redis: name: redis
         #            config: { redis_url: "redis://localhost:6379" }
 
-  # ── Exec Module ────────────────────────────────────────────────────────
+  # ── Exec worker (iii-exec) ───────────────────────────────────────────────
   # Manages the SDK process lifecycle. Watches files and restarts on change.
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:                          # Glob patterns to watch for hot-reload
         - steps/**/*.ts
@@ -251,11 +251,11 @@ Note: `motia.config.ts` is **not deleted** -- it is simplified. Remove the `defi
 
 ---
 
-## 2. Module System and Runtime
+## 2. JavaScript module system and runtime
 
-The new Motia **does not enforce a specific module system or runtime**. You are free to use CommonJS, ESM, Node.js, Bun, or any compatible runtime. The framework adapts to your project's setup.
+The new Motia **does not enforce a specific JavaScript module system or runtime**. You are free to use CommonJS, ESM, Node.js, Bun, or any compatible runtime. The framework adapts to your project's setup.
 
-### Runtime Support
+### Runtime support
 
 Motia now has first-class support for **Bun** in addition to Node.js. You can choose whichever runtime fits your project:
 
@@ -264,7 +264,7 @@ Motia now has first-class support for **Bun** in addition to Node.js. You can ch
 | Node.js | `npx motia dev` | `node dist/index-production.js` |
 | Bun | `bun run dist/index-dev.js` | `bun run --enable-source-maps dist/index-production.js` |
 
-### Module System
+### CommonJS vs ESM
 
 You can use either CommonJS or ESM -- the choice is yours. If you want to adopt ESM (recommended for Bun compatibility and modern tooling), update your project:
 
@@ -1049,7 +1049,7 @@ triggers: [
 ### Project Setup
 
 - [ ] Install the iii engine from [https://iii.dev](https://iii.dev)
-- [ ] Create `config.yaml` with module definitions (stream, state, api, queue, cron, exec)
+- [ ] Create `config.yaml` with worker definitions (iii-stream, iii-state, iii-http, iii-queue, iii-cron, iii-exec)
 - [ ] Create `motia.config.ts` for authentication hooks (if needed)
 - [ ] Simplify `motia.config.ts`: remove `defineConfig`, all plugin imports, and the `plugins` array; keep only auth hook exports
 - [ ] Delete `motia-workbench.json`
@@ -1101,7 +1101,7 @@ triggers: [
 ### Python (if applicable)
 
 - [ ] Install `motia` as a standalone Python package (npm/Node.js no longer required!)
-- [ ] Add a separate ExecModule entry in `config.yaml` for the Python runtime
+- [ ] Add a separate iii-exec worker entry in `config.yaml` for the Python runtime
 - [ ] Refer to the dedicated Python migration guide for step-level changes
 
 ### Workbench and Plugins
@@ -1127,24 +1127,24 @@ In the new Motia, **runtimes are fully independent**. There is a dedicated **Mot
 | Python execution | Spawned as child process by Node runtime | Independent process managed by iii engine |
 | Node.js required for Python? | Yes | **No** |
 | SDK | Single `motia` npm package handled both | Separate `motia-py` (Python) and `motia` (Node) packages |
-| Configuration | Shared with Node steps | Own `config.yaml` ExecModule entry pointing to the Python process |
+| Configuration | Shared with Node steps | Own `config.yaml` iii-exec worker entry pointing to the Python process |
 | File naming | `*_step.py` | `*_step.py` (unchanged) |
 | Package manager | pip / poetry | `uv` (recommended) |
 
 > **Recommended migration order:**
 > 1. Set up your Python project (`pyproject.toml` with `uv`) — see [Python Project Setup](#python-project-setup) below
-> 2. Add the Python ExecModule entry in `config.yaml` — see [Configuration](#1-configuration) and [Module System](#2-module-system-and-runtime) for full `config.yaml` structure
+> 2. Add the Python iii-exec worker entry in `config.yaml` — see [Configuration](#1-configuration) and [JavaScript module system and runtime](#2-javascript-module-system-and-runtime) for full `config.yaml` structure
 > 3. Rename step files (`*_step.py` → `*_step.py`)
 > 4. Migrate step configs and handlers one at a time (use the subsections below as reference)
 > 5. Verify with the [Python Migration Checklist](#python-migration-checklist) at the end of this section
 
 ### For Mixed Projects (Node + Python)
 
-If your project has both Node and Python steps, you now configure **separate ExecModule entries** in `config.yaml` -- one for each runtime:
+If your project has both Node and Python steps, you now configure **separate iii-exec worker entries** in `config.yaml` -- one for each runtime:
 
 ```yaml
-modules:
-  - class: modules::shell::ExecModule
+workers:
+  - name: iii-exec
     config:
       watch:                          # Glob patterns to watch for hot-reload
         - steps/**/*.ts
@@ -1153,7 +1153,7 @@ modules:
         - npx motia dev
         - bun run --enable-source-maps dist/index-dev.js
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       watch:                          # Glob patterns to watch for hot-reload
         - steps/**/*.py
@@ -1161,7 +1161,7 @@ modules:
         - uv run motia dev --dir steps
 ```
 
-> For the complete `config.yaml` structure including stream, state, API, queue, and cron adapter modules, see [Section 1: Configuration](#1-configuration) and [Section 2: Module System and Runtime](#2-module-system-and-runtime).
+> For the complete `config.yaml` structure including stream, state, API, queue, and cron workers and adapters, see [Section 1: Configuration](#1-configuration) and [Section 2: JavaScript module system and runtime](#2-javascript-module-system-and-runtime).
 
 ### Python Project Setup
 
@@ -2079,7 +2079,7 @@ async def handler(input_data: dict[str, Any], ctx: FlowContext[Any]) -> None:
 #### Project Setup
 - [ ] Create `pyproject.toml` with `motia[otel]`, `iii-sdk`, and `pydantic` dependencies
 - [ ] Run `uv sync` to install dependencies — Node.js is no longer required
-- [ ] Add a Python ExecModule entry in `config.yaml`
+- [ ] Add a Python iii-exec worker entry in `config.yaml`
 - [ ] Delete `motia.config.ts`, `package.json`, and `tsconfig.json` if this is a Python-only project (replaced by `config.yaml` and `pyproject.toml`)
 - [ ] Delete `motia-workbench.json` (replaced by iii Console — see [Section 13](#13-workbench-plugins-and-console))
 

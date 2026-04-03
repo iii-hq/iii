@@ -140,7 +140,7 @@ impl ConfigurableModule for CronCoreModule {
     type Config = CronModuleConfig;
     type Adapter = dyn CronSchedulerAdapter;
     type AdapterRegistration = super::registry::CronAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::cron::KvCronAdapter";
+    const DEFAULT_ADAPTER_NAME: &'static str = "kv";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CronSchedulerAdapter>>>> =
@@ -157,8 +157,8 @@ impl ConfigurableModule for CronCoreModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -167,7 +167,7 @@ impl ConfigurableModule for CronCoreModule {
 }
 
 crate::register_module!(
-    "modules::cron::CronModule",
+    "iii-cron",
     CronCoreModule,
     enabled_by_default = true
 );
@@ -184,10 +184,10 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn default_adapter_class() {
+    fn default_adapter_name() {
         assert_eq!(
-            CronCoreModule::DEFAULT_ADAPTER_CLASS,
-            "modules::cron::KvCronAdapter"
+            CronCoreModule::DEFAULT_ADAPTER_NAME,
+            "kv"
         );
     }
 
@@ -381,21 +381,21 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn adapter_class_from_config_none() {
+    fn adapter_name_from_config_none() {
         let config = super::super::config::CronModuleConfig::default();
-        assert!(CronCoreModule::adapter_class_from_config(&config).is_none());
+        assert!(CronCoreModule::adapter_name_from_config(&config).is_none());
     }
 
     #[test]
-    fn adapter_class_from_config_some() {
+    fn adapter_name_from_config_some() {
         let config = super::super::config::CronModuleConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "my::CronAdapter".to_string(),
+                name: "my::CronAdapter".to_string(),
                 config: None,
             }),
         };
         assert_eq!(
-            CronCoreModule::adapter_class_from_config(&config),
+            CronCoreModule::adapter_name_from_config(&config),
             Some("my::CronAdapter".to_string())
         );
     }
@@ -410,7 +410,7 @@ mod tests {
     fn adapter_config_from_config_some() {
         let config = super::super::config::CronModuleConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "my::Adapter".to_string(),
+                name: "my::Adapter".to_string(),
                 config: Some(json!({"interval": 60})),
             }),
         };
@@ -424,7 +424,7 @@ mod tests {
     fn adapter_config_from_config_adapter_without_config() {
         let config = super::super::config::CronModuleConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "my::Adapter".to_string(),
+                name: "my::Adapter".to_string(),
                 config: None,
             }),
         };

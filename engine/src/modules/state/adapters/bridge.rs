@@ -188,4 +188,4 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFutu
     })
 }
 
-crate::register_adapter!(<StateAdapterRegistration> "modules::state::adapters::Bridge", make_adapter);
+crate::register_adapter!(<StateAdapterRegistration> "bridge", make_adapter);

@@ -298,7 +298,7 @@ impl Module for BridgeClientModule {
 }
 
 crate::register_module!(
-    "modules::bridge_client::BridgeClientModule",
+    "iii-bridge",
     BridgeClientModule
 );
 

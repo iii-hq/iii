@@ -175,7 +175,7 @@ impl Module for HttpFunctionsModule {
 }
 
 crate::register_module!(
-    "modules::http_functions::HttpFunctionsModule",
+    "iii-http-functions",
     HttpFunctionsModule
 );
 

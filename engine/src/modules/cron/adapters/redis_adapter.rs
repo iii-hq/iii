@@ -72,7 +72,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> CronAdapterFutur
     })
 }
 
-crate::register_adapter!(<CronAdapterRegistration> "modules::cron::RedisCronAdapter", make_adapter);
+crate::register_adapter!(<CronAdapterRegistration> "redis", make_adapter);
 
 #[async_trait]
 impl CronSchedulerAdapter for RedisCronLock {

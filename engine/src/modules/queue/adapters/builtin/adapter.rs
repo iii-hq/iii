@@ -470,7 +470,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
 
 crate::register_adapter!(
     <QueueAdapterRegistration>
-    "modules::queue::BuiltinQueueAdapter",
+    "builtin",
     make_adapter
 );
 

@@ -197,7 +197,7 @@ async fn ws_handler(
     })
 }
 
-crate::register_module!("modules::worker::WorkerModule", WorkerModule, mandatory);
+crate::register_module!("iii-worker-manager", WorkerModule, mandatory);
 
 #[cfg(test)]
 mod tests {

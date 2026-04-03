@@ -6,7 +6,7 @@ description: 'Distributed key-value state management with reactive change trigge
 Distributed key-value state storage with scope-based organization and reactive triggers that fire on any state change.
 
 ```
-modules::state::StateModule
+iii-state
 ```
 
 ## Architecture
@@ -26,30 +26,31 @@ State is server-side key-value storage with trigger-based reactivity. Unlike str
 ## Sample Configuration
 
 ```yaml
-- class: modules::state::StateModule
-  config:
-    adapter:
-      class: modules::state::adapters::KvStore
-      config:
-        store_method: file_based
-        file_path: ./data/state_store
-        save_interval_ms: 5000
+workers:
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store
+          save_interval_ms: 5000
 ```
 
 ## Configuration
 
 <ResponseField name="adapter" type="Adapter">
-  The adapter to use for state persistence and distribution. Defaults to `modules::state::adapters::KvStore` when not specified.
+  The adapter to use for state persistence and distribution. Defaults to `kv` when not specified.
 </ResponseField>
 
 ## Adapters
 
-### modules::state::adapters::KvStore
+### kv
 
 Built-in key-value store. Supports both in-memory and file-based persistence.
 
 ```yaml
-class: modules::state::adapters::KvStore
+name: kv
 config:
   store_method: file_based
   file_path: ./data/state_store
@@ -70,12 +71,12 @@ config:
   Interval in milliseconds between automatic disk saves. Defaults to `5000`.
 </ResponseField>
 
-### modules::state::adapters::RedisAdapter
+### redis
 
 Uses Redis as the state backend.
 
 ```yaml
-class: modules::state::adapters::RedisAdapter
+name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -86,12 +87,12 @@ config:
   The URL of the Redis instance to use.
 </ResponseField>
 
-### modules::state::adapters::Bridge
+### bridge
 
 Forwards state operations to a remote III Engine instance via the Bridge Client.
 
 ```yaml
-class: modules::state::adapters::Bridge
+name: bridge
 ```
 
 ## Functions
@@ -226,7 +227,7 @@ class: modules::state::adapters::Bridge
 
 ## Trigger Type
 
-This module adds a new Trigger Type: `state`.
+The `iii-state` worker adds a new Trigger Type: `state`.
 
 When a state value is created, updated, or deleted, all registered `state` triggers are evaluated and fired if they match.
 

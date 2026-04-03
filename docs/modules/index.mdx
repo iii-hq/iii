@@ -1,55 +1,55 @@
 ---
-title: 'Core Modules'
-description: 'The modular building blocks of the iii architecture — engine, modules, and adapters.'
+title: 'Core Workers'
+description: 'The modular building blocks of the iii architecture — engine, workers, and adapters.'
 ---
 
-iii Architecture is very modular. Composed of a few Layers: Engine, Modules, Adapters.
+iii Architecture is very modular. Composed of a few layers: Engine, Workers, Adapters.
 
 Let's break down each layer:
 
 - **Engine**: The core of iii. It is the engine that powers the iii architecture.
-- **Modules**: The core modules that make up the iii architecture.
-- **Adapters**: The adapters that connect the iii architecture to the outside world. See [Adapters](/advanced/adapters) for details.
+- **Workers**: Built-in engine extensions you list under `workers:` in YAML (for example `iii-http`, `iii-stream`, `iii-queue`). Each entry uses `name:` for the worker type and optional `adapter.name` for its backend.
+- **Adapters**: Backends that connect those workers to external services. See [Adapters](/advanced/adapters) for details.
 
 ## Engine
 
-The engine is the orchestration layer. Responsible for connecting the modules to the workers.
+The engine is the orchestration layer. It loads configured workers, wires their adapters, and connects SDK workers over WebSocket.
 
-## Core Modules
+## Core Workers
 
-Built with Rust for exceptional speed and memory efficiency, Core Modules deliver top-tier performance.
+Built with Rust for exceptional speed and memory efficiency, core workers deliver top-tier performance.
 
-Examples of Modules:
+Examples (YAML `name:` values):
 
-- **HTTP Module**: Expose functions as HTTP endpoints.
-- **Stream Module**: Durable streams for real-time data subscriptions.
-- **Queue Module**: Topic-based message queuing with retries and DLQ.
-- **PubSub Module**: Topic-based publish/subscribe for real-time events.
-- **Cron Module**: Schedule functions with cron expressions.
-- **Observability Module**: Traces, metrics, logs, and alerts (OpenTelemetry).
+- **`iii-http`**: Expose functions as HTTP endpoints.
+- **`iii-stream`**: Durable streams for real-time data subscriptions.
+- **`iii-queue`**: Topic-based message queuing with retries and DLQ.
+- **`iii-pubsub`**: Topic-based publish/subscribe for real-time events.
+- **`iii-cron`**: Schedule functions with cron expressions.
+- **`iii-observability`**: Traces, metrics, logs, and alerts (OpenTelemetry).
 
-Within these modules, there's an Adapter Layer, where we can configure external services to be used as their backend.
-For example: in the Queue Module, you can configure Redis or RabbitMQ to manage queues.
+Within these workers, there is an adapter layer where you configure external services as their backend.
+For example: with `iii-queue`, you can use the `redis`, `rabbitmq`, or `builtin` adapter to manage queues.
 
 ## How to configure the Engine
 
-Let's use the Stream Module as an example. The following file is the main configuration file for iii.
-Add it to your project as `iii-config.yaml` and iii will automatically load the modules and adapters.
+Let's use `iii-stream` as an example. The following file is the main configuration file for iii.
+Add it to your project as `iii-config.yaml` and iii will automatically load the configured workers and adapters.
 
 ```yaml
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}
       host: 0.0.0.0
       adapter:
-        class: modules::stream::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
 
-In the example above, we're configuring only the Stream Module in the Engine.
+In the example above, we're configuring only the Stream worker in the Engine.
 We can configure the port to listen on and the host to listen on.
 
-We're also configuring the adapter to use for the Stream Module. In this case, we're using the `modules::stream::adapters::RedisAdapter`.
-We can configure the Redis URL to use for the RedisAdapter.
+We're also configuring the adapter to use for the Stream worker. In this case, we're using the `redis` adapter.
+We can configure the Redis URL to use for that adapter.

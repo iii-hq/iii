@@ -82,13 +82,13 @@ mod tests {
     fn deserialize_with_adapter() {
         let json = r#"{
             "adapter": {
-                "class": "my_adapter::StreamAdapter",
+                "name": "my_adapter::StreamAdapter",
                 "config": {"key": "value"}
             }
         }"#;
         let config: StreamModuleConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
-        assert_eq!(adapter.class, "my_adapter::StreamAdapter");
+        assert_eq!(adapter.name, "my_adapter::StreamAdapter");
         assert!(adapter.config.is_some());
     }
 

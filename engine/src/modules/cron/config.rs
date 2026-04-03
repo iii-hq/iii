@@ -33,19 +33,19 @@ mod tests {
 
     #[test]
     fn deserialize_with_adapter() {
-        let json = r#"{"adapter": {"class": "my::CronAdapter", "config": {"key": "val"}}}"#;
+        let json = r#"{"adapter": {"name": "my::CronAdapter", "config": {"key": "val"}}}"#;
         let config: CronModuleConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
-        assert_eq!(adapter.class, "my::CronAdapter");
+        assert_eq!(adapter.name, "my::CronAdapter");
         assert!(adapter.config.is_some());
     }
 
     #[test]
     fn deserialize_adapter_no_config() {
-        let json = r#"{"adapter": {"class": "cron::Adapter"}}"#;
+        let json = r#"{"adapter": {"name": "cron::Adapter"}}"#;
         let config: CronModuleConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
-        assert_eq!(adapter.class, "cron::Adapter");
+        assert_eq!(adapter.name, "cron::Adapter");
         assert!(adapter.config.is_none());
     }
 
@@ -60,14 +60,14 @@ mod tests {
     fn serialize_roundtrip() {
         let config = CronModuleConfig {
             adapter: Some(AdapterEntry {
-                class: "test::Adapter".to_string(),
+                name: "test::Adapter".to_string(),
                 config: Some(serde_json::json!({"interval": 60})),
             }),
         };
         let json_str = serde_json::to_string(&config).unwrap();
         let deserialized: CronModuleConfig = serde_json::from_str(&json_str).unwrap();
         let adapter = deserialized.adapter.unwrap();
-        assert_eq!(adapter.class, "test::Adapter");
+        assert_eq!(adapter.name, "test::Adapter");
         assert_eq!(adapter.config.unwrap()["interval"], 60);
     }
 }

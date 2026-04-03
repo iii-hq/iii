@@ -223,7 +223,7 @@ impl ConfigurableModule for StreamCoreModule {
     type Config = StreamModuleConfig;
     type Adapter = dyn StreamAdapter;
     type AdapterRegistration = super::registry::StreamAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::stream::adapters::KvStore";
+    const DEFAULT_ADAPTER_NAME: &'static str = "kv";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
@@ -240,8 +240,8 @@ impl ConfigurableModule for StreamCoreModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -827,7 +827,7 @@ impl StreamCoreModule {
 }
 
 crate::register_module!(
-    "modules::stream::StreamModule",
+    "iii-stream",
     StreamCoreModule,
     enabled_by_default = true
 );
@@ -899,7 +899,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             auth_function: None,
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "modules::stream::adapters::KvStore".to_string(),
+                name: "kv".to_string(),
                 config: None,
             }),
         };
@@ -1076,7 +1076,7 @@ mod tests {
             host: "127.0.0.1".to_string(),
             auth_function: None,
             adapter: Some(crate::modules::module::AdapterEntry {
-                class: "test-adapter".to_string(),
+                name: "test-adapter".to_string(),
                 config: None,
             }),
         };
@@ -1976,7 +1976,7 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 auth_function: None,
                 adapter: Some(crate::modules::module::AdapterEntry {
-                    class: "test-adapter".to_string(),
+                    name: "test-adapter".to_string(),
                     config: None,
                 }),
             },

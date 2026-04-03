@@ -28,8 +28,8 @@ mod tests {
 
     #[test]
     fn state_config_with_adapter() {
-        let json = json!({"adapter": {"class": "redis", "config": {"url": "redis://localhost"}}});
+        let json = json!({"adapter": {"name": "redis", "config": {"url": "redis://localhost"}}});
         let config: StateModuleConfig = serde_json::from_value(json).unwrap();
-        assert_eq!(config.adapter.unwrap().class, "redis");
+        assert_eq!(config.adapter.unwrap().name, "redis");
     }
 }

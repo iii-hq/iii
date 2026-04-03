@@ -1,12 +1,11 @@
-modules:
-  - class: modules::api::RestApiModule
+workers:
+  - name: iii-http
     config:
       host: 0.0.0.0
       port: 3111
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
 
-  - class: modules::observability::LoggingModule
+  - name: iii-observability
     config:
-      level: info
-      format: json
+      enabled: true

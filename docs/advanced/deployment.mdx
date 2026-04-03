@@ -47,23 +47,23 @@ iii --version
 
 ## Configuration File
 
-The engine uses a YAML configuration file to define active modules and their settings.
+The engine uses a YAML configuration file to define active workers (engine capabilities) and their settings.
 
 ### Basic Structure
 
 ```yaml
-modules:
-  - class: modules::api::RestApiModule
+workers:
+  - name: iii-http
     config:
       host: 0.0.0.0
       port: 3111
 
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       host: 0.0.0.0
       port: 3112
       adapter:
-        class: modules::stream::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: redis://localhost:6379
 ```
@@ -73,16 +73,16 @@ modules:
 Configuration supports environment variable expansion using `${VAR_NAME:default_value}`:
 
 ```yaml
-modules:
-  - class: modules::api::RestApiModule
+workers:
+  - name: iii-http
     config:
       host: ${API_HOST:127.0.0.1}
       port: ${API_PORT:3111}
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -211,21 +211,21 @@ See the [Nginx documentation](https://nginx.org/en/docs/) for SSL, header, and p
 Example configuration using built-in adapters:
 
 ```yaml
-modules:
-  - class: modules::api::RestApiModule
+workers:
+  - name: iii-http
     config:
       host: 0.0.0.0
       port: 3111
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: true
       exporter: memory
 ```
 
-For scale-out or production durability, modules such as Streams and Queue typically use external adapters such as Redis or RabbitMQ. See the [Configuration File](#configuration-file) section for examples.
+For scale-out or production durability, workers such as Streams and Queue typically use external adapters such as Redis or RabbitMQ. See the [Configuration File](#configuration-file) section for examples.
 
 ## Production Checklist
 
@@ -266,7 +266,7 @@ nc -zv 127.0.0.1 49134
 
 ## Built-in Defaults
 
-When you start the engine with `iii --use-default-config`, it loads the modules registered as enabled by default in the current build, including the core REST API, queue, cron, pub/sub, state, stream, and KV modules.
+When you start the engine with `iii --use-default-config`, it loads the workers registered as enabled by default in the current build, including the core REST API, queue, cron, pub/sub, state, stream, and KV-backed capabilities.
 
 Queue and Stream use their built-in adapters under this mode. For custom ports, observability, or production adapters such as Redis or RabbitMQ, provide an explicit `config.yaml`.
 
@@ -283,7 +283,7 @@ graph TD
     InitDefaultLog --> LoadDefaults[Load Built-in Defaults]
     Mode -->|No| InitConfigLog[Initialize Logging from Config]
     InitConfigLog --> LoadConfig[Load Config File]
-    LoadConfig -->|Success| ApplyConfig[Apply Modules]
+    LoadConfig -->|Success| ApplyConfig[Apply Workers]
     LoadConfig -->|Missing or invalid| ExitErr[Exit with error and hint]
 
     LoadDefaults --> ApplyConfig
@@ -298,7 +298,7 @@ When running multiple engine instances:
 
 1. **Redis Required**: Use Redis adapters for Queue, Cron, Streams, and State
 2. **Load Balancing**: Use a load balancer for API endpoints
-3. **Distributed Locking**: Cron module uses Redis locks to prevent duplicate execution
+3. **Distributed Locking**: The Cron worker (`iii-cron`) uses Redis locks to prevent duplicate execution
 4. **Session Affinity**: Not required - workers connect to any engine instance
 
 ```mermaid
@@ -322,7 +322,7 @@ graph LR
 Monitor engine health by checking:
 
 1. **WebSocket Port**: Engine listens on `127.0.0.1:49134` by default
-2. **Module Ports**: HTTP API (3111), Streams (3112)
+2. **HTTP and stream ports**: HTTP API (`iii-http`, 3111), Streams (`iii-stream`, 3112)
 3. **Redis Connection**: If using Redis adapters
 
 Example health check:
@@ -337,11 +337,11 @@ curl http://localhost:3111/health
 
 ## Logging
 
-Configure the observability module (traces, metrics, logs):
+Configure the Observability worker (`iii-observability`) (traces, metrics, logs):
 
 ```yaml
-modules:
-  - class: modules::observability::OtelModule
+workers:
+  - name: iii-observability
     config:
       enabled: true
       exporter: memory  # or otlp, both

@@ -6,33 +6,34 @@ description: 'Connect to another iii instance'
 Connects this III Engine instance to another III instance over WebSocket so you can expose local functions and forward calls to remote functions.
 
 ```
-modules::bridge_client::BridgeClientModule
+iii-bridge
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::bridge_client::BridgeClientModule
-  config:
-    url: ${REMOTE_III_URL:ws://0.0.0.0:49134}
-    service_id: bridge-client
-    service_name: bridge-client
-    expose:
-      - local_function: engine::log::info
-        remote_function: engine::log::info
+workers:
+  - name: iii-bridge
+    config:
+      url: ${REMOTE_III_URL:ws://0.0.0.0:49134}
+      service_id: bridge-client
+      service_name: bridge-client
+      expose:
+        - local_function: engine::log::info
+          remote_function: engine::log::info
 
-    forward:
-      - local_function: remote::state::get
-        remote_function: state::get
-        timeout_ms: 5000
+      forward:
+        - local_function: remote::state::get
+          remote_function: state::get
+          timeout_ms: 5000
 
-      - local_function: remote::state::set
-        remote_function: state::set
-        timeout_ms: 5000
+        - local_function: remote::state::set
+          remote_function: state::set
+          timeout_ms: 5000
 
-      - local_function: remote::state::delete
-        remote_function: state::delete
-        timeout_ms: 5000
+        - local_function: remote::state::delete
+          remote_function: state::delete
+          timeout_ms: 5000
 ```
 
 ## Configuration
@@ -42,7 +43,7 @@ modules::bridge_client::BridgeClientModule
 </ResponseField>
 
 <ResponseField name="service_id" type="string">
-  Service identifier to register with the remote instance. When set, the module registers the service on connect.
+  Service identifier to register with the remote instance. When set, the `iii-bridge` worker registers the service on connect.
 </ResponseField>
 
 <ResponseField name="service_name" type="string">

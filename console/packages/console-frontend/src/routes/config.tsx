@@ -209,10 +209,10 @@ function ConfigPage() {
     const yaml = `# iii Engine Configuration
 # Generated from Developer Console at ${new Date().toISOString()}
 
-modules:
+workers:
 ${modules
   .map(
-    (m) => `  - class: ${m.id}
+    (m) => `  - name: ${m.id}
     config:
       # Add module-specific configuration here
 `,
@@ -238,25 +238,25 @@ ${modules
     const sdkPort =
       endpoints.find((e) => e.name === 'SDK Bridge')?.url?.match(/:(\d+)/)?.[1] || '49134'
 
-    let modulesYaml = ''
+    let workersYaml = ''
 
     if (
       detectedModules.some((m) => m.id === 'streams') ||
       detectedTriggerHandlers.some((t) => t.id.includes('streams'))
     ) {
-      modulesYaml += `  - class: modules::streams::StreamModule
+      workersYaml += `  - name: iii-stream
     config:
       port: ${streamsPort}
       host: 127.0.0.1
       adapter:
-        class: modules::streams::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: redis://localhost:6379
 
 `
     }
 
-    modulesYaml += `  - class: modules::rest_api::RestApiModule
+    workersYaml += `  - name: iii-http
     config:
       port: ${apiPort}
       host: 127.0.0.1
@@ -265,10 +265,10 @@ ${modules
 `
 
     if (detectedTriggerHandlers.some((t) => t.id === 'cron')) {
-      modulesYaml += `  - class: modules::cron::CronModule
+      workersYaml += `  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::adapters::RedisCronAdapter
+        name: redis
         config:
           redis_url: redis://localhost:6379
 
@@ -276,17 +276,17 @@ ${modules
     }
 
     if (detectedTriggerHandlers.some((t) => t.id === 'event')) {
-      modulesYaml += `  - class: modules::event::EventModule
+      workersYaml += `  - name: iii-event
     config:
       adapter:
-        class: modules::event::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: redis://localhost:6379
 
 `
     }
 
-    modulesYaml += `  - class: modules::devtools::DevToolsModule
+    workersYaml += `  - name: iii-devtools
     config:
       # Runtime settings (enabled, api_prefix, metrics_enabled, metrics_interval)
       # are managed by the engine and may differ from defaults
@@ -298,11 +298,11 @@ ${modules
 # Based on detected runtime state from the engine API
 
 # ═══════════════════════════════════════════════════════════════
-# DETECTED MODULES
+# DETECTED WORKERS
 # ═══════════════════════════════════════════════════════════════
 
-modules:
-${modulesYaml}
+workers:
+${workersYaml}
 # ═══════════════════════════════════════════════════════════════
 # RUNTIME STATUS
 # ═══════════════════════════════════════════════════════════════

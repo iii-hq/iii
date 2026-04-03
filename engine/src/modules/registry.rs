@@ -13,20 +13,20 @@ use crate::{engine::Engine, modules::module::Module};
 pub type AdapterFuture<A> = Pin<Box<dyn Future<Output = anyhow::Result<Arc<A>>> + Send>>;
 
 pub struct AdapterRegistration<A: ?Sized + Send + Sync + 'static> {
-    pub class: &'static str,
+    pub name: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> AdapterFuture<A>,
 }
 
 pub trait AdapterRegistrationEntry<A: ?Sized + Send + Sync + 'static>:
     Send + Sync + 'static
 {
-    fn class(&self) -> &'static str;
+    fn name(&self) -> &'static str;
     fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> AdapterFuture<A>;
 }
 
 impl<A: ?Sized + Send + Sync + 'static> AdapterRegistrationEntry<A> for AdapterRegistration<A> {
-    fn class(&self) -> &'static str {
-        self.class
+    fn name(&self) -> &'static str {
+        self.name
     }
 
     fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> AdapterFuture<A> {
@@ -36,18 +36,18 @@ impl<A: ?Sized + Send + Sync + 'static> AdapterRegistrationEntry<A> for AdapterR
 
 #[macro_export]
 macro_rules! register_adapter {
-    (<$registration:path> $class:expr, $factory:expr) => {
+    (<$registration:path> $name:expr, $factory:expr) => {
         ::inventory::submit! {
             $registration {
-                class: $class,
+                name: $name,
                 factory: $factory,
             }
         }
     };
-    ($registration:path, $class:expr, $factory:expr) => {
+    ($registration:path, $name:expr, $factory:expr) => {
         ::inventory::submit! {
             $registration {
-                class: $class,
+                name: $name,
                 factory: $factory,
             }
         }
@@ -57,7 +57,7 @@ macro_rules! register_adapter {
 pub type ModuleFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Module>>> + Send>>;
 
 pub struct ModuleRegistration {
-    pub class: &'static str,
+    pub name: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> ModuleFuture,
     pub is_default: bool,
     pub mandatory: bool,
@@ -65,30 +65,30 @@ pub struct ModuleRegistration {
 
 #[macro_export]
 macro_rules! register_module {
-    ($class:expr, $module:ty, mandatory) => {
+    ($name:expr, $module:ty, mandatory) => {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
-                class: $class,
+                name: $name,
                 factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: true,
                 mandatory: true,
             }
         }
     };
-    ($class:expr, $module:ty, enabled_by_default = $enabled_by_default:expr) => {
+    ($name:expr, $module:ty, enabled_by_default = $enabled_by_default:expr) => {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
-                class: $class,
+                name: $name,
                 factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: $enabled_by_default,
                 mandatory: false,
             }
         }
     };
-    ($class:expr, $module:ty) => {
+    ($name:expr, $module:ty) => {
         ::inventory::submit! {
             $crate::modules::registry::ModuleRegistration {
-                class: $class,
+                name: $name,
                 factory: < $module as $crate::modules::module::Module >::make_module,
                 is_default: false,
                 mandatory: false,
@@ -110,13 +110,13 @@ mod tests {
     }
 
     #[test]
-    fn adapter_registration_class_and_factory() {
+    fn adapter_registration_name_and_factory() {
         let reg = AdapterRegistration::<dyn Send + Sync> {
-            class: "test-adapter",
+            name: "test-adapter",
             factory: dummy_adapter_factory,
         };
         assert_eq!(
-            AdapterRegistrationEntry::<dyn Send + Sync>::class(&reg),
+            AdapterRegistrationEntry::<dyn Send + Sync>::name(&reg),
             "test-adapter"
         );
         let _f = AdapterRegistrationEntry::<dyn Send + Sync>::factory(&reg);
@@ -129,12 +129,12 @@ mod tests {
     #[test]
     fn module_registration_fields() {
         let reg = ModuleRegistration {
-            class: "test-module",
+            name: "test-module",
             factory: dummy_module_factory,
             is_default: true,
             mandatory: false,
         };
-        assert_eq!(reg.class, "test-module");
+        assert_eq!(reg.name, "test-module");
         assert!(reg.is_default);
         assert!(!reg.mandatory);
     }

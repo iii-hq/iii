@@ -27,19 +27,14 @@ use crate::engine::Engine;
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     #[serde(default)]
-    pub modules: Vec<ModuleEntry>,
-    #[serde(default)]
     pub workers: Vec<ModuleEntry>,
 }
 
 impl EngineConfig {
     pub fn default_modules(self) -> Self {
-        let modules = default_module_entries();
+        let workers = default_module_entries();
 
-        Self {
-            modules,
-            workers: Vec::new(),
-        }
+        Self { workers }
     }
 
     pub(crate) fn expand_env_vars(yaml_content: &str) -> String {
@@ -94,8 +89,7 @@ impl EngineConfig {
     pub fn default_config() -> Self {
         tracing::info!("Using default config (no config file)");
         Self {
-            modules: default_module_entries(),
-            workers: Vec::new(),
+            workers: default_module_entries(),
         }
     }
 }
@@ -105,7 +99,8 @@ fn default_module_entries() -> Vec<ModuleEntry> {
         .into_iter()
         .filter(|registration| registration.is_default)
         .map(|registration| ModuleEntry {
-            class: registration.class.to_string(),
+            name: Some(registration.name.to_string()),
+            image: None,
             config: None,
         })
         .collect()
@@ -114,7 +109,10 @@ fn default_module_entries() -> Vec<ModuleEntry> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModuleEntry {
-    pub class: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default)]
     pub config: Option<Value>,
 }
@@ -162,7 +160,7 @@ impl ModuleRegistry {
             self.module_factories
                 .write()
                 .expect("RwLock poisoned")
-                .insert(registration.class.to_string(), info);
+                .insert(registration.name.to_string(), info);
         }
     }
 
@@ -173,7 +171,7 @@ impl ModuleRegistry {
     /// Registers a module by type
     ///
     /// The module must implement `Module`. The registry uses `M::create()` to create instances.
-    pub fn register<M: Module + 'static>(&self, class: &str) {
+    pub fn register<M: Module + 'static>(&self, name: &str) {
         let info = ModuleInfo {
             factory: Arc::new(|engine, config| Box::pin(M::create(engine, config))),
         };
@@ -181,35 +179,35 @@ impl ModuleRegistry {
         self.module_factories
             .write()
             .expect("RwLock poisoned")
-            .insert(class.to_string(), info);
+            .insert(name.to_string(), info);
     }
 
     /// Creates a module instance.
     ///
-    /// First checks the built-in registry. If the class is not found, falls back
-    /// to external module resolution: checks `iii.toml` for installed modules and
-    /// spawns the corresponding binary from `iii_modules/`.
+    /// First checks the built-in registry. If not found, falls back
+    /// to external module resolution: checks `iii.toml` for installed workers and
+    /// spawns the corresponding binary from `iii_workers/`.
     pub async fn create_module(
         self: &Arc<Self>,
-        class: &str,
+        name: &str,
         engine: Arc<Engine>,
         config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Module>> {
         // Try built-in registry first
         let factory = {
             let factories = self.module_factories.read().expect("RwLock poisoned");
-            factories.get(class).map(|info| info.factory.clone())
+            factories.get(name).map(|info| info.factory.clone())
         };
 
         if let Some(factory) = factory {
             return factory(engine, config).await;
         }
 
-        // Fallback: try external module from iii_modules/
-        if let Some(info) = super::external::resolve_external_module(class) {
+        // Fallback: try external module from iii_workers/
+        if let Some(info) = super::external::resolve_external_module(name) {
             tracing::info!(
                 "Resolved '{}' as external module '{}' ({})",
-                class,
+                name,
                 info.name,
                 info.binary_path.display()
             );
@@ -217,7 +215,7 @@ impl ModuleRegistry {
             return Ok(Box::new(module));
         }
 
-        Err(anyhow::anyhow!("Unknown module class: {}", class))
+        Err(anyhow::anyhow!("Unknown worker: {}", name))
     }
 
     // =========================================================================
@@ -238,16 +236,28 @@ impl Default for ModuleRegistry {
 }
 
 impl ModuleEntry {
+    /// Returns the lookup key for this entry (name or image).
+    pub fn lookup_key(&self) -> &str {
+        if let Some(ref name) = self.name {
+            name.as_str()
+        } else if let Some(ref image) = self.image {
+            image.as_str()
+        } else {
+            "<unknown>"
+        }
+    }
+
     /// Creates a module instance from this entry
     pub async fn create_module(
         &self,
         engine: Arc<Engine>,
         registry: &Arc<ModuleRegistry>,
     ) -> anyhow::Result<Box<dyn Module>> {
+        let key = self.lookup_key();
         registry
-            .create_module(&self.class, engine, self.config.clone())
+            .create_module(key, engine, self.config.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", self.class, e))
+            .map_err(|e| anyhow::anyhow!("Failed to create {}: {}", key, e))
     }
 }
 
@@ -278,8 +288,8 @@ impl ModuleEntry {
 /// Register custom module:
 /// ```ignore
 /// EngineBuilder::new()
-///     .register_module::<MyCustomModule>("my::CustomModule")
-///     .add_module("my::CustomModule", Some(json!({"key": "value"})))
+///     .register_module::<MyCustomModule>("my-custom-module")
+///     .add_module("my-custom-module", Some(json!({"key": "value"})))
 ///     .build().await?
 ///     .serve().await?;
 /// ```
@@ -311,23 +321,23 @@ impl EngineBuilder {
     ///
     /// This allows you to register a module implementation that can then be used
     /// via `add_module` or in the config file.
-    pub fn register_module<M: Module + 'static>(self, class: &str) -> Self {
-        self.registry.register::<M>(class);
+    pub fn register_module<M: Module + 'static>(self, name: &str) -> Self {
+        self.registry.register::<M>(name);
         self
     }
 
     /// Adds a custom module entry
-    pub fn add_module(mut self, class: &str, config: Option<Value>) -> Self {
+    pub fn add_module(mut self, name: &str, config: Option<Value>) -> Self {
         if self.config.is_none() {
             self.config = Some(EngineConfig {
-                modules: Vec::new(),
                 workers: Vec::new(),
             });
         }
 
         if let Some(ref mut cfg) = self.config {
-            cfg.modules.push(ModuleEntry {
-                class: class.to_string(),
+            cfg.workers.push(ModuleEntry {
+                name: Some(name.to_string()),
+                image: None,
                 config,
             });
         }
@@ -342,37 +352,37 @@ impl EngineBuilder {
         // This prevents panics in workers/invocation code that unconditionally calls get_engine_metrics().
         crate::modules::observability::metrics::ensure_default_meter();
 
-        // Merge workers into the modules processing pipeline
-        let mut modules = config.modules;
-        modules.extend(config.workers);
+        let mut workers = config.workers;
 
-        tracing::info!("Building engine with {} modules", modules.len());
-        let module_classes = modules
+        tracing::info!("Building engine with {} workers", workers.len());
+        let worker_names: HashSet<String> = workers
             .iter()
-            .map(|entry| entry.class.clone())
-            .collect::<HashSet<String>>();
+            .filter_map(|entry| entry.name.clone())
+            .collect();
 
         for registration in inventory::iter::<ModuleRegistration> {
-            if registration.mandatory && !module_classes.contains(registration.class) {
-                modules.push(ModuleEntry {
-                    class: registration.class.to_string(),
+            if registration.mandatory && !worker_names.contains(registration.name) {
+                workers.push(ModuleEntry {
+                    name: Some(registration.name.to_string()),
+                    image: None,
                     config: None,
                 });
             }
         }
 
         // Create modules using the registry
-        for entry in &modules {
-            tracing::debug!("Creating module: {}", entry.class);
+        for entry in &workers {
+            let key = entry.lookup_key();
+            tracing::debug!("Creating module: {}", key);
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)
                 .await
                 .map_err(|err| {
-                    anyhow::anyhow!("failed to create module '{}': {}", entry.class, err)
+                    anyhow::anyhow!("failed to create module '{}': {}", key, err)
                 })?;
-            tracing::debug!("Initializing module: {}", entry.class);
+            tracing::debug!("Initializing module: {}", key);
             module.initialize().await.map_err(|err| {
-                anyhow::anyhow!("failed to initialize module '{}': {}", entry.class, err)
+                anyhow::anyhow!("failed to initialize module '{}': {}", key, err)
             })?;
             module.register_functions(self.engine.clone());
             self.modules.push(Arc::from(module));
@@ -584,10 +594,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test_config.yaml");
         let mut file = std::fs::File::create(&path).unwrap();
-        writeln!(file, "modules: []").unwrap();
+        writeln!(file, "workers: []").unwrap();
 
         let config = EngineConfig::config_file(path.to_str().unwrap()).unwrap();
-        assert!(config.modules.is_empty());
+        assert!(config.workers.is_empty());
     }
 
     #[test]
@@ -701,15 +711,12 @@ mod tests {
 
     #[test]
     fn test_default_modules_returns_entries() {
-        // Verify default_module_entries returns a Vec of ModuleEntry
         let entries = default_module_entries();
-        // Each entry should have a non-empty class name
         for entry in &entries {
             assert!(
-                !entry.class.is_empty(),
-                "Module entry class should not be empty"
+                entry.name.as_ref().map_or(false, |n| !n.is_empty()),
+                "Module entry name should not be empty"
             );
-            // Default entries have no config
             assert!(
                 entry.config.is_none(),
                 "Default module entries should have no config"
@@ -719,17 +726,17 @@ mod tests {
 
     #[test]
     fn test_default_modules_keys() {
-        // Verify the module type keys are present (collected from inventory)
         let entries = default_module_entries();
-        let class_names: Vec<&str> = entries.iter().map(|e| e.class.as_str()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e.name.as_deref())
+            .collect();
 
-        // We cannot know exact modules at compile time since they come from inventory,
-        // but we can verify the structure is sound: no duplicates in class names
-        let unique_names: HashSet<&str> = class_names.iter().copied().collect();
+        let unique_names: HashSet<&str> = names.iter().copied().collect();
         assert_eq!(
-            class_names.len(),
+            names.len(),
             unique_names.len(),
-            "Default module entries should have unique class names"
+            "Default module entries should have unique names"
         );
     }
 
@@ -739,57 +746,51 @@ mod tests {
 
     #[test]
     fn test_config_yaml_parsing() {
-        // Parse a minimal valid YAML config string
         let yaml = r#"
-modules: []
+workers: []
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(config.modules.is_empty());
+        assert!(config.workers.is_empty());
     }
 
     #[test]
-    fn test_config_yaml_with_modules() {
-        // Parse config with modules section
+    fn test_config_yaml_with_workers() {
         let yaml = r#"
-modules:
-  - class: "my::TestModule"
+workers:
+  - name: "my-test-module"
     config:
       key: "value"
       count: 42
-  - class: "my::OtherModule"
+  - name: "my-other-module"
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.modules.len(), 2);
+        assert_eq!(config.workers.len(), 2);
 
-        // First module has class and config
-        assert_eq!(config.modules[0].class, "my::TestModule");
-        let cfg = config.modules[0].config.as_ref().unwrap();
+        assert_eq!(config.workers[0].name.as_deref(), Some("my-test-module"));
+        let cfg = config.workers[0].config.as_ref().unwrap();
         assert_eq!(cfg["key"], "value");
         assert_eq!(cfg["count"], 42);
 
-        // Second module has class but no config
-        assert_eq!(config.modules[1].class, "my::OtherModule");
-        assert!(config.modules[1].config.is_none());
+        assert_eq!(config.workers[1].name.as_deref(), Some("my-other-module"));
+        assert!(config.workers[1].config.is_none());
     }
 
     #[test]
     fn test_config_yaml_empty() {
-        // Parse empty/minimal YAML -- should use defaults
         let yaml = "{}";
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(config.modules.is_empty());
+        assert!(config.workers.is_empty());
     }
 
     #[test]
-    fn test_config_yaml_only_modules() {
-        // Parse YAML with only modules
+    fn test_config_yaml_only_workers() {
         let yaml = r#"
-modules:
-  - class: "test::Module"
+workers:
+  - name: "test-module"
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.modules.len(), 1);
-        assert_eq!(config.modules[0].class, "test::Module");
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name.as_deref(), Some("test-module"));
     }
 
     // =========================================================================
@@ -938,21 +939,29 @@ modules:
     #[test]
     fn test_module_entry_deserialize() {
         let yaml = r#"
-class: "my::Module"
+name: "my-module"
 config:
   key: "value"
 "#;
         let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(entry.class, "my::Module");
+        assert_eq!(entry.name.as_deref(), Some("my-module"));
         assert!(entry.config.is_some());
     }
 
     #[test]
     fn test_module_entry_deserialize_no_config() {
-        let yaml = r#"class: "my::Module""#;
+        let yaml = r#"name: "my-module""#;
         let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(entry.class, "my::Module");
+        assert_eq!(entry.name.as_deref(), Some("my-module"));
         assert!(entry.config.is_none());
+    }
+
+    #[test]
+    fn test_module_entry_deserialize_with_image() {
+        let yaml = r#"image: "docker.io/org/worker:latest""#;
+        let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(entry.name.is_none());
+        assert_eq!(entry.image.as_deref(), Some("docker.io/org/worker:latest"));
     }
 
     // =========================================================================
@@ -968,31 +977,31 @@ config:
 
     #[test]
     fn test_engine_builder_add_module_without_config() {
-        let builder = EngineBuilder::new().add_module("test::Module", None);
+        let builder = EngineBuilder::new().add_module("test-module", None);
         assert!(builder.config.is_some());
         let config = builder.config.unwrap();
-        assert_eq!(config.modules.len(), 1);
-        assert_eq!(config.modules[0].class, "test::Module");
-        assert!(config.modules[0].config.is_none());
+        assert_eq!(config.workers.len(), 1);
+        assert_eq!(config.workers[0].name.as_deref(), Some("test-module"));
+        assert!(config.workers[0].config.is_none());
     }
 
     #[test]
     fn test_engine_builder_add_module_with_config() {
         let builder = EngineBuilder::new()
-            .add_module("test::Module", Some(serde_json::json!({"key": "value"})));
+            .add_module("test-module", Some(serde_json::json!({"key": "value"})));
         let config = builder.config.unwrap();
-        assert_eq!(config.modules[0].config.as_ref().unwrap()["key"], "value");
+        assert_eq!(config.workers[0].config.as_ref().unwrap()["key"], "value");
     }
 
     #[test]
     fn test_engine_builder_add_multiple_modules() {
         let builder = EngineBuilder::new()
-            .add_module("test::ModA", None)
-            .add_module("test::ModB", Some(serde_json::json!({"port": 3000})));
+            .add_module("test-mod-a", None)
+            .add_module("test-mod-b", Some(serde_json::json!({"port": 3000})));
         let config = builder.config.unwrap();
-        assert_eq!(config.modules.len(), 2);
-        assert_eq!(config.modules[0].class, "test::ModA");
-        assert_eq!(config.modules[1].class, "test::ModB");
+        assert_eq!(config.workers.len(), 2);
+        assert_eq!(config.workers[0].name.as_deref(), Some("test-mod-a"));
+        assert_eq!(config.workers[1].name.as_deref(), Some("test-mod-b"));
     }
 
     // =========================================================================
@@ -1000,15 +1009,15 @@ config:
     // =========================================================================
 
     #[tokio::test]
-    async fn test_create_module_unknown_class_fails() {
+    async fn test_create_module_unknown_name_fails() {
         let registry = Arc::new(ModuleRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = registry
-            .create_module("nonexistent::Module", engine, None)
+            .create_module("nonexistent-module", engine, None)
             .await;
         assert!(result.is_err());
         let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Unknown module class"));
+        assert!(err_msg.contains("Unknown worker"));
     }
 
     #[tokio::test]
@@ -1049,7 +1058,8 @@ config:
     #[tokio::test]
     async fn test_module_entry_create_unknown_fails() {
         let entry = ModuleEntry {
-            class: "unknown::Module".to_string(),
+            name: Some("unknown-module".to_string()),
+            image: None,
             config: None,
         };
         let registry = Arc::new(ModuleRegistry::new());
@@ -1057,7 +1067,7 @@ config:
         let result = entry.create_module(engine, &registry).await;
         assert!(result.is_err());
         let err_msg = result.err().unwrap().to_string();
-        assert!(err_msg.contains("Failed to create unknown::Module"));
+        assert!(err_msg.contains("Failed to create unknown-module"));
     }
 
     // =========================================================================
@@ -1067,8 +1077,8 @@ config:
     #[test]
     fn test_config_yaml_module_with_complex_config() {
         let yaml = r#"
-modules:
-  - class: "my::Module"
+workers:
+  - name: "my-module"
     config:
       nested:
         deep: true
@@ -1078,8 +1088,8 @@ modules:
       number: 42
 "#;
         let config: EngineConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.modules.len(), 1);
-        let cfg = config.modules[0].config.as_ref().unwrap();
+        assert_eq!(config.workers.len(), 1);
+        let cfg = config.workers[0].config.as_ref().unwrap();
         assert_eq!(cfg["nested"]["deep"], true);
         assert_eq!(cfg["nested"]["items"][0], "a");
         assert_eq!(cfg["number"], 42);
@@ -1229,18 +1239,18 @@ modules:
     }
 
     #[tokio::test]
-    async fn engine_builder_reports_module_class_on_stream_bind_failure() {
+    async fn engine_builder_reports_module_name_on_stream_bind_failure() {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
         let port = occupied.local_addr().expect("local addr").port();
 
         let err = EngineBuilder::new()
             .add_module(
-                "modules::stream::StreamModule",
+                "iii-stream",
                 Some(serde_json::json!({
                     "host": "127.0.0.1",
                     "port": port,
                     "adapter": {
-                        "class": "modules::stream::adapters::KvStore"
+                        "name": "kv"
                     }
                 })),
             )
@@ -1251,7 +1261,7 @@ modules:
 
         let message = err.to_string();
         assert!(
-            message.contains("modules::stream::StreamModule"),
+            message.contains("iii-stream"),
             "unexpected error message: {message}"
         );
         assert!(

@@ -46,7 +46,7 @@ impl BenchRuntime {
 
         let builder = EngineBuilder::new()
             .add_module(
-                "modules::api::RestApiModule",
+                "iii-http",
                 Some(json!({
                     "host": "127.0.0.1",
                     "port": http_port,
@@ -54,7 +54,7 @@ impl BenchRuntime {
                 })),
             )
             .add_module(
-                "modules::worker::WorkerModule",
+                "iii-worker-manager",
                 Some(json!({
                     "port": ws_port,
                 })),

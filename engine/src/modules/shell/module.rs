@@ -66,7 +66,7 @@ impl Module for ExecCoreModule {
 }
 
 crate::register_module!(
-    "modules::shell::ExecModule",
+    "iii-exec",
     ExecCoreModule,
     enabled_by_default = false
 );

@@ -1,6 +1,6 @@
 ---
 title: 'Stream Real-Time Data'
-description: 'How to push live updates to connected clients using the Stream module.'
+description: 'How to push live updates to connected clients using the Stream worker (`iii-stream`).'
 ---
 
 ## Goal
@@ -9,20 +9,20 @@ Push real-time updates (chat messages, notifications, live dashboards) to connec
 
 ## Steps
 
-### 1. Enable the Stream module
+### 1. Enable the Stream worker (`iii-stream`)
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}
       host: localhost
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based  # Options: in_memory, file_based
           file_path: ./data/stream_store  # required for file_based
-        # class: modules::stream::adapters::RedisAdapter
+        # name: redis
         # config:
         #   redis_url: redis://localhost:6379
 ```

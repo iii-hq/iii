@@ -1,22 +1,22 @@
 ---
 title: 'Schedule a Cron Task'
-description: 'How to run a Function on a recurring schedule.'
+description: 'How to run a Function on a recurring schedule with the Cron worker (`iii-cron`).'
 ---
 
 ## Goal
 
-Run a Function at regular intervals (cleanup jobs, report generation, health checks) using the Cron module.
+Run a Function at regular intervals (cleanup jobs, report generation, health checks) using the Cron worker (`iii-cron`).
 
 ## Steps
 
-### 1. Enable the Cron module
+### 1. Enable the Cron worker (`iii-cron`)
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::cron::CronModule
+workers:
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv
 ```
 
 ### 2. Register the Function

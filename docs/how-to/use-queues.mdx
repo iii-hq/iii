@@ -18,8 +18,8 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
     Declare one or more named queues under `queue_configs` in your `iii-config.yaml`. Each queue has independent retry, concurrency, and ordering settings.
 
     ```yaml title="iii-config.yaml"
-    modules:
-      - class: modules::queue::QueueModule
+    workers:
+      - name: iii-queue
         config:
           queue_configs:
             default:
@@ -37,7 +37,7 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
               type: standard
               backoff_ms: 2000
           adapter:
-            class: modules::queue::BuiltinQueueAdapter
+            name: builtin
             config:
               store_method: file_based
               file_path: ./data/queue_store
@@ -46,7 +46,7 @@ Offload work to a named queue so it runs asynchronously with built-in retries, c
     You can define as many named queues as your system requires. Each queue name is referenced when enqueuing work.
 
     <Info title="Full configuration reference">
-      See the [Queue module reference](/modules/module-queue#queue-configuration) for every field, type, and default value.
+      See the [Queue worker reference](/modules/module-queue#queue-configuration) for every field, type, and default value.
     </Info>
   </Step>
 
@@ -382,8 +382,8 @@ An order API must respond fast. Payment processing is critical and must happen i
 **Queue configuration:**
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
+workers:
+  - name: iii-queue
     config:
       queue_configs:
         payment:
@@ -397,7 +397,7 @@ modules:
           type: standard
           backoff_ms: 2000
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based
           file_path: ./data/queue_store
@@ -1016,14 +1016,14 @@ The queue adapter determines where messages are stored and how they are distribu
 
 | Scenario | Recommended Adapter | Why |
 |----------|-------------------|-----|
-| Local development | `BuiltinQueueAdapter` (`in_memory`) | Zero dependencies, fast iteration |
-| Single-instance production | `BuiltinQueueAdapter` (`file_based`) | Durable across restarts, no external infra |
-| Multi-instance production | `RabbitMQAdapter` | Distributes messages across engine instances |
+| Local development | `builtin` (`in_memory`) | Zero dependencies, fast iteration |
+| Single-instance production | `builtin` (`file_based`) | Durable across restarts, no external infra |
+| Multi-instance production | `rabbitmq` | Distributes messages across engine instances |
 
 Regardless of which adapter you choose, retry semantics, concurrency enforcement, and FIFO ordering behave identically — the engine owns these behaviors, not the adapter.
 
 <Info title="Adapter details">
-  See the [Queue module reference](/modules/module-queue#adapters) for adapter configuration and the [adapter comparison table](/modules/module-queue#adapter-comparison) for a feature matrix.
+  See the [Queue worker reference](/modules/module-queue#adapters) for adapter configuration and the [adapter comparison table](/modules/module-queue#adapter-comparison) for a feature matrix.
 </Info>
 
 <Info title="RabbitMQ queue naming">
@@ -1041,7 +1041,7 @@ Regardless of which adapter you choose, retry semantics, concurrency enforcement
 | `backoff_ms` | `u64` | `1000` | Base retry backoff in milliseconds. Applied exponentially: `backoff_ms × 2^(attempt - 1)` |
 | `poll_interval_ms` | `u64` | `100` | Worker poll interval in milliseconds |
 
-For the full module configuration including adapter settings, see the [Queue module reference](/modules/module-queue#configuration).
+For the full queue worker (`iii-queue`) configuration including adapter settings, see the [Queue module reference](/modules/module-queue#configuration).
 
 ## Next Steps
 
@@ -1052,7 +1052,7 @@ For the full module configuration including adapter settings, see the [Queue mod
   <Card title="Dead Letter Queues" href="/how-to/dead-letter-queues" icon="skull">
     Handle and redrive failed queue messages
   </Card>
-  <Card title="Queue Module Reference" href="/modules/module-queue" icon="gear">
+  <Card title="Queue worker reference" href="/modules/module-queue" icon="gear">
     Full configuration reference for queues and adapters
   </Card>
   <Card title="Queue Architecture" href="/architecture/queues" icon="sitemap">

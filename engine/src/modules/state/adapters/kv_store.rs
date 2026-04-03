@@ -85,7 +85,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFutu
     )
 }
 
-crate::register_adapter!(<StateAdapterRegistration> "modules::state::adapters::KvStore", make_adapter);
+crate::register_adapter!(<StateAdapterRegistration> "kv", make_adapter);
 
 #[cfg(test)]
 mod tests {

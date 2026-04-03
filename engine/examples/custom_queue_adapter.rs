@@ -40,13 +40,13 @@ pub trait CustomQueueAdapter: Send + Sync + 'static {
 type CustomQueueAdapterFuture = AdapterFuture<dyn CustomQueueAdapter>;
 
 pub struct CustomQueueAdapterRegistration {
-    pub class: &'static str,
+    pub name: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> CustomQueueAdapterFuture,
 }
 
 impl AdapterRegistrationEntry<dyn CustomQueueAdapter> for CustomQueueAdapterRegistration {
-    fn class(&self) -> &'static str {
-        self.class
+    fn name(&self) -> &'static str {
+        self.name
     }
 
     fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomQueueAdapterFuture {
@@ -248,7 +248,7 @@ impl ConfigurableModule for CustomQueueModule {
     type Config = CustomQueueModuleConfig;
     type Adapter = dyn CustomQueueAdapter;
     type AdapterRegistration = CustomQueueAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "my::InMemoryQueueAdapter";
+    const DEFAULT_ADAPTER_NAME: &'static str = "my::InMemoryQueueAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomQueueAdapter>>>> =
@@ -264,8 +264,8 @@ impl ConfigurableModule for CustomQueueModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -319,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
             "my::CustomQueueModule",
             Some(serde_json::json!({
                 "adapter": {
-                    "class": "my::LoggingQueueAdapter",
+                    "name": "my::LoggingQueueAdapter",
                     "config": {
                         "inner_adapter": "my::InMemoryQueueAdapter"
                     }
@@ -342,10 +342,10 @@ async fn main() -> anyhow::Result<()> {
 // To use this module, you would add to config.yaml:
 // =============================================================================
 //
-// modules:
-//   - class: my::CustomQueueModule
+// workers:
+//   - name: my::CustomQueueModule
 //     config:
 //       adapter:
-//         class: my::LoggingQueueAdapter  # or my::InMemoryQueueAdapter
+//         name: my::LoggingQueueAdapter  # or my::InMemoryQueueAdapter
 //         config:
 //           inner_adapter: my::InMemoryQueueAdapter

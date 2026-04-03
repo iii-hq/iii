@@ -1,9 +1,9 @@
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49199
 
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       host: 0.0.0.0
       port: 49135
@@ -18,36 +18,36 @@ modules:
           - metadata:
               ew_public: true
 
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       port: ${STREAMS_PORT:3112}
       host: 0.0.0.0
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/stream_store
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based
           file_path: ./data/state_store.db
 
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       host: 0.0.0.0
       port: 3199
       default_timeout: 30000
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::LocalAdapter
+        name: local
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: ${OTEL_ENABLED:true}
       service_name: ${OTEL_SERVICE_NAME:iii-test}
@@ -67,7 +67,7 @@ modules:
       logs_sampling_ratio: ${OTEL_LOGS_SAMPLING_RATIO:1.0}
       logs_console_output: ${OTEL_LOGS_CONSOLE_OUTPUT:false}
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -105,9 +105,9 @@ modules:
           type: fifo
           message_group_field: group_id
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
 
-  - class: modules::http_functions::HttpFunctionsModule
+  - name: iii-http-functions
     config:
       security:
         url_allowlist:
@@ -116,7 +116,7 @@ modules:
         block_private_ips: false
         require_https: false
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv

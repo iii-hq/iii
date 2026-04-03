@@ -1,11 +1,11 @@
 ---
 title: 'Configure the Engine'
-description: 'Complete reference for iii-config.yaml with all modules, adapters, and options.'
+description: 'Complete reference for iii-config.yaml with all workers, adapters, and options.'
 ---
 
 ## Goal
 
-Configure iii functionality through its config file to enable modules, functionality,
+Configure iii functionality through its config file to enable workers, functionality,
 set up adapters, and customize behavior.
 
 ## Overview
@@ -13,7 +13,7 @@ set up adapters, and customize behavior.
 The config file controls:
 
 - **Engine settings** - WebSocket port for SDK connections
-- **Modules** - Features like HTTP endpoints, queues, state, cron, observability
+- **Workers** — Engine capabilities (HTTP, queues, state, cron, observability, etc.) listed under `workers:` in YAML
 - **Adapters** - Storage backends (file, memory, Redis, RabbitMQ, etc.)
 
 ## Specifying the config file
@@ -44,22 +44,22 @@ When doing development it is common to use built-in adapters with persistent `fi
 and non-persistent `in_memory` storage. 
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49134
 
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: file_based # or in_memory
           file_path: ./data/state_store
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -67,7 +67,7 @@ modules:
           concurrency: 5
           type: standard
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based # or in_memory
           file_path: ./data/queue_store
@@ -87,17 +87,17 @@ adapters that are built for purpose such as Redis, or RabbitMQ.
 
 ```yaml title="iii-config.yaml"
 port: ${III_PORT:49134}
-modules:
-  - class: modules::api::RestApiModule
+workers:
+  - name: iii-http
     config:
       port: ${HTTP_PORT:3111}
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL}
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -105,19 +105,19 @@ modules:
           concurrency: 5
           type: standard
       adapter:
-        class: modules::queue::RabbitMQAdapter
+        name: rabbitmq
         config:
           amqp_url: ${AMQP_URL}
-        # class: modules::queue::RedisAdapter
+        # name: redis
         # config:
         #   redis_url: ${REDIS_URL}
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::RedisCronAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL}
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: true
       exporter: otlp
@@ -132,19 +132,19 @@ modules:
   Engine WebSocket port for SDK/worker connections.
 </ResponseField>
 
-<ResponseField name="modules" type="array" required>
-  List of modules to enable. Each entry requires a `class` identifier and an optional `config` object.
+<ResponseField name="workers" type="array" required>
+  List of workers to enable. Each entry requires a `name` identifier (for example `iii-http`, `iii-queue`) and an optional `config` object.
 </ResponseField>
 
 ---
 
-### Modules
+### Workers
 
 <AccordionGroup>
 
-<Accordion title="REST API Module">
+<Accordion title="HTTP worker (`iii-http`)">
 
-**Class:** `modules::api::RestApiModule`
+**Name:** `iii-http`
 
 Exposes HTTP endpoints for triggers and the core API surface. Functions with HTTP triggers are served through this module.
 
@@ -180,9 +180,9 @@ Exposes HTTP endpoints for triggers and the core API surface. Functions with HTT
 
 </Accordion>
 
-<Accordion title="Stream Module">
+<Accordion title="Stream worker (`iii-stream`)">
 
-**Class:** `modules::stream::StreamModule`
+**Name:** `iii-stream`
 
 Real-time WebSocket pub/sub for live data streaming to clients. Clients connect via WebSocket to receive pushed updates on subscribed channels.
 
@@ -202,7 +202,7 @@ Real-time WebSocket pub/sub for live data streaming to clients. Clients connect 
   Storage backend for stream state (subscriptions, message history).
 
   <Expandable title="KvStore adapter">
-    **Class:** `modules::stream::adapters::KvStore`
+    **Name:** `kv`
 
     <ResponseField name="adapter.config.store_method" type="string" default="file_based">
       Storage mode. Options: `file_based` (persists to disk), `in_memory` (lost on restart).
@@ -218,7 +218,7 @@ Real-time WebSocket pub/sub for live data streaming to clients. Clients connect 
   </Expandable>
 
   <Expandable title="Redis adapter">
-    **Class:** `modules::stream::adapters::RedisAdapter`
+    **Name:** `redis`
 
     <ResponseField name="adapter.config.redis_url" type="string" required>
       Redis connection URL (e.g., `redis://localhost:6379`).
@@ -226,7 +226,7 @@ Real-time WebSocket pub/sub for live data streaming to clients. Clients connect 
   </Expandable>
 
   <Expandable title="Bridge adapter">
-    **Class:** `modules::stream::adapters::Bridge`
+    **Name:** `bridge`
 
     <ResponseField name="adapter.config.bridge_url" type="string" required>
       WebSocket URL of another iii engine instance for distributed streaming.
@@ -236,9 +236,9 @@ Real-time WebSocket pub/sub for live data streaming to clients. Clients connect 
 
 </Accordion>
 
-<Accordion title="State Module">
+<Accordion title="State worker (`iii-state`)">
 
-**Class:** `modules::state::StateModule`
+**Name:** `iii-state`
 
 Persistent key-value storage for function state across invocations. Functions use `ctx.state.get` / `ctx.state.set` to read and write stateful data.
 
@@ -246,7 +246,7 @@ Persistent key-value storage for function state across invocations. Functions us
   Storage backend for state data.
 
   <Expandable title="KvStore adapter">
-    **Class:** `modules::state::adapters::KvStore`
+    **Name:** `kv`
 
     <ResponseField name="adapter.config.store_method" type="string" default="file_based">
       Storage mode. Options: `file_based` (persists to disk), `in_memory` (lost on restart).
@@ -262,7 +262,7 @@ Persistent key-value storage for function state across invocations. Functions us
   </Expandable>
 
   <Expandable title="Redis adapter">
-    **Class:** `modules::state::adapters::RedisAdapter`
+    **Name:** `redis`
 
     <ResponseField name="adapter.config.redis_url" type="string" required>
       Redis connection URL (e.g., `redis://localhost:6379`).
@@ -270,7 +270,7 @@ Persistent key-value storage for function state across invocations. Functions us
   </Expandable>
 
   <Expandable title="Bridge adapter">
-    **Class:** `modules::state::adapters::Bridge`
+    **Name:** `bridge`
 
     <ResponseField name="adapter.config.bridge_url" type="string" required>
       WebSocket URL of another iii engine instance for forwarding state operations.
@@ -280,9 +280,9 @@ Persistent key-value storage for function state across invocations. Functions us
 
 </Accordion>
 
-<Accordion title="Queue Module">
+<Accordion title="Queue worker (`iii-queue`)">
 
-**Class:** `modules::queue::QueueModule`
+**Name:** `iii-queue`
 
 Background job processing with retries, dead-letter queues, and concurrency control. Functions enqueue jobs; subscribers process them asynchronously.
 
@@ -290,7 +290,7 @@ Background job processing with retries, dead-letter queues, and concurrency cont
   Job queue backend.
 
   <Expandable title="Built-in queue adapter">
-    **Class:** `modules::queue::BuiltinQueueAdapter`
+    **Name:** `builtin`
 
     <ResponseField name="adapter.config.max_attempts" type="integer" default="3">
       Maximum delivery attempts before moving to dead-letter queue.
@@ -326,7 +326,7 @@ Background job processing with retries, dead-letter queues, and concurrency cont
   </Expandable>
 
   <Expandable title="Redis adapter">
-    **Class:** `modules::queue::RedisAdapter`
+    **Name:** `redis`
 
     <ResponseField name="adapter.config.redis_url" type="string" required>
       Redis connection URL (e.g., `redis://localhost:6379`).
@@ -334,7 +334,7 @@ Background job processing with retries, dead-letter queues, and concurrency cont
   </Expandable>
 
   <Expandable title="Bridge adapter">
-    **Class:** `modules::queue::adapters::Bridge`
+    **Name:** `bridge`
 
     <ResponseField name="adapter.config.bridge_url" type="string" required>
       WebSocket URL of another iii engine instance for forwarding queue operations.
@@ -342,7 +342,7 @@ Background job processing with retries, dead-letter queues, and concurrency cont
   </Expandable>
 
   <Expandable title="RabbitMQ adapter">
-    **Class:** `modules::queue::RabbitMQAdapter`
+    **Name:** `rabbitmq`
 
     <ResponseField name="adapter.config.amqp_url" type="string" required>
       AMQP connection URL (e.g., `amqp://localhost:5672`).
@@ -364,9 +364,9 @@ Background job processing with retries, dead-letter queues, and concurrency cont
 
 </Accordion>
 
-<Accordion title="PubSub Module">
+<Accordion title="PubSub worker (`iii-pubsub`)">
 
-**Class:** `modules::pubsub::PubSubModule`
+**Name:** `iii-pubsub`
 
 In-process event fanout for decoupled function communication. Functions publish events; multiple subscribers receive them immediately.
 
@@ -374,13 +374,13 @@ In-process event fanout for decoupled function communication. Functions publish 
   PubSub backend.
 
   <Expandable title="Local adapter">
-    **Class:** `modules::pubsub::LocalAdapter`
+    **Name:** `local`
 
     In-process pub/sub. Events don't cross engine instances. No additional config required.
   </Expandable>
 
   <Expandable title="Redis adapter">
-    **Class:** `modules::pubsub::RedisAdapter`
+    **Name:** `redis`
 
     Distributed pub/sub across multiple engine instances.
 
@@ -392,9 +392,9 @@ In-process event fanout for decoupled function communication. Functions publish 
 
 </Accordion>
 
-<Accordion title="Cron Module">
+<Accordion title="Cron worker (`iii-cron`)">
 
-**Class:** `modules::cron::CronModule`
+**Name:** `iii-cron`
 
 Time-based job scheduling using cron expressions. Functions with cron triggers execute on schedule.
 
@@ -402,12 +402,12 @@ Time-based job scheduling using cron expressions. Functions with cron triggers e
   Cron scheduling backend.
 
   <Expandable title="KV-based cron adapter">
-    **Class:** `modules::cron::KvCronAdapter`
+    **Name:** `kv`
 
     Uses local KV store for distributed lock coordination.
 
     <Warning>
-      Local locks only prevent duplicates within the same process. Multiple engine instances may execute the same cron job. Use `RedisCronAdapter` for true distributed locking.
+      Local locks only prevent duplicates within the same process. Multiple engine instances may execute the same cron job. Use the `redis` adapter for true distributed locking.
     </Warning>
 
     <ResponseField name="adapter.config.lock_ttl_ms" type="integer" default="30000">
@@ -432,7 +432,7 @@ Time-based job scheduling using cron expressions. Functions with cron triggers e
   </Expandable>
 
   <Expandable title="Redis cron adapter">
-    **Class:** `modules::cron::RedisCronAdapter`
+    **Name:** `redis`
 
     True distributed locking across engine instances.
 
@@ -444,9 +444,9 @@ Time-based job scheduling using cron expressions. Functions with cron triggers e
 
 </Accordion>
 
-<Accordion title="Observability Module">
+<Accordion title="Observability worker (`iii-observability`)">
 
-**Class:** `modules::observability::OtelModule`
+**Name:** `iii-observability`
 
 OpenTelemetry tracing, metrics, logs, and alerting. Provides visibility into function execution, performance, and errors.
 
@@ -621,9 +621,9 @@ OpenTelemetry tracing, metrics, logs, and alerting. Provides visibility into fun
 
 </Accordion>
 
-<Accordion title="HTTP Functions Module">
+<Accordion title="HTTP Functions worker (`iii-http-functions`)">
 
-**Class:** `modules::http_functions::HttpFunctionsModule`
+**Name:** `iii-http-functions`
 
 Enables HTTP-invoked functions (outbound HTTP calls from the engine). Required for functions registered with `HttpInvocationConfig`. The engine makes the HTTP request on behalf of the function and enforces URL security policies.
 
@@ -651,9 +651,9 @@ Enables HTTP-invoked functions (outbound HTTP calls from the engine). Required f
 
 </Accordion>
 
-<Accordion title="Exec Module">
+<Accordion title="Exec worker (`iii-exec`)">
 
-**Class:** `modules::shell::ExecModule`
+**Name:** `iii-exec`
 
 Spawns external processes (SDK workers) and watches for file changes. Useful for setups where workers need to run alongside the engine on the same host, or from frameworks like Motia.
 
@@ -667,7 +667,7 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
 
 ```yaml
 # Example: run Python SDK worker
-- class: modules::shell::ExecModule
+- name: iii-exec
   config:
     watch:
       - ./steps
@@ -675,7 +675,7 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
       - motia-py
 
 # Example: run Node.js SDK worker
-- class: modules::shell::ExecModule
+- name: iii-exec
   config:
     watch:
       - ./steps
@@ -686,9 +686,9 @@ Spawns external processes (SDK workers) and watches for file changes. Useful for
 
 </Accordion>
 
-<Accordion title="Bridge Client Module">
+<Accordion title="Bridge client worker (`iii-bridge`)">
 
-**Class:** `modules::bridge_client::BridgeClientModule`
+**Name:** `iii-bridge`
 
 Connects this engine to a remote iii instance for cross-instance function invocation. Enables distributed architectures and function federation.
 
@@ -738,9 +738,9 @@ Connects this engine to a remote iii instance for cross-instance function invoca
 
 </Accordion>
 
-<Accordion title="Telemetry Module">
+<Accordion title="Telemetry worker (`iii-telemetry`)">
 
-**Class:** `modules::telemetry::TelemetryModule`
+**Name:** `iii-telemetry`
 
 Anonymous product usage analytics for iii development. Helps the team understand usage patterns and prioritize features.
 

@@ -776,7 +776,7 @@ impl Module for TelemetryModule {
 }
 
 crate::register_module!(
-    "modules::telemetry::TelemetryModule",
+    "iii-telemetry",
     TelemetryModule,
     mandatory
 );

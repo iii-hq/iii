@@ -165,7 +165,7 @@ impl ConfigurableModule for PubSubCoreModule {
     type Config = PubSubModuleConfig;
     type Adapter = dyn PubSubAdapter;
     type AdapterRegistration = super::registry::PubSubAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "modules::pubsub::LocalAdapter";
+    const DEFAULT_ADAPTER_NAME: &'static str = "local";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn PubSubAdapter>>>> =
@@ -181,8 +181,8 @@ impl ConfigurableModule for PubSubCoreModule {
         }
     }
 
-    fn adapter_class_from_config(config: &Self::Config) -> Option<String> {
-        config.adapter.as_ref().map(|a| a.class.clone())
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
     }
 
     fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
@@ -191,7 +191,7 @@ impl ConfigurableModule for PubSubCoreModule {
 }
 
 crate::register_module!(
-    "modules::pubsub::PubSubModule",
+    "iii-pubsub",
     PubSubCoreModule,
     enabled_by_default = true
 );
@@ -368,16 +368,16 @@ mod tests {
     }
 
     #[test]
-    fn adapter_class_and_config_are_read_from_config() {
+    fn adapter_name_and_config_are_read_from_config() {
         let config = PubSubModuleConfig {
             adapter: Some(AdapterEntry {
-                class: "custom::PubSub".to_string(),
+                name: "custom::PubSub".to_string(),
                 config: Some(json!({ "url": "redis://example" })),
             }),
         };
 
         assert_eq!(
-            PubSubCoreModule::adapter_class_from_config(&config).as_deref(),
+            PubSubCoreModule::adapter_name_from_config(&config).as_deref(),
             Some("custom::PubSub")
         );
         assert_eq!(

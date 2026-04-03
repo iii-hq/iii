@@ -469,7 +469,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StateAdapterFutu
     })
 }
 
-crate::register_adapter!(<StateAdapterRegistration> "modules::state::adapters::RedisAdapter", make_adapter);
+crate::register_adapter!(<StateAdapterRegistration> "redis", make_adapter);
 
 #[cfg(test)]
 mod tests {

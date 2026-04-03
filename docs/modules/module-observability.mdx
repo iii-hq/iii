@@ -6,30 +6,31 @@ description: 'OpenTelemetry-based traces, metrics, logs, alerts, and sampling.'
 Full OpenTelemetry observability for III Engine: distributed tracing, structured logs, performance metrics, alert rules, and trace sampling — all queryable via built-in functions.
 
 ```
-modules::observability::OtelModule
+iii-observability
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::observability::OtelModule
-  config:
-    enabled: true
-    service_name: my-service
-    service_version: 1.0.0
-    exporter: memory
-    metrics_enabled: true
-    logs_enabled: true
-    memory_max_spans: 1000
-    sampling_ratio: 1.0
-    alerts:
-      - name: high-error-rate
-        metric: iii.invocations.error
-        threshold: 10
-        operator: ">"
-        window_seconds: 60
-        action:
-          type: log
+workers:
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: my-service
+      service_version: 1.0.0
+      exporter: memory
+      metrics_enabled: true
+      logs_enabled: true
+      memory_max_spans: 1000
+      sampling_ratio: 1.0
+      alerts:
+        - name: high-error-rate
+          metric: iii.invocations.error
+          threshold: 10
+          operator: ">"
+          window_seconds: 60
+          action:
+            type: log
 ```
 
 ## Configuration
@@ -123,7 +124,7 @@ modules::observability::OtelModule
 </ResponseField>
 
 <ResponseField name="logs_enabled" type="boolean">
-  Whether structured log storage is enabled. When not set, log storage is always initialized by the module.
+  Whether structured log storage is enabled. When not set, log storage is always initialized by the `iii-observability` worker.
 </ResponseField>
 
 <ResponseField name="logs_exporter" type="string">
@@ -406,7 +407,7 @@ modules::observability::OtelModule
 
 ## Trigger Type
 
-This module adds a new Trigger Type: `log`.
+The `iii-observability` worker adds a new Trigger Type: `log`.
 
 Register a function to react to log entries as they are produced.
 

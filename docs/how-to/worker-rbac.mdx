@@ -1,19 +1,19 @@
 ---
 title: 'Worker RBAC'
-description: 'Configure the WorkerModule to enable role-based access control for workers connecting over WebSocket.'
+description: 'Configure the worker manager (`iii-worker-manager`) to enable role-based access control for workers connecting over WebSocket.'
 ---
 
-This guide walks you through enabling RBAC on your iii instance using the **WorkerModule**. Workers connect via WebSocket to a dedicated RBAC port, separate from the internal engine bridge.
+This guide walks you through enabling RBAC on your iii instance using the **worker manager** (`iii-worker-manager`). Workers connect via WebSocket to a dedicated RBAC port, separate from the internal engine bridge.
 
-## 1. Add RBAC Config to the WorkerModule
+## 1. Add RBAC Config to the worker manager
 
-Add a `modules::worker::WorkerModule` entry with RBAC config to your engine config file. At minimum you need a port and an `expose_functions` list inside `rbac`:
+Add an `iii-worker-manager` entry with RBAC config to your engine config file. At minimum you need a port and an `expose_functions` list inside `rbac`:
 
 ```yaml title="iii-config.yaml"
-modules:
-  # ... your existing modules ...
+workers:
+  # ... your existing workers ...
 
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       port: 49135
       rbac:
@@ -143,8 +143,8 @@ iii.register_function(RegisterFunction::new_async(
 Update your config to reference the auth function:
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49135
       rbac:
@@ -235,8 +235,8 @@ iii.register_function(RegisterFunction::new_async(
 Add it to your config. Note that `middleware_function_id` sits at the `config` level, not inside `rbac`:
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49135
       middleware_function_id: my-project::middleware-function
@@ -346,8 +346,8 @@ The auth function controls trigger access via two fields in `AuthResult`:
 For fine-grained control, configure hook functions that are called before each registration:
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49135
       middleware_function_id: my-project::middleware-function
@@ -496,12 +496,16 @@ iii.register_function((msg, |input: Value| async move {
 Then filter by metadata in your config:
 
 ```yaml title="iii-config.yaml"
-rbac:
-  expose_functions:
-    - metadata:
-        public: true
-    - metadata:
-        tier: "free"
+workers:
+  - name: iii-worker-manager
+    config:
+      port: 49135
+      rbac:
+        expose_functions:
+          - metadata:
+              public: true
+          - metadata:
+              tier: "free"
 ```
 
 ## Types Reference
@@ -578,16 +582,16 @@ Input passed to the `on_function_registration_function_id` hook. Return `true` t
 ## Full Example Config
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49134
 
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       port: 3112
 
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       host: 0.0.0.0
       port: 49135

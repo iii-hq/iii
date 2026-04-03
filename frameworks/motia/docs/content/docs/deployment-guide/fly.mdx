@@ -60,7 +60,7 @@ motia build
 ```
 
 <Callout type="warn">
-This Docker recipe is for JavaScript/TypeScript projects built with `motia build` (Bun runtime image). For Python-only or mixed projects, use the Python runtime pattern from the [Docker guide](/docs/deployment-guide/docker#python-steps) and include a Python ExecModule alongside the Node/Bun runtime as needed.
+This Docker recipe is for JavaScript/TypeScript projects built with `motia build` (Bun runtime image). For Python-only or mixed projects, use the Python runtime pattern from the [Docker guide](/docs/deployment-guide/docker#python-steps) and include a Python iii-exec worker alongside the Node/Bun runtime as needed.
 </Callout>
 
 Then create a `Dockerfile` in your project root:
@@ -176,66 +176,66 @@ Your app is live at: `https://my-motia-app.fly.dev`
 
 ### Configure the iii Engine
 
-The iii engine is the entrypoint for your Motia app in production. It reads `config.yaml` and manages all modules. Make sure your `config.yaml` binds to `0.0.0.0` -- Fly needs your app to listen on all interfaces.
+The iii engine is the entrypoint for your Motia app in production. It reads `config.yaml` and manages all workers. Make sure your `config.yaml` binds to `0.0.0.0` -- Fly needs your app to listen on all interfaces.
 
-Use `${PORT:3111}` in your REST API module config so Fly can inject its port if needed.
+Use `${PORT:3111}` in your iii-http worker config so Fly can inject its port if needed.
 
 ### Configure Redis
 
-Create a production `config.yaml` with Redis adapters for all modules. Fly sets `REDIS_URL` when you run `flyctl redis create`:
+Create a production `config.yaml` with Redis adapters for all workers that need them. Fly sets `REDIS_URL` when you run `flyctl redis create`:
 
 ```yaml title="config-production.yaml"
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:3112}
       host: 0.0.0.0
       auth_function: motia.streams.authenticate
       adapter:
-        class: modules::stream::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: ${PORT:3111}
       host: 0.0.0.0
       default_timeout: 30000
       concurrency_request_limit: 1024
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: true
       service_name: ${OTEL_SERVICE_NAME:my-app}
       exporter: otlp
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       exec:
         - bun run --enable-source-maps dist/index-production.js
@@ -291,10 +291,10 @@ flyctl apps destroy my-motia-app
 
 **Symptom:** Fly warns "app is not listening on the expected address"
 
-**Fix:** Make sure your `config.yaml` REST API module uses `host: 0.0.0.0` and the port matches `fly.toml`'s `internal_port`:
+**Fix:** Make sure your `config.yaml` iii-http worker uses `host: 0.0.0.0` and the port matches `fly.toml`'s `internal_port`:
 
 ```yaml
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: ${PORT:3111}
       host: 0.0.0.0

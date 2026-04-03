@@ -1,15 +1,15 @@
-modules:
-  - class: modules::stream::StreamModule
+workers:
+  - name: iii-stream
     config:
       port: ${STREAM_PORT:31112}
       host: 0.0.0.0
       auth_function: motia.stream.authenticate
       adapter:
-        class: modules::stream::adapters::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       port: 3111
       host: 0.0.0.0
@@ -25,26 +25,25 @@ modules:
           - DELETE
           - OPTIONS
 
-  - class: modules::observability::LoggingModule
+  - name: iii-observability
     config:
-      level: ${RUST_LOG:info}
-      format: json
+      enabled: true
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
       adapter:
-        class: modules::queue::RedisAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::RedisCronAdapter
+        name: redis
         config:
           redis_url: ${REDIS_URL:redis://localhost:6379}
 
-  - class: modules::shell::ExecModule
+  - name: iii-exec
     config:
       exec:
         - bun run --enable-source-maps index-production.js

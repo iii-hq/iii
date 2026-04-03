@@ -122,19 +122,19 @@ mod tests {
     #[test]
     fn deserialize_with_adapter() {
         let json =
-            r#"{"adapter": {"class": "my::QueueAdapter", "config": {"url": "redis://localhost"}}}"#;
+            r#"{"adapter": {"name": "my::QueueAdapter", "config": {"url": "redis://localhost"}}}"#;
         let config: QueueModuleConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
-        assert_eq!(adapter.class, "my::QueueAdapter");
+        assert_eq!(adapter.name, "my::QueueAdapter");
         assert!(adapter.config.is_some());
     }
 
     #[test]
     fn deserialize_adapter_no_config() {
-        let json = r#"{"adapter": {"class": "my::QueueAdapter"}}"#;
+        let json = r#"{"adapter": {"name": "my::QueueAdapter"}}"#;
         let config: QueueModuleConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
-        assert_eq!(adapter.class, "my::QueueAdapter");
+        assert_eq!(adapter.name, "my::QueueAdapter");
         assert!(adapter.config.is_none());
     }
 
@@ -184,7 +184,7 @@ queue_configs:
     type: fifo
     message_group_field: transaction_id
 adapter:
-  class: modules::queue::BuiltinQueueAdapter
+  name: builtin
 "#;
         let config: QueueModuleConfig = serde_yaml::from_str(yaml).unwrap();
 
@@ -208,7 +208,7 @@ adapter:
         );
 
         let adapter = config.adapter.unwrap();
-        assert_eq!(adapter.class, "modules::queue::BuiltinQueueAdapter");
+        assert_eq!(adapter.name, "builtin");
     }
 
     #[test]

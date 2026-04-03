@@ -1,29 +1,29 @@
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49199
 
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       port: 3112
       host: 0.0.0.0
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: file_based # Options: in_memory, file_based
           file_path: ./data/stream_store
-  - class: modules::api::RestApiModule
+  - name: iii-http
     config:
       host: 0.0.0.0
       port: 3199
       default_timeout: 30000
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::LocalAdapter
+        name: local
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       # === Core Configuration (Required) ===
       enabled: ${OTEL_ENABLED:true}
@@ -129,10 +129,10 @@ modules:
       #     action: webhook
       #     webhook_url: https://hooks.slack.com/services/xxx
 
-  - class: modules::queue::QueueModule
+  - name: iii-queue
     config:
         adapter:
-          class: modules::queue::BuiltinQueueAdapter
+          name: builtin
           config:
             # QueueConfig
             mode: concurrent        # concurrent | fifo
@@ -150,7 +150,7 @@ modules:
             channel_size: 256
 
 
-  - class: modules::cron::CronModule
+  - name: iii-cron
     config:
       adapter:
-        class: modules::cron::KvCronAdapter
+        name: kv

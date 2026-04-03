@@ -86,8 +86,8 @@ the job moves to the DLQ. Enqueue work to this function by calling `trigger()` w
 `TriggerAction.Enqueue` from wherever the order is created.
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
+workers:
+  - name: iii-queue
     config:
       queue_configs:
         payment_dlq:
@@ -96,7 +96,7 @@ modules:
           concurrency: 2
           type: standard
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
 ```
 
 <Tabs>

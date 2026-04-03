@@ -1,29 +1,29 @@
-modules:
-  - class: modules::worker::WorkerModule
+workers:
+  - name: iii-worker-manager
     config:
       port: 49198
 
-  - class: modules::stream::StreamModule
+  - name: iii-stream
     config:
       port: 3113
       host: 0.0.0.0
       adapter:
-        class: modules::stream::adapters::KvStore
+        name: kv
         config:
           store_method: in_memory
 
-  - class: modules::state::StateModule
+  - name: iii-state
     config:
       adapter:
-        class: modules::state::adapters::KvStore
+        name: kv
         config:
           store_method: in_memory
 
-  - class: modules::pubsub::PubSubModule
+  - name: iii-pubsub
     config:
       adapter:
-        class: modules::pubsub::LocalAdapter
+        name: local
 
-  - class: modules::observability::OtelModule
+  - name: iii-observability
     config:
       enabled: false

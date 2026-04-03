@@ -6,38 +6,39 @@ description: 'Schedule functions with cron expressions.'
 Schedule functions to execute at specific times using cron expressions.
 
 ```
-modules::cron::CronModule
+iii-cron
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::cron::CronModule
-  config:
-    adapter:
-      class: modules::cron::RedisCronAdapter
-      config:
-        redis_url: ${REDIS_URL:redis://localhost:6379}
+workers:
+  - name: iii-cron
+    config:
+      adapter:
+        name: redis
+        config:
+          redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
 
 ## Configuration
 
 <ResponseField name="adapter" type="Adapter">
-  The adapter to use for distributed locking. Defaults to `modules::cron::KvCronAdapter`. Use `RedisCronAdapter` for multi-instance deployments.
+  The adapter to use for distributed locking. Defaults to `kv`. Use `redis` for multi-instance deployments.
 </ResponseField>
 
 ## Adapters
 
-### modules::cron::KvCronAdapter
+### kv
 
 <Warning>
-  When running multiple engine instances, `KvCronAdapter` does not provide reliable distributed locking — the same cron job may execute on every instance simultaneously. Use `RedisCronAdapter` for multi-instance deployments.
+  When running multiple engine instances, the `kv` adapter does not provide reliable distributed locking — the same cron job may execute on every instance simultaneously. Use `redis` for multi-instance deployments.
 </Warning>
 
 Built-in adapter using process-local locks. Suitable for single-instance deployments.
 
 ```yaml
-class: modules::cron::KvCronAdapter
+name: kv
 config:
   lock_ttl_ms: 30000
   lock_index: cron_locks
@@ -52,12 +53,12 @@ config:
   Key namespace used to store lock entries in the KV store. Defaults to `cron_locks`.
 </ResponseField>
 
-### modules::cron::RedisCronAdapter
+### redis
 
 Uses Redis for distributed locking to prevent duplicate job execution across multiple engine instances.
 
 ```yaml
-class: modules::cron::RedisCronAdapter
+name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -70,7 +71,7 @@ config:
 
 ## Trigger Type
 
-This Module adds a new Trigger Type: `cron`.
+The `iii-cron` worker adds a new Trigger Type: `cron`.
 
 <Expandable title="Trigger Config">
   <ResponseField name="expression" type="string" required>
@@ -173,7 +174,7 @@ iii.register_trigger(RegisterTriggerInput {
 
 ## Distributed Execution
 
-When running multiple iii Engine instances, the Cron Module uses distributed locking to ensure jobs execute only once:
+When running multiple iii Engine instances, the `iii-cron` worker uses distributed locking to ensure jobs execute only once:
 
 ```mermaid
 sequenceDiagram

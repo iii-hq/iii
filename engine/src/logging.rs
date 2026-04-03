@@ -8,6 +8,7 @@ use std::{fmt, sync::OnceLock};
 
 use chrono::Local;
 use colored::Colorize;
+use serde_json::Value;
 use tracing::{
     Event, Level, Subscriber,
     field::{Field, Visit},
@@ -278,8 +279,10 @@ static TRACING: OnceLock<()> = OnceLock::new();
 /// Extract OTEL configuration from the OtelModule config in the config file.
 /// This is called early during startup, before modules are loaded.
 fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
-    let otel_module_name = "modules::observability::OtelModule";
-    let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
+    let otel_module_cfg = cfg
+        .workers
+        .iter()
+        .find(|m| m.name.as_deref() == Some("iii-observability"));
 
     let mut otel_cfg = OtelConfig::default();
 
@@ -338,19 +341,26 @@ pub fn init_log_from_config(config_path: Option<&str>) {
             println!("Parsed config file: {}", path);
 
             let otel_cfg = extract_otel_config(&cfg);
-            let otel_module_name = "modules::observability::OtelModule";
-            let otel_module_cfg = cfg.modules.iter().find(|m| m.class == otel_module_name);
+            let otel_module_cfg = cfg
+                .workers
+                .iter()
+                .find(|m| m.name.as_deref() == Some("iii-observability"));
 
             let log_level = otel_module_cfg
                 .and_then(|m| m.config.as_ref())
-                .and_then(|c| c.get("level").or_else(|| c.get("log_level")))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .and_then(|c: &Value| {
+                    c.get("level")
+                        .or_else(|| c.get("log_level"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
                 .unwrap_or_else(|| "info".to_string());
 
             let log_format = otel_module_cfg
                 .and_then(|m| m.config.as_ref())
-                .and_then(|c| c.get("format"))
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .and_then(|c: &Value| c.get("format"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
                 .unwrap_or_else(|| "default".to_string());
 
             println!(
@@ -846,8 +856,9 @@ mod tests {
     #[test]
     fn test_extract_otel_config_reads_observability_module_config() {
         let cfg = EngineConfig {
-            modules: vec![ModuleEntry {
-                class: "modules::observability::OtelModule".to_string(),
+            workers: vec![ModuleEntry {
+                name: Some("iii-observability".to_string()),
+                image: None,
                 config: Some(serde_json::json!({
                     "enabled": true,
                     "service_name": "test-service",
@@ -857,7 +868,6 @@ mod tests {
                     "memory_max_spans": 321
                 })),
             }],
-            workers: vec![],
         };
 
         let otel = extract_otel_config(&cfg);
@@ -872,7 +882,6 @@ mod tests {
     #[test]
     fn test_extract_otel_config_defaults_when_module_missing() {
         let cfg = EngineConfig {
-            modules: vec![],
             workers: vec![],
         };
 
@@ -894,8 +903,8 @@ mod tests {
         ));
 
         let yaml = r#"
-modules:
-  - class: modules::observability::OtelModule
+workers:
+  - name: iii-observability
     config:
       enabled: false
       level: debug

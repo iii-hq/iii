@@ -440,7 +440,7 @@ impl TriggerRegistrator for RestApiCoreModule {
 }
 
 crate::register_module!(
-    "modules::api::RestApiModule",
+    "iii-http",
     RestApiCoreModule,
     enabled_by_default = true
 );

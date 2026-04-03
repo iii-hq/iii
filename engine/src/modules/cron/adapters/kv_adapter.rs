@@ -72,7 +72,7 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> CronAdapterFutur
     })
 }
 
-crate::register_adapter!(<CronAdapterRegistration> "modules::cron::KvCronAdapter", make_adapter);
+crate::register_adapter!(<CronAdapterRegistration> "kv", make_adapter);
 
 #[async_trait]
 impl CronSchedulerAdapter for KvCronLock {

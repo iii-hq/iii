@@ -3,19 +3,19 @@ title: 'Worker'
 description: 'WebSocket bridge that connects SDK workers to the engine for function registration, invocation, and trigger management.'
 ---
 
-The Worker Module opens a WebSocket server that SDK workers connect to. Through this connection, workers register functions, receive invocations, manage triggers, and stream data via channels.
+The `iii-worker-manager` worker opens a WebSocket server that SDK workers connect to. Through this connection, workers register functions, receive invocations, manage triggers, and stream data via channels.
 
 ```
-modules::worker::WorkerModule
+iii-worker-manager
 ```
 
-The `WorkerModule` is **mandatory** and always loaded. When explicitly configured in the `modules:` section, the first entry's `port` sets the main engine WebSocket port. Additional entries start separate listeners — optionally with an `rbac` block for role-based access control. Multiple `WorkerModule` entries are supported.
+The worker manager (`iii-worker-manager`) is **mandatory** and always loaded. When explicitly configured in the `workers:` section, the first entry's `port` sets the main engine WebSocket port. Additional entries start separate listeners — optionally with an `rbac` block for role-based access control. Multiple `iii-worker-manager` entries are supported.
 
 ## Architecture
 
 ```mermaid
 graph LR
-    SDK[SDK Worker] -->|WebSocket| WM[WorkerModule]
+    SDK[SDK Worker] -->|WebSocket| WM[iii-worker-manager]
     WM -->|Register| FR[Function Registry]
     WM -->|Register| TR[Trigger Registry]
     WM -->|Invoke| Engine[Engine]
@@ -28,14 +28,14 @@ Workers connect via WebSocket, send a registration message with metadata (runtim
 ## Sample Configuration
 
 ```yaml title="iii-config.yaml"
-modules:
+workers:
   # Main engine port — workers connect here by default
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       port: 49134
 
   # Additional listener with middleware and RBAC
-  - class: modules::worker::WorkerModule
+  - name: iii-worker-manager
     config:
       host: 0.0.0.0
       port: 49135
@@ -59,7 +59,7 @@ modules:
 Top-level fields on the `config` object:
 
 <ResponseField name="port" type="number" required>
-  The port to listen on. For the first `WorkerModule` entry this sets the main engine WebSocket port. Additional entries start separate listeners. Defaults to `49134`.
+  The port to listen on. For the first `iii-worker-manager` entry this sets the main engine WebSocket port. Additional entries start separate listeners. Defaults to `49134`.
 </ResponseField>
 
 <ResponseField name="host" type="string">
@@ -101,7 +101,7 @@ The middleware is responsible for calling the target function (e.g. via `trigger
 
 ## RBAC
 
-When the `rbac` block is present in a `WorkerModule` entry, that listener enforces role-based access control: authentication on connect, function invocation authorization, and gated function/trigger registration.
+When the `rbac` block is present in an `iii-worker-manager` entry, that listener enforces role-based access control: authentication on connect, function invocation authorization, and gated function/trigger registration.
 
 <Info title="How-to guidance">
   For step-by-step instructions on enabling RBAC, writing auth and middleware functions, and connecting workers, see [Worker RBAC](../how-to/worker-rbac).
@@ -273,13 +273,13 @@ Triggers registered by a session are automatically cleaned up when the worker di
 
 ## Channel Support
 
-Channels work on every `WorkerModule` port. The module mounts the channel WebSocket endpoint at `/ws/channels/{channel_id}` on the same port.
+Channels work on every `iii-worker-manager` port. The worker mounts the channel WebSocket endpoint at `/ws/channels/{channel_id}` on the same port.
 
 SDK workers can use `createChannel()` without any changes. On RBAC ports, the `engine::channels::create` function is automatically whitelisted to enable channel creation. Channel data transfer uses the standard channel WebSocket endpoint, which validates access via the `access_key` capability token.
 
 ## Protocol
 
-The Worker module uses the standard iii engine WebSocket protocol. SDK workers connect with `registerWorker()` and everything works out of the box.
+The `iii-worker-manager` worker uses the standard iii engine WebSocket protocol. SDK workers connect with `registerWorker()` and everything works out of the box.
 
 ### Worker to Server
 

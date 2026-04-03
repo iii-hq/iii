@@ -42,7 +42,7 @@ fn make_adapter(engine: Arc<Engine>, _config: Option<Value>) -> PubSubAdapterFut
     )
 }
 
-crate::register_adapter!(<PubSubAdapterRegistration> "modules::pubsub::LocalAdapter", make_adapter);
+crate::register_adapter!(<PubSubAdapterRegistration> "local", make_adapter);
 
 #[async_trait]
 impl PubSubAdapter for LocalAdapter {

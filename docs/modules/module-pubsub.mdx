@@ -6,40 +6,41 @@ description: 'Topic-based publish/subscribe messaging for real-time event distri
 Topic-based publish/subscribe messaging for broadcasting events to multiple subscribers in real time.
 
 ```
-modules::pubsub::PubSubModule
+iii-pubsub
 ```
 
 ## Sample Configuration
 
 ```yaml
-- class: modules::pubsub::PubSubModule
-  config:
-    adapter:
-      class: modules::pubsub::LocalAdapter
+workers:
+  - name: iii-pubsub
+    config:
+      adapter:
+        name: local
 ```
 
 ## Configuration
 
 <ResponseField name="adapter" type="Adapter">
-  The adapter to use for pub/sub distribution. Defaults to `modules::pubsub::LocalAdapter` (in-memory) when not specified.
+  The adapter to use for pub/sub distribution. Defaults to `local` (in-memory) when not specified.
 </ResponseField>
 
 ## Adapters
 
-### modules::pubsub::LocalAdapter
+### local
 
 In-memory pub/sub using broadcast channels. Messages are delivered only to subscribers running in the same engine process. No external dependencies required.
 
 ```yaml
-class: modules::pubsub::LocalAdapter
+name: local
 ```
 
-### modules::pubsub::RedisAdapter
+### redis
 
 Uses Redis Pub/Sub as the backend. Enables event delivery across multiple engine instances.
 
 ```yaml
-class: modules::pubsub::RedisAdapter
+name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -74,7 +75,7 @@ config:
 
 ## Trigger Type
 
-This module adds a new Trigger Type: `subscribe`.
+The `iii-pubsub` worker adds a new Trigger Type: `subscribe`.
 
 <Expandable title="Trigger Config">
   <ResponseField name="topic" type="string" required>

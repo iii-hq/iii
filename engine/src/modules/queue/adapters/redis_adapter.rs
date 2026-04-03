@@ -86,7 +86,7 @@ fn make_adapter(engine: Arc<Engine>, config: Option<Value>) -> QueueAdapterFutur
     })
 }
 
-crate::register_adapter!(<QueueAdapterRegistration> "modules::queue::RedisAdapter", make_adapter);
+crate::register_adapter!(<QueueAdapterRegistration> "redis", make_adapter);
 
 #[async_trait]
 impl QueueAdapter for RedisAdapter {
