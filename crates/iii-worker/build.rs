@@ -30,8 +30,7 @@ fn main() {
                 .expect("failed to copy libkrunfw from engine/firmware/");
             println!("cargo:rerun-if-changed={}", fw_path.display());
         } else {
-            std::fs::write(&libkrunfw_dest, [0u8])
-                .expect("failed to write libkrunfw placeholder");
+            std::fs::write(&libkrunfw_dest, [0u8]).expect("failed to write libkrunfw placeholder");
         }
     } else {
         std::fs::write(&libkrunfw_dest, [0u8]).expect("failed to write libkrunfw placeholder");

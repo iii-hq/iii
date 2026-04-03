@@ -159,21 +159,33 @@ mod tests {
     #[test]
     fn test_has_init_without_embed_feature() {
         // Test builds don't use embed-init, so INIT_BYTES is empty.
-        assert!(!has_init(), "has_init() should be false without embed-init feature");
+        assert!(
+            !has_init(),
+            "has_init() should be false without embed-init feature"
+        );
         assert!(INIT_BYTES.is_empty());
     }
 
     #[test]
     fn test_init_stat_zero_size_without_embed() {
         let st = init_stat();
-        assert_eq!(st.st_size, 0, "st_size should be 0 when INIT_BYTES is empty");
-        assert_eq!(st.st_blocks, 0, "st_blocks should be 0 when INIT_BYTES is empty");
+        assert_eq!(
+            st.st_size, 0,
+            "st_size should be 0 when INIT_BYTES is empty"
+        );
+        assert_eq!(
+            st.st_blocks, 0,
+            "st_blocks should be 0 when INIT_BYTES is empty"
+        );
     }
 
     #[test]
     fn test_create_init_file_succeeds_without_embed() {
         let file = create_init_file();
-        assert!(file.is_ok(), "create_init_file should succeed even without embedded init");
+        assert!(
+            file.is_ok(),
+            "create_init_file should succeed even without embedded init"
+        );
     }
 
     #[test]

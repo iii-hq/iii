@@ -129,11 +129,12 @@ fn mount_cgroup2() -> Result<(), InitError> {
     )?;
 
     // Enable memory controller for child cgroups.
-    std::fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+memory")
-        .map_err(|e| InitError::WriteFile {
+    std::fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+memory").map_err(|e| {
+        InitError::WriteFile {
             path: "/sys/fs/cgroup/cgroup.subtree_control".into(),
             source: e,
-        })?;
+        }
+    })?;
 
     // Create a child cgroup for the worker process.
     mkdir_ignore_exists("/sys/fs/cgroup/worker")?;

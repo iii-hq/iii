@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::constants::{libkrunfw_filename, III_INIT_FILENAME};
+use super::constants::{III_INIT_FILENAME, libkrunfw_filename};
 
 /// Returns the platform-correct environment variable name for the shared library search path.
 ///
@@ -120,7 +120,11 @@ fn is_cargo_target_dir(dir: &Path) -> bool {
         return false;
     }
 
-    match dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+    match dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
         // Direct child of `target/` → this is `target/release` or `target/debug`
         Some("target") => true,
         // Otherwise it's `target/{triple}/release` or some other path → not matched
@@ -229,7 +233,9 @@ mod tests {
 
     #[test]
     fn test_is_cargo_target_dir_release() {
-        assert!(is_cargo_target_dir(Path::new("/some/project/target/release")));
+        assert!(is_cargo_target_dir(Path::new(
+            "/some/project/target/release"
+        )));
     }
 
     #[test]

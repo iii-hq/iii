@@ -11,13 +11,13 @@
 use std::{
     io,
     os::fd::{AsRawFd, FromRawFd},
-    sync::{atomic::Ordering, Arc, RwLock},
+    sync::{Arc, RwLock, atomic::Ordering},
 };
 
-use super::{inode, PassthroughFs};
+use super::{PassthroughFs, inode};
 use crate::{
-    backends::shared::{handle_table::HandleData, init_binary, platform},
     Context, DirEntry, Entry, OpenOptions,
+    backends::shared::{handle_table::HandleData, init_binary, platform},
 };
 
 //--------------------------------------------------------------------------------------------------

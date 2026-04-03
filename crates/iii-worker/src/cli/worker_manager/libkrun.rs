@@ -12,8 +12,8 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::path::Component;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Maximum total extracted size (10 GiB).
@@ -306,7 +306,6 @@ async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<
     Ok(())
 }
 
-
 fn rootfs_search_paths(name: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -458,8 +457,7 @@ pub async fn run_dev(
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(|| {
-            nix::unistd::setsid()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            nix::unistd::setsid().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             Ok(())
         });
     }
@@ -657,8 +655,9 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         if !iii_filesystem::init::has_init() {
             let init_path = crate::cli::firmware::download::ensure_init_binary().await?;
             let dest = worker_rootfs.join("init.krun");
-            std::fs::copy(&init_path, &dest)
-                .with_context(|| format!("failed to copy iii-init to rootfs: {}", dest.display()))?;
+            std::fs::copy(&init_path, &dest).with_context(|| {
+                format!("failed to copy iii-init to rootfs: {}", dest.display())
+            })?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -769,8 +768,8 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
                     nix::libc::kill(pid as i32, nix::libc::SIGTERM);
                 }
 
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_secs(timeout_secs as u64);
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
                 while std::time::Instant::now() < deadline {
                     unsafe {
                         nix::libc::waitpid(pid as i32, std::ptr::null_mut(), nix::libc::WNOHANG);
@@ -979,12 +978,137 @@ mod tests {
     #[test]
     fn test_logs_dir_path() {
         let dir = LibkrunAdapter::logs_dir("test-worker");
-        assert!(dir.to_string_lossy().contains(".iii/managed/test-worker/logs"));
+        assert!(
+            dir.to_string_lossy()
+                .contains(".iii/managed/test-worker/logs")
+        );
     }
 
     #[test]
     fn test_libkrun_available_returns_bool() {
         let result = libkrun_available();
         let _ = result;
+    }
+
+    // --- 4.1: k8s_mem_to_mib Mi ---
+    #[test]
+    fn test_k8s_mem_to_mib_mi() {
+        assert_eq!(k8s_mem_to_mib("512Mi"), Some("512".to_string()));
+    }
+
+    // --- 4.2: k8s_mem_to_mib Gi ---
+    #[test]
+    fn test_k8s_mem_to_mib_gi() {
+        assert_eq!(k8s_mem_to_mib("2Gi"), Some("2048".to_string()));
+    }
+
+    // --- 4.3: k8s_mem_to_mib Ki ---
+    #[test]
+    fn test_k8s_mem_to_mib_ki() {
+        assert_eq!(k8s_mem_to_mib("1048576Ki"), Some("1024".to_string()));
+    }
+
+    // --- 4.4: k8s_mem_to_mib bytes ---
+    #[test]
+    fn test_k8s_mem_to_mib_bytes() {
+        assert_eq!(k8s_mem_to_mib("2147483648"), Some("2048".to_string()));
+    }
+
+    // --- 4.5: k8s_mem_to_mib invalid ---
+    #[test]
+    fn test_k8s_mem_to_mib_invalid() {
+        assert_eq!(k8s_mem_to_mib("not-a-number"), None);
+    }
+
+    // --- 4.6: read_oci_entrypoint with entrypoint and cmd ---
+    #[test]
+    fn test_read_oci_entrypoint_with_entrypoint_and_cmd() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {"Entrypoint": ["/usr/bin/node"], "Cmd": ["server.js"]}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        let result = read_oci_entrypoint(dir.path()).unwrap();
+        assert_eq!(result.0, "/usr/bin/node");
+        assert_eq!(result.1, vec!["server.js"]);
+    }
+
+    // --- 4.7: read_oci_entrypoint cmd only ---
+    #[test]
+    fn test_read_oci_entrypoint_cmd_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {"Cmd": ["/bin/sh", "-c", "echo hello"]}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        let result = read_oci_entrypoint(dir.path()).unwrap();
+        assert_eq!(result.0, "/bin/sh");
+        assert_eq!(result.1, vec!["-c", "echo hello"]);
+    }
+
+    // --- 4.8: read_oci_entrypoint none ---
+    #[test]
+    fn test_read_oci_entrypoint_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        assert!(read_oci_entrypoint(dir.path()).is_none());
+    }
+
+    // --- 4.9: read_oci_env ---
+    #[test]
+    fn test_read_oci_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {"Env": ["PATH=/usr/bin", "HOME=/root"]}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        let env = read_oci_env(dir.path());
+        assert_eq!(
+            env,
+            vec![
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("HOME".to_string(), "/root".to_string()),
+            ]
+        );
+    }
+
+    // --- 4.10: read_oci_env missing ---
+    #[test]
+    fn test_read_oci_env_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{"config": {}}"#;
+        std::fs::write(dir.path().join(".oci-config.json"), config).unwrap();
+        let env = read_oci_env(dir.path());
+        assert!(env.is_empty());
+    }
+
+    // --- 4.11: expected_oci_arch ---
+    #[test]
+    fn test_expected_oci_arch() {
+        let arch = expected_oci_arch();
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(arch, "arm64");
+        } else if cfg!(target_arch = "x86_64") {
+            assert_eq!(arch, "amd64");
+        }
+    }
+
+    // --- 4.12: oci_image_for_python ---
+    #[test]
+    fn test_oci_image_for_python() {
+        let (image, name) = oci_image_for_language("python");
+        assert_eq!(image, "docker.io/microsandbox/python");
+        assert_eq!(name, "python");
+    }
+
+    // --- 4.13: oci_image_for_rust ---
+    #[test]
+    fn test_oci_image_for_rust() {
+        let (image, name) = oci_image_for_language("rust");
+        assert_eq!(image, "docker.io/library/rust:slim-bookworm");
+        assert_eq!(name, "rust");
+    }
+
+    // --- 4.14: oci_image_for_go ---
+    #[test]
+    fn test_oci_image_for_go() {
+        let (image, name) = oci_image_for_language("go");
+        assert_eq!(image, "docker.io/library/golang:bookworm");
+        assert_eq!(name, "go");
     }
 }

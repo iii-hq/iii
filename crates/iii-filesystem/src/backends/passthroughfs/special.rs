@@ -10,8 +10,9 @@ use std::{io, os::fd::AsRawFd};
 
 use super::PassthroughFs;
 use crate::{
+    Context,
     backends::shared::{init_binary, platform},
-    statvfs64, Context,
+    statvfs64,
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -26,7 +27,10 @@ pub(crate) fn do_fsync(
     datasync: bool,
     handle: u64,
 ) -> io::Result<()> {
-    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init()
+        && handle == init_binary::INIT_HANDLE
+        && ino == init_binary::INIT_INODE
+    {
         return Ok(());
     }
 
