@@ -5,10 +5,10 @@ description: 'Decouple producers from consumers, process work asynchronously wit
 
 ## Goal
 
-Process work asynchronously with built-in retries, dead-letter support, and concurrency control using topic-based queues (pub/sub fan-out) or named queues (direct function targeting). For background on when and why to use queues, see [Queue Architecture](/architecture/queues). For the full configuration reference, see the [Queue module](/modules/module-queue).
+This guide covers two independent queue modes: topic-based queues which are durable pub-sub, and named queues that queue functions for later execution. For help deciding, see [When to use which](/modules/module-queue#when-to-use-which).
 
 <Info title="Trigger actions primer">
-  Named queues use the `Enqueue` trigger action. If you are new to trigger actions, read [Trigger Actions](./trigger-actions) first.
+  Named queues use the `Enqueue` trigger action. Refer to [Trigger Actions](./trigger-actions) to learn more.
 </Info>
 
 ## Enable the Queue module
@@ -30,10 +30,8 @@ modules:
 ```
 
 <Info title="Full configuration reference">
-  See the [Queue module reference](/modules/module-queue#configuration) for every field, adapter option, and default value.
+  For complete configuration options please refer to [Queue module reference](/modules/module-queue#configuration).
 </Info>
-
-This guide covers two independent queue modes — pick the one that fits your use case, or use both. For help deciding, see [When to use which](/modules/module-queue#when-to-use-which).
 
 ---
 
@@ -1301,7 +1299,7 @@ With `concurrency: 3`, at most three emails are in-flight at any time. Failed se
   For adapter options (builtin, RabbitMQ, Redis), scenario-based recommendations, and the full queue configuration reference, see the [Queue module reference](/modules/module-queue#adapter-comparison).
 </Info>
 
-## Result
+## Remember
 
 Producers enqueue work and return immediately. The engine delivers each job to the target function, retries failures with exponential backoff, and routes permanently failed jobs to a dead-letter queue. Topic-based queues fan out messages to every subscriber; named queues target a single function with configurable concurrency, FIFO ordering, and per-queue retry policies.
 
