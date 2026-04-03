@@ -11,6 +11,7 @@
 //! for crash isolation.
 
 use anyhow::{Context, Result};
+use colored::Colorize;
 use std::collections::HashMap;
 use std::path::Component;
 use std::path::PathBuf;
@@ -77,7 +78,7 @@ pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
         .join(rootfs_name);
 
     eprintln!(
-        "  Rootfs '{}' not found. Pulling {}...",
+        "  Pulling rootfs {} ({})...",
         rootfs_name, oci_image
     );
 
@@ -311,29 +312,40 @@ async fn pull_and_extract_rootfs(image: &str, dest: &std::path::Path) -> Result<
         }
     };
 
-    eprintln!("  Architecture: linux/{}", host_arch);
     if let Some(ref digest) = image_data.digest {
-        eprintln!("  Digest: {}", digest);
+        tracing::debug!(%digest, "image digest");
     }
     let total_layer_bytes: usize = image_data.layers.iter().map(|l| l.data.len()).sum();
     eprintln!(
-        "  Layers: {} ({:.1} MiB)",
+        "  linux/{} | {} layers | {:.1} MiB",
+        host_arch,
         image_data.layers.len(),
         total_layer_bytes as f64 / (1024.0 * 1024.0)
     );
 
-    let mut total_size: u64 = 0;
     let layer_count = image_data.layers.len();
+    let pb = indicatif::ProgressBar::new(layer_count as u64);
+    pb.set_style(
+        indicatif::ProgressStyle::with_template(
+            "  [{bar:40.cyan/blue}] {pos}/{len} layers extracted",
+        )
+        .unwrap()
+        .progress_chars("=> "),
+    );
+
+    let mut total_size: u64 = 0;
     for (i, layer) in image_data.layers.iter().enumerate() {
-        eprintln!("  Extracting layer {}/{}...", i + 1, layer_count);
         extract_layer_with_limits(&layer.data, dest, i, layer_count, &mut total_size)?;
+        pb.inc(1);
     }
+    pb.finish();
 
     let config_json = &image_data.config.data;
     let config_path = dest.join(".oci-config.json");
     let _ = std::fs::write(&config_path, config_json);
 
-    eprintln!("  Rootfs ready at {}", dest.display());
+    tracing::info!(path = %dest.display(), "rootfs ready");
+    eprintln!("  {} Rootfs ready", "\u{2713}".green());
     Ok(())
 }
 
@@ -659,7 +671,7 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
         let rootfs_dir = Self::image_rootfs(&spec.image);
         if !rootfs_dir.exists() {
             tracing::info!(image = %spec.image, "rootfs not found, pulling automatically");
-            eprintln!("  Rootfs not found. Pulling {}...", spec.image);
+            eprintln!("  Pulling rootfs ({})...", spec.image);
             self.pull(&spec.image).await?;
         }
 

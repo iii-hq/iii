@@ -724,9 +724,6 @@ pub async fn handle_worker_dev(
     };
 
     let has_manifest = project_path.join(WORKER_MANIFEST).exists();
-    if has_manifest {
-        eprintln!("  {} loaded from {}", "✓".green(), WORKER_MANIFEST.bold());
-    }
 
     let dir_name = project_path
         .file_name()
@@ -740,15 +737,20 @@ pub async fn handle_worker_dev(
     let lan_ip = detect_lan_ip().await;
     let engine_url = engine_url_for_runtime(&selected_runtime, address, port, &lan_ip);
 
-    eprintln!("  Runtime: {}", selected_runtime.bold());
-    eprintln!(
-        "  {} project detected: {}",
-        "✓".green(),
-        project.name.bold()
-    );
-    eprintln!("  Sandbox: {}", sb_name.bold());
-    eprintln!("  Path: {}", project_str.dimmed());
-    eprintln!("  Engine: {}", engine_url.bold());
+    tracing::debug!(runtime = %selected_runtime, "selected dev runtime");
+
+    eprintln!();
+    if has_manifest {
+        eprintln!("  {}    loaded from {}", "Config".cyan().bold(), WORKER_MANIFEST.bold());
+    }
+    let lang_suffix = project
+        .language
+        .as_deref()
+        .map(|l| format!(" ({})", l.dimmed()))
+        .unwrap_or_default();
+    eprintln!("  {}   {}{}", "Project".cyan().bold(), project.name.bold(), lang_suffix);
+    eprintln!("  {}   {}", "Sandbox".cyan().bold(), sb_name.bold());
+    eprintln!("  {}    {}", "Engine".cyan().bold(), engine_url.bold());
     eprintln!();
 
     let exit_code = run_dev_worker(
@@ -814,12 +816,12 @@ async fn run_dev_worker(
             let prepared_marker = dev_dir.join("var").join(".iii-prepared");
 
             if rebuild && dev_dir.exists() {
-                eprintln!("  Rebuilding: clearing cached rootfs...");
+                eprintln!("  Rebuilding: clearing cached sandbox...");
                 let _ = std::fs::remove_dir_all(&dev_dir);
             }
 
             if !dev_dir.exists() {
-                eprintln!("  Creating project rootfs (first run)...");
+                eprintln!("  Preparing sandbox...");
                 if let Err(e) = clone_rootfs(&base_rootfs, &dev_dir) {
                     eprintln!("{} Failed to create project rootfs: {}", "error:".red(), e);
                     return 1;
@@ -828,7 +830,11 @@ async fn run_dev_worker(
 
             let is_prepared = prepared_marker.exists();
             if is_prepared {
-                eprintln!("  Using cached deps (use --rebuild to reinstall)");
+                eprintln!(
+                    "  {} Using cached deps {}",
+                    "✓".green(),
+                    "(use --rebuild to reinstall)".dimmed()
+                );
             }
 
             let script = build_libkrun_dev_script(project, is_prepared);
@@ -1098,10 +1104,7 @@ pub async fn start_managed_workers(engine_url: &str) {
 
     let adapter = super::worker_manager::create_adapter("libkrun");
 
-    tracing::info!(
-        count = workers_file.workers.len(),
-        "Starting managed workers from iii.workers.yaml..."
-    );
+    tracing::info!("Starting workers from iii.workers.yaml...");
 
     for (name, def) in &workers_file.workers {
         if let Err(e) = adapter.pull(&def.image).await {
@@ -1123,7 +1126,7 @@ pub async fn start_managed_workers(engine_url: &str) {
 
         match adapter.start(&spec).await {
             Ok(_) => {
-                tracing::info!(worker = %name, "Managed worker started");
+                tracing::debug!(worker = %name, "managed worker process exited successfully");
             }
             Err(e) => {
                 tracing::warn!(worker = %name, error = %e, "Failed to start managed worker");

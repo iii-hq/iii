@@ -54,12 +54,7 @@ pub async fn handle_dispatch(command: &str, args: &[String], no_update_check: bo
     let binary_path = if platform::binary_path(spec.name).exists() {
         platform::binary_path(spec.name)
     } else if let Some(existing) = platform::find_existing_binary(spec.name) {
-        eprintln!(
-            "  {} Found existing {} at {}",
-            "✓".green(),
-            spec.name,
-            existing.display().to_string().dimmed()
-        );
+        tracing::debug!(binary = %existing.display(), name = spec.name, "found existing binary");
         existing
     } else {
         // Auto-download if binary is not present anywhere
