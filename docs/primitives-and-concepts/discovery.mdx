@@ -39,7 +39,7 @@ iii takes a different approach: the engine itself is the registry, and it pushes
 
 Traditional architectures require coordination when the system topology changes. Adding a new service means updating every service that needs to call it — changing config files, updating client libraries, or waiting for DNS to propagate.
 
-With a central registry topology changes are automatic:
+With a central registry topology changes are automatic. This is what iii calls **live discovery** — functions and triggers exposed by one worker become visible and usable across the system in real time. Combined with **live extensibility** (add new workers without redesigning the architecture) and **live observability** (observe the entire connected stack in real time), the system stays coherent as it grows.
 
 - **Workers scale independently** — Scale horizontally and vertically only where you need it
 - **New functionality is immediately available** — Connect a new worker with new functions and they're immediately available to the entire system
