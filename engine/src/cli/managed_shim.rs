@@ -13,6 +13,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 const WORKERS_FILE: &str = "iii.workers.yaml";
 
@@ -153,12 +155,41 @@ pub async fn start_managed_workers(engine_url: &str) {
         .unwrap_or(49134);
 
     for name in workers_file.workers.keys() {
-        let result = tokio::process::Command::new(&worker_binary)
+        let mut child = match tokio::process::Command::new(&worker_binary)
             .args(["start", name, "--port", &port.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .await;
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                tracing::warn!(worker = %name, error = %e, "Failed to spawn iii-worker start");
+                continue;
+            }
+        };
+
+        if let Some(stderr) = child.stderr.take() {
+            let mut lines = BufReader::new(stderr).lines();
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        let msg = line.trim();
+                        if !msg.is_empty() {
+                            tracing::info!(worker = %name, source = "iii-worker", "{msg}");
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        tracing::warn!(worker = %name, error = %e, "Failed to read iii-worker stderr");
+                        break;
+                    }
+                }
+            }
+        } else {
+            tracing::warn!(worker = %name, "iii-worker stderr unavailable; progress logs may be missing");
+        }
+
+        let result = child.wait().await;
 
         match result {
             Ok(status) if status.success() => {

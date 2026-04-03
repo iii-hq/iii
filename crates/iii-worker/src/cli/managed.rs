@@ -95,15 +95,6 @@ async fn resolve_image(input: &str) -> Result<(String, String), String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Build engine WebSocket URL from a bind address.
-pub(crate) fn managed_engine_url(bind_addr: &str) -> String {
-    let (_host, port) = match bind_addr.rsplit_once(':') {
-        Some((h, p)) => (h, p),
-        None => (bind_addr, "49134"),
-    };
-    format!("ws://localhost:{}", port)
-}
-
 // ---------------------------------------------------------------------------
 // Command handlers
 // ---------------------------------------------------------------------------
@@ -1145,6 +1136,14 @@ pub async fn start_managed_workers(engine_url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn managed_engine_url(bind_addr: &str) -> String {
+        let (_host, port) = match bind_addr.rsplit_once(':') {
+            Some((h, p)) => (h, p),
+            None => (bind_addr, "49134"),
+        };
+        format!("ws://localhost:{}", port)
+    }
 
     #[tokio::test]
     async fn resolve_image_full_ref_passthrough() {
