@@ -104,7 +104,7 @@ fn worker_help_shows_subcommands() {
     assert!(stdout.contains("add"), "worker help should list add");
     assert!(stdout.contains("remove"), "worker help should list remove");
     assert!(stdout.contains("list"), "worker help should list list");
-    assert!(stdout.contains("info"), "worker help should list info");
+    assert!(stdout.contains("logs"), "worker help should list logs");
 }
 
 #[test]
@@ -180,14 +180,14 @@ fn worker_remove_nonexistent_fails_gracefully() {
 }
 
 #[test]
-fn worker_info_requires_worker_name() {
+fn worker_info_is_not_a_valid_subcommand() {
     let output = iii_bin()
         .args(["worker", "info"])
         .output()
         .expect("failed to execute");
     assert!(
         !output.status.success(),
-        "worker info without name should fail"
+        "worker info should fail (not a valid subcommand)"
     );
 }
 
@@ -283,7 +283,7 @@ fn error_messages_never_reference_iii_cli() {
     let commands: Vec<Vec<&str>> = vec![
         vec!["start"],                           // invalid subcommand
         vec!["worker", "remove", "nonexistent"], // worker not found
-        vec!["worker", "info"],                  // missing arg
+        vec!["worker", "info"],                  // invalid subcommand
     ];
 
     for args in &commands {
