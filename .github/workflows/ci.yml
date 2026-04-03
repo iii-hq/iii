@@ -34,6 +34,17 @@ jobs:
 
       - uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Build and test iii-worker
+        run: |
+          cargo build -p iii-worker
+          cargo test -p iii-worker
+
+      - name: Install iii-worker for integration tests
+        run: |
+          mkdir -p ~/.local/bin
+          cp target/debug/iii-worker ~/.local/bin/iii-worker
+          chmod +x ~/.local/bin/iii-worker
+
       - name: Build and run coverage
         run: |
           eval "$(cargo llvm-cov show-env --export-prefix)"
@@ -42,11 +53,6 @@ jobs:
           cargo llvm-cov report \
             --ignore-filename-regex \
             "engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/"
-
-      - name: Build and test iii-worker
-        run: |
-          cargo build -p iii-worker
-          cargo test -p iii-worker
 
       - name: Check formatting
         run: cargo fmt --all -- --check
