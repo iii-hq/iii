@@ -24,7 +24,10 @@ fn builder_creates_functional_passthrough_fs() {
         .cache_policy(CachePolicy::Auto)
         .build();
 
-    assert!(result.is_ok(), "Builder should create a valid PassthroughFs");
+    assert!(
+        result.is_ok(),
+        "Builder should create a valid PassthroughFs"
+    );
 }
 
 /// Test 4 (continued): PassthroughFs::new with explicit config.
@@ -40,7 +43,10 @@ fn new_creates_passthrough_fs_with_config() {
     };
 
     let result = PassthroughFs::new(cfg);
-    assert!(result.is_ok(), "PassthroughFs::new should succeed with valid config");
+    assert!(
+        result.is_ok(),
+        "PassthroughFs::new should succeed with valid config"
+    );
 }
 
 /// Test 4 (continued): All cache policies are constructible.

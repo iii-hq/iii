@@ -64,7 +64,10 @@ fn rlimit_default_values() {
     // The init binary sets RLIMIT_NOFILE to a high value for server workloads.
     // Verify the pattern of setting soft = hard = desired.
     let desired_nofile: u64 = 1048576;
-    assert!(desired_nofile > 1024, "Should be higher than typical default");
+    assert!(
+        desired_nofile > 1024,
+        "Should be higher than typical default"
+    );
     assert!(desired_nofile <= 1048576, "Should not exceed kernel max");
 }
 

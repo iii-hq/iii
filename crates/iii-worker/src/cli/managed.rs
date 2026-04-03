@@ -741,14 +741,23 @@ pub async fn handle_worker_dev(
 
     eprintln!();
     if has_manifest {
-        eprintln!("  {}    loaded from {}", "Config".cyan().bold(), WORKER_MANIFEST.bold());
+        eprintln!(
+            "  {}    loaded from {}",
+            "Config".cyan().bold(),
+            WORKER_MANIFEST.bold()
+        );
     }
     let lang_suffix = project
         .language
         .as_deref()
         .map(|l| format!(" ({})", l.dimmed()))
         .unwrap_or_default();
-    eprintln!("  {}   {}{}", "Project".cyan().bold(), project.name.bold(), lang_suffix);
+    eprintln!(
+        "  {}   {}{}",
+        "Project".cyan().bold(),
+        project.name.bold(),
+        lang_suffix
+    );
     eprintln!("  {}   {}", "Sandbox".cyan().bold(), sb_name.bold());
     eprintln!("  {}    {}", "Engine".cyan().bold(), engine_url.bold());
     eprintln!();
