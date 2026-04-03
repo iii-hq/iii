@@ -38,7 +38,7 @@ def test_queue_trigger_registers_as_queue_trigger(mock_bridge: MagicMock) -> Non
 
     call_args = mock_bridge.register_trigger.call_args
     trigger_input = call_args[0][0]
-    assert trigger_input["type"] == "queue"
+    assert trigger_input["type"] == "durable:subscriber"
     assert trigger_input["config"]["topic"] == "orders.created"
 
 
@@ -54,7 +54,7 @@ def test_standalone_enqueue_calls_bridge(mock_bridge: MagicMock) -> None:
         enqueue({"topic": "orders.processed", "data": {"order_id": "123"}})
 
     mock_bridge.trigger.assert_called_once_with(
-        {"function_id": "enqueue", "payload": {"topic": "orders.processed", "data": {"order_id": "123"}}},
+        {"function_id": "durable::publish", "payload": {"topic": "orders.processed", "data": {"order_id": "123"}}},
     )
 
 
@@ -84,7 +84,7 @@ async def test_queue_handler_invoked_with_flow_context(mock_bridge: MagicMock) -
         await registered_handler({"source": "test"})
 
     assert captured_ctx is not None
-    assert captured_ctx.trigger.type == "queue"
+    assert captured_ctx.trigger.type == "durable:subscriber"
     assert captured_input == {"source": "test"}
 
 

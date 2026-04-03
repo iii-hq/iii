@@ -1,7 +1,7 @@
 export type Emit = string | { topic: string; label?: string; conditional?: boolean }
 
 export type TriggerData = {
-  type: 'event' | 'noop' | 'http' | 'cron' | 'queue' | 'state'
+  type: 'event' | 'noop' | 'http' | 'cron' | 'durable:subscriber' | 'state'
   topic?: string
   path?: string
   method?: string
@@ -14,7 +14,7 @@ export type TriggerData = {
 export type FlowStep = {
   id: string
   name: string
-  type: 'event' | 'http' | 'noop' | 'cron' | 'queue' | 'state'
+  type: 'event' | 'http' | 'noop' | 'cron' | 'durable:subscriber' | 'state'
   triggers: TriggerData[]
   description?: string
   subscribes?: string[]

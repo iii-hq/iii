@@ -336,12 +336,12 @@ pub fn register_panicking_function(
         .register_function(function_id.to_string(), function);
 }
 
-/// Calls `engine.call("enqueue", ...)` with a topic and data payload,
+/// Calls `engine.call("durable::publish", ...)` with a topic and data payload,
 /// mapping the result to `anyhow::Result<()>`.
 pub async fn enqueue_to_topic(engine: &Engine, topic: &str, data: Value) -> anyhow::Result<()> {
     use iii::engine::EngineTrait;
     let result = engine
-        .call("enqueue", json!({"topic": topic, "data": data}))
+        .call("durable::publish", json!({"topic": topic, "data": data}))
         .await;
     match result {
         Ok(_) => Ok(()),

@@ -83,7 +83,7 @@ impl BridgeAdapter {
         })
     }
 
-    const ENQUEUE_FUNCTION_ID: &'static str = "enqueue";
+    const ENQUEUE_FUNCTION_ID: &'static str = "durable::publish";
 
     /// Builds the JSON payload for enqueuing a message via the bridge.
     ///
@@ -266,7 +266,7 @@ impl QueueAdapter for BridgeAdapter {
         ));
 
         let trigger = match self.bridge.register_trigger(RegisterTriggerInput {
-            trigger_type: "queue".to_string(),
+            trigger_type: "durable:subscriber".to_string(),
             function_id: handler_path.clone(),
             config: serde_json::json!({ "topic": topic }),
             metadata: None,
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_enqueue_uses_enqueue_function_id() {
-        assert_eq!(BridgeAdapter::ENQUEUE_FUNCTION_ID, "enqueue");
+        assert_eq!(BridgeAdapter::ENQUEUE_FUNCTION_ID, "durable::publish");
     }
 
     #[test]

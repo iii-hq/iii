@@ -617,11 +617,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 {/* TODO: Update this, enqueue is its entirely own thing */}
 
-{/* <Info title="Queue uses enqueue">
-  Queue messaging uses `enqueue` — a built-in function, no trigger registration needed:
-  Node `trigger({ function_id: 'enqueue', payload: { topic: 'user.created', data: {...} } })`,
-  Python `trigger({'function_id': 'enqueue', 'payload': {'topic': 'user.created', 'data': {...}}})`,
-  Rust `trigger(TriggerRequest::new("enqueue", json!({"topic": "user.created", "data": {...}})))`.
+{/* <Info title="Queue uses durable::publish">
+  Queue messaging uses `durable::publish` — a built-in function, no trigger registration needed:
+  Node `trigger({ function_id: 'durable::publish', payload: { topic: 'user.created', data: {...} } })`,
+  Python `trigger({'function_id': 'durable::publish', 'payload': {'topic': 'user.created', 'data': {...}}})`,
+  Rust `trigger(TriggerRequest::new("durable::publish", json!({"topic": "user.created", "data": {...}})))`.
   See the [Queue module](/modules/module-queue) for details.
 </Info> */}
 
@@ -631,7 +631,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 |------|-----------|---------------|--------|
 | `http` | HTTP request received | `api_path`, `http_method` | HTTP |
 | `cron` | Schedule fires | `expression` | Cron |
-| `queue` | Message published to a topic | `topic` | Queue |
+| `durable:subscriber` | Message published to a topic | `topic` | Queue |
 | `subscribe` | PubSub message on a topic | `topic` | PubSub |
 | `state` | State value changes | `scope`, `key` | State |
 | `stream` | Stream value changes | `stream_name`, `group_id`, `item_id` | Stream |
@@ -826,7 +826,7 @@ Durable message queue for async processing.
 
 | Function | Purpose | Parameters |
 |----------|---------|------------|
-| `enqueue` | Enqueue a message | `topic`, `data` |
+| `durable::publish` | Publish a message | `topic`, `data` |
 
 ### PubSub
 

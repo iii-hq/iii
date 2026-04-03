@@ -60,7 +60,7 @@ iii.registerFunction(
     })
 
     await iii.trigger({
-      function_id: 'enqueue',
+      function_id: 'durable::publish',
       payload: { topic: 'order.process', data: { orderId, amount, customerId, items } },
       action: TriggerAction.Void(),
     })
@@ -121,7 +121,7 @@ def create_order(data) -> ApiResponse:
     })
 
     iii.trigger({
-        "function_id": "enqueue",
+        "function_id": "durable::publish",
         "payload": {"topic": "order.process", "data": {"orderId": order_id, "amount": amount, "customerId": customer_id}},
         "action": TriggerAction.Void(),
     })
@@ -180,7 +180,7 @@ iii.register_function((RegisterFunctionMessage::with_id("orders.create".into()),
         },
     })).action(TriggerAction::void())).await?;
 
-    iii.trigger(TriggerRequest::new("enqueue", json!({
+    iii.trigger(TriggerRequest::new("durable::publish", json!({
         "topic": "order.process",
         "data": { "orderId": order_id, "amount": amount, "customerId": customer_id },
     })).action(TriggerAction::void())).await?;
@@ -222,7 +222,7 @@ iii.registerFunction(
     })
 
     await iii.trigger({
-      function_id: 'enqueue',
+      function_id: 'durable::publish',
       payload: { topic: 'order.notify', data: { orderId, customerId, amount, status: 'processed' } },
       action: TriggerAction.Void(),
     })
@@ -232,7 +232,7 @@ iii.registerFunction(
 )
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'order.process',
   config: { topic: 'order.process' },
 })
@@ -270,7 +270,7 @@ def process_order(data: dict) -> None:
     })
 
     iii.trigger({
-        "function_id": "enqueue",
+        "function_id": "durable::publish",
         "payload": {"topic": "order.notify", "data": {"orderId": order_id, "customerId": customer_id, "amount": amount, "status": "processed"}},
         "action": TriggerAction.Void(),
     })
@@ -278,7 +278,7 @@ def process_order(data: dict) -> None:
     logger.info("Order processed", {"orderId": order_id, "traceId": current_trace_id()})
 
 iii.register_function("order.process", process_order)
-iii.register_trigger({"type": "queue", "function_id": "order.process", "config": {"topic": "order.process"}})
+iii.register_trigger({"type": "durable:subscriber", "function_id": "order.process", "config": {"topic": "order.process"}})
 ```
 
   </Tab>
@@ -298,7 +298,7 @@ iii.register_function((RegisterFunctionMessage::with_id("order.process".into()),
         "traceId": current_trace_id(),
     })));
 
-    iii.trigger(TriggerRequest::new("enqueue", json!({
+    iii.trigger(TriggerRequest::new("durable::publish", json!({
         "topic": "order.notify",
         "data": { "orderId": order_id, "customerId": input["customerId"] },
     })).action(TriggerAction::void())).await?;
@@ -307,7 +307,7 @@ iii.register_function((RegisterFunctionMessage::with_id("order.process".into()),
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.process".into(), config: json!({ "topic": "order.process" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "order.process".into(), config: json!({ "topic": "order.process" }), metadata: None })?;
 ```
 
   </Tab>
@@ -339,7 +339,7 @@ iii.registerFunction(
 )
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'order.notify',
   config: { topic: 'order.notify' },
 })
@@ -366,7 +366,7 @@ def notify_order(data: dict) -> None:
     logger.info("Order notification sent", {"orderId": order_id, "traceId": current_trace_id()})
 
 iii.register_function("order.notify", notify_order)
-iii.register_trigger({"type": "queue", "function_id": "order.notify", "config": {"topic": "order.notify"}})
+iii.register_trigger({"type": "durable:subscriber", "function_id": "order.notify", "config": {"topic": "order.notify"}})
 ```
 
   </Tab>
@@ -391,7 +391,7 @@ iii.register_function((RegisterFunctionMessage::with_id("order.notify".into()), 
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "order.notify".into(), config: json!({ "topic": "order.notify" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "order.notify".into(), config: json!({ "topic": "order.notify" }), metadata: None })?;
 ```
 
   </Tab>

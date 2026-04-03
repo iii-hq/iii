@@ -635,6 +635,8 @@ const HighlightedCodeBlock: React.FC<HighlightedCodeBlockProps> = ({
       lowerLine.includes('"publish"') ||
       lowerLine.includes("'enqueue'") ||
       lowerLine.includes('"enqueue"') ||
+      lowerLine.includes("'durable::publish'") ||
+      lowerLine.includes('"durable::publish"') ||
       (lowerLine.includes('await ') &&
         !lowerLine.includes('connect') &&
         !lowerLine.includes('subscribe')) ||

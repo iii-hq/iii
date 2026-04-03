@@ -43,7 +43,7 @@ class FlowContext(BaseModel, Generic[TEnqueueData]):
 
     def is_queue(self) -> bool:
         """Return True if the trigger is a queue trigger."""
-        return self.trigger.type == "queue"
+        return self.trigger.type == "durable:subscriber"
 
     def is_api(self) -> bool:
         """Return True if the trigger is an API request."""
@@ -155,7 +155,7 @@ class TriggerInfo(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    type: Literal["http", "queue", "cron", "state", "stream"]
+    type: Literal["http", "durable:subscriber", "cron", "state", "stream"]
     index: int | None = None
 
     # API trigger specific
@@ -179,7 +179,7 @@ class QueueTrigger(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    type: Literal["queue"] = "queue"
+    type: Literal["durable:subscriber"] = "durable:subscriber"
     topic: str
     condition: TriggerCondition | None = None
     input: Any | None = None

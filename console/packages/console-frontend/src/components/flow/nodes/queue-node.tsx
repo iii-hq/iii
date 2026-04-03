@@ -3,12 +3,12 @@ import type { NodeData } from '../../../api/flows/types'
 import { BaseNode } from './base-node'
 
 export function QueueFlowNode({ data }: { data: NodeData }) {
-  const queueTrigger = data.triggers?.find((t) => t.type === 'queue')
+  const queueTrigger = data.triggers?.find((t) => t.type === 'durable:subscriber')
 
   return (
     <BaseNode
       data={data}
-      variant="queue"
+      variant="durable:subscriber"
       title={data.name}
       subtitle={data.description}
       disableSourceHandle={!data.emits?.length && !data.virtualEmits?.length}

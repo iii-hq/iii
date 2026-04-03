@@ -269,7 +269,7 @@ iii.registerFunction(
         logger.warn('Order overdue', { orderId: order.id })
 
         await iii.trigger({
-          function_id: 'enqueue',
+          function_id: 'durable::publish',
           payload: { topic: 'notification', data: { orderId: order.id, templateId: 'order-audit-warning', status: order.status } },
           action: TriggerAction.Void(),
         })
@@ -309,7 +309,7 @@ def orders_audit(_data) -> None:
             logger.warn("Order overdue", {"orderId": order.get("id")})
 
             iii.trigger({
-                "function_id": "enqueue",
+                "function_id": "durable::publish",
                 "payload": {"topic": "notification", "data": {"orderId": order.get("id"), "templateId": "order-audit-warning"}},
                 "action": TriggerAction.Void(),
             })
@@ -345,7 +345,7 @@ iii.register_function(
                     logger.warn("Order overdue", Some(json!({ "orderId": order["id"] })));
 
                     iii.trigger(TriggerRequest {
-                        function_id: "enqueue".into(),
+                        function_id: "durable::publish".into(),
                         payload: json!({
                             "topic": "notification",
                             "data": { "orderId": order["id"], "templateId": "order-audit-warning" },

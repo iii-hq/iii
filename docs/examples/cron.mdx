@@ -29,7 +29,7 @@ iii.registerFunction(
     logger.info('Periodic job fired')
 
     await iii.trigger({
-      function_id: 'enqueue',
+      function_id: 'durable::publish',
       payload: {
         topic: 'job.tick',
         data: { firedAt: new Date().toISOString(), message: 'Periodic job executed' },
@@ -60,7 +60,7 @@ def periodic_job(_data) -> None:
     logger.info("Periodic job fired")
 
     iii.trigger({
-        "function_id": "enqueue",
+        "function_id": "durable::publish",
         "payload": {
             "topic": "job.tick",
             "data": {
@@ -94,7 +94,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.periodic_job".into
 
     logger.info("Periodic job fired", None);
 
-    iii.trigger(TriggerRequest::new("enqueue", json!({
+    iii.trigger(TriggerRequest::new("durable::publish", json!({
         "topic": "job.tick",
         "data": {
             "firedAt": chrono::Utc::now().to_rfc3339(),
@@ -130,7 +130,7 @@ iii.registerFunction(
 )
 
 iii.registerTrigger({
-  type: 'queue',
+  type: 'durable:subscriber',
   function_id: 'job.handle_tick',
   config: { topic: 'job.tick' },
 })
@@ -150,7 +150,7 @@ def handle_tick(data: dict) -> None:
     })
 
 iii.register_function("job.handle_tick", handle_tick)
-iii.register_trigger({"type": "queue", "function_id": "job.handle_tick", "config": {"topic": "job.tick"}})
+iii.register_trigger({"type": "durable:subscriber", "function_id": "job.handle_tick", "config": {"topic": "job.tick"}})
 ```
 
   </Tab>
@@ -167,7 +167,7 @@ iii.register_function((RegisterFunctionMessage::with_id("job.handle_tick".into()
     Ok(json!(null))
 });
 
-iii.register_trigger(RegisterTriggerInput { trigger_type: "queue".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }), metadata: None })?;
+iii.register_trigger(RegisterTriggerInput { trigger_type: "durable:subscriber".into(), function_id: "job.handle_tick".into(), config: json!({ "topic": "job.tick" }), metadata: None })?;
 ```
 
   </Tab>
@@ -200,7 +200,7 @@ iii.registerFunction(
         logger.warn('Order overdue', { orderId: order.id, shipDate: order.shipDate })
 
         await iii.trigger({
-          function_id: 'enqueue',
+          function_id: 'durable::publish',
           payload: {
             topic: 'notification',
             data: {
@@ -253,7 +253,7 @@ def orders_sweep(_data) -> None:
             logger.warn("Order overdue", {"orderId": order.get("id")})
 
             iii.trigger({
-                "function_id": "enqueue",
+                "function_id": "durable::publish",
                 "payload": {
                     "topic": "notification",
                     "data": {
@@ -294,7 +294,7 @@ iii.register_function((RegisterFunctionMessage::with_id("cron.orders_sweep".into
             if !complete && chrono::Utc::now() > ship_date {
                 logger.warn("Order overdue", Some(json!({ "orderId": order["id"] })));
 
-                iii.trigger(TriggerRequest::new("enqueue", json!({
+                iii.trigger(TriggerRequest::new("durable::publish", json!({
                     "topic": "notification",
                     "data": {
                         "orderId": order["id"],
@@ -347,5 +347,5 @@ iii uses a six-field extended cron format. The optional leading field is seconds
 ## Key concepts
 
 - Cron handlers receive `{trigger, job_id, scheduled_time, actual_time}` as their payload.
-- Keep cron handlers lightweight. Use `enqueue` to fan out work to queue handlers that can run in parallel.
+- Keep cron handlers lightweight. Use `durable::publish` to fan out work to queue handlers that can run in parallel.
 - Combine `state::list` with cron for periodic sweeps over accumulated data — the state sweep pattern above is the idiomatic approach.

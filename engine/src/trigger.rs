@@ -62,7 +62,7 @@ impl TriggerType {
         match id {
             "http" => Self::schema_for::<HttpTriggerConfig>(),
             "cron" => Self::schema_for::<CronTriggerConfig>(),
-            "queue" => Self::schema_for::<QueueTriggerConfig>(),
+            "durable:subscriber" => Self::schema_for::<QueueTriggerConfig>(),
             "subscribe" => Self::schema_for::<SubscribeTriggerConfig>(),
             "state" => Self::schema_for::<StateTriggerConfig>(),
             "stream:join" | "stream:leave" => Self::schema_for::<StreamJoinLeaveTriggerConfig>(),
@@ -590,12 +590,16 @@ mod tests {
     async fn test_register_trigger_propagates_registrator_error() {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(true, false));
-        let trigger_type =
-            TriggerType::new("queue", "Queue", Box::new(Arc::clone(&registrator)), None);
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue",
+            Box::new(Arc::clone(&registrator)),
+            None,
+        );
         registry.register_trigger_type(trigger_type).await.unwrap();
 
         let err = registry
-            .register_trigger(make_trigger("t-error", "queue"))
+            .register_trigger(make_trigger("t-error", "durable:subscriber"))
             .await
             .expect_err("register should fail when registrator errors");
 
@@ -608,16 +612,23 @@ mod tests {
     async fn test_unregister_trigger_propagates_registrator_error() {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(false, true));
-        let trigger_type =
-            TriggerType::new("queue", "Queue", Box::new(Arc::clone(&registrator)), None);
+        let trigger_type = TriggerType::new(
+            "durable:subscriber",
+            "Queue",
+            Box::new(Arc::clone(&registrator)),
+            None,
+        );
         registry.register_trigger_type(trigger_type).await.unwrap();
         registry
-            .register_trigger(make_trigger("t-unregister", "queue"))
+            .register_trigger(make_trigger("t-unregister", "durable:subscriber"))
             .await
             .unwrap();
 
         let err = registry
-            .unregister_trigger("t-unregister".to_string(), Some("queue".to_string()))
+            .unregister_trigger(
+                "t-unregister".to_string(),
+                Some("durable:subscriber".to_string()),
+            )
             .await
             .expect_err("unregister should fail when registrator errors");
 
@@ -632,14 +643,14 @@ mod tests {
         let worker_id = Uuid::new_v4();
         let registrator = Arc::new(ControlledRegistrator::new(false, true));
         let trigger_type = TriggerType::new(
-            "queue",
+            "durable:subscriber",
             "Queue",
             Box::new(Arc::clone(&registrator)),
             Some(worker_id),
         );
         registry.register_trigger_type(trigger_type).await.unwrap();
 
-        let mut trigger = make_trigger("t-owned", "queue");
+        let mut trigger = make_trigger("t-owned", "durable:subscriber");
         trigger.worker_id = Some(worker_id);
         registry.register_trigger(trigger).await.unwrap();
 
