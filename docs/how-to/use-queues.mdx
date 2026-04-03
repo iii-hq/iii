@@ -92,8 +92,8 @@ Subscribe multiple functions to a topic so that every published message fans out
         return {}
 
 
-    iii.register_function({"id": "notify::email"}, send_email_notification)
-    iii.register_function({"id": "audit::log"}, write_audit)
+    iii.register_function("notify::email", send_email_notification)
+    iii.register_function("audit::log", write_audit)
 
     iii.register_trigger({
         "type": "queue",
@@ -157,8 +157,6 @@ Subscribe multiple functions to a topic so that every published message fans out
     <Tabs>
     <Tab title="Node / TypeScript">
     ```typescript
-    import { TriggerAction } from 'iii-sdk'
-
     await iii.trigger({
       function_id: 'enqueue',
       payload: {
@@ -170,8 +168,6 @@ Subscribe multiple functions to a topic so that every published message fans out
     </Tab>
     <Tab title="Python">
     ```python
-    from iii import TriggerAction
-
     iii.trigger({
         "function_id": "enqueue",
         "payload": {
@@ -183,7 +179,7 @@ Subscribe multiple functions to a topic so that every published message fans out
     </Tab>
     <Tab title="Rust">
     ```rust
-    use iii_sdk::{TriggerAction, TriggerRequest};
+    use iii_sdk::{TriggerRequest};
     use serde_json::json;
 
     iii.trigger(TriggerRequest {
@@ -275,7 +271,7 @@ Subscribe multiple functions to a topic so that every published message fans out
         return data.get("total", 0) > 1000
 
 
-    iii.register_function({"id": "conditions::is_high_value"}, is_high_value)
+    iii.register_function("conditions::is_high_value", is_high_value)
 
     iii.register_trigger({
         "type": "queue",
@@ -881,9 +877,9 @@ def track_analytics(data):
     return {}
 
 
-iii.register_function({"id": "notify::email"}, send_email_notification)
-iii.register_function({"id": "inventory::reserve"}, reserve_inventory)
-iii.register_function({"id": "analytics::track"}, track_analytics)
+iii.register_function("notify::email", send_email_notification)
+iii.register_function("inventory::reserve", reserve_inventory)
+iii.register_function("analytics::track", track_analytics)
 
 for fid in ["notify::email", "inventory::reserve", "analytics::track"]:
     iii.register_trigger({
@@ -906,7 +902,7 @@ def create_order(req):
     return {"status_code": 201, "body": {"orderId": order["id"]}}
 
 
-iii.register_function({"id": "orders::create"}, create_order)
+iii.register_function("orders::create", create_order)
 ```
 </Tab>
 <Tab title="Rust">
