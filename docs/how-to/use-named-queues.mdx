@@ -14,8 +14,8 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
 ## Enable the Queue module
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
+workers:
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -23,7 +23,7 @@ modules:
           concurrency: 10
           type: standard
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based
           file_path: ./data/queue_store
@@ -40,8 +40,8 @@ modules:
 Declare one or more named queues under `queue_configs`. Each queue has independent retry, concurrency, and ordering settings.
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
+workers:
+  - name: iii-queue
     config:
       queue_configs:
         default:
@@ -59,7 +59,7 @@ modules:
           concurrency: 5
           type: standard
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based
           file_path: ./data/queue_store
@@ -306,8 +306,8 @@ Jobs are enqueued and acknowledged immediately — the caller receives a `messag
 The most common pattern — an HTTP endpoint accepts a request, responds immediately, and offloads the actual work to a queue. This keeps API response times fast regardless of how long downstream processing takes.
 
 ```yaml title="iii-config.yaml"
-modules:
-  - class: modules::queue::QueueModule
+workers:
+  - name: iii-queue
     config:
       queue_configs:
         payment:
@@ -321,7 +321,7 @@ modules:
           type: standard
           backoff_ms: 2000
       adapter:
-        class: modules::queue::BuiltinQueueAdapter
+        name: builtin
         config:
           store_method: file_based
           file_path: ./data/queue_store

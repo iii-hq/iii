@@ -6,7 +6,7 @@ description: 'Queue module for async job processing with named queues, retries, 
 A module for asynchronous job processing. It supports two modes: **topic-based queues** (register a consumer per topic, emit events) and **named queues** (enqueue function calls via `TriggerAction.Enqueue`, no trigger registration).
 
 ```
-modules::queue::QueueModule
+iii-queue
 ```
 
 <Info title="How-to guidance">
@@ -58,7 +58,7 @@ Both modes are valid. Named queues offer config-driven retries, concurrency, and
 ## Sample Configuration
 
 ```yaml
-- class: modules::queue::QueueModule
+- name: iii-queue
   config:
     queue_configs:
       default:
@@ -71,7 +71,7 @@ Both modes are valid. Named queues offer config-driven retries, concurrency, and
         type: fifo
         message_group_field: transaction_id
     adapter:
-      class: modules::queue::BuiltinQueueAdapter
+      name: builtin
       config:
         store_method: file_based
         file_path: ./data/queue_store
@@ -84,7 +84,7 @@ Both modes are valid. Named queues offer config-driven retries, concurrency, and
 </ResponseField>
 
 <ResponseField name="adapter" type="Adapter">
-  The transport adapter for queue persistence and distribution. Defaults to `modules::queue::BuiltinQueueAdapter` when not specified.
+  The transport adapter for queue persistence and distribution. Defaults to `builtin` when not specified.
 </ResponseField>
 
 ## Queue Configuration
@@ -188,12 +188,12 @@ sequenceDiagram
 
 ## Adapters
 
-### modules::queue::BuiltinQueueAdapter
+### builtin
 
 Built-in in-process queue. No external dependencies. Suitable for single-instance deployments — messages are not shared across engine instances.
 
 ```yaml
-class: modules::queue::BuiltinQueueAdapter
+name: builtin
 config:
   store_method: file_based   # in_memory | file_based
   file_path: ./data/queue_store  # required when store_method is file_based
@@ -207,16 +207,16 @@ config:
   Path to the queue store directory. Required when `store_method` is `file_based`.
 </ResponseField>
 
-### modules::queue::RedisAdapter
+### redis
 
 Uses Redis as the queue backend for topic-based pub/sub. Enables message distribution across multiple engine instances.
 
 <Warning title="Limited named queue support">
-  The Redis adapter supports publishing to named queues but does not implement named queue consumption, retries, or dead-letter queues. It is suitable for topic-based pub/sub only. For full named queue support in multi-instance deployments, use the [RabbitMQ adapter](#modulesqueuerabbitmqadapter).
+  The Redis adapter supports publishing to named queues but does not implement named queue consumption, retries, or dead-letter queues. It is suitable for topic-based pub/sub only. For full named queue support in multi-instance deployments, use the [RabbitMQ adapter](#rabbitmq).
 </Warning>
 
 ```yaml
-class: modules::queue::RedisAdapter
+name: redis
 config:
   redis_url: ${REDIS_URL:redis://localhost:6379}
 ```
@@ -225,14 +225,14 @@ config:
   The URL of the Redis instance to connect to.
 </ResponseField>
 
-### modules::queue::RabbitMQAdapter
+### rabbitmq
 
 Uses RabbitMQ as the queue backend. Supports durable delivery, retries, and dead-letter queues across multiple engine instances.
 
 The engine owns consumer loops, retry acknowledgement, and backoff logic — RabbitMQ is used as a transport only. Retry uses explicit ack + republish to a retry exchange with an `x-attempt` header, keeping compatibility with both classic and quorum queues.
 
 ```yaml
-class: modules::queue::RabbitMQAdapter
+name: rabbitmq
 config:
   amqp_url: ${RABBITMQ_URL:amqp://localhost:5672}
 ```
@@ -272,7 +272,7 @@ RabbitMQ's fanout exchange natively delivers a copy of each published message to
 
 ## Adapter Comparison
 
-| | BuiltinQueueAdapter | RabbitMQAdapter | RedisAdapter |
+| | builtin | rabbitmq | redis |
 |---|---|---|---|
 | **Retries** | Yes | Yes | No |
 | **Dead-letter queue** | Yes | Yes | No |
@@ -286,9 +286,9 @@ RabbitMQ's fanout exchange natively delivers a copy of each published message to
 
 | Scenario | Recommended Adapter | Why |
 |----------|-------------------|-----|
-| Local development | `BuiltinQueueAdapter` (`in_memory`) | Zero dependencies, fast iteration |
-| Single-instance production | `BuiltinQueueAdapter` (`file_based`) | Durable across restarts, no external infra |
-| Multi-instance production | `RabbitMQAdapter` | Distributes messages across engine instances |
+| Local development | `builtin` (`in_memory`) | Zero dependencies, fast iteration |
+| Single-instance production | `builtin` (`file_based`) | Durable across restarts, no external infra |
+| Multi-instance production | `rabbitmq` | Distributes messages across engine instances |
 
 Regardless of which adapter you choose, retry semantics, concurrency enforcement, and FIFO ordering behave identically — the engine owns these behaviors, not the adapter.
 
