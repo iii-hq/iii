@@ -36,9 +36,14 @@
                 "group": "How-to Guides",
                 "pages": [
                   "how-to/use-functions-and-triggers",
-                  "how-to/use-iii-in-the-browser",
-                  "how-to/worker-rbac",
-                  "how-to/configure-engine",
+                  {
+                    "group": "Functions",
+                    "pages": [
+                      "how-to/define-request-response-formats",
+                      "how-to/create-ephemeral-worker",
+                      "how-to/schedule-cron-task"
+                    ]
+                  },
                   {
                     "group": "Triggers",
                     "pages": [
@@ -48,12 +53,14 @@
                       "how-to/create-custom-trigger-type"
                     ]
                   },
+                  "how-to/use-iii-in-the-browser",
+                  "how-to/worker-rbac",
+                  "how-to/configure-engine",
                   {
-                    "group": "Functions",
+                    "group": "HTTP",
                     "pages": [
-                      "how-to/define-request-response-formats",
-                      "how-to/create-ephemeral-worker",
-                      "how-to/schedule-cron-task"
+                      "how-to/expose-http-endpoint",
+                      "how-to/use-http-middleware"
                     ]
                   },
                   {
@@ -71,13 +78,6 @@
                       "how-to/react-to-state-changes",
                       "how-to/use-channels",
                       "how-to/stream-realtime-data"
-                    ]
-                  },
-                  {
-                    "group": "HTTP",
-                    "pages": [
-                      "how-to/expose-http-endpoint",
-                      "how-to/use-http-middleware"
                     ]
                   }
                 ]
