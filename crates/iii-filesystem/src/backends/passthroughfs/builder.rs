@@ -179,9 +179,7 @@ mod tests {
     #[test]
     fn build_with_valid_root_dir_succeeds() {
         let dir = tempfile::tempdir().unwrap();
-        let result = PassthroughFsBuilder::new()
-            .root_dir(dir.path())
-            .build();
+        let result = PassthroughFsBuilder::new().root_dir(dir.path()).build();
         assert!(result.is_ok());
     }
 

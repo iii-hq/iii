@@ -130,14 +130,8 @@ resources:
     let parsed: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
 
     assert_eq!(parsed["name"].as_str(), Some("integration-test-worker"));
-    assert_eq!(
-        parsed["runtime"]["language"].as_str(),
-        Some("typescript")
-    );
-    assert_eq!(
-        parsed["runtime"]["package_manager"].as_str(),
-        Some("npm")
-    );
+    assert_eq!(parsed["runtime"]["language"].as_str(), Some("typescript"));
+    assert_eq!(parsed["runtime"]["package_manager"].as_str(), Some("npm"));
     assert_eq!(parsed["env"]["NODE_ENV"].as_str(), Some("production"));
     assert_eq!(parsed["resources"]["cpus"].as_u64(), Some(4));
     assert_eq!(parsed["resources"]["memory"].as_u64(), Some(4096));
@@ -168,9 +162,7 @@ fn oci_config_json_parsing() {
     let content = std::fs::read_to_string(dir.path().join(".oci-config.json")).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-    let entrypoint = parsed["config"]["Entrypoint"]
-        .as_array()
-        .unwrap();
+    let entrypoint = parsed["config"]["Entrypoint"].as_array().unwrap();
     assert_eq!(entrypoint[0].as_str(), Some("/usr/bin/node"));
 
     let cmd = parsed["config"]["Cmd"].as_array().unwrap();

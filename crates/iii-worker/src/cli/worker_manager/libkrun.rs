@@ -77,10 +77,7 @@ pub async fn prepare_rootfs(language: &str) -> Result<PathBuf> {
         .join("rootfs")
         .join(rootfs_name);
 
-    eprintln!(
-        "  Pulling rootfs {} ({})...",
-        rootfs_name, oci_image
-    );
+    eprintln!("  Pulling rootfs {} ({})...", rootfs_name, oci_image);
 
     pull_and_extract_rootfs(oci_image, &rootfs_dir).await?;
 

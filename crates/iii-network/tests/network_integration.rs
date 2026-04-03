@@ -24,7 +24,9 @@ fn backend_write_frame_flows_to_device_stage() {
     let hdr_len = 12; // VIRTIO_NET_HDR_LEN
     let mut frame_with_header = vec![0u8; hdr_len + 6];
     frame_with_header[hdr_len..].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-    backend.write_frame(hdr_len, &mut frame_with_header).unwrap();
+    backend
+        .write_frame(hdr_len, &mut frame_with_header)
+        .unwrap();
 
     // Device reads the frame from tx_ring
     let mut device = SmoltcpDevice::new(shared, 1500);
