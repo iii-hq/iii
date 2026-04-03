@@ -377,13 +377,12 @@ impl EngineBuilder {
             let module = entry
                 .create_module(self.engine.clone(), &self.registry)
                 .await
-                .map_err(|err| {
-                    anyhow::anyhow!("failed to create module '{}': {}", key, err)
-                })?;
+                .map_err(|err| anyhow::anyhow!("failed to create module '{}': {}", key, err))?;
             tracing::debug!("Initializing module: {}", key);
-            module.initialize().await.map_err(|err| {
-                anyhow::anyhow!("failed to initialize module '{}': {}", key, err)
-            })?;
+            module
+                .initialize()
+                .await
+                .map_err(|err| anyhow::anyhow!("failed to initialize module '{}': {}", key, err))?;
             module.register_functions(self.engine.clone());
             self.modules.push(Arc::from(module));
         }
@@ -727,10 +726,7 @@ mod tests {
     #[test]
     fn test_default_modules_keys() {
         let entries = default_module_entries();
-        let names: Vec<&str> = entries
-            .iter()
-            .filter_map(|e| e.name.as_deref())
-            .collect();
+        let names: Vec<&str> = entries.iter().filter_map(|e| e.name.as_deref()).collect();
 
         let unique_names: HashSet<&str> = names.iter().copied().collect();
         assert_eq!(

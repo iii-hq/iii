@@ -1666,11 +1666,7 @@ impl Worker for OtelWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-observability",
-    OtelWorker,
-    enabled_by_default = false
-);
+crate::register_worker!("iii-observability", OtelWorker, enabled_by_default = false);
 
 #[cfg(test)]
 mod tests {

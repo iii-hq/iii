@@ -881,9 +881,7 @@ mod tests {
 
     #[test]
     fn test_extract_otel_config_defaults_when_module_missing() {
-        let cfg = EngineConfig {
-            workers: vec![],
-        };
+        let cfg = EngineConfig { workers: vec![] };
 
         let otel = extract_otel_config(&cfg);
         assert!(!otel.enabled);

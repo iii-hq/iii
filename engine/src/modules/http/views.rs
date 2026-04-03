@@ -1263,9 +1263,9 @@ mod tests {
 
     use crate::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
     use crate::function::FunctionResult;
-    use crate::modules::observability::metrics::ensure_default_meter;
-    use crate::modules::http::api_core::{PathRouter, HttpWorker};
+    use crate::modules::http::api_core::{HttpWorker, PathRouter};
     use crate::modules::http::types::HttpRequest;
+    use crate::modules::observability::metrics::ensure_default_meter;
     use crate::modules::worker::channels::ChannelItem;
     use crate::protocol::ErrorBody;
     use axum::http::Method;

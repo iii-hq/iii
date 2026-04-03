@@ -65,11 +65,7 @@ impl Worker for ExecWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-exec",
-    ExecWorker,
-    enabled_by_default = false
-);
+crate::register_worker!("iii-exec", ExecWorker, enabled_by_default = false);
 
 #[cfg(test)]
 mod tests {

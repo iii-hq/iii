@@ -174,10 +174,7 @@ impl Worker for HttpFunctionsWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-http-functions",
-    HttpFunctionsWorker
-);
+crate::register_worker!("iii-http-functions", HttpFunctionsWorker);
 
 #[cfg(test)]
 mod tests {

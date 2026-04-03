@@ -297,10 +297,7 @@ impl Worker for BridgeClientWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-bridge",
-    BridgeClientWorker
-);
+crate::register_worker!("iii-bridge", BridgeClientWorker);
 
 #[cfg(test)]
 mod tests {

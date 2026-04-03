@@ -543,11 +543,7 @@ impl EngineFunctionsWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-engine-fn",
-    EngineFunctionsWorker,
-    mandatory
-);
+crate::register_worker!("iii-engine-fn", EngineFunctionsWorker, mandatory);
 
 #[cfg(test)]
 mod tests {
@@ -1222,7 +1218,8 @@ mod tests {
             },
         );
 
-        let worker = crate::worker_connections::WorkerConnection::new(tokio::sync::mpsc::channel(1).0);
+        let worker =
+            crate::worker_connections::WorkerConnection::new(tokio::sync::mpsc::channel(1).0);
         let worker_id = worker.id.to_string();
         engine.worker_registry.register_worker(worker);
 

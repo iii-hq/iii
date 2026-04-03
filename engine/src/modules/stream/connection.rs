@@ -17,7 +17,7 @@ use crate::{
     engine::{Engine, EngineTrait},
     function::FunctionResult,
     modules::stream::{
-        StreamWorker, StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage,
+        StreamIncomingMessage, StreamOutboundMessage, StreamWorker, StreamWrapperMessage,
         Subscription,
         adapters::StreamConnection,
         structs::{

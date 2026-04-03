@@ -166,11 +166,7 @@ impl ConfigurableWorker for CronWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-cron",
-    CronWorker,
-    enabled_by_default = true
-);
+crate::register_worker!("iii-cron", CronWorker, enabled_by_default = true);
 
 #[cfg(test)]
 mod tests {
@@ -185,10 +181,7 @@ mod tests {
 
     #[test]
     fn default_adapter_name() {
-        assert_eq!(
-            CronWorker::DEFAULT_ADAPTER_NAME,
-            "kv"
-        );
+        assert_eq!(CronWorker::DEFAULT_ADAPTER_NAME, "kv");
     }
 
     // =========================================================================

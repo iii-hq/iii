@@ -796,11 +796,7 @@ impl ConfigurableWorker for QueueWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-queue",
-    QueueWorker,
-    enabled_by_default = true
-);
+crate::register_worker!("iii-queue", QueueWorker, enabled_by_default = true);
 
 #[cfg(test)]
 mod tests {
@@ -878,10 +874,7 @@ mod tests {
 
     #[test]
     fn default_adapter_name() {
-        assert_eq!(
-            QueueWorker::DEFAULT_ADAPTER_NAME,
-            "builtin"
-        );
+        assert_eq!(QueueWorker::DEFAULT_ADAPTER_NAME, "builtin");
     }
 
     // =========================================================================

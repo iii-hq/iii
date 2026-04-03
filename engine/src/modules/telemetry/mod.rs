@@ -775,11 +775,7 @@ impl Worker for TelemetryWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-telemetry",
-    TelemetryWorker,
-    mandatory
-);
+crate::register_worker!("iii-telemetry", TelemetryWorker, mandatory);
 
 #[cfg(test)]
 mod tests {

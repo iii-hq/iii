@@ -14,8 +14,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-pub use self::pubsub::PubSubWorker;
 pub use self::pubsub::PubSubInput;
+pub use self::pubsub::PubSubWorker;
 
 #[async_trait::async_trait]
 pub trait PubSubAdapter: Send + Sync + 'static {

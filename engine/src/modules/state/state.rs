@@ -406,11 +406,7 @@ impl StateWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-state",
-    StateWorker,
-    enabled_by_default = true
-);
+crate::register_worker!("iii-state", StateWorker, enabled_by_default = true);
 
 #[cfg(test)]
 mod tests {

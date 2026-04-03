@@ -5,7 +5,8 @@ use std::{sync::Arc, time::Instant};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::future::join_all;
 use iii::{
-    engine::Outbound, modules::observability::metrics::ensure_default_meter, worker_connections::WorkerConnection,
+    engine::Outbound, modules::observability::metrics::ensure_default_meter,
+    worker_connections::WorkerConnection,
 };
 use tokio::{runtime::Runtime, sync::mpsc};
 use uuid::Uuid;

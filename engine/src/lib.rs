@@ -24,6 +24,7 @@ pub mod modules {
     pub mod cron;
     pub mod engine_fn;
     pub mod external;
+    pub mod http;
     pub mod http_functions;
     pub mod module;
     pub mod observability;
@@ -31,7 +32,6 @@ pub mod modules {
     pub mod queue;
     pub mod redis;
     pub mod registry;
-    pub mod http;
     pub mod shell;
     pub mod state;
     pub mod stream;

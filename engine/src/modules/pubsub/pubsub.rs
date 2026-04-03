@@ -190,11 +190,7 @@ impl ConfigurableWorker for PubSubWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-pubsub",
-    PubSubWorker,
-    enabled_by_default = true
-);
+crate::register_worker!("iii-pubsub", PubSubWorker, enabled_by_default = true);
 
 #[cfg(test)]
 mod tests {

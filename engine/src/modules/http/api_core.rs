@@ -439,11 +439,7 @@ impl TriggerRegistrator for HttpWorker {
     }
 }
 
-crate::register_worker!(
-    "iii-http",
-    HttpWorker,
-    enabled_by_default = true
-);
+crate::register_worker!("iii-http", HttpWorker, enabled_by_default = true);
 
 #[cfg(test)]
 mod tests {
@@ -495,18 +491,12 @@ mod tests {
 
     #[test]
     fn normalize_strips_leading_slash() {
-        assert_eq!(
-            HttpWorker::normalize_http_path_for_key("/users"),
-            "users"
-        );
+        assert_eq!(HttpWorker::normalize_http_path_for_key("/users"), "users");
     }
 
     #[test]
     fn normalize_no_leading_slash_unchanged() {
-        assert_eq!(
-            HttpWorker::normalize_http_path_for_key("users"),
-            "users"
-        );
+        assert_eq!(HttpWorker::normalize_http_path_for_key("users"), "users");
     }
 
     #[test]
@@ -687,11 +677,8 @@ mod tests {
         let engine = Arc::new(crate::engine::Engine::new());
         let module = make_worker_with_cors(None);
         let registry = DashMap::new();
-        let _router = HttpWorker::build_routers_from_routers_registry(
-            engine,
-            Arc::new(module),
-            &registry,
-        );
+        let _router =
+            HttpWorker::build_routers_from_routers_registry(engine, Arc::new(module), &registry);
     }
 
     #[test]
@@ -765,11 +752,8 @@ mod tests {
             ),
         );
 
-        let _router = HttpWorker::build_routers_from_routers_registry(
-            engine,
-            Arc::new(module),
-            &registry,
-        );
+        let _router =
+            HttpWorker::build_routers_from_routers_registry(engine, Arc::new(module), &registry);
     }
 
     #[test]
@@ -789,11 +773,8 @@ mod tests {
             ),
         );
 
-        let _router = HttpWorker::build_routers_from_routers_registry(
-            engine,
-            Arc::new(module),
-            &registry,
-        );
+        let _router =
+            HttpWorker::build_routers_from_routers_registry(engine, Arc::new(module), &registry);
     }
 
     // ---- get_router tests ----
