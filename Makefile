@@ -69,6 +69,8 @@ engine-down:
 # ── Init Binary Cross-Compilation ────────────────────────────────────────────
 
 INIT_CRATE := iii-init
+WORKER_CRATE := iii-worker
+WORKER_EMBED_FEATURES := embed-init,embed-libkrunfw
 
 init-build-x86:
 	cargo build -p $(INIT_CRATE) --target x86_64-unknown-linux-musl --release
@@ -78,23 +80,40 @@ init-build-aarch64:
 
 init-build-all: init-build-x86 init-build-aarch64
 
-# ── Sandbox (init + engine with embedded init) ───────────────────────────────
+# ── Sandbox (init + engine/worker with embedded assets) ──────────────────────
 # Auto-detects host arch for the correct musl init target.
 
 UNAME_M := $(shell uname -m)
+UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_M),x86_64)
   INIT_TARGET := x86_64-unknown-linux-musl
 else
   INIT_TARGET := aarch64-unknown-linux-musl
 endif
 
-sandbox: ## Release build: cross-compile init, embed into iii
-	cargo build -p $(INIT_CRATE) --target $(INIT_TARGET) --release
-	cargo build --release -p iii -F iii-filesystem/embed-init
+ifeq ($(UNAME_S),Darwin)
+  ifeq ($(UNAME_M),x86_64)
+    WORKER_TARGET := x86_64-apple-darwin
+  else
+    WORKER_TARGET := aarch64-apple-darwin
+  endif
+else
+  ifeq ($(UNAME_M),x86_64)
+    WORKER_TARGET := x86_64-unknown-linux-gnu
+  else
+    WORKER_TARGET := aarch64-unknown-linux-gnu
+  endif
+endif
 
-sandbox-debug: ## Debug build: cross-compile init, embed into iii
+sandbox: ## Release-like local build: init + engine + worker(embed-init,embed-libkrunfw)
 	cargo build -p $(INIT_CRATE) --target $(INIT_TARGET) --release
-	cargo build -p iii -F iii-filesystem/embed-init
+	cargo build --release -p iii
+	cargo build -p $(WORKER_CRATE) --target $(WORKER_TARGET) --features $(WORKER_EMBED_FEATURES) --release
+
+sandbox-debug: ## Release-like local debug: init + engine + worker(embed-init,embed-libkrunfw)
+	cargo build -p $(INIT_CRATE) --target $(INIT_TARGET) --release
+	cargo build -p iii
+	cargo build -p $(WORKER_CRATE) --target $(WORKER_TARGET) --features $(WORKER_EMBED_FEATURES)
 
 # ── SDK Tests ─────────────────────────────────────────────────────────────────
 
