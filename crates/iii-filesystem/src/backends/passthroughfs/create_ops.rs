@@ -43,8 +43,8 @@ pub(crate) fn do_create(
 ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
     name_validation::validate_name(name)?;
 
-    // Protect init.krun from being overwritten.
-    if parent == 1 && init_binary::is_init_name(name.to_bytes()) {
+    // Protect init.krun from being overwritten (only when init is embedded).
+    if init_binary::has_init() && parent == 1 && init_binary::is_init_name(name.to_bytes()) {
         return Err(platform::eexist());
     }
 
@@ -103,8 +103,8 @@ pub(crate) fn do_mkdir(
 ) -> io::Result<Entry> {
     name_validation::validate_name(name)?;
 
-    // Protect init.krun from being used as a directory name.
-    if parent == 1 && init_binary::is_init_name(name.to_bytes()) {
+    // Protect init.krun from being used as a directory name (only when init is embedded).
+    if init_binary::has_init() && parent == 1 && init_binary::is_init_name(name.to_bytes()) {
         return Err(platform::eexist());
     }
 
@@ -133,7 +133,7 @@ pub(crate) fn do_symlink(
 ) -> io::Result<Entry> {
     name_validation::validate_name(name)?;
 
-    if parent == 1 && init_binary::is_init_name(name.to_bytes()) {
+    if init_binary::has_init() && parent == 1 && init_binary::is_init_name(name.to_bytes()) {
         return Err(platform::eexist());
     }
 
@@ -160,10 +160,10 @@ pub(crate) fn do_link(
 ) -> io::Result<Entry> {
     name_validation::validate_name(newname)?;
 
-    if inode_num == init_binary::INIT_INODE {
+    if init_binary::has_init() && inode_num == init_binary::INIT_INODE {
         return Err(platform::eperm());
     }
-    if newparent == 1 && init_binary::is_init_name(newname.to_bytes()) {
+    if init_binary::has_init() && newparent == 1 && init_binary::is_init_name(newname.to_bytes()) {
         return Err(platform::eexist());
     }
 

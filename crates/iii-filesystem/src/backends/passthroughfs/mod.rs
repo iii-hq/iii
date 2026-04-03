@@ -165,13 +165,19 @@ impl PassthroughFs {
             unsafe { File::from_raw_fd(fd) }
         };
 
+        let (start_inode, start_handle) = if init_binary::has_init() {
+            (3u64, 1u64)
+        } else {
+            (2u64, 0u64)
+        };
+
         Ok(Self {
             cfg,
             root_fd,
             inodes: RwLock::new(MultikeyBTreeMap::new()),
-            next_inode: AtomicU64::new(3), // 1=root, 2=init
+            next_inode: AtomicU64::new(start_inode),
             handles: RwLock::new(BTreeMap::new()),
-            next_handle: AtomicU64::new(1), // 0=init handle
+            next_handle: AtomicU64::new(start_handle),
             writeback: AtomicBool::new(false),
             init_file,
             #[cfg(target_os = "linux")]
@@ -331,8 +337,8 @@ impl DynFileSystem for PassthroughFs {
     }
 
     fn lookup(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
-        // Handle init.krun lookup in root directory.
-        if parent == 1 && init_binary::is_init_name(name.to_bytes()) {
+        // Handle init.krun lookup in root directory (only when init is embedded).
+        if init_binary::has_init() && parent == 1 && init_binary::is_init_name(name.to_bytes()) {
             return Ok(init_binary::init_entry(
                 self.cfg.entry_timeout,
                 self.cfg.attr_timeout,
@@ -342,7 +348,7 @@ impl DynFileSystem for PassthroughFs {
     }
 
     fn forget(&self, _ctx: Context, ino: u64, count: u64) {
-        if ino == init_binary::INIT_INODE {
+        if init_binary::has_init() && ino == init_binary::INIT_INODE {
             return;
         }
         inode::forget_one(self, ino, count);
@@ -353,7 +359,7 @@ impl DynFileSystem for PassthroughFs {
         // batch_forget is called with hundreds of entries after directory traversals.
         let mut inodes = self.inodes.write().unwrap();
         for (ino, count) in requests {
-            if ino == init_binary::INIT_INODE {
+            if init_binary::has_init() && ino == init_binary::INIT_INODE {
                 continue;
             }
             inode::forget_one_locked(&mut inodes, ino, count);
@@ -541,7 +547,7 @@ impl DynFileSystem for PassthroughFs {
     }
 
     fn readlink(&self, _ctx: Context, ino: u64) -> io::Result<Vec<u8>> {
-        if ino == init_binary::INIT_INODE {
+        if init_binary::has_init() && ino == init_binary::INIT_INODE {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
 

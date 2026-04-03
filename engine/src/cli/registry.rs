@@ -53,6 +53,8 @@ pub static REGISTRY: &[BinarySpec] = &[
         has_checksum: true,
         supported_targets: &[
             "x86_64-unknown-linux-musl",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
             "aarch64-unknown-linux-gnu",
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
@@ -115,6 +117,23 @@ pub static REGISTRY: &[BinarySpec] = &[
             binary_subcommand: None,
         }],
         tag_prefix: None,
+    },
+    BinarySpec {
+        name: "iii-worker",
+        repo: "iii-hq/iii",
+        has_checksum: true,
+        supported_targets: &[
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-gnu",
+        ],
+        commands: &[CommandMapping {
+            cli_command: "worker",
+            binary_subcommand: None,
+        }],
+        tag_prefix: Some("iii"),
     },
 ];
 

@@ -130,13 +130,21 @@ impl PassthroughFsBuilder {
             writeback: self.writeback,
         };
 
+        // When init is embedded: inode 2 = init, handle 0 = init handle.
+        // When init is NOT embedded: inode 2 and handle 0 are available for real files.
+        let (start_inode, start_handle) = if init_binary::has_init() {
+            (3u64, 1u64) // 1=root, 2=init (reserved)
+        } else {
+            (2u64, 0u64) // 1=root, no reserved init inode
+        };
+
         Ok(PassthroughFs {
             cfg,
             root_fd,
             inodes: RwLock::new(MultikeyBTreeMap::new()),
-            next_inode: AtomicU64::new(3), // 1=root, 2=init
+            next_inode: AtomicU64::new(start_inode),
             handles: RwLock::new(BTreeMap::new()),
-            next_handle: AtomicU64::new(1), // 0=init handle
+            next_handle: AtomicU64::new(start_handle),
             writeback: AtomicBool::new(false),
             init_file,
             #[cfg(target_os = "linux")]

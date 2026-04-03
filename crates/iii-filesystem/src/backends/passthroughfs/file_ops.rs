@@ -40,7 +40,7 @@ pub(crate) fn do_open(
     _kill_priv: bool,
     flags: u32,
 ) -> io::Result<(Option<u64>, OpenOptions)> {
-    if ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && ino == init_binary::INIT_INODE {
         return Ok((Some(init_binary::INIT_HANDLE), OpenOptions::empty()));
     }
 
@@ -83,7 +83,7 @@ pub(crate) fn do_read(
     offset: u64,
 ) -> io::Result<usize> {
     // Virtual init.krun binary.
-    if handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
         return init_binary::read_init(w, &fs.init_file, size, offset);
     }
 
@@ -111,7 +111,7 @@ pub(crate) fn do_write(
     offset: u64,
     kill_priv: bool,
 ) -> io::Result<usize> {
-    if handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
         return Err(platform::eperm());
     }
 
@@ -144,7 +144,7 @@ pub(crate) fn do_write(
 /// Emulates POSIX close semantics by duplicating and closing the fd.
 /// Called on every guest `close()` (may fire multiple times if the fd was `dup`'d).
 pub(crate) fn do_flush(fs: &PassthroughFs, _ctx: Context, ino: u64, handle: u64) -> io::Result<()> {
-    if handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
         return Ok(());
     }
 
@@ -172,7 +172,7 @@ pub(crate) fn do_release(
     ino: u64,
     handle: u64,
 ) -> io::Result<()> {
-    if handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
         return Ok(());
     }
 
