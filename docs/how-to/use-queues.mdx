@@ -69,21 +69,15 @@ Topic-based queues work like durable pub/sub: you publish a message to a **topic
 
     const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-    iii.registerFunction(
-      { id: 'notify::email' },
-      async (data) => {
-        await sendEmail(data.userId, `Order ${data.orderId} created`)
-        return {}
-      },
-    )
+    iii.registerFunction('notify::email', async (data) => {
+      await sendEmail(data.userId, `Order ${data.orderId} created`)
+      return {}
+    })
 
-    iii.registerFunction(
-      { id: 'audit::log' },
-      async (data) => {
-        await writeAuditLog('order.created', data)
-        return {}
-      },
-    )
+    iii.registerFunction('audit::log', async (data) => {
+      await writeAuditLog('order.created', data)
+      return {}
+    })
 
     iii.registerTrigger({
       type: 'queue',
@@ -283,10 +277,7 @@ Topic-based queues work like durable pub/sub: you publish a message to a **topic
     <Tabs>
     <Tab title="Node / TypeScript">
     ```typescript
-    iii.registerFunction(
-      { id: 'conditions::is_high_value' },
-      async (data) => data.total > 1000,
-    )
+    iii.registerFunction('conditions::is_high_value', async (data) => data.total > 1000)
 
     iii.registerTrigger({
       type: 'queue',
@@ -905,22 +896,6 @@ This example uses all three [trigger actions](./trigger-actions): **Enqueue** fo
 
 An order system publishes `order.created` events. Multiple independent services — email notifications, inventory updates, and analytics — each need to process every order. Topic-based queues fan out each message to all subscribers with independent retries per function.
 
-<<<<<<< HEAD
-**Queue configuration:**
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript title="process-order.ts"
-import { registerWorker, Logger } from 'iii-sdk'
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
-
-iii.registerFunction('orders::process-order', async (order) => {
-  const logger = new Logger()
-  logger.info('Processing payment', { orderId: order.id })
-  // ...payment logic...
-  return { processed: true }
-})
-=======
 ```mermaid
 flowchart LR
     P[orders::create] -->|publish| T((order.created))
@@ -930,33 +905,28 @@ flowchart LR
     Q1 --> F1[notify::email]
     Q2 --> F2[inventory::reserve]
     Q3 --> F3[analytics::track]
->>>>>>> 6f637f0f (docs: update queue documentation for fan-out delivery semantics)
 ```
 
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-<<<<<<< HEAD
-iii.registerFunction('orders::process-order', async (order) => {
-  // ...charge the customer...
-=======
 import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'notify::email' }, async (data) => {
+iii.registerFunction('notify::email', async (data) => {
   await sendEmail(data.email, `Your order ${data.orderId} is confirmed!`)
   return {}
 })
 
-iii.registerFunction({ id: 'inventory::reserve' }, async (data) => {
+iii.registerFunction('inventory::reserve', async (data) => {
   for (const item of data.items) {
     await reserveStock(item.sku, item.quantity)
   }
   return {}
 })
 
-iii.registerFunction({ id: 'analytics::track' }, async (data) => {
+iii.registerFunction('analytics::track', async (data) => {
   await trackEvent('order_created', { orderId: data.orderId, total: data.total })
   return {}
 })
@@ -979,9 +949,8 @@ iii.registerTrigger({
   config: { topic: 'order.created' },
 })
 
-iii.registerFunction({ id: 'orders::create' }, async (req) => {
+iii.registerFunction('orders::create', async (req) => {
   const order = { id: crypto.randomUUID(), ...req.body }
->>>>>>> 6f637f0f (docs: update queue documentation for fan-out delivery semantics)
 
   await iii.trigger({
     function_id: 'enqueue',
@@ -1161,7 +1130,7 @@ import { registerWorker, TriggerAction } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-iii.registerFunction({ id: 'transactions::submit' }, async (req) => {
+iii.registerFunction('transactions::submit', async (req) => {
   const { account_id, type, amount } = req.body
 
   const receipt = await iii.trigger({
@@ -1173,7 +1142,7 @@ iii.registerFunction({ id: 'transactions::submit' }, async (req) => {
   return { status_code: 202, body: { receiptId: receipt.messageReceiptId } }
 })
 
-iii.registerFunction({ id: 'ledger::apply' }, async (txn) => {
+iii.registerFunction('ledger::apply', async (txn) => {
   const { account_id, type, amount } = txn
   if (type === 'deposit') {
     await db.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amount, account_id])
@@ -1429,169 +1398,7 @@ iii.register_function(reg);
 
 With `concurrency: 3`, at most three emails are in-flight at any time. Failed sends retry with exponential backoff (5s, 10s, 20s, 40s, 80s), protecting the SMTP provider from overload.
 
-<<<<<<< HEAD
-### Scenario 3: Financial Transaction Ledger
-
-A banking system processes account transactions. Transactions for the same account must be applied in order to prevent balance inconsistencies. Different accounts can process in parallel.
-
-**Queue configuration:**
-
-```yaml title="iii-config.yaml (excerpt)"
-queue_configs:
-  ledger:
-    max_retries: 15
-    concurrency: 1
-    type: fifo
-    message_group_field: account_id
-    backoff_ms: 500
-```
-
-```mermaid
-sequenceDiagram
-    participant API as transactions::submit
-    participant Q as ledger queue (FIFO)
-    participant W as Worker
-    participant DB as Database
-
-    API->>Q: Deposit $100 (account: acct_A)
-    API->>Q: Withdraw $50 (account: acct_A)
-    API->>Q: Deposit $200 (account: acct_B)
-
-    Note over Q: acct_A jobs are ordered; acct_B is independent
-
-    Q->>W: Deposit $100 (acct_A)
-    W->>DB: UPDATE balance SET balance + 100
-    DB-->>W: OK (balance: $100)
-    W-->>Q: ACK
-
-    Q->>W: Withdraw $50 (acct_A)
-    W->>DB: UPDATE balance SET balance - 50
-    DB-->>W: OK (balance: $50)
-    W-->>Q: ACK
-
-    Q->>W: Deposit $200 (acct_B)
-    W->>DB: UPDATE balance SET balance + 200
-    DB-->>W: OK
-    W-->>Q: ACK
-```
-
-<Tabs>
-<Tab title="Node / TypeScript">
-```typescript
-import { registerWorker, TriggerAction } from 'iii-sdk'
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
-
-iii.registerFunction('transactions::submit', async (req) => {
-  const { account_id, type, amount } = req.body
-
-  const receipt = await iii.trigger({
-    function_id: 'ledger::apply',
-    payload: { account_id, type, amount },
-    action: TriggerAction.Enqueue({ queue: 'ledger' }),
-  })
-
-  return { status_code: 202, body: { receiptId: receipt.messageReceiptId } }
-})
-
-iii.registerFunction('ledger::apply', async (txn) => {
-  const { account_id, type, amount } = txn
-  if (type === 'deposit') {
-    await db.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amount, account_id])
-  } else if (type === 'withdraw') {
-    const { rows } = await db.query('SELECT balance FROM accounts WHERE id = $1', [account_id])
-    if (rows[0].balance < amount) {
-      throw new Error('Insufficient funds')
-    }
-    await db.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [amount, account_id])
-  }
-  return { applied: true }
-})
-```
-</Tab>
-<Tab title="Python">
-```python
-from iii import TriggerAction, register_worker
-
-iii = register_worker("ws://localhost:49134")
-
-
-def submit_transaction(req):
-    account_id = req["body"]["account_id"]
-    txn_type = req["body"]["type"]
-    amount = req["body"]["amount"]
-
-    receipt = iii.trigger({
-        "function_id": "ledger::apply",
-        "payload": {"account_id": account_id, "type": txn_type, "amount": amount},
-        "action": TriggerAction.Enqueue(queue="ledger"),
-    })
-
-    return {"status_code": 202, "body": {"receiptId": receipt["messageReceiptId"]}}
-
-
-def apply_transaction(txn):
-    account_id = txn["account_id"]
-    if txn["type"] == "deposit":
-        db.execute(
-            "UPDATE accounts SET balance = balance + %s WHERE id = %s",
-            (txn["amount"], account_id),
-        )
-    elif txn["type"] == "withdraw":
-        balance = db.query("SELECT balance FROM accounts WHERE id = %s", (account_id,))
-        if balance < txn["amount"]:
-            raise ValueError("Insufficient funds")
-        db.execute(
-            "UPDATE accounts SET balance = balance - %s WHERE id = %s",
-            (txn["amount"], account_id),
-        )
-    return {"applied": True}
-
-
-iii.register_function("transactions::submit", submit_transaction)
-iii.register_function("ledger::apply", apply_transaction)
-```
-</Tab>
-<Tab title="Rust">
-```rust
-use iii_sdk::{
-    register_worker, InitOptions, RegisterFunction,
-    TriggerAction, TriggerRequest,
-};
-use serde_json::{json, Value};
-
-let iii = register_worker("ws://localhost:49134", InitOptions::default());
-
-let iii_clone = iii.clone();
-let reg = RegisterFunction::new_async("transactions::submit", move |req: Value| {
-    let iii = iii_clone.clone();
-    async move {
-        let receipt = iii.trigger(TriggerRequest {
-            function_id: "ledger::apply".into(),
-            payload: json!({
-                "account_id": req["body"]["account_id"],
-                "type": req["body"]["type"],
-                "amount": req["body"]["amount"],
-            }),
-            action: Some(TriggerAction::Enqueue { queue: "ledger".into() }),
-            timeout_ms: None,
-        }).await?;
-
-        Ok(json!({
-            "status_code": 202,
-            "body": { "receiptId": receipt["messageReceiptId"] },
-        }))
-    }
-});
-iii.register_function(reg);
-```
-</Tab>
-</Tabs>
-
-Because the `ledger` queue is FIFO with `message_group_field: account_id`, the deposit for `acct_A` always completes before the withdrawal. Without FIFO ordering, the withdrawal could execute first and fail with "Insufficient funds" even though the deposit was submitted first.
-=======
 ---
->>>>>>> 6f637f0f (docs: update queue documentation for fan-out delivery semantics)
 
 ## Choosing an Adapter
 
