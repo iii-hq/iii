@@ -802,7 +802,7 @@ flowchart LR
 <Tabs>
 <Tab title="Node / TypeScript">
 ```typescript
-import { registerWorker, TriggerAction } from 'iii-sdk'
+import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
@@ -847,7 +847,6 @@ iii.registerFunction('orders::create', async (req) => {
   await iii.trigger({
     function_id: 'enqueue',
     payload: { topic: 'order.created', data: order },
-    action: TriggerAction.Void(),
   })
 
   return { status_code: 201, body: { orderId: order.id } }
@@ -856,7 +855,7 @@ iii.registerFunction('orders::create', async (req) => {
 </Tab>
 <Tab title="Python">
 ```python
-from iii import TriggerAction, register_worker
+from iii import register_worker
 
 iii = register_worker("ws://localhost:49134")
 
@@ -896,7 +895,6 @@ def create_order(req):
     iii.trigger({
         "function_id": "enqueue",
         "payload": {"topic": "order.created", "data": order},
-        "action": TriggerAction.Void(),
     })
 
     return {"status_code": 201, "body": {"orderId": order["id"]}}
@@ -909,7 +907,7 @@ iii.register_function("orders::create", create_order)
 ```rust
 use iii_sdk::{
     register_worker, InitOptions, RegisterFunction,
-    RegisterTriggerInput, TriggerAction, TriggerRequest,
+    RegisterTriggerInput, TriggerRequest,
 };
 use serde_json::{json, Value};
 
@@ -959,7 +957,6 @@ iii.register_function(RegisterFunction::new_async("orders::create", move |req: V
         iii.trigger(TriggerRequest {
             function_id: "enqueue".into(),
             payload: json!({ "topic": "order.created", "data": { "id": order_id, "items": req["body"]["items"] } }),
-            action: Some(TriggerAction::Void),
             timeout_ms: None,
         }).await?;
 
