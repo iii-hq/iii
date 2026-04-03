@@ -156,7 +156,7 @@ pub async fn start_managed_workers(engine_url: &str) {
         let result = tokio::process::Command::new(&worker_binary)
             .args(["start", name, "--port", &port.to_string()])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .await;
 

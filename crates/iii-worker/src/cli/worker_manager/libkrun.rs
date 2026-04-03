@@ -358,12 +358,13 @@ fn ensure_macos_entitlements(binary: &std::path::Path) -> Result<()> {
         ),
     )?;
 
-    eprintln!("  Signing binary with VM entitlements...");
     let status = Command::new("codesign")
         .args(["--sign", "-", "--entitlements"])
         .arg(&plist_path)
         .arg("--force")
         .arg(binary)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .context("failed to run codesign")?;
 
@@ -628,7 +629,9 @@ This image likely does not publish arm64. Rebuild/push a multi-arch image (linux
 
         let rootfs_dir = Self::image_rootfs(&spec.image);
         if !rootfs_dir.exists() {
-            anyhow::bail!("rootfs not found for image {}. Run pull first.", spec.image);
+            tracing::info!(image = %spec.image, "rootfs not found, pulling automatically");
+            eprintln!("  Rootfs not found. Pulling {}...", spec.image);
+            self.pull(&spec.image).await?;
         }
 
         let worker_rootfs = worker_dir.join("rootfs");
