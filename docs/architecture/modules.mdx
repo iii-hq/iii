@@ -1,30 +1,30 @@
 ---
-title: 'Modules'
-description: 'Modules are the interface between the Engine and the rest of the application.'
+title: 'Workers'
+description: 'Workers are the interface between the Engine and the rest of the application.'
 ---
 
-Modules are the interface between the Engine and the rest of the application. They are responsible for establishing connections to services, implementing trigger types, and supplying application Context.
+Workers are the interface between the Engine and the rest of the application. They are responsible for establishing connections to services, implementing trigger types, and supplying application Context.
 
-Every capability in iii (HTTP endpoints, cron scheduling, state management, queues, streams, observability) is implemented as a Module. This modular architecture means the Engine itself stays small and focused on orchestration, while Modules handle all external concerns.
+Every capability in iii (HTTP endpoints, cron scheduling, state management, queues, streams, observability) is implemented as a Worker. This architecture means the Engine itself stays small and focused on orchestration, while Workers handle all external concerns.
 
 In `iii-config.yaml`, capabilities are listed under the top-level **`workers:`** key. Each entry sets **`name:`** to a built-in worker id (for example `iii-http` or `iii-queue`) and optional **`config:`**. Adapters use **`adapter.name:`** with short ids such as `kv`, `redis`, `bridge`, `local`, `builtin`, or `rabbitmq`.
 
 ```mermaid
 graph TB
     subgraph Engine[Engine]
-        subgraph Module[Module]
+        subgraph Worker[Worker]
             Context[Context]
             Triggers[Triggers]
         end
     end
-    Module <--> Postgres[(Postgres)]
-    Module <--> Redis[(Redis)]
-    Module <--> ExtAPI[External API]
+    Worker <--> Postgres[(Postgres)]
+    Worker <--> Redis[(Redis)]
+    Worker <--> ExtAPI[External API]
 ```
 
-## Built-in Modules
+## Built-in Workers
 
-| Module | Provides | YAML `name` |
+| Worker | Provides | YAML `name` |
 |--------|----------|---------------|
 | [Worker manager](/modules/module-worker) | SDK WebSocket bridge, optional RBAC port | `iii-worker-manager` |
 | [HTTP](/modules/module-http) | HTTP trigger type, request/response handling | `iii-http` |
@@ -39,13 +39,13 @@ graph TB
 | [Bridge](/modules/module-bridge) | Connect engine to a remote iii instance | `iii-bridge` |
 | Telemetry | Anonymous product usage analytics | `iii-telemetry` |
 
-## How Modules Work
+## How Workers Work
 
-A Module has two responsibilities:
+A Worker has two responsibilities:
 
-1. **Register trigger types**: A Module can introduce new ways to invoke Functions. For example, the HTTP module registers the `http` trigger type, and the Cron module registers the `cron` trigger type.
+1. **Register trigger types**: A Worker can introduce new ways to invoke Functions. For example, the HTTP worker registers the `http` trigger type, and the Cron worker registers the `cron` trigger type.
 
-2. **Supply Context**: A Module can add capabilities to the Context object that gets passed to every Function. For example, the State module adds `state::get`, `state::set`, and other state operations.
+2. **Supply Context**: A Worker can add capabilities to the Context object that gets passed to every Function. For example, the State worker adds `state::get`, `state::set`, and other state operations.
 
 Workers are configured in `config.yaml` (the engine default). Use `-c iii-config.yaml` to specify a custom path:
 
@@ -69,6 +69,6 @@ workers:
           store_method: in_memory
 ```
 
-<Info title="Custom Modules">
-  You can build your own Modules to integrate any service or infrastructure. See [Custom Modules](/advanced/custom-modules) for a detailed guide.
+<Info title="Custom Workers">
+  You can build your own Workers to integrate any service or infrastructure. See [Custom Workers](/advanced/custom-modules) for a detailed guide.
 </Info>

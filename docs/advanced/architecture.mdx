@@ -1,6 +1,6 @@
 ---
 title: "Architecture Overview"
-description: 'An overview of the iii system components — engine core, core modules, and workers — and how they interact.'
+description: 'An overview of the iii system components — engine core, built-in workers, and worker processes — and how they interact.'
 ---
 
 Understanding the iii architecture helps you build more efficient and scalable applications.
@@ -9,9 +9,9 @@ Understanding the iii architecture helps you build more efficient and scalable a
 
 The iii architecture consists of three main layers:
 
-1. **Engine Core** - Manages worker connections, routing, and module lifecycle
-2. **Core Modules** - Provide interfaces to external systems (HTTP, Redis, WebSocket)
-3. **Workers** - External processes that execute business logic
+1. **Engine Core** - Manages worker connections, routing, and worker lifecycle
+2. **Built-in Workers** - Provide interfaces to external systems (HTTP, Redis, WebSocket)
+3. **Worker Processes** - External processes that execute business logic
 
 ```mermaid
 graph TD
@@ -25,12 +25,12 @@ graph TD
         Core[Engine Core]
         Reg[Worker<br/>Registry]
 
-        subgraph "Core Modules"
-            API[RestApiModule]
-            Stream[StreamModule]
-            Log[OtelModule]
-            Queue[QueueModule]
-            Cron[CronModule]
+        subgraph "Built-in Workers"
+            API[HttpWorker]
+            Stream[StreamWorker]
+            Log[OtelWorker]
+            Queue[QueueWorker]
+            Cron[CronWorker]
         end
     end
 
@@ -114,11 +114,11 @@ sequenceDiagram
     W2-->>E: Processing Complete
 ```
 
-## Module Architecture
+## Worker Architecture
 
-Core Modules implement the `CoreModule` trait and bridge external protocols to internal function calls.
+Built-in workers implement the `Worker` trait and bridge external protocols to internal function calls.
 
-### HTTP Module
+### HTTP Worker
 
 Maps HTTP routes to internal function paths using a hot router:
 
@@ -126,7 +126,7 @@ Maps HTTP routes to internal function paths using a hot router:
 - **Path Router**: Links HTTP method + path to function
 - **Request Mapping**: Converts HTTP requests to function invocations
 
-### Streams Module
+### Stream Worker
 
 Manages real-time state and WebSocket connections:
 
@@ -134,7 +134,7 @@ Manages real-time state and WebSocket connections:
 - **Real-time Sync**: WebSocket-based state synchronization
 - **Authentication**: Optional auth function for connection validation
 
-### Queue Module
+### Queue Worker
 
 Implements publish-subscribe pattern:
 
@@ -142,7 +142,7 @@ Implements publish-subscribe pattern:
 - **Topics**: Subscribe to specific event topics
 - **Async Processing**: Non-blocking event distribution
 
-### Cron Module
+### Cron Worker
 
 Handles distributed scheduling:
 
@@ -198,7 +198,7 @@ Run multiple engine instances with shared Redis:
 
 Optimize single instance performance:
 
-- **Rust Performance**: Core modules built for speed and memory efficiency
+- **Rust Performance**: Built-in workers built for speed and memory efficiency
 - **Async Runtime**: Tokio for concurrent request handling
 - **Connection Pooling**: Efficient WebSocket management
 - **Adapter Optimization**: Redis pipelining, connection pooling
@@ -306,11 +306,11 @@ graph TD
 
 ## Extension Points
 
-### Custom Modules
+### Custom Workers
 
-Build custom core modules by implementing the `CoreModule` trait:
+Build custom built-in workers by implementing the `Worker` trait:
 
-1. Define module configuration
+1. Define worker configuration
 2. Implement initialization logic
 3. Register trigger types
 4. Expose functions to workers

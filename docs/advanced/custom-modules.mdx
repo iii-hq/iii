@@ -1,79 +1,79 @@
 ---
-title: 'Developing Custom Modules'
-description: 'Extend the iii engine by building custom modules that register functions, triggers, and integrate with external systems.'
+title: 'Developing Custom Workers'
+description: 'Extend the iii engine by building custom workers that register functions, triggers, and integrate with external systems.'
 ---
 
-Custom modules in the iii Engine allow developers to extend the core functionality of the system. A module acts as a container for logic that can register functions, triggers, and integrate with external systems.
+Custom workers in the iii Engine allow developers to extend the core functionality of the system. A worker acts as a container for logic that can register functions, triggers, and integrate with external systems.
 
 ## Introduction
 
-Modules are dynamically loaded and configured, often utilizing an Adapter pattern to allow for swappable backend implementations (e.g., swapping an in-memory event bus for a Redis-backed one).
+Workers are dynamically loaded and configured, often utilizing an Adapter pattern to allow for swappable backend implementations (e.g., swapping an in-memory event bus for a Redis-backed one).
 
-The engine provides a trait-based system where modules implement the `CoreModule` trait for lifecycle management and the `ConfigurableModule` trait for handling configuration and adapter injection.
+The engine provides a trait-based system where each worker type implements the `Worker` trait for lifecycle management and the `ConfigurableWorker` trait for handling configuration and adapter injection.
 
 ```mermaid
 graph TD
-    Engine[iii Engine] -->|Loads| Module[Custom Module]
-    Module -->|Uses| Adapter[Adapter Interface]
+    Engine[iii Engine] -->|Loads| CustomWorker[Custom Worker]
+    CustomWorker -->|Uses| Adapter[Adapter Interface]
     Adapter -.->|implements| Redis[Redis Adapter]
     Adapter -.->|implements| Memory[In-Memory Adapter]
     Adapter -.->|implements| Custom[Custom Adapter]
 
-    Module -->|Registers| Functions[Functions]
-    Module -->|Registers| Triggers[Triggers]
+    CustomWorker -->|Registers| Functions[Functions]
+    CustomWorker -->|Registers| Triggers[Triggers]
 ```
 
-## Module Architecture
+## Worker architecture
 
-The module system is built around two primary traits: `CoreModule` and `ConfigurableModule`.
+The worker system is built around two primary traits: `Worker` and `ConfigurableWorker`.
 
 ### Core Traits
 
 | Trait                  | Description                                                                                   | Key Methods                                                  |
 | ---------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| **CoreModule**         | The base trait for all modules. Handles lifecycle, identification, and function registration. | `name()`, `create()`, `initialize()`, `register_functions()`, `start_background_tasks()`, `destroy()` |
-| **ConfigurableModule** | Extends `CoreModule` to support typed configuration and pluggable adapters.                   | `build()`, `registry()`, `adapter_class_from_config()`       |
+| **Worker**         | The base trait for all workers. Handles lifecycle, identification, and function registration. | `name()`, `create()`, `initialize()`, `register_functions()`, `start_background_tasks()`, `destroy()` |
+| **ConfigurableWorker** | Extends `Worker` to support typed configuration and pluggable adapters.                   | `build()`, `registry()`, `adapter_name_from_config()`, `adapter_config_from_config()`       |
 
 ### Lifecycle Flow
 
-The following diagram illustrates the lifecycle of a module from creation to initialization.
+The following diagram illustrates the lifecycle of a worker from creation to initialization.
 
 ```mermaid
 sequenceDiagram
     participant Engine
     participant Builder
-    participant Module
+    participant CustomWorker
     participant Adapter
 
-    Note over Builder, Module: Module Registration Phase
-    Builder->>Module: create(engine, config)
+    Note over Builder, CustomWorker: Worker registration phase
+    Builder->>CustomWorker: create(engine, config)
 
-    alt is ConfigurableModule
-        Module->>Module: create_with_adapters(engine, config)
-        Module->>Adapter: factory(engine, config)
-        Adapter-->>Module: Arc<AdapterInstance>
-        Module->>Module: build(engine, config, adapter)
+    alt is ConfigurableWorker
+        CustomWorker->>CustomWorker: create_with_adapters(engine, config)
+        CustomWorker->>Adapter: factory(engine, config)
+        Adapter-->>CustomWorker: Arc<AdapterInstance>
+        CustomWorker->>CustomWorker: build(engine, config, adapter)
     end
 
-    Builder->>Module: initialize()
-    activate Module
-    Module->>Engine: register_trigger_type() (Optional)
-    Module-->>Builder: Result
-    deactivate Module
+    Builder->>CustomWorker: initialize()
+    activate CustomWorker
+    CustomWorker->>Engine: register_trigger_type() (Optional)
+    CustomWorker-->>Builder: Result
+    deactivate CustomWorker
 
-    Builder->>Module: register_functions(engine)
-    activate Module
-    Module->>Engine: register_function()
-    deactivate Module
+    Builder->>CustomWorker: register_functions(engine)
+    activate CustomWorker
+    CustomWorker->>Engine: register_function()
+    deactivate CustomWorker
 ```
 
-## Implementing a Configurable Module
+## Implementing a configurable worker
 
-Developing a custom module typically involves defining an adapter interface, implementing specific adapters, and then wrapping them in a module structure.
+Developing a custom worker typically involves defining an adapter interface, implementing specific adapters, and then wrapping them in a worker type.
 
 ### Step 1: Define the Adapter Trait
 
-Define an `async_trait` that specifies the behavior your module's backend must implement. This allows users to switch implementations via configuration.
+Define an `async_trait` that specifies the behavior your worker's backend must implement. This allows users to switch implementations via configuration.
 
 ```rust
 use async_trait::async_trait;
@@ -97,21 +97,22 @@ To make adapters discoverable by the configuration system, you must define a reg
 use std::sync::Arc;
 use std::future::Future;
 use std::pin::Pin;
-use iii::Engine;
+use iii::engine::Engine;
+use iii::modules::registry::AdapterRegistrationEntry;
 
 pub type CustomEventAdapterFuture = Pin<
     Box<dyn Future<Output = anyhow::Result<Arc<dyn CustomEventAdapter>>> + Send>
 >;
 
 pub struct CustomEventAdapterRegistration {
-    pub class: &'static str,
+    pub name: &'static str,
     pub factory: fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture,
 }
 
 // Implement AdapterRegistrationEntry trait
 impl AdapterRegistrationEntry<dyn CustomEventAdapter> for CustomEventAdapterRegistration {
-    fn class(&self) -> &'static str {
-        self.class
+    fn name(&self) -> &'static str {
+        self.name
     }
 
     fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture {
@@ -130,8 +131,6 @@ inventory::collect!(CustomEventAdapterRegistration);
 Define factory functions that instantiate your specific adapter implementations (e.g., `InMemory` or `Logging`).
 
 ```rust
-use iii::register_adapter;
-
 fn make_inmemory_adapter(
     engine: Arc<Engine>,
     config: Option<Value>
@@ -143,7 +142,7 @@ fn make_inmemory_adapter(
 }
 
 // Register the specific adapter implementation
-register_adapter!(
+iii::register_adapter!(
     <CustomEventAdapterRegistration>
     "my::InMemoryEventAdapter",
     make_inmemory_adapter
@@ -242,40 +241,47 @@ Create the actual adapter implementations.
   </Accordion>
 </AccordionGroup>
 
-### Step 5: Implement the Module Logic
+### Step 5: Implement the worker logic
 
-The module struct holds the `Engine` reference and the injected `Adapter`.
+The worker struct holds the `Engine` reference and the injected `Adapter`.
 
 ```rust
-use serde::Deserialize;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use iii::engine::Engine;
+use iii::modules::module::{AdapterEntry, AdapterFactory, ConfigurableWorker};
 use once_cell::sync::Lazy;
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CustomEventModuleConfig {
+pub struct CustomEventWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
 
 #[derive(Clone)]
-pub struct CustomEventModule {
+pub struct CustomEventWorker {
     adapter: Arc<dyn CustomEventAdapter>,
     engine: Arc<Engine>,
-    _config: CustomEventModuleConfig,
+    _config: CustomEventWorkerConfig,
 }
 
 #[async_trait]
-impl ConfigurableModule for CustomEventModule {
-    type Config = CustomEventModuleConfig;
+impl ConfigurableWorker for CustomEventWorker {
+    type Config = CustomEventWorkerConfig;
     type Adapter = dyn CustomEventAdapter;
     type AdapterRegistration = CustomEventAdapterRegistration;
-    const DEFAULT_ADAPTER_CLASS: &'static str = "my::InMemoryEventAdapter";
+    const DEFAULT_ADAPTER_NAME: &'static str = "my::InMemoryEventAdapter";
 
     // Define how to access the registry
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomEventAdapter>>>> =
-            Lazy::new(|| RwLock::new(CustomEventModule::build_registry()));
+            Lazy::new(|| RwLock::new(CustomEventWorker::build_registry()));
         &REGISTRY
     }
 
@@ -291,12 +297,20 @@ impl ConfigurableModule for CustomEventModule {
             adapter
         }
     }
+
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
+    }
 }
 ```
 
 ## Registering Functions
 
-Modules expose functionality to the engine (and thus to workers) by registering functions. This is typically done in the `initialize` method or `register_functions`.
+Workers expose functionality to the engine (and thus to connected runtimes) by registering functions. This is typically done in the `initialize` method or `register_functions`.
 
 ### Registration Request Structure
 
@@ -310,18 +324,30 @@ When registering a function, you must provide a `RegisterFunctionRequest`.
 | `response_format` | `Option<Value>`  | JSON Schema defining the expected output       |
 
 <Note>
-When using the `#[service]` macro with `#[function]` attributes, `request_format` and `response_format` are **auto-generated** as standard JSON Schema from your Rust types (via [`schemars`](https://docs.rs/schemars)). Your input/output types must derive `JsonSchema`. Manual schema specification is only needed for custom module registration.
+When using the `#[service]` macro with `#[function]` attributes, `request_format` and `response_format` are **auto-generated** as standard JSON Schema from your Rust types (via [`schemars`](https://docs.rs/schemars)). Your input/output types must derive `JsonSchema`. Manual schema specification is only needed for custom worker registration.
 </Note>
 
 ### Example Registration
 
 ```rust
-use iii::RegisterFunctionRequest;
+use std::sync::Arc;
+
+use iii::engine::{Engine, RegisterFunctionRequest};
+use iii::modules::module::Worker;
+use serde_json::Value;
 
 #[async_trait]
-impl CoreModule for CustomEventModule {
-    fn name(&self) -> &str {
+impl Worker for CustomEventWorker {
+    fn name(&self) -> &'static str {
         "custom_event"
+    }
+
+    fn register_functions(&self, _engine: Arc<Engine>) {
+        // Additional synchronous function registrations can go here
+    }
+
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        Self::create_with_adapters(engine, config).await
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -344,77 +370,96 @@ impl CoreModule for CustomEventModule {
         );
         Ok(())
     }
-
-    async fn register_functions(&self, _engine: Arc<Engine>) -> anyhow::Result<()> {
-        // Additional function registrations can go here
-        Ok(())
-    }
 }
 ```
 
 ## Handling Function Invocations
 
-To handle invocations, the module (or a specific handler struct) must implement the `FunctionHandler` trait.
+To handle invocations, the worker (or a specific handler struct) must implement the `FunctionHandler` trait.
 
 ```rust
-use iii::{FunctionHandler, FunctionResult};
+use std::future::Future;
+use std::pin::Pin;
 
-#[async_trait]
-impl FunctionHandler for CustomEventModule {
-    async fn handle(&self, input: Value) -> FunctionResult {
-        // 1. Parse Input
-        let topic = input.get("topic")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'topic' field"))?;
+use iii::function::{FunctionHandler, FunctionResult};
+use iii::protocol::ErrorBody;
+use serde_json::Value;
+use uuid::Uuid;
 
-        let data = input.get("data")
-            .cloned()
-            .unwrap_or(Value::Null);
+impl FunctionHandler for CustomEventWorker {
+    fn handle_function(
+        &self,
+        _invocation_id: Option<Uuid>,
+        _function_id: String,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static>> {
+        let adapter = self.adapter.clone();
+        Box::pin(async move {
+            // 1. Parse Input
+            let topic = match input
+                .get("topic")
+                .and_then(|v| v.as_str())
+            {
+                Some(t) => t,
+                None => {
+                    return FunctionResult::Failure(ErrorBody {
+                        code: "missing_topic".into(),
+                        message: "Missing 'topic' field".into(),
+                        stacktrace: None,
+                    });
+                }
+            };
 
-        // 2. Execute Logic (using the adapter)
-        self.adapter.emit(topic, data).await;
+            let data = input.get("data").cloned().unwrap_or(Value::Null);
 
-        // 3. Return Result
-        FunctionResult::Success(None)
+            // 2. Execute Logic (using the adapter)
+            adapter.emit(topic, data).await;
+
+            // 3. Return Result
+            FunctionResult::Success(None)
+        })
     }
 }
 ```
 
 ## Registering Triggers
 
-Modules can also act as sources of events by registering `TriggerType`s. This allows the engine to route external events (like Cron ticks or HTTP requests) to specific functions.
+Workers can also act as sources of events by registering `TriggerType`s. This allows the engine to route external events (like Cron ticks or HTTP requests) to specific functions.
 
 ### Trigger Architecture
 
 ```mermaid
 graph TD
-    Module[Core Module] -->|Registers| TT[TriggerType]
+    EngineWorker[Engine worker] -->|Registers| TT[TriggerType]
     TT -->|Contains| Registrator[TriggerRegistrator]
 
-    Worker -->|Sends registertrigger| Engine
+    Runtime[SDK / runtime] -->|Sends registertrigger| Engine
     Engine -->|Delegates to| Registrator
     Registrator -->|Stores| TriggerDefinition
 
-    ExternalEvent[External Event e.g., Timer/HTTP] --> Module
-    Module -->|Look up| TriggerDefinition
-    Module -->|Invoke| Engine
-    Engine -->|Route to| Worker
+    ExternalEvent[External Event e.g., Timer/HTTP] --> EngineWorker
+    EngineWorker -->|Look up| TriggerDefinition
+    EngineWorker -->|Invoke| Engine
+    Engine -->|Route to| Runtime
 ```
 
 ### Implementation
 
-To support triggers, a module implements `TriggerRegistrator`.
+To support triggers, a worker implements `TriggerRegistrator`.
 
 ```rust
 use iii::{TriggerRegistrator, Trigger, TriggerType};
 use std::future::Future;
 use std::pin::Pin;
 
-impl TriggerRegistrator for CustomEventModule {
+impl TriggerRegistrator for CustomEventWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
     ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let adapter = self.adapter.clone();
+        let trigger_id = trigger.id.clone();
+        let function_id = trigger.function_id.clone();
         Box::pin(async move {
             // Extract configuration
             let config = trigger.config;
@@ -427,11 +472,9 @@ impl TriggerRegistrator for CustomEventModule {
                 let topic_str = topic.as_str()
                     .ok_or_else(|| anyhow::anyhow!("Invalid topic"))?;
 
-                self.adapter.subscribe(
-                    topic_str,
-                    &trigger.id,
-                    &trigger.function_id
-                ).await;
+                adapter
+                    .subscribe(topic_str, &trigger_id, &function_id)
+                    .await;
             }
 
             Ok(())
@@ -462,14 +505,14 @@ async fn initialize(&self) -> anyhow::Result<()> {
 
 ## Configuration
 
-Modules are configured via `iii-config.yaml` or JSON passed during initialization. The `ConfigurableModule` trait maps this configuration to a Rust struct.
+Workers are configured via `iii-config.yaml` or JSON passed during initialization. The `ConfigurableWorker` trait maps this configuration to a Rust struct.
 
 ### Configuration Struct
 
 ```rust
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CustomEventModuleConfig {
+pub struct CustomEventWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -478,11 +521,11 @@ pub struct CustomEventModuleConfig {
 ### Usage in Config File
 
 ```yaml
-modules:
-  - class: my::CustomEventModule
+workers:
+  - name: my-custom-event
     config:
       adapter:
-        class: my::LoggingEventAdapter
+        name: my::LoggingEventAdapter
         config:
           inner_adapter: my::InMemoryEventAdapter
 ```
@@ -491,22 +534,28 @@ modules:
 
 ## Complete Example
 
-Here's a complete custom module implementation:
+Here's a complete custom worker implementation:
 
-### examples/custom_event_module.rs
+### examples/custom_event_worker.rs
 
 ```rust
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use iii::{
-    Engine, CoreModule, ConfigurableModule, FunctionHandler,
-    FunctionResult, RegisterFunctionRequest, TriggerRegistrator,
-    Trigger, TriggerType, AdapterEntry
-};
+use uuid::Uuid;
+
+use iii::engine::{Engine, RegisterFunctionRequest};
+use iii::function::{FunctionHandler, FunctionResult};
+use iii::modules::module::{AdapterEntry, AdapterFactory, ConfigurableWorker, Worker};
+use iii::modules::registry::{AdapterFuture, AdapterRegistrationEntry};
+use iii::protocol::ErrorBody;
+use iii::{Trigger, TriggerRegistrator, TriggerType};
 
 // 1. Define Adapter Trait
 #[async_trait]
@@ -557,26 +606,101 @@ impl CustomEventAdapter for InMemoryEventAdapter {
     }
 }
 
-// 3. Define Module Configuration
+type CustomEventAdapterFuture = AdapterFuture<dyn CustomEventAdapter>;
+
+pub struct CustomEventAdapterRegistration {
+    pub name: &'static str,
+    pub factory: fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture,
+}
+
+impl AdapterRegistrationEntry<dyn CustomEventAdapter> for CustomEventAdapterRegistration {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn factory(&self) -> fn(Arc<Engine>, Option<Value>) -> CustomEventAdapterFuture {
+        self.factory
+    }
+}
+
+inventory::collect!(CustomEventAdapterRegistration);
+
+fn make_inmemory_adapter(
+    engine: Arc<Engine>,
+    config: Option<Value>,
+) -> CustomEventAdapterFuture {
+    Box::pin(async move {
+        Ok(Arc::new(InMemoryEventAdapter::new(config, engine).await?)
+            as Arc<dyn CustomEventAdapter>)
+    })
+}
+
+iii::register_adapter!(
+    <CustomEventAdapterRegistration>
+    "my::InMemoryEventAdapter",
+    make_inmemory_adapter
+);
+
+// 3. Define worker configuration
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CustomEventModuleConfig {
+pub struct CustomEventWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
 
-// 4. Implement Module
+// 4. Implement worker type
 #[derive(Clone)]
-pub struct CustomEventModule {
+pub struct CustomEventWorker {
     adapter: Arc<dyn CustomEventAdapter>,
     engine: Arc<Engine>,
-    _config: CustomEventModuleConfig,
+    _config: CustomEventWorkerConfig,
 }
 
 #[async_trait]
-impl CoreModule for CustomEventModule {
-    fn name(&self) -> &str {
+impl ConfigurableWorker for CustomEventWorker {
+    type Config = CustomEventWorkerConfig;
+    type Adapter = dyn CustomEventAdapter;
+    type AdapterRegistration = CustomEventAdapterRegistration;
+    const DEFAULT_ADAPTER_NAME: &'static str = "my::InMemoryEventAdapter";
+
+    async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
+        static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomEventAdapter>>>> =
+            Lazy::new(|| RwLock::new(CustomEventWorker::build_registry()));
+        &REGISTRY
+    }
+
+    fn build(
+        engine: Arc<Engine>,
+        config: Self::Config,
+        adapter: Arc<Self::Adapter>,
+    ) -> Self {
+        Self {
+            engine,
+            _config: config,
+            adapter,
+        }
+    }
+
+    fn adapter_name_from_config(config: &Self::Config) -> Option<String> {
+        config.adapter.as_ref().map(|a| a.name.clone())
+    }
+
+    fn adapter_config_from_config(config: &Self::Config) -> Option<Value> {
+        config.adapter.as_ref().and_then(|a| a.config.clone())
+    }
+}
+
+#[async_trait]
+impl Worker for CustomEventWorker {
+    fn name(&self) -> &'static str {
         "custom_event"
+    }
+
+    fn register_functions(&self, _engine: Arc<Engine>) {}
+
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        Self::create_with_adapters(engine, config).await
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -611,22 +735,32 @@ impl CoreModule for CustomEventModule {
     }
 }
 
-#[async_trait]
-impl FunctionHandler for CustomEventModule {
-    async fn handle(&self, input: Value) -> FunctionResult {
-        let topic = input.get("topic").and_then(|v| v.as_str()).unwrap_or("");
-        let data = input.get("data").cloned().unwrap_or(Value::Null);
+impl FunctionHandler for CustomEventWorker {
+    fn handle_function(
+        &self,
+        _invocation_id: Option<Uuid>,
+        _function_id: String,
+        input: Value,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static>> {
+        let adapter = self.adapter.clone();
+        Box::pin(async move {
+            let topic = input.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+            let data = input.get("data").cloned().unwrap_or(Value::Null);
 
-        self.adapter.emit(topic, data).await;
-        FunctionResult::Success(None)
+            adapter.emit(topic, data).await;
+            FunctionResult::Success(None)
+        })
     }
 }
 
-impl TriggerRegistrator for CustomEventModule {
+impl TriggerRegistrator for CustomEventWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+        let adapter = self.adapter.clone();
+        let trigger_id = trigger.id.clone();
+        let function_id = trigger.function_id.clone();
         Box::pin(async move {
             let config = trigger.config;
             let subscribes = config.get("subscribes")
@@ -636,23 +770,27 @@ impl TriggerRegistrator for CustomEventModule {
             for topic in subscribes {
                 let topic_str = topic.as_str()
                     .ok_or_else(|| anyhow::anyhow!("Invalid topic"))?;
-                self.adapter.subscribe(topic_str, &trigger.id, &trigger.function_id).await;
+                adapter
+                    .subscribe(topic_str, &trigger_id, &function_id)
+                    .await;
             }
 
             Ok(())
         })
     }
 }
+
+iii::register_worker!("my-custom-event", CustomEventWorker);
 ```
 
 ### iii-config.yaml
 
 ```yaml
-modules:
-  - class: my::CustomEventModule
+workers:
+  - name: my-custom-event
     config:
       adapter:
-        class: my::InMemoryEventAdapter
+        name: my::InMemoryEventAdapter
 ```
 
 ## Best Practices
@@ -668,7 +806,7 @@ modules:
     }
 
     // Avoid: Hard-coded implementation
-    pub struct Module {
+    pub struct CoupledService {
         redis: RedisClient,  // Tightly coupled
     }
     ```
@@ -676,13 +814,13 @@ modules:
   </Accordion>
 
   <Accordion title="Implement Graceful Shutdown">
-    Handle cleanup in the module's drop implementation or provide shutdown hooks.
+    Handle cleanup in the worker's `Drop` implementation or provide shutdown hooks.
 
     ```rust
-    impl Drop for CustomEventModule {
+    impl Drop for CustomEventWorker {
         fn drop(&mut self) {
             // Clean up resources
-            tracing::info!("Shutting down CustomEventModule");
+            tracing::info!("Shutting down CustomEventWorker");
         }
     }
     ```
@@ -722,8 +860,8 @@ modules:
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Core Modules" href="/modules" icon="cubes">
-    Explore built-in core modules
+  <Card title="Built-in workers" href="/modules" icon="cubes">
+    Explore built-in engine workers
   </Card>
   <Card title="Adapters" href="/advanced/adapters" icon="gear">
     Learn more about the adapter pattern

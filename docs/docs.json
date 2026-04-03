@@ -65,7 +65,7 @@
                 ]
               },
               {
-                "group": "Modules",
+                "group": "Workers",
                 "pages": [
                   "modules/index",
                   "modules/module-http",

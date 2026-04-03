@@ -157,7 +157,7 @@ Cron triggers display their schedule expression (e.g. `0 */5 * * * *`). You can 
 For event-type triggers, the console provides an event emitter: the event name is pre-filled, you enter a JSON payload, and click **Emit** to publish the event.
 
 <Info title="Trigger types">
-  The available trigger types depend on which workers are enabled in your engine configuration. See [Trigger Types](/architecture/trigger-types) and [Modules](/modules) for the full list.
+  The available trigger types depend on which workers are enabled in your engine configuration. See [Trigger Types](/architecture/trigger-types) and [Workers](/modules) for the full list.
 </Info>
 
 ## States
@@ -182,7 +182,7 @@ Select a group from the left panel to see all its key-value items. Each item sho
 - **Delete** — Click the delete icon and confirm. Fires `state:deleted` triggers if registered.
 
 <Info title="State persistence">
-  State persistence depends on your engine's State worker configuration. With `in_memory` storage, state is lost on engine restart. With `file_based` or the `redis` adapter, state persists across restarts. See [State Module](/modules/module-state) for configuration details.
+  State persistence depends on your engine's State worker configuration. With `in_memory` storage, state is lost on engine restart. With `file_based` or the `redis` adapter, state persists across restarts. See [State Worker](/modules/module-state) for configuration details.
 </Info>
 
 Use the search bar to filter items by key name. For groups with many items, the browser supports pagination.
@@ -203,8 +203,8 @@ Use the filter toggle to show or hide system streams. Streams update in real tim
 
 <img src="/images/console/streams-detail.png" alt="Stream detail showing live messages with direction, timestamp, and payload" />
 
-<Info title="Stream module required">
-  Streams are provided by the Stream worker. Make sure `iii-stream` is included in your engine configuration. See [Stream Module](/modules/module-stream) for details.
+<Info title="Stream worker required">
+  Streams are provided by the Stream worker. Make sure `iii-stream` is included in your engine configuration. See [Stream Worker](/modules/module-stream) for details.
 </Info>
 
 ## Traces
@@ -213,8 +213,8 @@ The Traces page provides full OpenTelemetry trace visualization with multiple vi
 
 <img src="/images/console/traces.png" alt="Traces screen showing the trace list with filter bar and per-trace duration and service info" />
 
-<Info title="Observability module required">
-  Trace collection requires the Observability worker (`iii-observability`) with `exporter` set to `memory` or `both`. See [Observability Module](/modules/module-observability) for configuration.
+<Info title="Observability worker required">
+  Trace collection requires the Observability worker (`iii-observability`) with `exporter` set to `memory` or `both`. See [Observability Worker](/modules/module-observability) for configuration.
 </Info>
 
 ### Trace List
@@ -274,8 +274,8 @@ The Logs page provides a viewer for structured OpenTelemetry logs collected by t
 
 <img src="/images/console/logs.png" alt="Logs screen showing structured log entries with severity, service, trace context, and message columns" />
 
-<Info title="Observability module required">
-  Log collection requires the Observability worker (`iii-observability`) with `logs_enabled: true`. See [Observability Module](/modules/module-observability) for configuration.
+<Info title="Observability worker required">
+  Log collection requires the Observability worker (`iii-observability`) with `logs_enabled: true`. See [Observability Worker](/modules/module-observability) for configuration.
 </Info>
 
 ### Log Viewer

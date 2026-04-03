@@ -3,7 +3,7 @@ title: 'Architecture'
 description: 'The structural components of an iii system.'
 ---
 
-An iii system is made up of four components working together: the **Engine**, **Workers**, **Modules**, and **Context**.
+An iii system is made up of four components working together: the **Engine**, **worker processes**, **built-in workers**, and **Context**.
 
 
 ```mermaid
@@ -18,12 +18,12 @@ graph TD
         Core[Engine Core]
         Reg[Worker<br/>Registry]
 
-        subgraph "Core Modules"
-            API[RestApiModule]
-            Stream[StreamModule]
-            Log[OtelModule]
-            Queue[QueueModule]
-            Cron[CronModule]
+        subgraph "Built-in Workers"
+            API[HttpWorker]
+            Stream[StreamWorker]
+            Log[OtelWorker]
+            Queue[QueueWorker]
+            Cron[CronWorker]
         end
     end
 
