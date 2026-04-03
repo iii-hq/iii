@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 const DEFAULT_PORT: u16 = 49134;
 
 #[derive(Parser, Debug)]
-#[command(name = "iii-worker", about = "iii managed worker runtime")]
+#[command(name = "iii-worker", version, about = "iii managed worker runtime")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
