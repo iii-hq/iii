@@ -11,15 +11,14 @@ use std::{
     ffi::CStr,
     io,
     os::fd::FromRawFd,
-    sync::{atomic::Ordering, Arc, RwLock},
+    sync::{Arc, RwLock, atomic::Ordering},
 };
 
-use super::{inode, PassthroughFs};
+use super::{PassthroughFs, inode};
 use crate::{
-    backends::shared::{handle_table::HandleData, init_binary, name_validation, platform},
     Context, Entry, Extensions, OpenOptions,
+    backends::shared::{handle_table::HandleData, init_binary, name_validation, platform},
 };
-
 
 //--------------------------------------------------------------------------------------------------
 // Functions
@@ -195,9 +194,7 @@ pub(crate) fn do_link(
     #[cfg(target_os = "macos")]
     {
         let inodes = fs.inodes.read().unwrap();
-        let data = inodes
-            .get(&inode_num)
-            .ok_or_else(platform::ebadf)?;
+        let data = inodes.get(&inode_num).ok_or_else(platform::ebadf)?;
         let path = inode::vol_path(data.dev, data.ino);
         drop(inodes);
 

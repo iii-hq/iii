@@ -670,11 +670,7 @@ pub fn restore_terminal_cooked_mode() {
         termios
             .output_flags
             .insert(nix::sys::termios::OutputFlags::ONLCR);
-        let _ = nix::sys::termios::tcsetattr(
-            &stderr,
-            nix::sys::termios::SetArg::TCSANOW,
-            &termios,
-        );
+        let _ = nix::sys::termios::tcsetattr(&stderr, nix::sys::termios::SetArg::TCSANOW, &termios);
     }
 }
 
@@ -875,10 +871,7 @@ async fn run_dev_worker(
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &dest,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
+                    let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
                 }
             }
 
@@ -1163,7 +1156,10 @@ mod tests {
     #[test]
     fn build_env_exports_excludes_engine_urls() {
         let mut env = HashMap::new();
-        env.insert("III_ENGINE_URL".to_string(), "ws://localhost:49134".to_string());
+        env.insert(
+            "III_ENGINE_URL".to_string(),
+            "ws://localhost:49134".to_string(),
+        );
         env.insert("III_URL".to_string(), "ws://localhost:49134".to_string());
         env.insert("CUSTOM_VAR".to_string(), "custom-val".to_string());
 
@@ -1184,5 +1180,339 @@ mod tests {
     fn engine_url_for_runtime_libkrun_uses_localhost() {
         let url = engine_url_for_runtime("libkrun", "0.0.0.0", 49134, &None);
         assert_eq!(url, "ws://localhost:49134");
+    }
+
+    // --- 3.1: resolve_image shorthand uses registry ---
+    #[tokio::test]
+    async fn resolve_image_shorthand_uses_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry_path = dir.path().join("registry.json");
+        let registry_json = r#"{"version": 2, "workers": {"image-resize": {"description": "Resize images", "image": "ghcr.io/iii-hq/image-resize", "latest": "0.1.2"}}}"#;
+        std::fs::write(&registry_path, registry_json).unwrap();
+
+        let url = format!("file://{}", registry_path.display());
+        // SAFETY: test is single-threaded for env var access
+        unsafe { std::env::set_var("III_REGISTRY_URL", &url) };
+        let result = resolve_image("image-resize").await;
+        unsafe { std::env::remove_var("III_REGISTRY_URL") };
+
+        let (image, name) = result.unwrap();
+        assert_eq!(image, "ghcr.io/iii-hq/image-resize:0.1.2");
+        assert_eq!(name, "image-resize");
+    }
+
+    // --- 3.2: resolve_image shorthand not found ---
+    #[tokio::test]
+    async fn resolve_image_shorthand_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry_path = dir.path().join("registry.json");
+        let registry_json = r#"{"version": 2, "workers": {}}"#;
+        std::fs::write(&registry_path, registry_json).unwrap();
+
+        let url = format!("file://{}", registry_path.display());
+        unsafe { std::env::set_var("III_REGISTRY_URL", &url) };
+        let result = resolve_image("nonexistent").await;
+        unsafe { std::env::remove_var("III_REGISTRY_URL") };
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found in registry"));
+    }
+
+    // --- 3.3: resolve_image with slash no tag ---
+    #[tokio::test]
+    async fn resolve_image_with_slash_no_tag() {
+        let (image, name) = resolve_image("ghcr.io/iii-hq/image-resize").await.unwrap();
+        assert_eq!(image, "ghcr.io/iii-hq/image-resize");
+        assert_eq!(name, "image-resize");
+    }
+
+    // --- 3.4: load_manifest_with_explicit_scripts ---
+    #[test]
+    fn load_manifest_with_explicit_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: my-worker
+scripts:
+  setup: "apt-get update"
+  install: "npm install"
+  start: "node server.js"
+env:
+  FOO: bar
+  III_URL: skip
+  III_ENGINE_URL: skip
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert_eq!(info.name, "my-worker");
+        assert_eq!(info.setup_cmd, "apt-get update");
+        assert_eq!(info.install_cmd, "npm install");
+        assert_eq!(info.run_cmd, "node server.js");
+        assert_eq!(info.env.get("FOO").unwrap(), "bar");
+        assert!(!info.env.contains_key("III_URL"));
+        assert!(!info.env.contains_key("III_ENGINE_URL"));
+    }
+
+    // --- 3.5: load_manifest_auto_detects_scripts ---
+    #[test]
+    fn load_manifest_auto_detects_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: my-bun-worker
+runtime:
+  language: typescript
+  package_manager: bun
+  entry: src/index.ts
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert_eq!(info.name, "my-bun-worker");
+        assert!(info.setup_cmd.contains("bun.sh/install"));
+        assert!(info.install_cmd.contains("bun install"));
+        assert!(info.run_cmd.contains("bun src/index.ts"));
+    }
+
+    // --- 3.6: load_manifest_filters_engine_url_env ---
+    #[test]
+    fn load_manifest_filters_engine_url_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: env-test
+env:
+  FOO: bar
+  III_URL: skip
+  III_ENGINE_URL: skip
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let info = load_from_manifest(&manifest_path).unwrap();
+        assert_eq!(info.env.get("FOO").unwrap(), "bar");
+        assert!(!info.env.contains_key("III_URL"));
+        assert!(!info.env.contains_key("III_ENGINE_URL"));
+    }
+
+    // --- 3.7: infer_scripts_python ---
+    #[test]
+    fn infer_scripts_python() {
+        let (setup, install, run) = infer_scripts("python", "pip", "my_module");
+        assert!(setup.contains("python3-venv") || setup.contains("python3"));
+        assert!(install.contains(".venv/bin/pip"));
+        assert!(run.contains(".venv/bin/python -m my_module"));
+    }
+
+    // --- 3.8: infer_scripts_rust ---
+    #[test]
+    fn infer_scripts_rust() {
+        let (setup, install, run) = infer_scripts("rust", "cargo", "src/main.rs");
+        assert!(setup.contains("rustup"));
+        assert!(install.contains("cargo build"));
+        assert!(run.contains("cargo run"));
+    }
+
+    // --- 3.9: infer_scripts_bun ---
+    #[test]
+    fn infer_scripts_bun() {
+        let (setup, install, run) = infer_scripts("typescript", "bun", "src/index.ts");
+        assert!(setup.contains("bun.sh/install"));
+        assert!(install.contains("bun install"));
+        assert!(run.contains("bun src/index.ts"));
+    }
+
+    // --- 3.10: infer_scripts_npm ---
+    #[test]
+    fn infer_scripts_npm() {
+        let (setup, install, run) = infer_scripts("typescript", "npm", "src/index.ts");
+        assert!(setup.contains("nodejs") || setup.contains("nodesource"));
+        assert!(install.contains("npm install"));
+        assert!(run.contains("npx tsx src/index.ts"));
+    }
+
+    // --- 3.11: auto_detect_project_node_npm ---
+    #[test]
+    fn auto_detect_project_node_npm() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let info = auto_detect_project(dir.path()).unwrap();
+        assert_eq!(info.name, "node (npm)");
+        assert_eq!(info.language.as_deref(), Some("typescript"));
+        assert!(info.install_cmd.contains("npm"));
+    }
+
+    // --- 3.12: auto_detect_project_node_bun ---
+    #[test]
+    fn auto_detect_project_node_bun() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("bun.lock"), "").unwrap();
+        let info = auto_detect_project(dir.path()).unwrap();
+        assert_eq!(info.name, "node (bun)");
+        assert!(info.run_cmd.contains("bun"));
+    }
+
+    // --- 3.13: auto_detect_project_rust ---
+    #[test]
+    fn auto_detect_project_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        let info = auto_detect_project(dir.path()).unwrap();
+        assert_eq!(info.name, "rust");
+        assert_eq!(info.language.as_deref(), Some("rust"));
+    }
+
+    // --- 3.14: auto_detect_project_python ---
+    #[test]
+    fn auto_detect_project_python() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[project]").unwrap();
+        let info = auto_detect_project(dir.path()).unwrap();
+        assert_eq!(info.name, "python");
+        assert_eq!(info.language.as_deref(), Some("python"));
+    }
+
+    // --- 3.15: auto_detect_project_unknown_returns_none ---
+    #[test]
+    fn auto_detect_project_unknown_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(auto_detect_project(dir.path()).is_none());
+    }
+
+    // --- 3.16: load_project_info_prefers_manifest ---
+    #[test]
+    fn load_project_info_prefers_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        // Both package.json and iii.worker.yaml exist
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        let yaml = r#"
+name: manifest-worker
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/index.ts
+"#;
+        std::fs::write(dir.path().join("iii.worker.yaml"), yaml).unwrap();
+        let info = load_project_info(dir.path()).unwrap();
+        assert_eq!(info.name, "manifest-worker");
+    }
+
+    // --- 3.17: build_libkrun_dev_script_first_run ---
+    #[test]
+    fn build_libkrun_dev_script_first_run() {
+        let project = ProjectInfo {
+            name: "test".to_string(),
+            language: Some("typescript".to_string()),
+            setup_cmd: "apt-get install nodejs".to_string(),
+            install_cmd: "npm install".to_string(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::new(),
+        };
+        let script = build_libkrun_dev_script(&project, false);
+        assert!(script.contains("apt-get install nodejs"));
+        assert!(script.contains("npm install"));
+        assert!(script.contains("node server.js"));
+        assert!(script.contains(".iii-prepared"));
+    }
+
+    // --- 3.18: build_libkrun_dev_script_prepared ---
+    #[test]
+    fn build_libkrun_dev_script_prepared() {
+        let project = ProjectInfo {
+            name: "test".to_string(),
+            language: Some("typescript".to_string()),
+            setup_cmd: "apt-get install nodejs".to_string(),
+            install_cmd: "npm install".to_string(),
+            run_cmd: "node server.js".to_string(),
+            env: HashMap::new(),
+        };
+        let script = build_libkrun_dev_script(&project, true);
+        assert!(!script.contains("apt-get install nodejs"));
+        assert!(!script.contains("npm install"));
+        assert!(script.contains("node server.js"));
+    }
+
+    // --- 3.19: build_dev_env_sets_engine_urls ---
+    #[test]
+    fn build_dev_env_sets_engine_urls() {
+        let env = build_dev_env("ws://localhost:49134", &HashMap::new());
+        assert_eq!(env.get("III_ENGINE_URL").unwrap(), "ws://localhost:49134");
+        assert_eq!(env.get("III_URL").unwrap(), "ws://localhost:49134");
+    }
+
+    // --- 3.20: build_dev_env_preserves_custom_env ---
+    #[test]
+    fn build_dev_env_preserves_custom_env() {
+        let mut project_env = HashMap::new();
+        project_env.insert("CUSTOM".to_string(), "value".to_string());
+        let env = build_dev_env("ws://localhost:49134", &project_env);
+        assert_eq!(env.get("CUSTOM").unwrap(), "value");
+        assert_eq!(env.get("III_ENGINE_URL").unwrap(), "ws://localhost:49134");
+        assert_eq!(env.get("III_URL").unwrap(), "ws://localhost:49134");
+    }
+
+    // --- 3.21: build_dev_env_does_not_override_engine_urls ---
+    #[test]
+    fn build_dev_env_does_not_override_engine_urls() {
+        let mut project_env = HashMap::new();
+        project_env.insert("III_URL".to_string(), "custom".to_string());
+        let env = build_dev_env("ws://localhost:49134", &project_env);
+        assert_eq!(env.get("III_URL").unwrap(), "ws://localhost:49134");
+    }
+
+    // --- 3.22: parse_manifest_resources_defaults ---
+    #[test]
+    fn parse_manifest_resources_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let nonexistent = dir.path().join("nonexistent.yaml");
+        let (cpus, memory) = parse_manifest_resources(&nonexistent);
+        assert_eq!(cpus, 2);
+        assert_eq!(memory, 2048);
+    }
+
+    // --- 3.23: parse_manifest_resources_custom ---
+    #[test]
+    fn parse_manifest_resources_custom() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("iii.worker.yaml");
+        let yaml = r#"
+name: resource-test
+resources:
+  cpus: 4
+  memory: 4096
+"#;
+        std::fs::write(&manifest_path, yaml).unwrap();
+        let (cpus, memory) = parse_manifest_resources(&manifest_path);
+        assert_eq!(cpus, 4);
+        assert_eq!(memory, 4096);
+    }
+
+    // --- 3.24: shell_escape_single_quote ---
+    #[test]
+    fn shell_escape_single_quote() {
+        let result = shell_escape("it's");
+        assert_eq!(result, "it'\\''s");
+    }
+
+    // --- 3.25: copy_dir_contents_skips_ignored_dirs ---
+    #[test]
+    fn copy_dir_contents_skips_ignored_dirs() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        // Create source structure
+        std::fs::create_dir_all(src.path().join("src")).unwrap();
+        std::fs::write(src.path().join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir_all(src.path().join("node_modules/pkg")).unwrap();
+        std::fs::write(src.path().join("node_modules/pkg/index.js"), "").unwrap();
+        std::fs::create_dir_all(src.path().join(".git")).unwrap();
+        std::fs::write(src.path().join(".git/config"), "").unwrap();
+        std::fs::create_dir_all(src.path().join("target/debug")).unwrap();
+        std::fs::write(src.path().join("target/debug/bin"), "").unwrap();
+
+        copy_dir_contents(src.path(), dst.path()).unwrap();
+
+        assert!(dst.path().join("src/main.rs").exists());
+        assert!(!dst.path().join("node_modules").exists());
+        assert!(!dst.path().join(".git").exists());
+        assert!(!dst.path().join("target").exists());
     }
 }

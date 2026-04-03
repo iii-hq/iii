@@ -80,11 +80,9 @@ fn check_kvm_available() -> Result<(), String> {
 #[cfg(target_os = "linux")]
 fn check_kvm_at_path(kvm: &std::path::Path) -> Result<(), String> {
     if !kvm.exists() {
-        return Err(
-            "KVM not available -- /dev/kvm does not exist. \
+        return Err("KVM not available -- /dev/kvm does not exist. \
              Ensure KVM is enabled in your kernel and loaded (modprobe kvm_intel or kvm_amd)."
-                .to_string(),
-        );
+            .to_string());
     }
     match std::fs::File::options().read(true).write(true).open(kvm) {
         Ok(_) => Ok(()),
@@ -221,16 +219,11 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         .build()
         .map_err(|e| format!("tokio runtime failed: {}", e))?;
 
-    let mut network = iii_network::SmoltcpNetwork::new(
-        iii_network::NetworkConfig::default(),
-        args.slot,
-    );
+    let mut network =
+        iii_network::SmoltcpNetwork::new(iii_network::NetworkConfig::default(), args.slot);
     network.start(tokio_rt.handle().clone());
 
-    builder = builder.net(|net| {
-        net.mac(network.guest_mac())
-            .custom(network.take_backend())
-    });
+    builder = builder.net(|net| net.mac(network.guest_mac()).custom(network.take_backend()));
 
     let dns_nameserver = network.gateway_ipv4().to_string();
     let guest_ip = network.guest_ipv4().to_string();
@@ -356,5 +349,21 @@ mod tests {
             build_worker_cmd("/usr/bin/node", &args),
             "/usr/bin/node script.js --port 3000"
         );
+    }
+
+    // --- 6.1: check_kvm_nonexistent_path (Linux only) ---
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_check_kvm_nonexistent_path() {
+        let result = check_kvm_at_path(std::path::Path::new("/dev/nonexistent_kvm"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    // --- 6.2: shell_quote with embedded single quotes ---
+    #[test]
+    fn test_shell_quote_with_embedded_single_quotes() {
+        let result = shell_quote("it's a test");
+        assert_eq!(result, "'it'\\''s a test'");
     }
 }

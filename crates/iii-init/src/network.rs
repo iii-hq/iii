@@ -39,15 +39,12 @@ pub fn configure_network() -> Result<(), InitError> {
         Ok(v) => v,
         Err(_) => return Ok(()),
     };
-    let gw_str = std::env::var("III_INIT_GW").unwrap_or_else(|_| {
-        detect_gateway().unwrap_or_else(|| "10.0.2.2".to_string())
-    });
+    let gw_str = std::env::var("III_INIT_GW")
+        .unwrap_or_else(|_| detect_gateway().unwrap_or_else(|| "10.0.2.2".to_string()));
     let cidr: u8 = std::env::var("III_INIT_CIDR")
         .unwrap_or_else(|_| "30".to_string())
         .parse()
-        .map_err(|_| InitError::InvalidCidr(
-            std::env::var("III_INIT_CIDR").unwrap_or_default(),
-        ))?;
+        .map_err(|_| InitError::InvalidCidr(std::env::var("III_INIT_CIDR").unwrap_or_default()))?;
 
     let ip: Ipv4Addr = ip_str.parse().map_err(|_| InitError::InvalidAddr {
         var: "III_INIT_IP".into(),
@@ -188,11 +185,7 @@ fn new_ifreq(iface: &[u8]) -> libc::ifreq {
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
     let len = iface.len().min(libc::IFNAMSIZ);
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            iface.as_ptr(),
-            ifr.ifr_name.as_mut_ptr() as *mut u8,
-            len,
-        );
+        std::ptr::copy_nonoverlapping(iface.as_ptr(), ifr.ifr_name.as_mut_ptr() as *mut u8, len);
     }
     ifr
 }
@@ -297,7 +290,10 @@ mod tests {
     fn test_make_sockaddr_in() {
         let sa = make_sockaddr_in(Ipv4Addr::new(100, 96, 0, 2));
         assert_eq!(sa.sin_family, libc::AF_INET as u16);
-        assert_eq!(sa.sin_addr.s_addr, u32::from(Ipv4Addr::new(100, 96, 0, 2)).to_be());
+        assert_eq!(
+            sa.sin_addr.s_addr,
+            u32::from(Ipv4Addr::new(100, 96, 0, 2)).to_be()
+        );
     }
 
     #[test]

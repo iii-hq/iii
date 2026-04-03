@@ -9,10 +9,11 @@
 
 use std::{io, os::fd::AsRawFd, time::Duration};
 
-use super::{inode, PassthroughFs};
+use super::{PassthroughFs, inode};
 use crate::{
+    Context, SetattrValid,
     backends::shared::{init_binary, platform},
-    stat64, Context, SetattrValid,
+    stat64,
 };
 
 //--------------------------------------------------------------------------------------------------

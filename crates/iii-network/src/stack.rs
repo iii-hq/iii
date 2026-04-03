@@ -6,8 +6,8 @@
 //! through tokio proxy tasks.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::time::Instant;
@@ -90,10 +90,7 @@ pub fn create_interface(device: &mut SmoltcpDevice, config: &PollLoopConfig) -> 
 
     iface.update_ip_addrs(|addrs| {
         addrs
-            .push(IpCidr::new(
-                IpAddress::from(config.gateway_ipv4),
-                30,
-            ))
+            .push(IpCidr::new(IpAddress::from(config.gateway_ipv4), 30))
             .expect("failed to add gateway IPv4 address");
     });
 
@@ -129,11 +126,7 @@ pub fn smoltcp_poll_loop(
     let mut iface = create_interface(&mut device, &config);
     let mut sockets = SocketSet::new(vec![]);
     let mut conn_tracker = ConnectionTracker::new(None);
-    let mut dns_interceptor = DnsInterceptor::new(
-        &mut sockets,
-        shared.clone(),
-        &tokio_handle,
-    );
+    let mut dns_interceptor = DnsInterceptor::new(&mut sockets, shared.clone(), &tokio_handle);
     let mut udp_relay = UdpRelay::new(
         shared.clone(),
         config.gateway_mac,
@@ -346,12 +339,7 @@ mod tests {
     }
 
     /// Build a minimal Ethernet + IPv4 + UDP frame.
-    fn build_udp_frame(
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
-        src_port: u16,
-        dst_port: u16,
-    ) -> Vec<u8> {
+    fn build_udp_frame(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16) -> Vec<u8> {
         let mut frame = vec![0u8; 14 + 20 + 8]; // eth + ipv4 + udp
 
         frame[12] = 0x08;

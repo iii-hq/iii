@@ -13,4 +13,6 @@ pub use msb_krun::backends::fs::{
 };
 
 // Re-export PassthroughFs backend types
-pub use backends::passthroughfs::{CachePolicy, PassthroughConfig, PassthroughFs, PassthroughFsBuilder};
+pub use backends::passthroughfs::{
+    CachePolicy, PassthroughConfig, PassthroughFs, PassthroughFsBuilder,
+};
