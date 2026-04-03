@@ -282,8 +282,18 @@ RabbitMQ's fanout exchange natively delivers a copy of each published message to
 | **Multi-instance** | No | Yes | Yes |
 | **External dependency** | None | RabbitMQ | Redis |
 
-<Info title="Choosing an adapter">
-  For practical guidance on which adapter to use in different deployment scenarios, see [Use Queues — Choosing an Adapter](../how-to/use-queues#choosing-an-adapter).
+### Choosing an adapter
+
+| Scenario | Recommended Adapter | Why |
+|----------|-------------------|-----|
+| Local development | `BuiltinQueueAdapter` (`in_memory`) | Zero dependencies, fast iteration |
+| Single-instance production | `BuiltinQueueAdapter` (`file_based`) | Durable across restarts, no external infra |
+| Multi-instance production | `RabbitMQAdapter` | Distributes messages across engine instances |
+
+Regardless of which adapter you choose, retry semantics, concurrency enforcement, and FIFO ordering behave identically — the engine owns these behaviors, not the adapter.
+
+<Info title="How-to guide">
+  For step-by-step queue setup, see [Use Queues](../how-to/use-queues).
 </Info>
 
 ## Builtin Functions

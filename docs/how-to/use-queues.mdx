@@ -11,6 +11,28 @@ Use queues to run work asynchronously with built-in retries, dead-letter support
   Named queues use the `Enqueue` trigger action. If you are new to trigger actions, read [Trigger Actions](./trigger-actions) first.
 </Info>
 
+## Enable the Queue module
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 10
+          type: standard
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
+```
+
+<Info title="Full configuration reference">
+  See the [Queue module reference](/modules/module-queue#configuration) for every field, adapter option, and default value.
+</Info>
+
 ---
 
 ## Topic-Based Queues
@@ -1261,40 +1283,9 @@ iii.register_function(reg);
 
 With `concurrency: 3`, at most three emails are in-flight at any time. Failed sends retry with exponential backoff (5s, 10s, 20s, 40s, 80s), protecting the SMTP provider from overload.
 
----
-
-## Choosing an Adapter
-
-The queue adapter determines where messages are stored and how they are distributed.
-
-| Scenario | Recommended Adapter | Why |
-|----------|-------------------|-----|
-| Local development | `BuiltinQueueAdapter` (`in_memory`) | Zero dependencies, fast iteration |
-| Single-instance production | `BuiltinQueueAdapter` (`file_based`) | Durable across restarts, no external infra |
-| Multi-instance production | `RabbitMQAdapter` | Distributes messages across engine instances |
-
-Regardless of which adapter you choose, retry semantics, concurrency enforcement, and FIFO ordering behave identically — the engine owns these behaviors, not the adapter.
-
-<Info title="Adapter details">
-  See the [Queue module reference](/modules/module-queue#adapters) for adapter configuration and the [adapter comparison table](/modules/module-queue#adapter-comparison) for a feature matrix.
+<Info title="Adapters and configuration">
+  For adapter options (builtin, RabbitMQ, Redis), scenario-based recommendations, and the full queue configuration reference, see the [Queue module reference](/modules/module-queue#adapter-comparison).
 </Info>
-
-<Info title="RabbitMQ queue naming">
-  When using the RabbitMQ adapter, iii creates exchanges and queues using a predictable naming convention. For a queue named `payment`, the main queue is `iii.__fn_queue::payment`, the retry queue is `iii.__fn_queue::payment::retry.queue`, and the DLQ is `iii.__fn_queue::payment::dlq.queue`. See [Dead Letter Queues](./dead-letter-queues#dlq-naming-convention) for the full resource map.
-</Info>
-
-## Queue Config Reference
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_retries` | `u32` | `3` | Maximum delivery attempts before routing to DLQ |
-| `concurrency` | `u32` | `10` | Maximum concurrent workers for this queue (standard only) |
-| `type` | `string` | `"standard"` | `"standard"` for concurrent processing; `"fifo"` for ordered processing |
-| `message_group_field` | `string` | — | Required for FIFO — the JSON field in the payload used for ordering groups (must be non-null) |
-| `backoff_ms` | `u64` | `1000` | Base retry backoff in milliseconds. Applied exponentially: `backoff_ms × 2^(attempt - 1)` |
-| `poll_interval_ms` | `u64` | `100` | Worker poll interval in milliseconds |
-
-For the full module configuration including adapter settings, see the [Queue module reference](/modules/module-queue#configuration).
 
 ## Next Steps
 
