@@ -5,7 +5,7 @@ description: 'Decouple producers from consumers, process work asynchronously wit
 
 ## Goal
 
-Use queues to run work asynchronously with built-in retries, dead-letter support, and concurrency control. iii offers **topic-based** queues (pub/sub fan-out) and **named queues** (direct function targeting). For background on when and why to use queues, see [Queue Architecture](/architecture/queues). For the full configuration reference, see the [Queue module](/modules/module-queue).
+Process work asynchronously with built-in retries, dead-letter support, and concurrency control using topic-based queues (pub/sub fan-out) or named queues (direct function targeting). For background on when and why to use queues, see [Queue Architecture](/architecture/queues). For the full configuration reference, see the [Queue module](/modules/module-queue).
 
 <Info title="Trigger actions primer">
   Named queues use the `Enqueue` trigger action. If you are new to trigger actions, read [Trigger Actions](./trigger-actions) first.
@@ -1286,6 +1286,10 @@ With `concurrency: 3`, at most three emails are in-flight at any time. Failed se
 <Info title="Adapters and configuration">
   For adapter options (builtin, RabbitMQ, Redis), scenario-based recommendations, and the full queue configuration reference, see the [Queue module reference](/modules/module-queue#adapter-comparison).
 </Info>
+
+## Result
+
+Producers enqueue work and return immediately. The engine delivers each job to the target function, retries failures with exponential backoff, and routes permanently failed jobs to a dead-letter queue. Topic-based queues fan out messages to every subscriber; named queues target a single function with configurable concurrency, FIFO ordering, and per-queue retry policies.
 
 ## Next Steps
 
