@@ -340,7 +340,7 @@ Enqueue jobs to a specific function by name with configurable retries, concurren
               max_retries: 10
               concurrency: 2
               type: fifo
-              message_group_field: transaction_id
+              message_group_field: orderId
             email:
               max_retries: 8
               backoff_ms: 2000
