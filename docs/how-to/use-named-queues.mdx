@@ -34,261 +34,260 @@ modules:
 </Info>
 
 ## Steps
-<Steps>
-  <Step title="Define named queues in config">
-    Declare one or more named queues under `queue_configs`. Each queue has independent retry, concurrency, and ordering settings.
 
-    ```yaml title="iii-config.yaml"
-    modules:
-      - class: modules::queue::QueueModule
+### 1. Define named queues in config
+
+Declare one or more named queues under `queue_configs`. Each queue has independent retry, concurrency, and ordering settings.
+
+```yaml title="iii-config.yaml"
+modules:
+  - class: modules::queue::QueueModule
+    config:
+      queue_configs:
+        default:
+          max_retries: 5
+          concurrency: 10
+          type: standard
+        payment:
+          max_retries: 10
+          concurrency: 2
+          type: fifo
+          message_group_field: orderId
+        email:
+          max_retries: 8
+          backoff_ms: 2000
+          concurrency: 5
+          type: standard
+      adapter:
+        class: modules::queue::BuiltinQueueAdapter
         config:
-          queue_configs:
-            default:
-              max_retries: 5
-              concurrency: 10
-              type: standard
-            payment:
-              max_retries: 10
-              concurrency: 2
-              type: fifo
-              message_group_field: orderId
-            email:
-              max_retries: 8
-              backoff_ms: 2000
-              concurrency: 5
-              type: standard
-          adapter:
-            class: modules::queue::BuiltinQueueAdapter
-            config:
-              store_method: file_based
-              file_path: ./data/queue_store
-    ```
+          store_method: file_based
+          file_path: ./data/queue_store
+```
 
-    <Info title="Full configuration reference">
-      FIFO queues enforce ordering in a queue and they require a `message_group_field` to order on. Queues can also set `backoff_ms` for exponential retry delays. See more on this in the steps below.
-      
-      For full configuration options refer to the [Queue module reference](/modules/module-queue#queue-configuration).
-    </Info>
-  </Step>
+<Info title="Full configuration reference">
+  FIFO queues enforce ordering in a queue and they require a `message_group_field` to order on. Queues can also set `backoff_ms` for exponential retry delays. See more on this in the steps below.
+  
+  For full configuration options refer to the [Queue module reference](/modules/module-queue#queue-configuration).
+</Info>
 
-  <Step title="Enqueue work via trigger action">
-    From any function, enqueue a job by calling `trigger()` with `TriggerAction.Enqueue` and the target queue name. The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job — it does not wait for processing.
+### 2. Enqueue work via trigger action
 
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker, TriggerAction } from 'iii-sdk'
+From any function, enqueue a job by calling `trigger()` with `TriggerAction.Enqueue` and the target queue name. The caller receives an acknowledgement (`messageReceiptId`) once the engine accepts the job — it does not wait for processing.
 
-    const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+import { registerWorker, TriggerAction } from 'iii-sdk'
 
-    const receipt = await iii.trigger({
-      function_id: 'orders::process-payment',
-      payload: { orderId: 'ord_789', amount: 149.99, currency: 'USD' },
-      action: TriggerAction.Enqueue({ queue: 'payment' }),
-    })
+const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
-    console.log(receipt.messageReceiptId)
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    from iii import register_worker, TriggerAction
+const receipt = await iii.trigger({
+  function_id: 'orders::process-payment',
+  payload: { orderId: 'ord_789', amount: 149.99, currency: 'USD' },
+  action: TriggerAction.Enqueue({ queue: 'payment' }),
+})
 
-    iii = register_worker("ws://localhost:49134")
+console.log(receipt.messageReceiptId)
+```
+</Tab>
+<Tab title="Python">
+```python
+from iii import register_worker, TriggerAction
 
+iii = register_worker("ws://localhost:49134")
+
+receipt = iii.trigger({
+    "function_id": "orders::process-payment",
+    "payload": {"orderId": "ord_789", "amount": 149.99, "currency": "USD"},
+    "action": TriggerAction.Enqueue(queue="payment"),
+})
+
+print(receipt["messageReceiptId"])
+```
+</Tab>
+<Tab title="Rust">
+```rust
+use iii_sdk::{register_worker, InitOptions, TriggerAction, TriggerRequest};
+use serde_json::json;
+
+let iii = register_worker("ws://localhost:49134", InitOptions::default());
+
+let receipt = iii.trigger(TriggerRequest {
+    function_id: "orders::process-payment".to_string(),
+    payload: json!({
+        "orderId": "ord_789",
+        "amount": 149.99,
+        "currency": "USD",
+    }),
+    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
+    timeout_ms: None,
+}).await?;
+
+println!("{}", receipt["messageReceiptId"]);
+```
+</Tab>
+</Tabs>
+
+The target function receives the `payload` as its input — it does not need to know it was invoked via a queue.
+
+### 3. Handle the enqueue result
+
+The enqueue call can fail synchronously if the queue name is unknown or FIFO validation fails. Always handle the result.
+
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+try {
+  const receipt = await iii.trigger({
+    function_id: 'orders::process-payment',
+    payload: { orderId: 'ord_789', amount: 149.99 },
+    action: TriggerAction.Enqueue({ queue: 'payment' }),
+  })
+  console.log('Enqueued:', receipt.messageReceiptId)
+} catch (err) {
+  if (err.enqueue_error) {
+    console.error('Queue rejected job:', err.enqueue_error)
+  }
+}
+```
+</Tab>
+<Tab title="Python">
+```python
+try:
     receipt = iii.trigger({
         "function_id": "orders::process-payment",
-        "payload": {"orderId": "ord_789", "amount": 149.99, "currency": "USD"},
+        "payload": {"orderId": "ord_789", "amount": 149.99},
         "action": TriggerAction.Enqueue(queue="payment"),
     })
+    print("Enqueued:", receipt["messageReceiptId"])
+except Exception as e:
+    print("Queue rejected job:", e)
+```
+</Tab>
+<Tab title="Rust">
+```rust
+match iii.trigger(TriggerRequest {
+    function_id: "orders::process-payment".to_string(),
+    payload: json!({ "orderId": "ord_789", "amount": 149.99 }),
+    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
+    timeout_ms: None,
+}).await {
+    Ok(receipt) => println!("Enqueued: {}", receipt["messageReceiptId"]),
+    Err(e) => eprintln!("Queue rejected job: {}", e),
+}
+```
+</Tab>
+</Tabs>
 
-    print(receipt["messageReceiptId"])
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    use iii_sdk::{register_worker, InitOptions, TriggerAction, TriggerRequest};
-    use serde_json::json;
+Common rejection reasons:
+- The queue name does not exist in `queue_configs`
+- A FIFO queue's `message_group_field` is missing or `null` in the payload
 
-    let iii = register_worker("ws://localhost:49134", InitOptions::default());
+### 4. Use FIFO queues for ordered processing
 
-    let receipt = iii.trigger(TriggerRequest {
-        function_id: "orders::process-payment".to_string(),
-        payload: json!({
-            "orderId": "ord_789",
-            "amount": 149.99,
-            "currency": "USD",
-        }),
-        action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
-        timeout_ms: None,
-    }).await?;
+When processing order matters — for example, financial transactions for the same account — set `type: fifo` and specify `message_group_field`. Jobs sharing the same group value are processed strictly in order.
 
-    println!("{}", receipt["messageReceiptId"]);
-    ```
-    </Tab>
-    </Tabs>
+```yaml title="iii-config.yaml (excerpt)"
+queue_configs:
+  payment:
+    max_retries: 10
+    concurrency: 2
+    type: fifo
+    message_group_field: transaction_id
+```
 
-    The target function receives the `payload` as its input — it does not need to know it was invoked via a queue.
-  </Step>
+The payload **must** contain the field named by `message_group_field`, and its value must be non-null.
 
-  <Step title="Handle the enqueue result">
-    The enqueue call can fail synchronously if the queue name is unknown or FIFO validation fails. Always handle the result.
+<Tabs>
+<Tab title="Node / TypeScript">
+```typescript
+await iii.trigger({
+  function_id: 'payments::process',
+  payload: { transaction_id: 'txn-abc-123', amount: 49.99, currency: 'USD' },
+  action: TriggerAction.Enqueue({ queue: 'payment' }),
+})
+```
+</Tab>
+<Tab title="Python">
+```python
+iii.trigger({
+    "function_id": "payments::process",
+    "payload": {
+        "transaction_id": "txn-abc-123",
+        "amount": 49.99,
+        "currency": "USD",
+    },
+    "action": TriggerAction.Enqueue(queue="payment"),
+})
+```
+</Tab>
+<Tab title="Rust">
+```rust
+iii.trigger(TriggerRequest {
+    function_id: "payments::process".to_string(),
+    payload: json!({
+        "transaction_id": "txn-abc-123",
+        "amount": 49.99,
+        "currency": "USD",
+    }),
+    action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
+    timeout_ms: None,
+}).await?;
+```
+</Tab>
+</Tabs>
 
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    try {
-      const receipt = await iii.trigger({
-        function_id: 'orders::process-payment',
-        payload: { orderId: 'ord_789', amount: 149.99 },
-        action: TriggerAction.Enqueue({ queue: 'payment' }),
-      })
-      console.log('Enqueued:', receipt.messageReceiptId)
-    } catch (err) {
-      if (err.enqueue_error) {
-        console.error('Queue rejected job:', err.enqueue_error)
-      }
-    }
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    try:
-        receipt = iii.trigger({
-            "function_id": "orders::process-payment",
-            "payload": {"orderId": "ord_789", "amount": 149.99},
-            "action": TriggerAction.Enqueue(queue="payment"),
-        })
-        print("Enqueued:", receipt["messageReceiptId"])
-    except Exception as e:
-        print("Queue rejected job:", e)
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    match iii.trigger(TriggerRequest {
-        function_id: "orders::process-payment".to_string(),
-        payload: json!({ "orderId": "ord_789", "amount": 149.99 }),
-        action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
-        timeout_ms: None,
-    }).await {
-        Ok(receipt) => println!("Enqueued: {}", receipt["messageReceiptId"]),
-        Err(e) => eprintln!("Queue rejected job: {}", e),
-    }
-    ```
-    </Tab>
-    </Tabs>
+### 5. Configure retries and backoff
 
-    Common rejection reasons:
-    - The queue name does not exist in `queue_configs`
-    - A FIFO queue's `message_group_field` is missing or `null` in the payload
-  </Step>
+Every named queue retries failed jobs automatically. Backoff is exponential:
 
-  <Step title="Use FIFO queues for ordered processing">
-    When processing order matters — for example, financial transactions for the same account — set `type: fifo` and specify `message_group_field`. Jobs sharing the same group value are processed strictly in order.
+```
+delay = backoff_ms × 2^(attempt - 1)
+```
 
-    ```yaml title="iii-config.yaml (excerpt)"
-    queue_configs:
-      payment:
-        max_retries: 10
-        concurrency: 2
-        type: fifo
-        message_group_field: transaction_id
-    ```
+| Attempt | `backoff_ms: 1000` | `backoff_ms: 2000` |
+|---------|--------------------|--------------------|
+| 1       | 1 000 ms           | 2 000 ms           |
+| 2       | 2 000 ms           | 4 000 ms           |
+| 3       | 4 000 ms           | 8 000 ms           |
+| 4       | 8 000 ms           | 16 000 ms          |
+| 5       | 16 000 ms          | 32 000 ms          |
 
-    The payload **must** contain the field named by `message_group_field`, and its value must be non-null.
+```yaml title="iii-config.yaml (excerpt)"
+queue_configs:
+  email:
+    max_retries: 8
+    backoff_ms: 2000
+    concurrency: 5
+    type: standard
+```
 
-    <Tabs>
-    <Tab title="Node / TypeScript">
-    ```typescript
-    await iii.trigger({
-      function_id: 'payments::process',
-      payload: { transaction_id: 'txn-abc-123', amount: 49.99, currency: 'USD' },
-      action: TriggerAction.Enqueue({ queue: 'payment' }),
-    })
-    ```
-    </Tab>
-    <Tab title="Python">
-    ```python
-    iii.trigger({
-        "function_id": "payments::process",
-        "payload": {
-            "transaction_id": "txn-abc-123",
-            "amount": 49.99,
-            "currency": "USD",
-        },
-        "action": TriggerAction.Enqueue(queue="payment"),
-    })
-    ```
-    </Tab>
-    <Tab title="Rust">
-    ```rust
-    iii.trigger(TriggerRequest {
-        function_id: "payments::process".to_string(),
-        payload: json!({
-            "transaction_id": "txn-abc-123",
-            "amount": 49.99,
-            "currency": "USD",
-        }),
-        action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
-        timeout_ms: None,
-    }).await?;
-    ```
-    </Tab>
-    </Tabs>
-  </Step>
+After all retries are exhausted, the job moves to a dead-letter queue (DLQ).
 
-  <Step title="Configure retries and backoff">
-    Every named queue retries failed jobs automatically. Backoff is exponential:
+<Info title="Dead letter queues">
+  See [Manage Failed Triggers](./dead-letter-queues) for DLQ inspection and redrive.
+</Info>
 
-    ```
-    delay = backoff_ms × 2^(attempt - 1)
-    ```
+### 6. Control concurrency
 
-    | Attempt | `backoff_ms: 1000` | `backoff_ms: 2000` |
-    |---------|--------------------|--------------------|
-    | 1       | 1 000 ms           | 2 000 ms           |
-    | 2       | 2 000 ms           | 4 000 ms           |
-    | 3       | 4 000 ms           | 8 000 ms           |
-    | 4       | 8 000 ms           | 16 000 ms          |
-    | 5       | 16 000 ms          | 32 000 ms          |
+The `concurrency` field sets the maximum number of jobs the engine processes simultaneously from a single queue (per engine instance).
 
-    ```yaml title="iii-config.yaml (excerpt)"
-    queue_configs:
-      email:
-        max_retries: 8
-        backoff_ms: 2000
-        concurrency: 5
-        type: standard
-    ```
+```yaml title="iii-config.yaml (excerpt)"
+queue_configs:
+  default:
+    concurrency: 10
+    type: standard
+  payment:
+    concurrency: 2
+    type: fifo
+    message_group_field: transaction_id
+```
 
-    After all retries are exhausted, the job moves to a dead-letter queue (DLQ).
+- **Standard queues**: the engine pulls up to `concurrency` jobs simultaneously.
+- **FIFO queues**: the engine processes one job at a time (prefetch=1) to preserve ordering, regardless of the `concurrency` value.
 
-    <Info title="Dead letter queues">
-      See [Manage Failed Triggers](./dead-letter-queues) for DLQ inspection and redrive.
-    </Info>
-  </Step>
-
-  <Step title="Control concurrency">
-    The `concurrency` field sets the maximum number of jobs the engine processes simultaneously from a single queue (per engine instance).
-
-    ```yaml title="iii-config.yaml (excerpt)"
-    queue_configs:
-      default:
-        concurrency: 10
-        type: standard
-      payment:
-        concurrency: 2
-        type: fifo
-        message_group_field: transaction_id
-    ```
-
-    - **Standard queues**: the engine pulls up to `concurrency` jobs simultaneously.
-    - **FIFO queues**: the engine processes one job at a time (prefetch=1) to preserve ordering, regardless of the `concurrency` value.
-
-    Use low concurrency to protect rate-limited APIs. Use high concurrency for embarrassingly parallel work like image resizing.
-  </Step>
-</Steps>
+Use low concurrency to protect rate-limited APIs. Use high concurrency for embarrassingly parallel work like image resizing.
 
 ## Result
 
@@ -334,8 +333,6 @@ sequenceDiagram
     participant API as orders::create
     participant PQ as payment queue (FIFO)
     participant EQ as email queue (standard)
-    participant Payment as orders::process-payment
-    participant Email as emails::confirmation
     participant Analytics as analytics::track
 
     Client->>API: POST /orders
@@ -346,6 +343,14 @@ sequenceDiagram
     API-->>Client: 201 { orderId }
 
     Note over Client,API: Client gets a fast response
+```
+
+```mermaid
+sequenceDiagram
+    participant PQ as payment queue (FIFO)
+    participant EQ as email queue (standard)
+    participant Payment as orders::process-payment
+    participant Email as emails::confirmation
 
     PQ->>Payment: Process payment (ordered, with retries)
     Payment-->>PQ: ACK
@@ -513,14 +518,19 @@ queue_configs:
 sequenceDiagram
     participant API as transactions::submit
     participant Q as ledger queue (FIFO)
-    participant W as Worker
-    participant DB as Database
 
     API->>Q: Deposit $100 (account: acct_A)
     API->>Q: Withdraw $50 (account: acct_A)
     API->>Q: Deposit $200 (account: acct_B)
 
     Note over Q: acct_A jobs are ordered; acct_B is independent
+```
+
+```mermaid
+sequenceDiagram
+    participant Q as ledger queue (FIFO)
+    participant W as Worker
+    participant DB as Database
 
     Q->>W: Deposit $100 (acct_A)
     W->>DB: UPDATE balance SET balance + 100
@@ -670,37 +680,31 @@ queue_configs:
 sequenceDiagram
     participant Campaign as campaigns::launch
     participant Q as bulk-email queue
-    participant W1 as Worker 1
-    participant W2 as Worker 2
-    participant W3 as Worker 3
+    participant W as Workers (×3)
     participant SMTP as SMTP Provider
 
     Campaign->>Q: Enqueue 1000 emails
 
     par concurrency: 3
-        Q->>W1: Email #1
-        Q->>W2: Email #2
-        Q->>W3: Email #3
+        Q->>W: Email #1
+        Q->>W: Email #2
+        Q->>W: Email #3
     end
 
-    W1->>SMTP: Send
-    SMTP-->>W1: 200 OK
-    W1-->>Q: ACK
+    W->>SMTP: Send Email #1
+    SMTP-->>W: 200 OK
+    W-->>Q: ACK
 
-    W2->>SMTP: Send
-    SMTP-->>W2: 429 Rate Limited
-    W2-->>Q: NACK (retry with backoff)
+    W->>SMTP: Send Email #2
+    SMTP-->>W: 429 Rate Limited
+    W-->>Q: NACK (retry with backoff)
 
-    Note over Q,W2: Retry after 5s, then 10s, then 20s...
+    Note over Q,W: Retry after 5s → 10s → 20s…
 
-    W3->>SMTP: Send
-    SMTP-->>W3: 200 OK
-    W3-->>Q: ACK
-
-    Q->>W2: Retry Email #2
-    W2->>SMTP: Send
-    SMTP-->>W2: 200 OK
-    W2-->>Q: ACK
+    Q->>W: Retry Email #2
+    W->>SMTP: Send
+    SMTP-->>W: 200 OK
+    W-->>Q: ACK
 ```
 
 <Tabs>
