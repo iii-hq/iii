@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use iii::modules::state::adapters::{StateAdapter, kv_store::BuiltinKvStoreAdapter};
+use iii::workers::state::adapters::{StateAdapter, kv_store::BuiltinKvStoreAdapter};
 use iii_sdk::{FieldPath, UpdateOp};
 use serde_json::json;
 use tokio::runtime::Runtime;

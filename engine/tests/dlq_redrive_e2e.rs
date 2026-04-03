@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Worker, queue::QueueWorker},
+    workers::{worker::Worker, queue::QueueWorker},
     protocol::ErrorBody,
 };
 
@@ -44,23 +44,23 @@ fn queue_config_with_fast_retries() -> Value {
     })
 }
 
-/// Creates an engine with the QueueWorker initialized AND the module's
+/// Creates an engine with the QueueWorker initialized AND the worker's
 /// built-in functions (including `iii::queue::redrive`) registered on the engine.
 async fn create_engine_with_redrive(config: Value) -> Arc<Engine> {
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
     // Register macro-generated functions (iii::queue::redrive, enqueue, etc.)
-    module.register_functions(engine.clone());
+    worker.register_functions(engine.clone());
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     engine
 }
@@ -71,20 +71,20 @@ async fn enqueue(
     function_id: &str,
     data: Value,
 ) -> anyhow::Result<()> {
-    let guard = engine.queue_module.read().await;
+    let guard = engine.queue_worker.read().await;
     let qm = guard
         .as_ref()
-        .expect("queue_module should be set after initialize");
+        .expect("queue_worker should be set after initialize");
     let message_id = uuid::Uuid::new_v4().to_string();
     qm.enqueue_to_function_queue(queue_name, function_id, data, message_id, None, None)
         .await
 }
 
 async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
-    let guard = engine.queue_module.read().await;
+    let guard = engine.queue_worker.read().await;
     let qm = guard
         .as_ref()
-        .expect("queue_module should be set after initialize");
+        .expect("queue_worker should be set after initialize");
     qm.function_queue_dlq_count(queue_name)
         .await
         .expect("dlq_count should not fail")
@@ -194,7 +194,7 @@ fn register_flaky_function(
 async fn e2e_dlq_redrive_full_lifecycle() {
     // Phase 1: set up engine, register a failing function, enqueue a message
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -204,14 +204,14 @@ async fn e2e_dlq_redrive_full_lifecycle() {
     // Register a failing function so it exhausts retries
     register_failing_function(&engine, "e2e::order_processor", fail_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let worker = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
     // Register iii::queue::redrive and other built-in functions
-    module.register_functions(engine.clone());
+    worker.register_functions(engine.clone());
 
-    module
+    worker
         .initialize()
         .await
         .expect("initialize should succeed");
@@ -286,19 +286,19 @@ async fn e2e_dlq_redrive_full_lifecycle() {
 #[tokio::test]
 async fn e2e_redrive_multiple_dlq_messages() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::batch_handler", fail_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let worker = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
-    module.register_functions(engine.clone());
-    module
+    worker.register_functions(engine.clone());
+    worker
         .initialize()
         .await
         .expect("initialize should succeed");
@@ -402,7 +402,7 @@ async fn e2e_flaky_function_recovers_after_redrive() {
     // With max_retries=2, the first run (3 attempts) exhausts retries → DLQ.
     // After redrive, it gets 3 more attempts (calls 4,5,6). Call 6 succeeds.
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -417,12 +417,12 @@ async fn e2e_flaky_function_recovers_after_redrive() {
         5,
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let worker = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
-    module.register_functions(engine.clone());
-    module
+    worker.register_functions(engine.clone());
+    worker
         .initialize()
         .await
         .expect("initialize should succeed");
@@ -472,19 +472,19 @@ async fn e2e_flaky_function_recovers_after_redrive() {
 #[tokio::test]
 async fn e2e_redrive_result_contains_metadata() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let fail_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "e2e::meta_handler", fail_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
+    let worker = QueueWorker::create(engine.clone(), Some(queue_config_with_fast_retries()))
         .await
         .expect("create should succeed");
 
-    module.register_functions(engine.clone());
-    module
+    worker.register_functions(engine.clone());
+    worker
         .initialize()
         .await
         .expect("initialize should succeed");

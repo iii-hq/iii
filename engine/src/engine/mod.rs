@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::{
     function::{Function, FunctionHandler, FunctionResult, FunctionsRegistry},
     invocation::{InvocationHandler, http_function::HttpFunctionConfig},
-    modules::{
+    workers::{
         engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsWorker,
         worker::{WorkerConfig, channels::ChannelManager, rbac_session},
@@ -39,7 +39,7 @@ use crate::{
 
 /// Abstraction for enqueuing messages to named queues.
 ///
-/// This trait decouples the Engine from the concrete QueueCoreModule
+/// This trait decouples the Engine from the concrete QueueCoreWorker
 /// so that dispatch routing can push work onto a named queue without
 /// creating a circular dependency.
 #[async_trait::async_trait]
@@ -184,7 +184,7 @@ pub struct Engine {
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
-    pub queue_module: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
+    pub queue_worker: Arc<tokio::sync::RwLock<Option<Arc<dyn QueueEnqueuer>>>>,
 }
 
 impl Default for Engine {
@@ -202,12 +202,12 @@ impl Engine {
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations: Arc::new(InvocationHandler::new()),
             channel_manager: Arc::new(ChannelManager::new()),
-            queue_module: Arc::new(tokio::sync::RwLock::new(None)),
+            queue_worker: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
-    pub async fn set_queue_module(&self, module: Arc<dyn QueueEnqueuer>) {
-        *self.queue_module.write().await = Some(module);
+    pub async fn set_queue_worker(&self, worker: Arc<dyn QueueEnqueuer>) {
+        *self.queue_worker.write().await = Some(worker);
     }
 
     async fn send_msg(&self, worker: &WorkerConnection, msg: Message) -> bool {
@@ -542,7 +542,7 @@ impl Engine {
                         worker_id: Some(worker.id),
                     })
                     .await;
-                crate::modules::telemetry::collector::track_trigger_registered();
+                crate::workers::telemetry::collector::track_trigger_registered();
 
                 Ok(())
             }
@@ -582,7 +582,7 @@ impl Engine {
 
                 if let Some(session) = &worker.session {
                     let function = self.functions.get(function_id);
-                    if !crate::modules::worker::rbac_config::is_function_allowed(
+                    if !crate::workers::worker::rbac_config::is_function_allowed(
                         function_id,
                         session.config.rbac.clone(),
                         &session.allowed_functions,
@@ -668,8 +668,8 @@ impl Engine {
 
                         tokio::spawn(
                             async move {
-                                let queue_module = engine.queue_module.read().await;
-                                let result = match queue_module.as_ref() {
+                                let queue_worker = engine.queue_worker.read().await;
+                                let result = match queue_worker.as_ref() {
                                     Some(qm) => {
                                         qm.enqueue_to_function_queue(
                                             &queue,
@@ -681,7 +681,7 @@ impl Engine {
                                         )
                                         .await
                                     }
-                                    None => Err(anyhow::anyhow!("QueueModule not loaded")),
+                                    None => Err(anyhow::anyhow!("QueueWorker not loaded")),
                                 };
 
                                 if let Some(invocation_id) = invocation_id {
@@ -798,11 +798,11 @@ impl Engine {
                 );
                 if worker.has_external_function_id(id).await {
                     worker.remove_external_function_id(id).await;
-                    if let Some(http_module) = self
+                    if let Some(http_worker) = self
                         .service_registry
                         .get_service::<HttpFunctionsWorker>("http_functions")
                     {
-                        match http_module.unregister_http_function(id).await {
+                        match http_worker.unregister_http_function(id).await {
                             Ok(()) => {
                                 tracing::debug!(
                                     worker_id = %worker.id,
@@ -885,14 +885,14 @@ impl Engine {
                 self.service_registry.register_service_from_function_id(id);
 
                 if let Some(invocation) = invocation {
-                    let Some(http_module) = self
+                    let Some(http_worker) = self
                         .service_registry
                         .get_service::<HttpFunctionsWorker>("http_functions")
                     else {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %id,
-                            "HTTP functions module not loaded"
+                            "HTTP functions worker not loaded"
                         );
                         return Ok(());
                     };
@@ -912,7 +912,7 @@ impl Engine {
                         updated_at: None,
                     };
 
-                    if let Err(err) = http_module.register_http_function(config).await {
+                    if let Err(err) = http_worker.register_http_function(config).await {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %id,
@@ -1145,12 +1145,12 @@ impl Engine {
         }
 
         if !external_functions.is_empty() {
-            if let Some(http_module) = self
+            if let Some(http_worker) = self
                 .service_registry
                 .get_service::<HttpFunctionsWorker>("http_functions")
             {
                 for function_id in external_functions.iter() {
-                    if let Err(err) = http_module.unregister_http_function(function_id).await {
+                    if let Err(err) = http_worker.unregister_http_function(function_id).await {
                         tracing::error!(
                             worker_id = %worker.id,
                             function_id = %function_id,
@@ -1288,7 +1288,7 @@ impl EngineTrait for Engine {
         };
 
         self.functions.register_function(function_id, function);
-        crate::modules::telemetry::collector::track_function_registered();
+        crate::workers::telemetry::collector::track_function_registered();
     }
 
     fn register_function_handler<H, F>(&self, request: RegisterFunctionRequest, handler: Handler<H>)
@@ -1333,10 +1333,10 @@ mod tests {
     use crate::{
         config::SecurityConfig,
         function::FunctionResult,
-        modules::{
+        workers::{
             engine_fn::TRIGGER_WORKERS_AVAILABLE,
             http_functions::{HttpFunctionsWorker, config::HttpFunctionsConfig},
-            module::Worker,
+            worker::Worker,
             observability::metrics::ensure_default_meter,
         },
         protocol::{HttpInvocationRef, Message},
@@ -1379,16 +1379,16 @@ mod tests {
             },
         };
 
-        let http_functions_module = HttpFunctionsWorker::create(
+        let http_functions_worker = HttpFunctionsWorker::create(
             engine.clone(),
             Some(serde_json::to_value(&http_functions_config).expect("serialize config")),
         )
         .await
-        .expect("create module");
-        http_functions_module
+        .expect("create worker");
+        http_functions_worker
             .initialize()
             .await
-            .expect("initialize module");
+            .expect("initialize worker");
 
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
@@ -1416,13 +1416,13 @@ mod tests {
         assert!(engine.functions.get("external.my_lambda").is_some());
         assert!(worker.has_external_function_id("external.my_lambda").await);
 
-        let http_module = engine
+        let http_worker = engine
             .service_registry
             .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http_functions service registered");
 
         assert!(
-            http_module
+            http_worker
                 .http_functions()
                 .contains_key("external.my_lambda")
         );
@@ -1432,7 +1432,7 @@ mod tests {
         assert!(engine.functions.get("external.my_lambda").is_none());
 
         assert!(
-            !http_module
+            !http_worker
                 .http_functions()
                 .contains_key("external.my_lambda")
         );
@@ -2081,14 +2081,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_router_msg_register_http_invocation_without_http_module_is_ignored() {
+    async fn test_router_msg_register_http_invocation_without_http_worker_is_ignored() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
 
         let register_message = Message::RegisterFunction {
-            id: "external.without_module".to_string(),
+            id: "external.without_worker".to_string(),
             description: Some("external function".to_string()),
             request_format: None,
             response_format: None,
@@ -2107,16 +2107,16 @@ mod tests {
             .await
             .expect("register message should not fail");
 
-        assert!(engine.functions.get("external.without_module").is_none());
+        assert!(engine.functions.get("external.without_worker").is_none());
         assert!(
             !worker
-                .has_external_function_id("external.without_module")
+                .has_external_function_id("external.without_worker")
                 .await
         );
     }
 
     #[tokio::test]
-    async fn test_router_msg_unregister_external_without_http_module_removes_function() {
+    async fn test_router_msg_unregister_external_without_http_worker_removes_function() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, _rx) = mpsc::channel::<Outbound>(8);

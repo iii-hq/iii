@@ -7,7 +7,7 @@ use futures::Future;
 use iii::{
     engine::Outbound,
     function::{Function, FunctionResult, FunctionsRegistry},
-    modules::observability::metrics::ensure_default_meter,
+    workers::observability::metrics::ensure_default_meter,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
     worker_connections::{WorkerConnection, WorkerConnectionRegistry},
 };

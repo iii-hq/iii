@@ -6,7 +6,7 @@
 
 //! Lightweight lifecycle shim for managed workers.
 //!
-//! When the engine boots and `iii.workers.yaml` declares workers, this module
+//! When the engine boots and `iii.workers.yaml` declares workers, this worker
 //! locates (or auto-downloads) the `iii-worker` binary and spawns it to
 //! start/stop worker VMs. No VMM code is linked into the engine.
 

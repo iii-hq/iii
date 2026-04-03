@@ -18,7 +18,7 @@ pub mod trigger;
 pub mod trigger_formats;
 pub mod worker_connections;
 
-pub mod modules {
+pub mod workers {
     pub mod bridge_client;
     pub mod config;
     pub mod cron;
@@ -40,6 +40,6 @@ pub mod modules {
 }
 
 // Re-export commonly used types
-pub use modules::{config::EngineBuilder, queue::QueueAdapter};
+pub use workers::{config::EngineBuilder, queue::QueueAdapter};
 
-// todo: create a prelude module for commonly used traits and types
+// todo: create a prelude worker for commonly used traits and types

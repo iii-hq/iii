@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     engine::Outbound,
-    modules::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
+    workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
 
 #[derive(Clone, Deserialize, Serialize, Default, JsonSchema)]
@@ -71,11 +71,11 @@ impl WorkerConnectionRegistry {
         metrics.workers_spawns_total.add(1, &[]);
 
         // Update accumulator for readable metrics
-        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+        let acc = crate::workers::observability::metrics::get_metrics_accumulator();
         acc.workers_spawns
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        crate::modules::telemetry::collector::track_peak_workers(count as u64);
+        crate::workers::telemetry::collector::track_peak_workers(count as u64);
     }
 
     pub fn unregister_worker(&self, worker_id: &Uuid) {
@@ -101,7 +101,7 @@ impl WorkerConnectionRegistry {
         metrics.workers_deaths_total.add(1, &[]);
 
         // Update accumulator for readable metrics
-        let acc = crate::modules::observability::metrics::get_metrics_accumulator();
+        let acc = crate::workers::observability::metrics::get_metrics_accumulator();
         acc.workers_deaths
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -374,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn worker_with_session_tracks_functions_external_ids_and_invocations() {
         use crate::engine::Engine;
-        use crate::modules::worker::WorkerConfig;
+        use crate::workers::worker::WorkerConfig;
 
         let (tx, _rx) = mpsc::channel(8);
         let session = Session {
@@ -428,14 +428,14 @@ mod tests {
 
     #[test]
     fn unregister_worker_does_not_panic_with_unknown_id() {
-        crate::modules::observability::metrics::ensure_default_meter();
+        crate::workers::observability::metrics::ensure_default_meter();
         let registry = WorkerConnectionRegistry::new();
         registry.unregister_worker(&Uuid::new_v4());
     }
 
     #[tokio::test]
     async fn worker_registry_registers_updates_and_unregisters_workers() {
-        crate::modules::observability::metrics::ensure_default_meter();
+        crate::workers::observability::metrics::ensure_default_meter();
 
         let registry = WorkerConnectionRegistry::new();
         let worker = make_worker();
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn update_worker_metadata_stores_pid() {
-        crate::modules::observability::metrics::ensure_default_meter();
+        crate::workers::observability::metrics::ensure_default_meter();
         let registry = WorkerConnectionRegistry::new();
         let worker = make_worker();
         let worker_id = worker.id;

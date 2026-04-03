@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::rabbitmq::RabbitMq;
+use testcontainers_workers::rabbitmq::RabbitMq;
 use tokio::sync::OnceCell;
 
 /// Holds a running RabbitMQ container and its AMQP + Management URLs.

@@ -14,8 +14,8 @@ use iii::{
     EngineBuilder,
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::{FunctionHandler, FunctionResult},
-    modules::{
-        module::{AdapterEntry, AdapterFactory, ConfigurableWorker, Worker},
+    workers::{
+        worker::{AdapterEntry, AdapterFactory, ConfigurableWorker, Worker},
         registry::{AdapterFuture, AdapterRegistrationEntry},
     },
     protocol::ErrorBody,
@@ -313,8 +313,8 @@ impl FunctionHandler for CustomQueueWorker {
 async fn main() -> anyhow::Result<()> {
     // Register the custom worker and add it to the engine using EngineBuilder
     EngineBuilder::new()
-        .register_module::<CustomQueueWorker>("my::CustomQueueWorker")
-        .add_module(
+        .register_worker::<CustomQueueWorker>("my::CustomQueueWorker")
+        .add_worker(
             // instead load from config file
             "my::CustomQueueWorker",
             Some(serde_json::json!({

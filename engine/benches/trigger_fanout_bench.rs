@@ -14,7 +14,7 @@ use futures::Future;
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::observability::metrics::ensure_default_meter,
+    workers::observability::metrics::ensure_default_meter,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 use tokio::{runtime::Runtime, sync::Notify};

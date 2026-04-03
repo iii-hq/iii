@@ -20,7 +20,7 @@ use uuid::Uuid;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Worker, queue::QueueWorker},
+    workers::{worker::Worker, queue::QueueWorker},
 };
 
 use common::queue_helpers::{
@@ -43,24 +43,24 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::rmq_handler", call_count.clone());
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     enqueue(
         &engine,
@@ -87,24 +87,24 @@ async fn full_roundtrip_fifo_preserves_order() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let invocation_order: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_order_recording_function(&engine, "test::rmq_fifo", "seq", invocation_order.clone());
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     let message_count: usize = 5;
     for i in 0..message_count {
@@ -144,24 +144,24 @@ async fn retry_behavior_with_rabbitmq() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_retry", call_count.clone());
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     enqueue(
         &engine,
@@ -198,24 +198,24 @@ async fn exhausted_message_lands_in_dlq() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::rmq_dlq", call_count.clone());
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     assert_eq!(
         dlq_count(&engine, &format!("{prefix}-default")).await,
@@ -248,7 +248,7 @@ async fn concurrent_processing() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -260,17 +260,17 @@ async fn concurrent_processing() {
         timestamps.clone(),
     );
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     let start = std::time::Instant::now();
 
@@ -311,7 +311,7 @@ async fn multiple_queues_operate_independently() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -320,17 +320,17 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::rmq_default", default_count.clone());
     register_counting_function(&engine, "test::rmq_payment", payment_count.clone());
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     for i in 0..3 {
         enqueue(
@@ -478,24 +478,24 @@ async fn rmq_enqueue_process_ack_preserves_payload() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let captured: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::rmq_payload", captured.clone());
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     let sent_payload = json!({
         "order_id": 42,
@@ -535,7 +535,7 @@ async fn rmq_topology_matches_expected_configuration() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -545,17 +545,17 @@ async fn rmq_topology_matches_expected_configuration() {
     register_counting_function(&engine, "test::rmq_topo_default", default_count);
     register_counting_function(&engine, "test::rmq_topo_payment", payment_count);
 
-    let module = QueueWorker::create(
+    let worker = QueueWorker::create(
         engine.clone(),
         Some(rabbitmq_queue_config(&ctx.amqp_url, &prefix)),
     )
     .await
     .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Open a separate connection for verification (do not reuse the adapter's internal channel)
     let verify_conn = Connection::connect(&ctx.amqp_url, ConnectionProperties::default())
@@ -680,7 +680,7 @@ async fn rmq_retry_backoff_timing_is_flat() {
     let max_retries: u32 = 3;
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -694,14 +694,14 @@ async fn rmq_retry_backoff_timing_is_flat() {
     );
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, max_retries, backoff_ms);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     enqueue(
         &engine,
@@ -748,7 +748,7 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -756,14 +756,14 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
     register_failing_function(&engine, "test::rmq_dlq_content", call_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 300);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     let sent_payload = json!({"order_id": 42, "action": "verify_dlq_content"});
 
@@ -841,7 +841,7 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -849,14 +849,14 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
     register_failing_function(&engine, "test::rmq_zero_retry", call_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 0, 200);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     let sent_payload = json!({"zero_retry": true});
 
@@ -928,7 +928,7 @@ async fn rmq_fifo_multi_group_ordering() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -960,14 +960,14 @@ async fn rmq_fifo_multi_group_ordering() {
         }
     });
 
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Enqueue 3 groups x 5 messages INTERLEAVED to stress ordering guarantee
     let groups = ["A", "B", "C"];
@@ -1029,7 +1029,7 @@ async fn rmq_handler_panic_recovery() {
     let prefix = test_prefix();
 
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -1037,14 +1037,14 @@ async fn rmq_handler_panic_recovery() {
     register_panicking_function(&engine, "test::rmq_panic", success_count.clone());
 
     let config = rabbitmq_queue_config_custom(&ctx.amqp_url, &prefix, 2, 200);
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Enqueue a panicking message
     enqueue(

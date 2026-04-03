@@ -6,10 +6,10 @@
 
 //! OpenTelemetry initialization for the III Engine.
 //!
-//! This module re-exports from `modules::observability::otel` for backward compatibility.
-//! The canonical implementation is in `crate::modules::observability::otel`.
+//! This worker re-exports from `workers::observability::otel` for backward compatibility.
+//! The canonical implementation is in `crate::workers::observability::otel`.
 
-pub use crate::modules::observability::otel::*;
+pub use crate::workers::observability::otel::*;
 
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;

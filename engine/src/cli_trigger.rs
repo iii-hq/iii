@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use clap::Parser;
-use iii::modules::worker::DEFAULT_PORT;
+use iii::workers::worker::DEFAULT_PORT;
 use iii_sdk::{IIIError, InitOptions, TriggerRequest, register_worker};
 
 #[derive(Parser, Debug, Clone)]

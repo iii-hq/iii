@@ -4,7 +4,7 @@ use std::{net::TcpListener as StdTcpListener, time::Duration};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use iii::{EngineBuilder, modules::config::EngineConfig, protocol::Message};
+use iii::{EngineBuilder, workers::config::EngineConfig, protocol::Message};
 use serde_json::json;
 use tempfile::NamedTempFile;
 use tokio::{runtime::Runtime, task::JoinHandle, time, time::sleep};
@@ -117,7 +117,7 @@ fn reserve_local_port() -> u16 {
 fn write_ws_only_config() -> NamedTempFile {
     use std::io::Write;
     let mut file = NamedTempFile::new().expect("create temp config file");
-    let yaml = "modules: []\n";
+    let yaml = "workers: []\n";
     file.write_all(yaml.as_bytes()).expect("write config");
     file.flush().expect("flush config");
     file

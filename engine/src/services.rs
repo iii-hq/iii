@@ -10,23 +10,23 @@ use dashmap::DashMap;
 #[derive(Default)]
 pub struct ServicesRegistry {
     pub services: Arc<DashMap<String, Service>>,
-    module_services: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
+    worker_services: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 impl ServicesRegistry {
     pub fn new() -> Self {
         ServicesRegistry {
             services: Arc::new(DashMap::new()),
-            module_services: Arc::new(DashMap::new()),
+            worker_services: Arc::new(DashMap::new()),
         }
     }
 
     pub fn register_service<T: Send + Sync + 'static>(&self, name: &str, service: Arc<T>) {
-        self.module_services
+        self.worker_services
             .insert(name.to_string(), service as Arc<dyn Any + Send + Sync>);
     }
 
     pub fn get_service<T: Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
-        self.module_services
+        self.worker_services
             .get(name)?
             .value()
             .clone()
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_register_and_get_module_service() {
+    fn registry_register_and_get_worker_service() {
         let reg = ServicesRegistry::new();
         let service_data = Arc::new(42u32);
         reg.register_service("my_svc", service_data);
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_get_nonexistent_module_service_returns_none() {
+    fn registry_get_nonexistent_worker_service_returns_none() {
         let reg = ServicesRegistry::new();
         let result: Option<Arc<u32>> = reg.get_service("nonexistent");
         assert!(result.is_none());

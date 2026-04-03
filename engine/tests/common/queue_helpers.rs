@@ -8,34 +8,34 @@ use tokio::sync::Mutex;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Worker, queue::QueueWorker},
+    workers::{worker::Worker, queue::QueueWorker},
 };
 
 /// Creates an Engine with a QueueWorker initialized from the given config.
 pub async fn create_engine_with_queue(config: Value) -> Arc<Engine> {
-    iii::modules::observability::metrics::ensure_default_meter();
+    iii::workers::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
-    let module = QueueWorker::create(engine.clone(), Some(config))
+    let worker = QueueWorker::create(engine.clone(), Some(config))
         .await
         .expect("QueueWorker::create should succeed");
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
     engine
 }
 
-/// Enqueue a message to a function queue via the engine's queue_module.
+/// Enqueue a message to a function queue via the engine's queue_worker.
 pub async fn enqueue(
     engine: &Engine,
     queue_name: &str,
     function_id: &str,
     data: Value,
 ) -> anyhow::Result<()> {
-    let guard = engine.queue_module.read().await;
+    let guard = engine.queue_worker.read().await;
     let qm = guard
         .as_ref()
-        .expect("queue_module should be set after initialize");
+        .expect("queue_worker should be set after initialize");
     let message_id = uuid::Uuid::new_v4().to_string();
     qm.enqueue_to_function_queue(queue_name, function_id, data, message_id, None, None)
         .await
@@ -43,10 +43,10 @@ pub async fn enqueue(
 
 /// Returns the number of messages in the DLQ for a function queue.
 pub async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
-    let guard = engine.queue_module.read().await;
+    let guard = engine.queue_worker.read().await;
     let qm = guard
         .as_ref()
-        .expect("queue_module should be set after initialize");
+        .expect("queue_worker should be set after initialize");
     qm.function_queue_dlq_count(queue_name)
         .await
         .expect("dlq_count should not fail")
@@ -55,10 +55,10 @@ pub async fn dlq_count(engine: &Engine, queue_name: &str) -> u64 {
 /// Returns up to `count` DLQ messages for a function queue as parsed JSON Values.
 /// Each message has structure: { "job": {...}, "error": "...", "failed_at": u64 }
 pub async fn dlq_messages(engine: &Engine, queue_name: &str, count: usize) -> Vec<Value> {
-    let guard = engine.queue_module.read().await;
+    let guard = engine.queue_worker.read().await;
     let qm = guard
         .as_ref()
-        .expect("queue_module should be set after initialize");
+        .expect("queue_worker should be set after initialize");
     qm.function_queue_dlq_messages(queue_name, count)
         .await
         .expect("dlq_messages should not fail")

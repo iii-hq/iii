@@ -8,7 +8,7 @@ use iii::{
     engine::Outbound,
     function::{Function, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
-    modules::observability::metrics::ensure_default_meter,
+    workers::observability::metrics::ensure_default_meter,
     services::ServicesRegistry,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
     worker_connections::{WorkerConnection, WorkerConnectionRegistry},
@@ -48,7 +48,7 @@ fn make_function(id: &str) -> Function {
 }
 
 /// Simulates a subset of Engine::cleanup_worker operations for registry teardown.
-/// NOTE: This does not include external-function module cleanup, channel cleanup,
+/// NOTE: This does not include external-function worker cleanup, channel cleanup,
 /// or worker_disconnected trigger dispatch.
 async fn simulate_cleanup(
     worker: &WorkerConnection,

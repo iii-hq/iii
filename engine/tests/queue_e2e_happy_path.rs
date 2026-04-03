@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use iii::{
     engine::Engine,
-    modules::{module::Worker, queue::QueueWorker},
+    workers::{worker::Worker, queue::QueueWorker},
     trigger::Trigger,
 };
 
@@ -24,17 +24,17 @@ use common::queue_helpers::{
 #[tokio::test]
 async fn enqueue_process_ack_preserves_payload() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let captured_payloads: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     register_payload_capturing_function(&engine, "test::payload_check", captured_payloads.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
-    module.initialize().await.expect("init should succeed");
+    worker.initialize().await.expect("init should succeed");
 
     let sent_payload = json!({
         "order_id": 42,
@@ -74,7 +74,7 @@ async fn enqueue_process_ack_preserves_payload() {
 #[tokio::test]
 async fn condition_based_filtering_routes_matching_messages_only() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -95,13 +95,13 @@ async fn condition_based_filtering_routes_matching_messages_only() {
         json!("important"),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
     // register_functions must be called to make the "enqueue" service function
     // available on the engine (topic-based enqueue path uses engine.call("enqueue", ...))
-    module.register_functions(engine.clone());
-    module.initialize().await.expect("init should succeed");
+    worker.register_functions(engine.clone());
+    worker.initialize().await.expect("init should succeed");
 
     let topic = format!("cond-test-{}", uuid::Uuid::new_v4());
 

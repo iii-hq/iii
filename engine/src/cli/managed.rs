@@ -1003,10 +1003,10 @@ fn clone_rootfs(base: &std::path::Path, dest: &std::path::Path) -> Result<(), St
 }
 
 /// Recursively copy directory contents from src to dst.
-/// Skips node_modules, .git, target, and other build artifacts.
+/// Skips node_workers, .git, target, and other build artifacts.
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     let skip = [
-        "node_modules",
+        "node_workers",
         ".git",
         "target",
         "__pycache__",

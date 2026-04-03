@@ -4,7 +4,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::observability::metrics::ensure_default_meter,
+    workers::observability::metrics::ensure_default_meter,
 };
 
 fn core_runtime_benchmark(c: &mut Criterion) {

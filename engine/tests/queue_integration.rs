@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Worker, queue::QueueWorker},
+    workers::{worker::Worker, queue::QueueWorker},
 };
 
 use common::queue_helpers::{
@@ -96,22 +96,22 @@ async fn enqueue_to_fifo_null_group_field_fails() {
 #[tokio::test]
 async fn full_roundtrip_enqueue_consume_invoke() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::handler", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
     // Initialize starts the consumer loops in the background.
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Enqueue a single message to the standard queue.
     enqueue(
@@ -136,7 +136,7 @@ async fn full_roundtrip_enqueue_consume_invoke() {
 #[tokio::test]
 async fn full_roundtrip_fifo_preserves_order() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -148,14 +148,14 @@ async fn full_roundtrip_fifo_preserves_order() {
         invocation_order.clone(),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Enqueue 5 messages to the FIFO queue with the same transaction_id
     // (same message group) so they are processed sequentially.
@@ -198,21 +198,21 @@ async fn retry_exhaustion_stops_redelivery() {
     // The "default" queue has max_retries=2, so a permanently failing function
     // should be invoked at most 1 (initial) + 2 (retries) = 3 times.
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::always_fails", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     enqueue(
         &engine,
@@ -249,21 +249,21 @@ async fn retry_exhaustion_stops_redelivery() {
 #[tokio::test]
 async fn exhausted_message_lands_in_dlq() {
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::dlq_target", call_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // DLQ should start empty
     assert_eq!(dlq_count(&engine, "default").await, 0);
@@ -293,7 +293,7 @@ async fn standard_queue_processes_concurrently() {
     // 200ms handler, sequential processing would take >= 600ms while
     // concurrent processing takes ~200ms.
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -305,14 +305,14 @@ async fn standard_queue_processes_concurrently() {
         timestamps.clone(),
     );
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     let start = std::time::Instant::now();
 
@@ -351,7 +351,7 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
     // The consumer should nack it (function_not_found error) and continue
     // processing subsequent messages for other functions.
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -359,14 +359,14 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
     register_counting_function(&engine, "test::real_handler", call_count.clone());
     // Note: "test::ghost" is NOT registered
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Enqueue to a nonexistent function first
     enqueue(&engine, "default", "test::ghost", json!({"should": "fail"}))
@@ -399,7 +399,7 @@ async fn multiple_queues_operate_independently() {
     // simultaneously. Each queue should process its own messages without
     // interference.
     let engine = {
-        iii::modules::observability::metrics::ensure_default_meter();
+        iii::workers::observability::metrics::ensure_default_meter();
         Arc::new(Engine::new())
     };
 
@@ -408,14 +408,14 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::default_handler", default_count.clone());
     register_counting_function(&engine, "test::payment_handler", payment_count.clone());
 
-    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
+    let worker = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
         .expect("QueueWorker::create should succeed");
 
-    module
+    worker
         .initialize()
         .await
-        .expect("Module initialization should succeed");
+        .expect("Worker initialization should succeed");
 
     // Enqueue 3 messages to each queue
     for i in 0..3 {

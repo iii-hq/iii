@@ -21,9 +21,9 @@ use tracing_subscriber::{
     util::SubscriberInitExt,
 };
 
-use crate::modules::config::EngineConfig;
-use crate::modules::observability::logs_layer::OtelLogsLayer;
-use crate::modules::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
+use crate::workers::config::EngineConfig;
+use crate::workers::observability::logs_layer::OtelLogsLayer;
+use crate::workers::observability::otel::{get_log_storage, get_otel_config, init_log_storage};
 use crate::telemetry::{ExporterType, OtelConfig, init_otel};
 
 /// Collected field from tracing event
@@ -256,7 +256,7 @@ where
         };
         write!(writer, "[{}] ", level_str)?;
 
-        // Use "function" field if present, otherwise use target (module path)
+        // Use "function" field if present, otherwise use target (worker path)
         let display_name = collector.get_function().unwrap_or(meta.target());
         write!(writer, "{} ", display_name.cyan().bold())?;
 
@@ -276,18 +276,18 @@ where
 
 static TRACING: OnceLock<()> = OnceLock::new();
 
-/// Extract OTEL configuration from the OtelModule config in the config file.
-/// This is called early during startup, before modules are loaded.
+/// Extract OTEL configuration from the OtelWorker config in the config file.
+/// This is called early during startup, before workers are loaded.
 fn extract_otel_config(cfg: &EngineConfig) -> OtelConfig {
-    let otel_module_cfg = cfg
+    let otel_worker_cfg = cfg
         .workers
         .iter()
         .find(|m| m.name.as_deref() == Some("iii-observability"));
 
     let mut otel_cfg = OtelConfig::default();
 
-    if let Some(module_entry) = otel_module_cfg
-        && let Some(config) = &module_entry.config
+    if let Some(worker_entry) = otel_worker_cfg
+        && let Some(config) = &worker_entry.config
     {
         if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
             otel_cfg.enabled = enabled;
@@ -341,12 +341,12 @@ pub fn init_log_from_config(config_path: Option<&str>) {
             println!("Parsed config file: {}", path);
 
             let otel_cfg = extract_otel_config(&cfg);
-            let otel_module_cfg = cfg
+            let otel_worker_cfg = cfg
                 .workers
                 .iter()
                 .find(|m| m.name.as_deref() == Some("iii-observability"));
 
-            let log_level = otel_module_cfg
+            let log_level = otel_worker_cfg
                 .and_then(|m| m.config.as_ref())
                 .and_then(|c: &Value| {
                     c.get("level")
@@ -356,7 +356,7 @@ pub fn init_log_from_config(config_path: Option<&str>) {
                 })
                 .unwrap_or_else(|| "info".to_string());
 
-            let log_format = otel_module_cfg
+            let log_format = otel_worker_cfg
                 .and_then(|m| m.config.as_ref())
                 .and_then(|c: &Value| c.get("format"))
                 .and_then(|v| v.as_str())
@@ -456,7 +456,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::config::{EngineConfig, WorkerEntry};
+    use crate::workers::config::{EngineConfig, WorkerEntry};
     use serial_test::serial;
     use tracing::callsite::Identifier;
     use tracing::field::{FieldSet, Visit};
@@ -854,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_otel_config_reads_observability_module_config() {
+    fn test_extract_otel_config_reads_observability_worker_config() {
         let cfg = EngineConfig {
             workers: vec![WorkerEntry {
                 name: Some("iii-observability".to_string()),
@@ -880,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_otel_config_defaults_when_module_missing() {
+    fn test_extract_otel_config_defaults_when_worker_missing() {
         let cfg = EngineConfig { workers: vec![] };
 
         let otel = extract_otel_config(&cfg);

@@ -9,7 +9,7 @@ mod cli_trigger;
 
 use clap::{Parser, Subcommand};
 use cli_trigger::TriggerArgs;
-use iii::{EngineBuilder, logging, modules::config::EngineConfig, modules::worker::DEFAULT_PORT};
+use iii::{EngineBuilder, logging, workers::config::EngineConfig, workers::worker::DEFAULT_PORT};
 
 #[derive(Parser, Debug)]
 #[command(name = "iii", about = "Process communication engine")]
@@ -124,7 +124,7 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
 
     engine.serve().await?;
 
-    // Engine shutdown complete (modules destroyed). Stop managed worker VMs.
+    // Engine shutdown complete (workers destroyed). Stop managed worker VMs.
     cli::managed_shim::stop_managed_workers().await;
 
     Ok(())
@@ -169,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
-    use iii::modules::worker::DEFAULT_PORT;
+    use iii::workers::worker::DEFAULT_PORT;
 
     #[test]
     fn trigger_parses_all_arguments() {

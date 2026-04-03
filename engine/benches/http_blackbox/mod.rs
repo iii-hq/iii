@@ -45,7 +45,7 @@ impl BenchRuntime {
         let base_http_url = format!("http://127.0.0.1:{http_port}");
 
         let builder = EngineBuilder::new()
-            .add_module(
+            .add_worker(
                 "iii-http",
                 Some(json!({
                     "host": "127.0.0.1",
@@ -53,7 +53,7 @@ impl BenchRuntime {
                     "default_timeout": 120000,
                 })),
             )
-            .add_module(
+            .add_worker(
                 "iii-worker-manager",
                 Some(json!({
                     "port": ws_port,

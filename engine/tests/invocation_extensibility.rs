@@ -79,8 +79,8 @@ async fn test_engine_function_registration() {
 async fn worker_pid_is_stored_and_listed() {
     use iii::{
         engine::Outbound,
-        modules::{
-            engine_fn::EngineFunctionsWorker, module::Worker,
+        workers::{
+            engine_fn::EngineFunctionsWorker, worker::Worker,
             observability::metrics::ensure_default_meter,
         },
         worker_connections::WorkerConnection,
@@ -89,14 +89,14 @@ async fn worker_pid_is_stored_and_listed() {
     ensure_default_meter();
     let engine = Arc::new(Engine::new());
 
-    let engine_fn_module = EngineFunctionsWorker::create(engine.clone(), None)
+    let engine_fn_worker = EngineFunctionsWorker::create(engine.clone(), None)
         .await
         .expect("create EngineFunctionsWorker");
-    engine_fn_module
+    engine_fn_worker
         .initialize()
         .await
         .expect("initialize EngineFunctionsWorker");
-    engine_fn_module.register_functions(engine.clone());
+    engine_fn_worker.register_functions(engine.clone());
 
     // Simulate worker connecting
     let (tx, _rx) = tokio::sync::mpsc::channel::<Outbound>(8);
