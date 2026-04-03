@@ -50,11 +50,10 @@ pub async fn ensure_libkrunfw() -> anyhow::Result<PathBuf> {
         #[cfg(unix)]
         symlinks::create_libkrunfw_symlinks(&lib_dir);
 
-        eprintln!(
-            "  {} libkrunfw v{} extracted to {}",
-            "\u{2713}",
-            LIBKRUNFW_VERSION,
-            lib_dir.display()
+        tracing::debug!(
+            version = LIBKRUNFW_VERSION,
+            path = %lib_dir.display(),
+            "libkrunfw extracted"
         );
 
         return Ok(lib_dir);
@@ -179,12 +178,12 @@ async fn download_libkrunfw() -> anyhow::Result<PathBuf> {
     #[cfg(unix)]
     symlinks::create_libkrunfw_symlinks(&lib_dir);
 
-    eprintln!(
-        "  {} libkrunfw v{} downloaded to {}",
-        "\u{2713}",
-        LIBKRUNFW_VERSION,
-        lib_dir.display()
+    tracing::debug!(
+        version = LIBKRUNFW_VERSION,
+        path = %lib_dir.display(),
+        "libkrunfw downloaded"
     );
+    eprintln!("  \u{2713} Firmware ready");
 
     Ok(lib_dir)
 }

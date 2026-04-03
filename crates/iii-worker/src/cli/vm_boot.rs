@@ -274,9 +274,10 @@ fn boot_vm(args: &VmBootArgs) -> Result<std::convert::Infallible, String> {
         .build()
         .map_err(|e| format!("VM build failed: {}", e))?;
 
+    let vcpu_label = if args.vcpus == 1 { "vCPU" } else { "vCPUs" };
     eprintln!(
-        "  Booting VM (vcpus={}, ram={}MiB)...",
-        args.vcpus, args.ram
+        "  Booting VM ({} {}, {} MiB RAM)...",
+        args.vcpus, vcpu_label, args.ram
     );
     vm.enter().map_err(|e| format!("VM enter failed: {}", e))
 }
