@@ -20,24 +20,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::panic::AssertUnwindSafe;
 
-use super::{QueueAdapter, SubscriberQueueConfig, TopicInfo, config::QueueModuleConfig};
+use super::{QueueAdapter, SubscriberQueueConfig, TopicInfo, config::QueueWorkerConfig};
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
     engine::{Engine, EngineTrait, Handler, QueueEnqueuer, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::module::{AdapterFactory, ConfigurableModule, Module},
+    modules::module::{AdapterFactory, ConfigurableWorker, Worker},
     protocol::ErrorBody,
     telemetry::{SpanExt, inject_baggage_from_context, inject_traceparent_from_context},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
 #[derive(Clone)]
-pub struct QueueCoreModule {
+pub struct QueueWorker {
     adapter: Arc<dyn QueueAdapter>,
     engine: Arc<Engine>,
-    _config: QueueModuleConfig,
+    _config: QueueWorkerConfig,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -71,7 +71,7 @@ pub struct RedriveSingleResult {
 }
 
 #[service(name = "queue")]
-impl QueueCoreModule {
+impl QueueWorker {
     /// Resolves a display-friendly queue name to the internal adapter key.
     /// Function queues (listed in config) are prefixed with `__fn_queue::`;
     /// topic-based queues pass through unchanged.
@@ -496,7 +496,7 @@ impl QueueCoreModule {
 }
 
 #[async_trait]
-impl QueueEnqueuer for QueueCoreModule {
+impl QueueEnqueuer for QueueWorker {
     async fn enqueue_to_function_queue(
         &self,
         queue_name: &str,
@@ -530,7 +530,7 @@ impl QueueEnqueuer for QueueCoreModule {
     }
 }
 
-impl TriggerRegistrator for QueueCoreModule {
+impl TriggerRegistrator for QueueWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -613,11 +613,11 @@ impl TriggerRegistrator for QueueCoreModule {
 }
 
 #[async_trait]
-impl Module for QueueCoreModule {
+impl Worker for QueueWorker {
     fn name(&self) -> &'static str {
         "QueueModule"
     }
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
@@ -767,15 +767,15 @@ impl Module for QueueCoreModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for QueueCoreModule {
-    type Config = QueueModuleConfig;
+impl ConfigurableWorker for QueueWorker {
+    type Config = QueueWorkerConfig;
     type Adapter = dyn QueueAdapter;
     type AdapterRegistration = super::registry::QueueAdapterRegistration;
     const DEFAULT_ADAPTER_NAME: &'static str = "builtin";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn QueueAdapter>>>> =
-            Lazy::new(|| RwLock::new(QueueCoreModule::build_registry()));
+            Lazy::new(|| RwLock::new(QueueWorker::build_registry()));
         &REGISTRY
     }
 
@@ -796,15 +796,16 @@ impl ConfigurableModule for QueueCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-queue",
-    QueueCoreModule,
+    QueueWorker,
     enabled_by_default = true
 );
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::module::Worker;
     use serde_json::json;
 
     // =========================================================================
@@ -866,19 +867,19 @@ mod tests {
     }
 
     // =========================================================================
-    // QueueCoreModule::name
+    // QueueWorker::name
     // =========================================================================
     // Note: The module itself requires an adapter and engine, so we test what
     // we can without those dependencies.
 
     // =========================================================================
-    // ConfigurableModule trait constants
+    // ConfigurableWorker trait constants
     // =========================================================================
 
     #[test]
     fn default_adapter_name() {
         assert_eq!(
-            QueueCoreModule::DEFAULT_ADAPTER_NAME,
+            QueueWorker::DEFAULT_ADAPTER_NAME,
             "builtin"
         );
     }
@@ -1140,26 +1141,26 @@ mod tests {
         }
     }
 
-    fn setup_queue_module() -> (Arc<Engine>, QueueCoreModule, Arc<MockQueueAdapter>) {
+    fn setup_queue_module() -> (Arc<Engine>, QueueWorker, Arc<MockQueueAdapter>) {
         crate::modules::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let adapter = Arc::new(MockQueueAdapter::new());
-        let module = QueueCoreModule {
+        let module = QueueWorker {
             adapter: adapter.clone(),
             engine: engine.clone(),
-            _config: super::super::config::QueueModuleConfig::default(),
+            _config: super::super::config::QueueWorkerConfig::default(),
         };
         (engine, module, adapter)
     }
 
     // =========================================================================
-    // QueueCoreModule::name
+    // QueueWorker::name
     // =========================================================================
 
     #[test]
     fn queue_module_name() {
         let (_engine, module, _adapter) = setup_queue_module();
-        assert_eq!(Module::name(&module), "QueueModule");
+        assert_eq!(Worker::name(&module), "QueueModule");
     }
 
     // =========================================================================
@@ -1395,18 +1396,18 @@ mod tests {
     }
 
     // =========================================================================
-    // ConfigurableModule trait tests
+    // ConfigurableWorker trait tests
     // =========================================================================
 
     #[test]
     fn adapter_name_from_config_none() {
-        let config = super::super::config::QueueModuleConfig::default();
-        assert!(QueueCoreModule::adapter_name_from_config(&config).is_none());
+        let config = super::super::config::QueueWorkerConfig::default();
+        assert!(QueueWorker::adapter_name_from_config(&config).is_none());
     }
 
     #[test]
     fn adapter_name_from_config_some() {
-        let config = super::super::config::QueueModuleConfig {
+        let config = super::super::config::QueueWorkerConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
                 name: "my::CustomAdapter".to_string(),
                 config: None,
@@ -1414,20 +1415,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            QueueCoreModule::adapter_name_from_config(&config),
+            QueueWorker::adapter_name_from_config(&config),
             Some("my::CustomAdapter".to_string())
         );
     }
 
     #[test]
     fn adapter_config_from_config_none() {
-        let config = super::super::config::QueueModuleConfig::default();
-        assert!(QueueCoreModule::adapter_config_from_config(&config).is_none());
+        let config = super::super::config::QueueWorkerConfig::default();
+        assert!(QueueWorker::adapter_config_from_config(&config).is_none());
     }
 
     #[test]
     fn adapter_config_from_config_some() {
-        let config = super::super::config::QueueModuleConfig {
+        let config = super::super::config::QueueWorkerConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
                 name: "my::Adapter".to_string(),
                 config: Some(json!({"url": "redis://localhost"})),
@@ -1435,25 +1436,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            QueueCoreModule::adapter_config_from_config(&config),
+            QueueWorker::adapter_config_from_config(&config),
             Some(json!({"url": "redis://localhost"}))
         );
     }
 
     #[test]
     fn adapter_config_from_config_adapter_without_config() {
-        let config = super::super::config::QueueModuleConfig {
+        let config = super::super::config::QueueWorkerConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
                 name: "my::Adapter".to_string(),
                 config: None,
             }),
             ..Default::default()
         };
-        assert!(QueueCoreModule::adapter_config_from_config(&config).is_none());
+        assert!(QueueWorker::adapter_config_from_config(&config).is_none());
     }
 
     // =========================================================================
-    // Module::initialize test
+    // Worker::initialize test
     // =========================================================================
 
     #[tokio::test]
@@ -1473,17 +1474,17 @@ mod tests {
         crate::modules::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let adapter: Arc<dyn QueueAdapter> = Arc::new(MockQueueAdapter::new());
-        let config = super::super::config::QueueModuleConfig::default();
-        let module = QueueCoreModule::build(engine.clone(), config, adapter);
-        assert_eq!(Module::name(&module), "QueueModule");
+        let config = super::super::config::QueueWorkerConfig::default();
+        let module = QueueWorker::build(engine.clone(), config, adapter);
+        assert_eq!(Worker::name(&module), "QueueModule");
     }
 
     // =========================================================================
     // enqueue_to_function_queue tests
     // =========================================================================
 
-    fn setup_queue_module_with_configs() -> (Arc<Engine>, QueueCoreModule, Arc<MockQueueAdapter>) {
-        use super::super::config::{FunctionQueueConfig, QueueModuleConfig};
+    fn setup_queue_module_with_configs() -> (Arc<Engine>, QueueWorker, Arc<MockQueueAdapter>) {
+        use super::super::config::{FunctionQueueConfig, QueueWorkerConfig};
 
         crate::modules::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
@@ -1506,12 +1507,12 @@ mod tests {
             },
         );
 
-        let config = QueueModuleConfig {
+        let config = QueueWorkerConfig {
             adapter: None,
             queue_configs,
         };
 
-        let module = QueueCoreModule {
+        let module = QueueWorker {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: config,
@@ -1624,20 +1625,20 @@ mod tests {
     // Integration tests with real BuiltinQueueAdapter
     // =========================================================================
 
-    use crate::modules::module::ConfigurableModule;
+    use crate::modules::module::ConfigurableWorker;
 
     async fn setup_integration_module() -> (
         Arc<Engine>,
-        QueueCoreModule,
+        QueueWorker,
         Arc<dyn super::super::QueueAdapter>,
     ) {
-        use super::super::config::{FunctionQueueConfig, QueueModuleConfig};
+        use super::super::config::{FunctionQueueConfig, QueueWorkerConfig};
 
         crate::modules::observability::metrics::ensure_default_meter();
 
         let engine = Arc::new(Engine::new());
 
-        let factory = QueueCoreModule::get_adapter("builtin")
+        let factory = QueueWorker::get_adapter("builtin")
             .await
             .expect("BuiltinQueueAdapter factory must be registered");
         let adapter = factory(engine.clone(), None)
@@ -1663,12 +1664,12 @@ mod tests {
             },
         );
 
-        let config = QueueModuleConfig {
+        let config = QueueWorkerConfig {
             adapter: None,
             queue_configs,
         };
 
-        let module = QueueCoreModule {
+        let module = QueueWorker {
             adapter: adapter.clone(),
             engine: engine.clone(),
             _config: config,

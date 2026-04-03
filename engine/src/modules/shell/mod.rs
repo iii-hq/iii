@@ -9,4 +9,4 @@ mod exec;
 mod glob_exec;
 mod module;
 
-pub use self::module::ExecCoreModule;
+pub use self::module::ExecWorker;

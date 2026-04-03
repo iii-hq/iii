@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    modules::state::StateCoreModule,
+    modules::state::StateWorker,
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -49,7 +49,7 @@ impl StateTriggers {
 pub const TRIGGER_TYPE: &str = "state";
 
 #[async_trait::async_trait]
-impl TriggerRegistrator for StateCoreModule {
+impl TriggerRegistrator for StateWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -107,8 +107,8 @@ mod tests {
 
     use super::*;
     use crate::modules::{
-        module::ConfigurableModule,
-        state::{StateCoreModule, adapters::StateAdapter, config::StateModuleConfig},
+        module::ConfigurableWorker,
+        state::{StateWorker, adapters::StateAdapter, config::StateWorkerConfig},
     };
 
     struct NoopStateAdapter;
@@ -160,10 +160,10 @@ mod tests {
         }
     }
 
-    fn test_module() -> StateCoreModule {
-        <StateCoreModule as ConfigurableModule>::build(
+    fn test_module() -> StateWorker {
+        <StateWorker as ConfigurableWorker>::build(
             Arc::new(crate::engine::Engine::new()),
-            StateModuleConfig::default(),
+            StateWorkerConfig::default(),
             Arc::new(NoopStateAdapter),
         )
     }

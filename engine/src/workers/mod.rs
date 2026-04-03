@@ -40,22 +40,22 @@ impl std::fmt::Debug for WorkerTelemetryMeta {
 }
 
 #[derive(Default)]
-pub struct WorkerRegistry {
-    pub workers: Arc<DashMap<Uuid, Worker>>,
+pub struct WorkerConnectionRegistry {
+    pub workers: Arc<DashMap<Uuid, WorkerConnection>>,
 }
 
-impl WorkerRegistry {
+impl WorkerConnectionRegistry {
     pub fn new() -> Self {
         Self {
             workers: Arc::new(DashMap::new()),
         }
     }
 
-    pub fn get_worker(&self, id: &Uuid) -> Option<Worker> {
+    pub fn get_worker(&self, id: &Uuid) -> Option<WorkerConnection> {
         self.workers.get(id).map(|w| w.value().clone())
     }
 
-    pub fn register_worker(&self, worker: Worker) {
+    pub fn register_worker(&self, worker: WorkerConnection) {
         let ip_address = worker.session.as_ref().map(|s| s.ip_address.as_str());
         tracing::info!(
             worker_id = %worker.id,
@@ -106,7 +106,7 @@ impl WorkerRegistry {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn list_workers(&self) -> Vec<Worker> {
+    pub fn list_workers(&self) -> Vec<WorkerConnection> {
         self.workers
             .iter()
             .map(|entry| entry.value().clone())
@@ -194,7 +194,7 @@ impl FromStr for WorkerStatus {
 }
 
 #[derive(Clone)]
-pub struct Worker {
+pub struct WorkerConnection {
     pub id: Uuid,
     pub channel: mpsc::Sender<Outbound>,
     pub function_ids: Arc<RwLock<HashSet<String>>>,
@@ -211,7 +211,7 @@ pub struct Worker {
     pub session: Option<Arc<Session>>,
 }
 
-impl Worker {
+impl WorkerConnection {
     pub fn new(channel: mpsc::Sender<Outbound>) -> Self {
         let id = Uuid::new_v4();
         Self {
@@ -324,9 +324,9 @@ mod tests {
 
     use super::*;
 
-    fn make_worker() -> Worker {
+    fn make_worker() -> WorkerConnection {
         let (tx, _rx) = mpsc::channel(8);
-        Worker::new(tx)
+        WorkerConnection::new(tx)
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
             allow_trigger_type_registration: false,
             context: serde_json::json!({}),
         };
-        let worker = Worker::with_session(tx, session);
+        let worker = WorkerConnection::with_session(tx, session);
         assert_eq!(
             worker.session.as_ref().unwrap().ip_address.as_str(),
             "127.0.0.1"
@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn unregister_worker_does_not_panic_with_unknown_id() {
         crate::modules::observability::metrics::ensure_default_meter();
-        let registry = WorkerRegistry::new();
+        let registry = WorkerConnectionRegistry::new();
         registry.unregister_worker(&Uuid::new_v4());
     }
 
@@ -437,7 +437,7 @@ mod tests {
     async fn worker_registry_registers_updates_and_unregisters_workers() {
         crate::modules::observability::metrics::ensure_default_meter();
 
-        let registry = WorkerRegistry::new();
+        let registry = WorkerConnectionRegistry::new();
         let worker = make_worker();
         let worker_id = worker.id;
         registry.register_worker(worker);
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn update_worker_metadata_stores_pid() {
         crate::modules::observability::metrics::ensure_default_meter();
-        let registry = WorkerRegistry::new();
+        let registry = WorkerConnectionRegistry::new();
         let worker = make_worker();
         let worker_id = worker.id;
         registry.register_worker(worker);

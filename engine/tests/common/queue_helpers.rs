@@ -8,16 +8,16 @@ use tokio::sync::Mutex;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Module, queue::QueueCoreModule},
+    modules::{module::Worker, queue::QueueWorker},
 };
 
-/// Creates an Engine with a QueueCoreModule initialized from the given config.
+/// Creates an Engine with a QueueWorker initialized from the given config.
 pub async fn create_engine_with_queue(config: Value) -> Arc<Engine> {
     iii::modules::observability::metrics::ensure_default_meter();
     let engine = Arc::new(Engine::new());
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module
         .initialize()
         .await

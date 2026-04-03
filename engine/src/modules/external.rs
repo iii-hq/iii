@@ -26,7 +26,7 @@ use tokio::{
     time::{Duration, timeout},
 };
 
-use crate::{engine::Engine, modules::module::Module};
+use crate::{engine::Engine, modules::module::Worker};
 
 /// Resolves an external worker name to a binary path.
 ///
@@ -40,12 +40,12 @@ struct ManifestFile {
     workers: Option<BTreeMap<String, String>>,
 }
 
-pub fn resolve_external_module(name: &str) -> Option<ExternalModuleInfo> {
+pub fn resolve_external_module(name: &str) -> Option<ExternalWorkerInfo> {
     let base_dir = std::env::current_dir().ok()?;
     resolve_external_module_in(&base_dir, name)
 }
 
-pub fn resolve_external_module_in(base_dir: &Path, name: &str) -> Option<ExternalModuleInfo> {
+pub fn resolve_external_module_in(base_dir: &Path, name: &str) -> Option<ExternalWorkerInfo> {
     if name.is_empty() {
         return None;
     }
@@ -78,13 +78,13 @@ pub fn resolve_external_module_in(base_dir: &Path, name: &str) -> Option<Externa
         return None;
     }
 
-    Some(ExternalModuleInfo {
+    Some(ExternalWorkerInfo {
         name: name.to_string(),
         binary_path,
     })
 }
 
-pub struct ExternalModuleInfo {
+pub struct ExternalWorkerInfo {
     pub name: String,
     pub binary_path: PathBuf,
 }
@@ -95,7 +95,7 @@ pub struct ExternalModuleInfo {
 /// and killed during `destroy`. The module config is serialized to a temporary
 /// YAML file and passed via `--config <path>`.
 #[derive(Clone)]
-pub struct ExternalModule {
+pub struct ExternalWorker {
     display_name: &'static str,
     name: String,
     binary_path: PathBuf,
@@ -104,10 +104,10 @@ pub struct ExternalModule {
     config_file: Arc<Mutex<Option<PathBuf>>>,
 }
 
-impl ExternalModule {
-    pub fn new(info: ExternalModuleInfo, config: Option<Value>) -> Self {
+impl ExternalWorker {
+    pub fn new(info: ExternalWorkerInfo, config: Option<Value>) -> Self {
         let name = info.name.clone();
-        let display_name = Box::leak(format!("ExternalModule({})", &name).into_boxed_str());
+        let display_name = Box::leak(format!("ExternalWorker({})", &name).into_boxed_str());
         Self {
             display_name,
             name,
@@ -120,7 +120,7 @@ impl ExternalModule {
 }
 
 #[async_trait::async_trait]
-impl Module for ExternalModule {
+impl Worker for ExternalWorker {
     fn name(&self) -> &'static str {
         self.display_name
     }
@@ -128,9 +128,9 @@ impl Module for ExternalModule {
     async fn create(
         _engine: Arc<Engine>,
         _config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn Module>> {
+    ) -> anyhow::Result<Box<dyn Worker>> {
         Err(anyhow::anyhow!(
-            "ExternalModule::create should not be called directly"
+            "ExternalWorker::create should not be called directly"
         ))
     }
 
@@ -420,15 +420,15 @@ mod tests {
         );
     }
 
-    // ── ExternalModule construction ─────────────────────────────────────
+    // ── ExternalWorker construction ─────────────────────────────────────
 
     #[test]
     fn external_module_new_without_config() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "test-worker".to_string(),
             binary_path: PathBuf::from("/tmp/test-worker"),
         };
-        let module = ExternalModule::new(info, None);
+        let module = ExternalWorker::new(info, None);
         assert_eq!(module.name, "test-worker");
         assert_eq!(module.binary_path, PathBuf::from("/tmp/test-worker"));
         assert!(module.config.is_none());
@@ -437,31 +437,31 @@ mod tests {
     #[test]
     fn external_module_new_with_config() {
         let config = serde_json::json!({"port": 8080, "debug": true});
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "configured-worker".to_string(),
             binary_path: PathBuf::from("/tmp/configured-worker"),
         };
-        let module = ExternalModule::new(info, Some(config.clone()));
+        let module = ExternalWorker::new(info, Some(config.clone()));
         assert_eq!(module.config, Some(config));
     }
 
     #[test]
     fn external_module_display_name_format() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "my-worker".to_string(),
             binary_path: PathBuf::from("/tmp/my-worker"),
         };
-        let module = ExternalModule::new(info, None);
-        assert_eq!(module.name(), "ExternalModule(my-worker)");
+        let module = ExternalWorker::new(info, None);
+        assert_eq!(module.name(), "ExternalWorker(my-worker)");
     }
 
     #[test]
     fn external_module_name_returns_consistent_pointer() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "test-worker".to_string(),
             binary_path: PathBuf::from("/tmp/test-worker"),
         };
-        let module = ExternalModule::new(info, None);
+        let module = ExternalWorker::new(info, None);
         let name1 = module.name();
         let name2 = module.name();
         assert_eq!(
@@ -472,11 +472,11 @@ mod tests {
 
     #[test]
     fn external_module_clone_shares_child_and_config_file() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "clone-test".to_string(),
             binary_path: PathBuf::from("/tmp/clone-test"),
         };
-        let module = ExternalModule::new(info, None);
+        let module = ExternalWorker::new(info, None);
         let cloned = module.clone();
 
         // Arc pointers should be the same (shared state)
@@ -485,36 +485,36 @@ mod tests {
         assert_eq!(module.name, cloned.name);
     }
 
-    // ── async Module trait methods ──────────────────────────────────────
+    // ── async Worker trait methods ──────────────────────────────────────
 
     #[tokio::test]
     async fn external_module_initialize_succeeds() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "init-test".to_string(),
             binary_path: PathBuf::from("/tmp/init-test"),
         };
-        let module = ExternalModule::new(info, None);
+        let module = ExternalWorker::new(info, None);
         assert!(module.initialize().await.is_ok());
     }
 
     #[tokio::test]
     async fn external_module_destroy_succeeds_with_no_child() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "destroy-test".to_string(),
             binary_path: PathBuf::from("/tmp/destroy-test"),
         };
-        let module = ExternalModule::new(info, None);
+        let module = ExternalWorker::new(info, None);
         // destroy on a fresh module (no spawned child) should succeed
         assert!(module.destroy().await.is_ok());
     }
 
     #[tokio::test]
     async fn external_module_destroy_cleans_up_config_file() {
-        let info = ExternalModuleInfo {
+        let info = ExternalWorkerInfo {
             name: "cleanup-test".to_string(),
             binary_path: PathBuf::from("/tmp/cleanup-test"),
         };
-        let module = ExternalModule::new(info, None);
+        let module = ExternalWorker::new(info, None);
 
         // Simulate a config file being written
         let temp_config = std::env::temp_dir().join("iii-cleanup-test-config.yaml");

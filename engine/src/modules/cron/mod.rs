@@ -12,4 +12,4 @@ mod cron;
 pub mod registry;
 mod structs;
 
-pub use cron::CronCoreModule;
+pub use cron::CronWorker;

@@ -41,7 +41,7 @@ struct SubscriptionInfo {
 /// Configure in `config.yaml`:
 /// ```yaml
 /// modules:
-///   - class: modules::queue::QueueModule
+///   - class: modules::queue::QueueWorker
 ///     config:
 ///       adapter:
 ///         class: modules::queue::adapters::Bridge

@@ -10,7 +10,7 @@ use crate::modules::module::AdapterEntry;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct StreamModuleConfig {
+pub struct StreamWorkerConfig {
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -32,7 +32,7 @@ fn default_host() -> String {
     "0.0.0.0".to_string()
 }
 
-impl Default for StreamModuleConfig {
+impl Default for StreamWorkerConfig {
     fn default() -> Self {
         Self {
             port: default_port(),
@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn default_values() {
-        let config = StreamModuleConfig::default();
+        let config = StreamWorkerConfig::default();
         assert_eq!(config.port, 3112);
         assert_eq!(config.host, "0.0.0.0");
         assert!(config.auth_function.is_none());
@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn deserialize_empty_json() {
-        let config: StreamModuleConfig = serde_json::from_str("{}").unwrap();
+        let config: StreamWorkerConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(config.port, 3112);
         assert_eq!(config.host, "0.0.0.0");
         assert!(config.auth_function.is_none());
@@ -72,7 +72,7 @@ mod tests {
             "host": "127.0.0.1",
             "auth_function": "my_auth_fn"
         }"#;
-        let config: StreamModuleConfig = serde_json::from_str(json).unwrap();
+        let config: StreamWorkerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.port, 4000);
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.auth_function, Some("my_auth_fn".to_string()));
@@ -86,7 +86,7 @@ mod tests {
                 "config": {"key": "value"}
             }
         }"#;
-        let config: StreamModuleConfig = serde_json::from_str(json).unwrap();
+        let config: StreamWorkerConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
         assert_eq!(adapter.name, "my_adapter::StreamAdapter");
         assert!(adapter.config.is_some());
@@ -95,20 +95,20 @@ mod tests {
     #[test]
     fn deny_unknown_fields() {
         let json = r#"{"port": 3112, "unknown": true}"#;
-        let result: Result<StreamModuleConfig, _> = serde_json::from_str(json);
+        let result: Result<StreamWorkerConfig, _> = serde_json::from_str(json);
         assert!(result.is_err(), "should deny unknown fields");
     }
 
     #[test]
     fn serialize_roundtrip() {
-        let config = StreamModuleConfig {
+        let config = StreamWorkerConfig {
             port: 5000,
             host: "localhost".to_string(),
             auth_function: Some("auth".to_string()),
             adapter: None,
         };
         let json_str = serde_json::to_string(&config).unwrap();
-        let deserialized: StreamModuleConfig = serde_json::from_str(&json_str).unwrap();
+        let deserialized: StreamWorkerConfig = serde_json::from_str(&json_str).unwrap();
         assert_eq!(deserialized.port, 5000);
         assert_eq!(deserialized.host, "localhost");
         assert_eq!(deserialized.auth_function, Some("auth".to_string()));
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn from_yaml_with_defaults() {
         let yaml = "{}";
-        let config: StreamModuleConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: StreamWorkerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.port, 3112);
         assert_eq!(config.host, "0.0.0.0");
     }
@@ -129,7 +129,7 @@ port: 7777
 host: "10.0.0.1"
 auth_function: "check_auth"
 "#;
-        let config: StreamModuleConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: StreamWorkerConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.port, 7777);
         assert_eq!(config.host, "10.0.0.1");
         assert_eq!(config.auth_function, Some("check_auth".to_string()));

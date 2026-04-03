@@ -17,7 +17,7 @@ use serde_json::Value;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::module::Module,
+    modules::module::Worker,
     protocol::ErrorBody,
 };
 
@@ -63,19 +63,19 @@ pub struct InvokeInput {
 }
 
 #[derive(Clone)]
-pub struct BridgeClientModule {
+pub struct BridgeClientWorker {
     engine: Arc<Engine>,
     bridge: III,
     config: BridgeClientConfig,
 }
 
 #[async_trait]
-impl Module for BridgeClientModule {
+impl Worker for BridgeClientWorker {
     fn name(&self) -> &'static str {
         "Bridge Client"
     }
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         let config: BridgeClientConfig = config
             .map(serde_json::from_value)
             .transpose()?
@@ -297,9 +297,9 @@ impl Module for BridgeClientModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-bridge",
-    BridgeClientModule
+    BridgeClientWorker
 );
 
 #[cfg(test)]
@@ -315,8 +315,8 @@ mod tests {
 
     use super::*;
 
-    fn build_module(config: BridgeClientConfig) -> BridgeClientModule {
-        BridgeClientModule {
+    fn build_module(config: BridgeClientConfig) -> BridgeClientWorker {
+        BridgeClientWorker {
             engine: Arc::new(Engine::new()),
             bridge: register_worker("ws://127.0.0.1:9", InitOptions::default()),
             config,
@@ -432,7 +432,7 @@ mod tests {
             std::env::remove_var("III_URL");
         }
 
-        let created = BridgeClientModule::create(Arc::new(Engine::new()), None)
+        let created = BridgeClientWorker::create(Arc::new(Engine::new()), None)
             .await
             .expect("create bridge client");
         assert_eq!(created.name(), "Bridge Client");

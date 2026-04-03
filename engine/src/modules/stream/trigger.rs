@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    modules::stream::StreamCoreModule,
+    modules::stream::StreamWorker,
     trigger::{Trigger, TriggerRegistrator},
 };
 
@@ -65,7 +65,7 @@ pub const LEAVE_TRIGGER_TYPE: &str = "stream:leave";
 pub const STREAM_TRIGGER_TYPE: &str = "stream";
 
 #[async_trait::async_trait]
-impl TriggerRegistrator for StreamCoreModule {
+impl TriggerRegistrator for StreamWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -168,17 +168,17 @@ impl TriggerRegistrator for StreamCoreModule {
 mod tests {
     use super::*;
     use crate::modules::{
-        module::ConfigurableModule,
+        module::ConfigurableWorker,
         observability::metrics::ensure_default_meter,
-        stream::{adapters::kv_store::BuiltinKvStoreAdapter, config::StreamModuleConfig},
+        stream::{adapters::kv_store::BuiltinKvStoreAdapter, config::StreamWorkerConfig},
     };
 
-    fn setup() -> StreamCoreModule {
+    fn setup() -> StreamWorker {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
         let adapter: Arc<dyn crate::modules::stream::adapters::StreamAdapter> =
             Arc::new(BuiltinKvStoreAdapter::new(None));
-        StreamCoreModule::build(engine, StreamModuleConfig::default(), adapter)
+        StreamWorker::build(engine, StreamWorkerConfig::default(), adapter)
     }
 
     fn make_trigger(

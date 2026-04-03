@@ -19,7 +19,7 @@ use tracing::Instrument;
 
 use crate::{
     condition::check_condition,
-    modules::rest_api::types::{HttpRequest, HttpResponse},
+    modules::http::types::{HttpRequest, HttpResponse},
     modules::worker::channels::ChannelItem,
 };
 
@@ -32,7 +32,7 @@ fn generate_error_id() -> String {
     format!("{:x}", timestamp & 0xFFFFFFFFFFFF)
 }
 
-use super::{RestApiCoreModule, types::TriggerMetadata};
+use super::{HttpWorker, types::TriggerMetadata};
 use crate::engine::{Engine, EngineTrait};
 
 fn apply_control_message(
@@ -146,7 +146,7 @@ pub async fn dynamic_handler(
     uri: Uri,
     headers: HeaderMap,
     Extension(engine): Extension<Arc<Engine>>,
-    Extension(api_handler): Extension<Arc<RestApiCoreModule>>,
+    Extension(api_handler): Extension<Arc<HttpWorker>>,
     Extension(registered_path): Extension<String>,
     Query(query_params): Query<HashMap<String, String>>,
     body: Body,
@@ -1264,8 +1264,8 @@ mod tests {
     use crate::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
     use crate::function::FunctionResult;
     use crate::modules::observability::metrics::ensure_default_meter;
-    use crate::modules::rest_api::api_core::{PathRouter, RestApiCoreModule};
-    use crate::modules::rest_api::types::HttpRequest;
+    use crate::modules::http::api_core::{PathRouter, HttpWorker};
+    use crate::modules::http::types::HttpRequest;
     use crate::modules::worker::channels::ChannelItem;
     use crate::protocol::ErrorBody;
     use axum::http::Method;
@@ -1275,14 +1275,14 @@ mod tests {
         Arc::new(Engine::new())
     }
 
-    fn make_test_api_handler(engine: Arc<Engine>) -> Arc<RestApiCoreModule> {
-        use crate::modules::rest_api::config::RestApiConfig;
+    fn make_test_api_handler(engine: Arc<Engine>) -> Arc<HttpWorker> {
+        use crate::modules::http::config::RestApiConfig;
         let config = RestApiConfig::default();
-        Arc::new(RestApiCoreModule::new_for_tests(engine, config))
+        Arc::new(HttpWorker::new_for_tests(engine, config))
     }
 
     async fn register_test_route(
-        api_handler: &Arc<RestApiCoreModule>,
+        api_handler: &Arc<HttpWorker>,
         path: &str,
         method: &str,
         function_id: &str,
@@ -1299,7 +1299,7 @@ mod tests {
     }
 
     async fn register_test_route_with_condition(
-        api_handler: &Arc<RestApiCoreModule>,
+        api_handler: &Arc<HttpWorker>,
         path: &str,
         method: &str,
         function_id: &str,

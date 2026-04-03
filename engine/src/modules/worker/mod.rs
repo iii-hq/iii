@@ -26,7 +26,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     engine::Engine,
-    modules::{module::Module, worker::ws_handler::channel_ws_upgrade},
+    modules::{module::Worker, worker::ws_handler::channel_ws_upgrade},
     protocol::StreamChannelRef,
 };
 
@@ -76,24 +76,24 @@ impl Default for WorkerConfig {
 }
 
 #[derive(Clone)]
-pub struct WorkerModule {
+pub struct WorkerManager {
     engine: Arc<Engine>,
     config: WorkerConfig,
 }
 
 #[async_trait::async_trait]
-impl Module for WorkerModule {
+impl Worker for WorkerManager {
     fn name(&self) -> &'static str {
-        "WorkerModule"
+        "WorkerManager"
     }
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         let config: WorkerConfig = config
             .map(serde_json::from_value)
             .transpose()?
             .unwrap_or_default();
 
-        Ok(Box::new(WorkerModule { engine, config }))
+        Ok(Box::new(WorkerManager { engine, config }))
     }
 
     async fn start_background_tasks(
@@ -138,7 +138,7 @@ impl Module for WorkerModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing WorkerModule");
+        tracing::info!("Initializing WorkerManager");
         Ok(())
     }
 
@@ -197,7 +197,7 @@ async fn ws_handler(
     })
 }
 
-crate::register_module!("iii-worker-manager", WorkerModule, mandatory);
+crate::register_worker!("iii-worker-manager", WorkerManager, mandatory);
 
 #[cfg(test)]
 mod tests {

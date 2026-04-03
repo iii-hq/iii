@@ -17,7 +17,7 @@ use crate::{
     engine::{Engine, EngineTrait},
     function::FunctionResult,
     modules::stream::{
-        StreamCoreModule, StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage,
+        StreamWorker, StreamIncomingMessage, StreamOutboundMessage, StreamWrapperMessage,
         Subscription,
         adapters::StreamConnection,
         structs::{
@@ -33,14 +33,14 @@ pub struct SocketStreamConnection {
     pub sender: mpsc::Sender<StreamOutbound>,
     pub triggers: Arc<StreamTriggers>,
     subscriptions: Arc<DashMap<String, Subscription>>,
-    stream_module: Arc<StreamCoreModule>,
+    stream_module: Arc<StreamWorker>,
     context: Option<StreamAuthContext>,
     engine: Arc<Engine>,
 }
 
 impl SocketStreamConnection {
     pub fn new(
-        stream_module: Arc<StreamCoreModule>,
+        stream_module: Arc<StreamWorker>,
         context: Option<StreamAuthContext>,
         sender: mpsc::Sender<StreamOutbound>,
         engine: Arc<Engine>,
@@ -372,11 +372,11 @@ mod tests {
         engine::{Handler, RegisterFunctionRequest},
         function::FunctionResult,
         modules::{
-            module::ConfigurableModule,
+            module::ConfigurableWorker,
             observability::metrics::ensure_default_meter,
             stream::{
                 adapters::{StreamAdapter, StreamConnection, kv_store::BuiltinKvStoreAdapter},
-                config::StreamModuleConfig,
+                config::StreamWorkerConfig,
             },
         },
         protocol::ErrorBody,
@@ -389,16 +389,16 @@ mod tests {
         context: Option<StreamAuthContext>,
     ) -> (
         Arc<Engine>,
-        Arc<StreamCoreModule>,
+        Arc<StreamWorker>,
         SocketStreamConnection,
         mpsc::Receiver<StreamOutbound>,
     ) {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let adapter: Arc<dyn StreamAdapter> = Arc::new(BuiltinKvStoreAdapter::new(None));
-        let module = Arc::new(StreamCoreModule::build(
+        let module = Arc::new(StreamWorker::build(
             engine.clone(),
-            StreamModuleConfig::default(),
+            StreamWorkerConfig::default(),
             adapter,
         ));
         let (tx, rx) = mpsc::channel(16);

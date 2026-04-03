@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
-use crate::modules::module::Module;
+use crate::modules::module::Worker;
 use crate::workers::WorkerTelemetryMeta;
 
 use self::amplitude::{AmplitudeClient, AmplitudeEvent};
@@ -430,7 +430,7 @@ impl TelemetryContext {
     }
 }
 
-pub struct TelemetryModule {
+pub struct TelemetryWorker {
     engine: Arc<Engine>,
     config: TelemetryConfig,
     client: Arc<AmplitudeClient>,
@@ -439,16 +439,16 @@ pub struct TelemetryModule {
     start_time: Instant,
 }
 
-impl TelemetryModule {
+impl TelemetryWorker {
     fn active_client(&self) -> &Arc<AmplitudeClient> {
         self.sdk_client.as_ref().unwrap_or(&self.client)
     }
 }
 
-struct DisabledTelemetryModule;
+struct DisabledTelemetryWorker;
 
 #[async_trait]
-impl Module for DisabledTelemetryModule {
+impl Worker for DisabledTelemetryWorker {
     fn name(&self) -> &'static str {
         "Telemetry"
     }
@@ -456,8 +456,8 @@ impl Module for DisabledTelemetryModule {
     async fn create(
         _engine: Arc<Engine>,
         _config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn Module>> {
-        Ok(Box::new(DisabledTelemetryModule))
+    ) -> anyhow::Result<Box<dyn Worker>> {
+        Ok(Box::new(DisabledTelemetryWorker))
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
@@ -478,12 +478,12 @@ impl Module for DisabledTelemetryModule {
 }
 
 #[async_trait]
-impl Module for TelemetryModule {
+impl Worker for TelemetryWorker {
     fn name(&self) -> &'static str {
         "Telemetry"
     }
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         let telemetry_config: TelemetryConfig = match config {
             Some(cfg) => serde_json::from_value(cfg)?,
             None => TelemetryConfig::default(),
@@ -504,7 +504,7 @@ impl Module for TelemetryModule {
                     tracing::info!("Anonymous telemetry disabled (dev opt-out).");
                 }
             }
-            return Ok(Box::new(DisabledTelemetryModule));
+            return Ok(Box::new(DisabledTelemetryWorker));
         }
 
         let install_id = get_or_create_install_id();
@@ -525,7 +525,7 @@ impl Module for TelemetryModule {
             env_info,
         };
 
-        Ok(Box::new(TelemetryModule {
+        Ok(Box::new(TelemetryWorker {
             engine,
             config: telemetry_config,
             client,
@@ -775,9 +775,9 @@ impl Module for TelemetryModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-telemetry",
-    TelemetryModule,
+    TelemetryWorker,
     mandatory
 );
 
@@ -795,7 +795,7 @@ mod tests {
         },
         services::Service,
         trigger::{Trigger, TriggerRegistrator, TriggerType},
-        workers::Worker,
+        workers::WorkerConnection,
     };
 
     fn clear_ci_env_vars() {
@@ -910,8 +910,8 @@ mod tests {
         engine: Arc<Engine>,
         sdk_client: bool,
         heartbeat_interval_secs: u64,
-    ) -> TelemetryModule {
-        TelemetryModule {
+    ) -> TelemetryWorker {
+        TelemetryWorker {
             engine,
             config: TelemetryConfig {
                 enabled: true,
@@ -1677,7 +1677,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
-        let mut worker1 = crate::workers::Worker::new(tx1);
+        let mut worker1 = crate::workers::WorkerConnection::new(tx1);
         worker1.runtime = Some("node".to_string());
         worker1.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
@@ -1688,7 +1688,7 @@ mod tests {
         engine.worker_registry.workers.insert(w1_id, worker1);
 
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-        let mut worker2 = crate::workers::Worker::new(tx2);
+        let mut worker2 = crate::workers::WorkerConnection::new(tx2);
         worker2.runtime = Some("python".to_string());
         worker2.telemetry = None;
         let w2_id = worker2.id;
@@ -1712,7 +1712,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut worker = crate::workers::Worker::new(tx);
+        let mut worker = crate::workers::WorkerConnection::new(tx);
         worker.runtime = None;
         worker.telemetry = None;
         let wid = worker.id;
@@ -1729,7 +1729,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
-        let mut worker1 = crate::workers::Worker::new(tx1);
+        let mut worker1 = crate::workers::WorkerConnection::new(tx1);
         worker1.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         worker1.runtime = Some("node".to_string());
         worker1.telemetry = Some(WorkerTelemetryMeta {
@@ -1740,7 +1740,7 @@ mod tests {
         engine.worker_registry.workers.insert(worker1.id, worker1);
 
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-        let mut worker2 = crate::workers::Worker::new(tx2);
+        let mut worker2 = crate::workers::WorkerConnection::new(tx2);
         worker2.id = uuid::Uuid::parse_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
         worker2.runtime = Some("node".to_string());
         worker2.telemetry = Some(WorkerTelemetryMeta {
@@ -1760,7 +1760,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut worker = crate::workers::Worker::new(tx);
+        let mut worker = crate::workers::WorkerConnection::new(tx);
         worker.runtime = Some("node".to_string());
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: None,
@@ -1779,7 +1779,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut worker = crate::workers::Worker::new(tx);
+        let mut worker = crate::workers::WorkerConnection::new(tx);
         worker.runtime = Some("node".to_string());
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
@@ -1807,25 +1807,25 @@ mod tests {
     }
 
     // =========================================================================
-    // DisabledTelemetryModule
+    // DisabledTelemetryWorker
     // =========================================================================
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_name() {
-        let module = DisabledTelemetryModule;
+        let module = DisabledTelemetryWorker;
         assert_eq!(module.name(), "Telemetry");
     }
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_initialize() {
-        let module = DisabledTelemetryModule;
+        let module = DisabledTelemetryWorker;
         let result = module.initialize().await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_start_background_tasks() {
-        let module = DisabledTelemetryModule;
+        let module = DisabledTelemetryWorker;
         let (tx, rx) = tokio::sync::watch::channel(false);
         let result = module.start_background_tasks(rx, tx).await;
         assert!(result.is_ok());
@@ -1833,7 +1833,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_disabled_telemetry_module_destroy() {
-        let module = DisabledTelemetryModule;
+        let module = DisabledTelemetryWorker;
         let result = module.destroy().await;
         assert!(result.is_ok());
     }
@@ -1841,14 +1841,14 @@ mod tests {
     #[tokio::test]
     async fn test_disabled_telemetry_module_create() {
         let engine = make_test_engine();
-        let result = DisabledTelemetryModule::create(engine, None).await;
+        let result = DisabledTelemetryWorker::create(engine, None).await;
         assert!(result.is_ok());
         let module = result.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
     // =========================================================================
-    // TelemetryModule::create
+    // TelemetryWorker::create
     // =========================================================================
 
     #[tokio::test]
@@ -1862,7 +1862,7 @@ mod tests {
 
         let engine = make_test_engine();
         let config = serde_json::json!({ "enabled": false });
-        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        let module = TelemetryWorker::create(engine, Some(config)).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
         assert!(module.initialize().await.is_ok());
     }
@@ -1877,7 +1877,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let module = TelemetryModule::create(engine, None).await.unwrap();
+        let module = TelemetryWorker::create(engine, None).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
 
         unsafe {
@@ -1898,7 +1898,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let module = TelemetryModule::create(engine, None).await.unwrap();
+        let module = TelemetryWorker::create(engine, None).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
 
         unsafe {
@@ -1916,7 +1916,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let module = TelemetryModule::create(engine, None).await.unwrap();
+        let module = TelemetryWorker::create(engine, None).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
 
         unsafe {
@@ -1934,7 +1934,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let module = TelemetryModule::create(engine, None).await.unwrap();
+        let module = TelemetryWorker::create(engine, None).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
@@ -1951,7 +1951,7 @@ mod tests {
         let config = serde_json::json!({
             "sdk_api_key": "sdk-key-456",
         });
-        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        let module = TelemetryWorker::create(engine, Some(config)).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
@@ -1968,7 +1968,7 @@ mod tests {
         let config = serde_json::json!({
             "sdk_api_key": "",
         });
-        let module = TelemetryModule::create(engine, Some(config)).await.unwrap();
+        let module = TelemetryWorker::create(engine, Some(config)).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
@@ -2026,7 +2026,7 @@ mod tests {
     }
 
     // =========================================================================
-    // TelemetryModule::active_client
+    // TelemetryWorker::active_client
     // =========================================================================
 
     #[test]
@@ -2047,7 +2047,7 @@ mod tests {
     }
 
     // =========================================================================
-    // TelemetryModule name
+    // TelemetryWorker name
     // =========================================================================
 
     #[tokio::test]
@@ -2060,7 +2060,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let module = TelemetryModule::create(engine, None).await.unwrap();
+        let module = TelemetryWorker::create(engine, None).await.unwrap();
         assert_eq!(module.name(), "Telemetry");
     }
 
@@ -2074,7 +2074,7 @@ mod tests {
         }
 
         let engine = make_test_engine();
-        let module = TelemetryModule::create(engine, None).await.unwrap();
+        let module = TelemetryWorker::create(engine, None).await.unwrap();
         assert!(module.initialize().await.is_ok());
     }
 
@@ -2115,7 +2115,7 @@ mod tests {
             .expect("register trigger");
 
         let (worker_tx, _worker_rx) = mpsc::channel(1);
-        let mut worker = Worker::new(worker_tx);
+        let mut worker = WorkerConnection::new(worker_tx);
         worker.runtime = Some("node".to_string());
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),

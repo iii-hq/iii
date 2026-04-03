@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::{
     engine::Engine,
-    modules::registry::{AdapterRegistrationEntry, ModuleFuture},
+    modules::registry::{AdapterRegistrationEntry, WorkerFuture},
 };
 
 // use across modules
@@ -44,13 +44,13 @@ pub(crate) fn bind_address_error(
 }
 
 #[async_trait::async_trait]
-pub trait Module: Send + Sync {
+pub trait Worker: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>>
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>>
     where
         Self: Sized;
 
-    fn make_module(engine: Arc<Engine>, config: Option<Value>) -> ModuleFuture
+    fn make_worker(engine: Arc<Engine>, config: Option<Value>) -> WorkerFuture
     where
         Self: Sized + 'static,
     {
@@ -90,7 +90,7 @@ pub type AdapterFactory<A> = Arc<
 >;
 
 #[async_trait::async_trait]
-pub trait ConfigurableModule: Module + Sized + 'static {
+pub trait ConfigurableWorker: Worker + Sized + 'static {
     type Config: DeserializeOwned + Default + Send;
     type Adapter: Send + Sync + 'static + ?Sized;
     type AdapterRegistration: AdapterRegistrationEntry<Self::Adapter> + inventory::Collect;
@@ -182,7 +182,7 @@ pub trait ConfigurableModule: Module + Sized + 'static {
     async fn create_with_adapters(
         engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn Module>> {
+    ) -> anyhow::Result<Box<dyn Worker>> {
         // 1. Parse config
         let parsed_config: Self::Config = config
             .map(serde_json::from_value)
@@ -282,15 +282,15 @@ mod tests {
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-    struct TestModuleConfig {
+    struct TestWorkerConfig {
         #[serde(default)]
         adapter: Option<AdapterEntry>,
     }
 
     #[derive(Clone)]
-    struct TestConfigurableModule {
+    struct TestConfigurableWorker {
         _engine: Arc<Engine>,
-        _config: TestModuleConfig,
+        _config: TestWorkerConfig,
         _adapter: Arc<dyn TestAdapter>,
     }
 
@@ -299,15 +299,15 @@ mod tests {
     static FACTORY_CALLS: Lazy<Mutex<Vec<FactoryCall>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
     #[async_trait::async_trait]
-    impl Module for TestConfigurableModule {
+    impl Worker for TestConfigurableWorker {
         fn name(&self) -> &'static str {
-            "TestConfigurableModule"
+            "TestConfigurableWorker"
         }
 
         async fn create(
             engine: Arc<Engine>,
             config: Option<Value>,
-        ) -> anyhow::Result<Box<dyn Module>> {
+        ) -> anyhow::Result<Box<dyn Worker>> {
             Self::create_with_adapters(engine, config).await
         }
 
@@ -317,8 +317,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ConfigurableModule for TestConfigurableModule {
-        type Config = TestModuleConfig;
+    impl ConfigurableWorker for TestConfigurableWorker {
+        type Config = TestWorkerConfig;
         type Adapter = dyn TestAdapter;
         type AdapterRegistration = TestAdapterRegistration;
         const DEFAULT_ADAPTER_NAME: &'static str = "test::default";
@@ -349,19 +349,19 @@ mod tests {
         }
     }
 
-    struct SimpleModule;
+    struct SimpleWorker;
 
     #[async_trait::async_trait]
-    impl Module for SimpleModule {
+    impl Worker for SimpleWorker {
         fn name(&self) -> &'static str {
-            "SimpleModule"
+            "SimpleWorker"
         }
 
         async fn create(
             _engine: Arc<Engine>,
             _config: Option<Value>,
-        ) -> anyhow::Result<Box<dyn Module>> {
-            Ok(Box::new(SimpleModule))
+        ) -> anyhow::Result<Box<dyn Worker>> {
+            Ok(Box::new(SimpleWorker))
         }
 
         async fn initialize(&self) -> anyhow::Result<()> {
@@ -375,22 +375,22 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct DefaultHooksModule {
+    struct DefaultHooksWorker {
         _engine: Arc<Engine>,
         _config: DefaultHooksConfig,
         _adapter: Arc<dyn TestAdapter>,
     }
 
     #[async_trait::async_trait]
-    impl Module for DefaultHooksModule {
+    impl Worker for DefaultHooksWorker {
         fn name(&self) -> &'static str {
-            "DefaultHooksModule"
+            "DefaultHooksWorker"
         }
 
         async fn create(
             engine: Arc<Engine>,
             config: Option<Value>,
-        ) -> anyhow::Result<Box<dyn Module>> {
+        ) -> anyhow::Result<Box<dyn Worker>> {
             Self::create_with_adapters(engine, config).await
         }
 
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ConfigurableModule for DefaultHooksModule {
+    impl ConfigurableWorker for DefaultHooksWorker {
         type Config = DefaultHooksConfig;
         type Adapter = dyn TestAdapter;
         type AdapterRegistration = TestAdapterRegistration;
@@ -408,7 +408,7 @@ mod tests {
 
         async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
             static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn TestAdapter>>>> =
-                Lazy::new(|| RwLock::new(DefaultHooksModule::build_registry()));
+                Lazy::new(|| RwLock::new(DefaultHooksWorker::build_registry()));
             &REGISTRY
         }
 
@@ -422,7 +422,7 @@ mod tests {
     }
 
     async fn clear_test_registry() {
-        TestConfigurableModule::registry()
+        TestConfigurableWorker::registry()
             .await
             .write()
             .unwrap()
@@ -431,7 +431,7 @@ mod tests {
     }
 
     fn recording_factory(name: &'static str) -> AdapterFactory<dyn TestAdapter> {
-        TestConfigurableModule::make_adapter_factory(move |_engine, config| async move {
+        TestConfigurableWorker::make_adapter_factory(move |_engine, config| async move {
             FACTORY_CALLS
                 .lock()
                 .expect("lock factory calls")
@@ -512,11 +512,11 @@ mod tests {
     #[tokio::test]
     async fn module_default_trait_methods_work() {
         let engine = Arc::new(Engine::new());
-        let module = SimpleModule::make_module(engine, None)
+        let module = SimpleWorker::make_worker(engine, None)
             .await
             .expect("make module should succeed");
 
-        assert_eq!(module.name(), "SimpleModule");
+        assert_eq!(module.name(), "SimpleWorker");
 
         let (tx, rx) = tokio::sync::watch::channel(false);
         module
@@ -532,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn module_register_functions_default_is_noop() {
         let engine = Arc::new(Engine::new());
-        let module = SimpleModule;
+        let module = SimpleWorker;
         module.register_functions(engine.clone());
         assert!(engine.functions.get("missing").is_none());
     }
@@ -540,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn module_default_trait_methods_on_concrete_type_work() {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let module = SimpleModule;
+        let module = SimpleWorker;
 
         module
             .start_background_tasks(rx, tx)
@@ -555,7 +555,7 @@ mod tests {
     #[tokio::test]
     async fn make_adapter_factory_wraps_custom_closure() {
         let engine = Arc::new(Engine::new());
-        let factory = TestConfigurableModule::make_adapter_factory(|_engine, config| async move {
+        let factory = TestConfigurableWorker::make_adapter_factory(|_engine, config| async move {
             Ok(Arc::new(RecordingAdapter {
                 name: "inline".to_string(),
                 config,
@@ -577,20 +577,20 @@ mod tests {
     async fn register_and_get_adapter_work() {
         clear_test_registry().await;
 
-        TestConfigurableModule::register_adapter("test::default", recording_factory("default"))
+        TestConfigurableWorker::register_adapter("test::default", recording_factory("default"))
             .await;
 
         assert_eq!(
-            TestConfigurableModule::default_adapter_name(),
+            TestConfigurableWorker::default_adapter_name(),
             "test::default"
         );
         assert!(
-            TestConfigurableModule::get_adapter("test::default")
+            TestConfigurableWorker::get_adapter("test::default")
                 .await
                 .is_some()
         );
         assert!(
-            TestConfigurableModule::get_adapter("missing")
+            TestConfigurableWorker::get_adapter("missing")
                 .await
                 .is_none()
         );
@@ -601,19 +601,19 @@ mod tests {
     async fn configurable_module_helper_defaults_are_accessible_directly() {
         clear_test_registry().await;
 
-        let inventory_registry = DefaultHooksModule::build_registry();
+        let inventory_registry = DefaultHooksWorker::build_registry();
         assert!(inventory_registry.contains_key("test::inventory"));
         assert_eq!(
-            DefaultHooksModule::default_adapter_name(),
+            DefaultHooksWorker::default_adapter_name(),
             "test::inventory"
         );
         assert!(
-            DefaultHooksModule::get_adapter("test::inventory")
+            DefaultHooksWorker::get_adapter("test::inventory")
                 .await
                 .is_some()
         );
 
-        TestConfigurableModule::add_adapter("test::default", |_engine, config| async move {
+        TestConfigurableWorker::add_adapter("test::default", |_engine, config| async move {
             Ok(Arc::new(RecordingAdapter {
                 name: "added-direct".to_string(),
                 config,
@@ -622,7 +622,7 @@ mod tests {
         .await
         .expect("add adapter should succeed");
 
-        let factory = TestConfigurableModule::get_adapter("test::default")
+        let factory = TestConfigurableWorker::get_adapter("test::default")
             .await
             .expect("registered adapter factory");
         let adapter = factory(
@@ -644,37 +644,37 @@ mod tests {
         clear_test_registry().await;
         let engine = Arc::new(Engine::new());
 
-        TestConfigurableModule::register_adapter("test::default", recording_factory("default"))
+        TestConfigurableWorker::register_adapter("test::default", recording_factory("default"))
             .await;
-        TestConfigurableModule::register_adapter("test::custom", recording_factory("custom")).await;
+        TestConfigurableWorker::register_adapter("test::custom", recording_factory("custom")).await;
 
-        let default_module = TestConfigurableModule::create_with_adapters(engine.clone(), None)
+        let default_module = TestConfigurableWorker::create_with_adapters(engine.clone(), None)
             .await
             .expect("create with default adapter");
-        assert_eq!(default_module.name(), "TestConfigurableModule");
+        assert_eq!(default_module.name(), "TestConfigurableWorker");
 
-        let configured = TestModuleConfig {
+        let configured = TestWorkerConfig {
             adapter: Some(AdapterEntry {
                 name: "test::custom".to_string(),
                 config: Some(serde_json::json!({ "mode": "custom" })),
             }),
         };
         assert_eq!(
-            TestConfigurableModule::adapter_name_from_config(&configured).as_deref(),
+            TestConfigurableWorker::adapter_name_from_config(&configured).as_deref(),
             Some("test::custom")
         );
         assert_eq!(
-            TestConfigurableModule::adapter_config_from_config(&configured),
+            TestConfigurableWorker::adapter_config_from_config(&configured),
             Some(serde_json::json!({ "mode": "custom" }))
         );
 
-        let custom_module = TestConfigurableModule::create_with_adapters(
+        let custom_module = TestConfigurableWorker::create_with_adapters(
             engine,
             Some(serde_json::to_value(configured).expect("serialize test config")),
         )
         .await
         .expect("create with custom adapter");
-        assert_eq!(custom_module.name(), "TestConfigurableModule");
+        assert_eq!(custom_module.name(), "TestConfigurableWorker");
 
         let calls = FACTORY_CALLS.lock().expect("lock factory calls").clone();
         assert_eq!(
@@ -695,7 +695,7 @@ mod tests {
         clear_test_registry().await;
         let engine = Arc::new(Engine::new());
 
-        TestConfigurableModule::add_adapter("test::default", |_engine, config| async move {
+        TestConfigurableWorker::add_adapter("test::default", |_engine, config| async move {
             FACTORY_CALLS
                 .lock()
                 .expect("lock factory calls")
@@ -708,12 +708,12 @@ mod tests {
         .await
         .expect("add adapter should succeed");
 
-        let created = TestConfigurableModule::create_with_adapters(engine.clone(), None)
+        let created = TestConfigurableWorker::create_with_adapters(engine.clone(), None)
             .await
             .expect("create with added adapter");
-        assert_eq!(created.name(), "TestConfigurableModule");
+        assert_eq!(created.name(), "TestConfigurableWorker");
 
-        let missing = TestConfigurableModule::create_with_adapters(
+        let missing = TestConfigurableWorker::create_with_adapters(
             engine,
             Some(serde_json::json!({
                 "adapter": { "name": "test::missing" }
@@ -727,22 +727,22 @@ mod tests {
 
     #[tokio::test]
     async fn build_registry_and_default_hooks_cover_inventory_path() {
-        let registry = DefaultHooksModule::build_registry();
+        let registry = DefaultHooksWorker::build_registry();
         assert!(registry.contains_key("test::inventory"));
 
-        let module = DefaultHooksModule::create_with_adapters(
+        let module = DefaultHooksWorker::create_with_adapters(
             Arc::new(Engine::new()),
             Some(serde_json::json!({ "enabled": true })),
         )
         .await
         .expect("create module from inventory-backed registry");
-        assert_eq!(module.name(), "DefaultHooksModule");
+        assert_eq!(module.name(), "DefaultHooksWorker");
         assert_eq!(
-            DefaultHooksModule::adapter_name_from_config(&DefaultHooksConfig::default()),
+            DefaultHooksWorker::adapter_name_from_config(&DefaultHooksConfig::default()),
             None
         );
         assert_eq!(
-            DefaultHooksModule::adapter_config_from_config(&DefaultHooksConfig::default()),
+            DefaultHooksWorker::adapter_config_from_config(&DefaultHooksConfig::default()),
             None
         );
     }
@@ -752,13 +752,13 @@ mod tests {
     async fn create_with_adapters_reports_parse_and_factory_errors() {
         clear_test_registry().await;
 
-        TestConfigurableModule::add_adapter("test::failing", |_engine, _config| async move {
+        TestConfigurableWorker::add_adapter("test::failing", |_engine, _config| async move {
             Err(anyhow::anyhow!("adapter factory failed"))
         })
         .await
         .expect("register failing adapter");
 
-        let parse_error = match TestConfigurableModule::create_with_adapters(
+        let parse_error = match TestConfigurableWorker::create_with_adapters(
             Arc::new(Engine::new()),
             Some(serde_json::json!(["not", "an", "object"])),
         )
@@ -769,7 +769,7 @@ mod tests {
         };
         assert!(parse_error.to_string().contains("invalid type"));
 
-        let factory_error = match TestConfigurableModule::create_with_adapters(
+        let factory_error = match TestConfigurableWorker::create_with_adapters(
             Arc::new(Engine::new()),
             Some(serde_json::json!({
                 "adapter": { "name": "test::failing" }

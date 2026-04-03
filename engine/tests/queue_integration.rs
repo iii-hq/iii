@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use iii::{
     engine::Engine,
     function::{Function, FunctionResult},
-    modules::{module::Module, queue::QueueCoreModule},
+    modules::{module::Worker, queue::QueueWorker},
 };
 
 use common::queue_helpers::{
@@ -103,9 +103,9 @@ async fn full_roundtrip_enqueue_consume_invoke() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_counting_function(&engine, "test::handler", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     // Initialize starts the consumer loops in the background.
     module
@@ -148,9 +148,9 @@ async fn full_roundtrip_fifo_preserves_order() {
         invocation_order.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -205,9 +205,9 @@ async fn retry_exhaustion_stops_redelivery() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::always_fails", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -256,9 +256,9 @@ async fn exhausted_message_lands_in_dlq() {
     let call_count = Arc::new(AtomicU64::new(0));
     register_failing_function(&engine, "test::dlq_target", call_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -305,9 +305,9 @@ async fn standard_queue_processes_concurrently() {
         timestamps.clone(),
     );
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -359,9 +359,9 @@ async fn nonexistent_function_nacks_without_blocking_queue() {
     register_counting_function(&engine, "test::real_handler", call_count.clone());
     // Note: "test::ghost" is NOT registered
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()
@@ -408,9 +408,9 @@ async fn multiple_queues_operate_independently() {
     register_counting_function(&engine, "test::default_handler", default_count.clone());
     register_counting_function(&engine, "test::payment_handler", payment_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(builtin_queue_config()))
+    let module = QueueWorker::create(engine.clone(), Some(builtin_queue_config()))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
 
     module
         .initialize()

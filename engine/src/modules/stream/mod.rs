@@ -18,7 +18,7 @@ mod structs;
 
 pub use self::{
     socket::StreamSocketManager,
-    stream::StreamCoreModule,
+    stream::StreamWorker,
     structs::{
         StreamIncomingMessage, StreamMetadata, StreamOutboundMessage, StreamWrapperMessage,
         Subscription,

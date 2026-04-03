@@ -29,7 +29,7 @@ use super::{
 };
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::module::Module,
+    modules::module::Worker,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
@@ -58,7 +58,7 @@ impl PathRouter {
 }
 
 #[derive(Clone)]
-pub struct RestApiCoreModule {
+pub struct HttpWorker {
     engine: Arc<Engine>,
     config: RestApiConfig,
     pub routers_registry: Arc<DashMap<String, PathRouter>>,
@@ -66,11 +66,11 @@ pub struct RestApiCoreModule {
 }
 
 #[async_trait::async_trait]
-impl Module for RestApiCoreModule {
+impl Worker for HttpWorker {
     fn name(&self) -> &'static str {
-        "RestApiCoreModule"
+        "HttpWorker"
     }
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         let config: RestApiConfig = config
             .map(serde_json::from_value)
             .transpose()?
@@ -132,7 +132,7 @@ impl Module for RestApiCoreModule {
 
 const ALLOW_ORIGIN_ANY: &str = "*";
 
-impl RestApiCoreModule {
+impl HttpWorker {
     #[cfg(test)]
     pub(crate) fn new_for_tests(engine: Arc<Engine>, config: RestApiConfig) -> Self {
         Self {
@@ -222,7 +222,7 @@ impl RestApiCoreModule {
     }
     fn build_routers_from_routers_registry(
         engine: Arc<Engine>,
-        api_handler: Arc<RestApiCoreModule>,
+        api_handler: Arc<HttpWorker>,
         routers_registry: &DashMap<String, PathRouter>,
     ) -> Router {
         use axum::{
@@ -376,7 +376,7 @@ impl RestApiCoreModule {
     }
 }
 
-impl TriggerRegistrator for RestApiCoreModule {
+impl TriggerRegistrator for HttpWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -439,9 +439,9 @@ impl TriggerRegistrator for RestApiCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-http",
-    RestApiCoreModule,
+    HttpWorker,
     enabled_by_default = true
 );
 
@@ -454,15 +454,15 @@ mod tests {
 
     #[test]
     fn build_router_key_normalizes_leading_slash() {
-        let a = RestApiCoreModule::build_router_key("GET", "users/:id");
-        let b = RestApiCoreModule::build_router_key("get", "/users/:id");
+        let a = HttpWorker::build_router_key("GET", "users/:id");
+        let b = HttpWorker::build_router_key("get", "/users/:id");
         assert_eq!(a, b);
         assert_eq!(a, "GET:users/:id");
     }
 
     #[test]
     fn build_router_key_keeps_root_path() {
-        let key = RestApiCoreModule::build_router_key("GET", "/");
+        let key = HttpWorker::build_router_key("GET", "/");
         assert_eq!(key, "GET:/");
     }
 
@@ -490,13 +490,13 @@ mod tests {
 
     #[test]
     fn normalize_root_path_stays_root() {
-        assert_eq!(RestApiCoreModule::normalize_http_path_for_key("/"), "/");
+        assert_eq!(HttpWorker::normalize_http_path_for_key("/"), "/");
     }
 
     #[test]
     fn normalize_strips_leading_slash() {
         assert_eq!(
-            RestApiCoreModule::normalize_http_path_for_key("/users"),
+            HttpWorker::normalize_http_path_for_key("/users"),
             "users"
         );
     }
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn normalize_no_leading_slash_unchanged() {
         assert_eq!(
-            RestApiCoreModule::normalize_http_path_for_key("users"),
+            HttpWorker::normalize_http_path_for_key("users"),
             "users"
         );
     }
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn normalize_nested_path() {
         assert_eq!(
-            RestApiCoreModule::normalize_http_path_for_key("/api/v1/users"),
+            HttpWorker::normalize_http_path_for_key("/api/v1/users"),
             "api/v1/users"
         );
     }
@@ -520,7 +520,7 @@ mod tests {
     #[test]
     fn normalize_path_with_params() {
         assert_eq!(
-            RestApiCoreModule::normalize_http_path_for_key("/users/:id/posts"),
+            HttpWorker::normalize_http_path_for_key("/users/:id/posts"),
             "users/:id/posts"
         );
     }
@@ -529,87 +529,87 @@ mod tests {
 
     #[test]
     fn build_router_key_uppercases_method() {
-        let key = RestApiCoreModule::build_router_key("post", "items");
+        let key = HttpWorker::build_router_key("post", "items");
         assert_eq!(key, "POST:items");
     }
 
     #[test]
     fn build_router_key_various_methods() {
         assert_eq!(
-            RestApiCoreModule::build_router_key("delete", "/resource"),
+            HttpWorker::build_router_key("delete", "/resource"),
             "DELETE:resource"
         );
         assert_eq!(
-            RestApiCoreModule::build_router_key("PUT", "/resource"),
+            HttpWorker::build_router_key("PUT", "/resource"),
             "PUT:resource"
         );
         assert_eq!(
-            RestApiCoreModule::build_router_key("patch", "resource"),
+            HttpWorker::build_router_key("patch", "resource"),
             "PATCH:resource"
         );
     }
 
     #[test]
     fn build_router_key_root_with_different_methods() {
-        assert_eq!(RestApiCoreModule::build_router_key("GET", "/"), "GET:/");
-        assert_eq!(RestApiCoreModule::build_router_key("POST", "/"), "POST:/");
+        assert_eq!(HttpWorker::build_router_key("GET", "/"), "GET:/");
+        assert_eq!(HttpWorker::build_router_key("POST", "/"), "POST:/");
     }
 
     // ---- build_router_for_axum tests ----
 
     #[test]
     fn build_router_for_axum_converts_colon_params() {
-        let result = RestApiCoreModule::build_router_for_axum(&"todo/:id".to_string());
+        let result = HttpWorker::build_router_for_axum(&"todo/:id".to_string());
         assert_eq!(result, "/todo/{id}");
     }
 
     #[test]
     fn build_router_for_axum_multiple_params() {
         let result =
-            RestApiCoreModule::build_router_for_axum(&"users/:user_id/posts/:post_id".to_string());
+            HttpWorker::build_router_for_axum(&"users/:user_id/posts/:post_id".to_string());
         assert_eq!(result, "/users/{user_id}/posts/{post_id}");
     }
 
     #[test]
     fn build_router_for_axum_no_params() {
-        let result = RestApiCoreModule::build_router_for_axum(&"api/v1/health".to_string());
+        let result = HttpWorker::build_router_for_axum(&"api/v1/health".to_string());
         assert_eq!(result, "/api/v1/health");
     }
 
     #[test]
     fn build_router_for_axum_already_has_leading_slash() {
-        let result = RestApiCoreModule::build_router_for_axum(&"/api/items".to_string());
+        let result = HttpWorker::build_router_for_axum(&"/api/items".to_string());
         assert_eq!(result, "/api/items");
     }
 
     #[test]
     fn build_router_for_axum_root_path() {
-        let result = RestApiCoreModule::build_router_for_axum(&"/".to_string());
+        let result = HttpWorker::build_router_for_axum(&"/".to_string());
         assert_eq!(result, "/");
     }
 
     #[test]
     fn build_router_for_axum_param_at_root() {
-        let result = RestApiCoreModule::build_router_for_axum(&":id".to_string());
+        let result = HttpWorker::build_router_for_axum(&":id".to_string());
         assert_eq!(result, "/{id}");
     }
 
     #[test]
     fn build_router_for_axum_leading_slash_with_param() {
-        let result = RestApiCoreModule::build_router_for_axum(&"/:id".to_string());
+        let result = HttpWorker::build_router_for_axum(&"/:id".to_string());
         assert_eq!(result, "/{id}");
     }
 
     // ---- build_cors_layer tests ----
 
-    fn make_module_with_cors(cors: Option<CorsConfig>) -> RestApiCoreModule {
+    fn make_worker_with_cors(cors: Option<CorsConfig>) -> HttpWorker {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
         let config = RestApiConfig {
             cors,
             ..RestApiConfig::default()
         };
-        RestApiCoreModule {
+        HttpWorker {
             engine,
             config,
             routers_registry: Arc::new(DashMap::new()),
@@ -619,13 +619,13 @@ mod tests {
 
     #[test]
     fn build_cors_layer_no_config_returns_permissive() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let _cors = module.build_cors_layer();
     }
 
     #[test]
     fn build_cors_layer_empty_origins_allows_any() {
-        let module = make_module_with_cors(Some(CorsConfig {
+        let module = make_worker_with_cors(Some(CorsConfig {
             allowed_origins: vec![],
             allowed_methods: vec![],
         }));
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn build_cors_layer_wildcard_origin() {
-        let module = make_module_with_cors(Some(CorsConfig {
+        let module = make_worker_with_cors(Some(CorsConfig {
             allowed_origins: vec!["*".to_string()],
             allowed_methods: vec!["GET".to_string()],
         }));
@@ -643,7 +643,7 @@ mod tests {
 
     #[test]
     fn build_cors_layer_specific_origins() {
-        let module = make_module_with_cors(Some(CorsConfig {
+        let module = make_worker_with_cors(Some(CorsConfig {
             allowed_origins: vec![
                 "http://localhost:3000".to_string(),
                 "https://example.com".to_string(),
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn build_cors_layer_mixed_wildcard_and_explicit() {
-        let module = make_module_with_cors(Some(CorsConfig {
+        let module = make_worker_with_cors(Some(CorsConfig {
             allowed_origins: vec!["*".to_string(), "http://localhost:3000".to_string()],
             allowed_methods: vec![],
         }));
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn build_cors_layer_with_all_methods() {
-        let module = make_module_with_cors(Some(CorsConfig {
+        let module = make_worker_with_cors(Some(CorsConfig {
             allowed_origins: vec!["http://localhost:3000".to_string()],
             allowed_methods: vec![
                 "GET".to_string(),
@@ -685,9 +685,9 @@ mod tests {
     fn build_routers_from_empty_registry() {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let registry = DashMap::new();
-        let _router = RestApiCoreModule::build_routers_from_routers_registry(
+        let _router = HttpWorker::build_routers_from_routers_registry(
             engine,
             Arc::new(module),
             &registry,
@@ -698,7 +698,7 @@ mod tests {
     fn build_routers_from_registry_with_entries() {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let registry = DashMap::new();
 
         registry.insert(
@@ -765,7 +765,7 @@ mod tests {
             ),
         );
 
-        let _router = RestApiCoreModule::build_routers_from_routers_registry(
+        let _router = HttpWorker::build_routers_from_routers_registry(
             engine,
             Arc::new(module),
             &registry,
@@ -776,7 +776,7 @@ mod tests {
     fn build_routers_unsupported_method_does_not_panic() {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let registry = DashMap::new();
 
         registry.insert(
@@ -789,7 +789,7 @@ mod tests {
             ),
         );
 
-        let _router = RestApiCoreModule::build_routers_from_routers_registry(
+        let _router = HttpWorker::build_routers_from_routers_registry(
             engine,
             Arc::new(module),
             &registry,
@@ -800,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_router_found() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
 
         module.routers_registry.insert(
             "GET:users/:id".to_string(),
@@ -821,14 +821,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_router_not_found() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let result = module.get_router("GET", "nonexistent");
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_get_router_normalizes_path() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
 
         module.routers_registry.insert(
             "POST:items".to_string(),
@@ -849,7 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_router_uses_uppercase_key_but_preserves_original_method() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
 
         module
             .register_router(PathRouter::new(
@@ -905,7 +905,7 @@ mod tests {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
 
-        let module = <RestApiCoreModule as Module>::create(
+        let module = <HttpWorker as Worker>::create(
             engine.clone(),
             Some(json!({
                 "host": "127.0.0.1",
@@ -917,7 +917,7 @@ mod tests {
         .await
         .expect("module should be created");
 
-        assert_eq!(module.name(), "RestApiCoreModule");
+        assert_eq!(module.name(), "HttpWorker");
 
         module.register_functions(engine.clone());
         module.initialize().await.expect("module should initialize");
@@ -932,7 +932,7 @@ mod tests {
         let port = occupied.local_addr().expect("local addr").port();
         let engine = Arc::new(crate::engine::Engine::new());
 
-        let module = <RestApiCoreModule as Module>::create(
+        let module = <HttpWorker as Worker>::create(
             engine,
             Some(json!({
                 "host": "127.0.0.1",
@@ -956,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_trigger_and_unregister_trigger_manage_routes() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let trigger = Trigger {
             id: "http-users".to_string(),
             trigger_type: "http".to_string(),
@@ -990,7 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_trigger_requires_api_path() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
         let trigger = Trigger {
             id: "http-missing-path".to_string(),
             trigger_type: "http".to_string(),
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[tokio::test]
     async fn unregister_router_returns_false_when_missing() {
-        let module = make_module_with_cors(None);
+        let module = make_worker_with_cors(None);
 
         let removed = module
             .unregister_router("GET", "/missing")

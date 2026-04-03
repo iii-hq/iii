@@ -14,7 +14,7 @@ use iii::builtins::queue::{
 };
 use iii::builtins::queue_kv::QueueKvStore;
 use iii::engine::Engine;
-use iii::modules::{module::Module, queue::QueueCoreModule};
+use iii::modules::{module::Worker, queue::QueueWorker};
 use tokio::sync::Mutex;
 
 use common::queue_helpers::{dlq_count, enqueue, register_panicking_function};
@@ -52,9 +52,9 @@ async fn handler_panic_does_not_crash_worker() {
     let success_count = Arc::new(AtomicU64::new(0));
     register_panicking_function(&engine, "test::panic_handler", success_count.clone());
 
-    let module = QueueCoreModule::create(engine.clone(), Some(config))
+    let module = QueueWorker::create(engine.clone(), Some(config))
         .await
-        .expect("QueueCoreModule::create should succeed");
+        .expect("QueueWorker::create should succeed");
     module.initialize().await.expect("init should succeed");
 
     // Enqueue a message that will cause a panic

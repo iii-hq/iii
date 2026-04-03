@@ -10,4 +10,4 @@ mod hot_router;
 mod types;
 mod views;
 
-pub use api_core::RestApiCoreModule;
+pub use api_core::HttpWorker;

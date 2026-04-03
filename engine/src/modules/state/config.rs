@@ -10,7 +10,7 @@ use crate::modules::module::AdapterEntry;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(deny_unknown_fields)]
-pub struct StateModuleConfig {
+pub struct StateWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -22,14 +22,14 @@ mod tests {
 
     #[test]
     fn default_state_config() {
-        let config: StateModuleConfig = serde_json::from_value(json!({})).unwrap();
+        let config: StateWorkerConfig = serde_json::from_value(json!({})).unwrap();
         assert!(config.adapter.is_none());
     }
 
     #[test]
     fn state_config_with_adapter() {
         let json = json!({"adapter": {"name": "redis", "config": {"url": "redis://localhost"}}});
-        let config: StateModuleConfig = serde_json::from_value(json).unwrap();
+        let config: StateWorkerConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.adapter.unwrap().name, "redis");
     }
 }

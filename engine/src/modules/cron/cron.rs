@@ -17,29 +17,29 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 
 use super::{
-    config::CronModuleConfig,
+    config::CronWorkerConfig,
     structs::{CronAdapter, CronSchedulerAdapter},
 };
 use crate::{
     engine::{Engine, EngineTrait},
-    modules::module::{AdapterFactory, ConfigurableModule, Module},
+    modules::module::{AdapterFactory, ConfigurableWorker, Worker},
     trigger::{Trigger, TriggerRegistrator},
 };
 
 #[derive(Clone)]
-pub struct CronCoreModule {
+pub struct CronWorker {
     adapter: Arc<CronAdapter>,
     engine: Arc<Engine>,
-    _config: CronModuleConfig,
+    _config: CronWorkerConfig,
 }
 
 #[async_trait]
-impl Module for CronCoreModule {
+impl Worker for CronWorker {
     fn name(&self) -> &'static str {
         "CronModule"
     }
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
@@ -86,7 +86,7 @@ impl Module for CronCoreModule {
     }
 }
 
-impl TriggerRegistrator for CronCoreModule {
+impl TriggerRegistrator for CronWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -136,15 +136,15 @@ impl TriggerRegistrator for CronCoreModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for CronCoreModule {
-    type Config = CronModuleConfig;
+impl ConfigurableWorker for CronWorker {
+    type Config = CronWorkerConfig;
     type Adapter = dyn CronSchedulerAdapter;
     type AdapterRegistration = super::registry::CronAdapterRegistration;
     const DEFAULT_ADAPTER_NAME: &'static str = "kv";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CronSchedulerAdapter>>>> =
-            Lazy::new(|| RwLock::new(CronCoreModule::build_registry()));
+            Lazy::new(|| RwLock::new(CronWorker::build_registry()));
         &REGISTRY
     }
 
@@ -166,9 +166,9 @@ impl ConfigurableModule for CronCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-cron",
-    CronCoreModule,
+    CronWorker,
     enabled_by_default = true
 );
 
@@ -180,13 +180,13 @@ mod tests {
     use serde_json::json;
 
     // =========================================================================
-    // ConfigurableModule trait constants
+    // ConfigurableWorker trait constants
     // =========================================================================
 
     #[test]
     fn default_adapter_name() {
         assert_eq!(
-            CronCoreModule::DEFAULT_ADAPTER_NAME,
+            CronWorker::DEFAULT_ADAPTER_NAME,
             "kv"
         );
     }
@@ -205,13 +205,13 @@ mod tests {
         async fn release_lock(&self, _job_id: &str) {}
     }
 
-    fn setup_cron_module() -> (Arc<Engine>, CronCoreModule) {
+    fn setup_cron_module() -> (Arc<Engine>, CronWorker) {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let scheduler: Arc<dyn CronSchedulerAdapter> = Arc::new(MockCronSchedulerAdapter);
         let cron_adapter = super::super::structs::CronAdapter::new(scheduler, engine.clone());
-        let config = super::super::config::CronModuleConfig::default();
-        let module = CronCoreModule {
+        let config = super::super::config::CronWorkerConfig::default();
+        let module = CronWorker {
             adapter: Arc::new(cron_adapter),
             engine: engine.clone(),
             _config: config,
@@ -220,17 +220,17 @@ mod tests {
     }
 
     // =========================================================================
-    // CronCoreModule::name
+    // CronWorker::name
     // =========================================================================
 
     #[test]
     fn cron_module_name() {
         let (_engine, module) = setup_cron_module();
-        assert_eq!(Module::name(&module), "CronModule");
+        assert_eq!(Worker::name(&module), "CronModule");
     }
 
     // =========================================================================
-    // Module::initialize test
+    // Worker::initialize test
     // =========================================================================
 
     #[tokio::test]
@@ -242,7 +242,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Module::destroy test
+    // Worker::destroy test
     // =========================================================================
 
     #[tokio::test]
@@ -253,7 +253,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Module::start_background_tasks test
+    // Worker::start_background_tasks test
     // =========================================================================
 
     #[tokio::test]
@@ -377,58 +377,58 @@ mod tests {
     }
 
     // =========================================================================
-    // ConfigurableModule trait tests
+    // ConfigurableWorker trait tests
     // =========================================================================
 
     #[test]
     fn adapter_name_from_config_none() {
-        let config = super::super::config::CronModuleConfig::default();
-        assert!(CronCoreModule::adapter_name_from_config(&config).is_none());
+        let config = super::super::config::CronWorkerConfig::default();
+        assert!(CronWorker::adapter_name_from_config(&config).is_none());
     }
 
     #[test]
     fn adapter_name_from_config_some() {
-        let config = super::super::config::CronModuleConfig {
+        let config = super::super::config::CronWorkerConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
                 name: "my::CronAdapter".to_string(),
                 config: None,
             }),
         };
         assert_eq!(
-            CronCoreModule::adapter_name_from_config(&config),
+            CronWorker::adapter_name_from_config(&config),
             Some("my::CronAdapter".to_string())
         );
     }
 
     #[test]
     fn adapter_config_from_config_none() {
-        let config = super::super::config::CronModuleConfig::default();
-        assert!(CronCoreModule::adapter_config_from_config(&config).is_none());
+        let config = super::super::config::CronWorkerConfig::default();
+        assert!(CronWorker::adapter_config_from_config(&config).is_none());
     }
 
     #[test]
     fn adapter_config_from_config_some() {
-        let config = super::super::config::CronModuleConfig {
+        let config = super::super::config::CronWorkerConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
                 name: "my::Adapter".to_string(),
                 config: Some(json!({"interval": 60})),
             }),
         };
         assert_eq!(
-            CronCoreModule::adapter_config_from_config(&config),
+            CronWorker::adapter_config_from_config(&config),
             Some(json!({"interval": 60}))
         );
     }
 
     #[test]
     fn adapter_config_from_config_adapter_without_config() {
-        let config = super::super::config::CronModuleConfig {
+        let config = super::super::config::CronWorkerConfig {
             adapter: Some(crate::modules::module::AdapterEntry {
                 name: "my::Adapter".to_string(),
                 config: None,
             }),
         };
-        assert!(CronCoreModule::adapter_config_from_config(&config).is_none());
+        assert!(CronWorker::adapter_config_from_config(&config).is_none());
     }
 
     // =========================================================================
@@ -440,13 +440,13 @@ mod tests {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let scheduler: Arc<dyn CronSchedulerAdapter> = Arc::new(MockCronSchedulerAdapter);
-        let config = super::super::config::CronModuleConfig::default();
-        let module = CronCoreModule::build(engine.clone(), config, scheduler);
-        assert_eq!(Module::name(&module), "CronModule");
+        let config = super::super::config::CronWorkerConfig::default();
+        let module = CronWorker::build(engine.clone(), config, scheduler);
+        assert_eq!(Worker::name(&module), "CronModule");
     }
 
     // =========================================================================
-    // Module::register_functions (noop) test
+    // Worker::register_functions (noop) test
     // =========================================================================
 
     #[test]

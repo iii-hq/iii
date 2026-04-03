@@ -8,7 +8,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde_json::Value;
 
-use crate::{engine::Engine, modules::module::Module};
+use crate::{engine::Engine, modules::module::Worker};
 
 pub type AdapterFuture<A> = Pin<Box<dyn Future<Output = anyhow::Result<Arc<A>>> + Send>>;
 
@@ -54,22 +54,22 @@ macro_rules! register_adapter {
     };
 }
 
-pub type ModuleFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Module>>> + Send>>;
+pub type WorkerFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Worker>>> + Send>>;
 
-pub struct ModuleRegistration {
+pub struct WorkerRegistration {
     pub name: &'static str,
-    pub factory: fn(Arc<Engine>, Option<Value>) -> ModuleFuture,
+    pub factory: fn(Arc<Engine>, Option<Value>) -> WorkerFuture,
     pub is_default: bool,
     pub mandatory: bool,
 }
 
 #[macro_export]
-macro_rules! register_module {
+macro_rules! register_worker {
     ($name:expr, $module:ty, mandatory) => {
         ::inventory::submit! {
-            $crate::modules::registry::ModuleRegistration {
+            $crate::modules::registry::WorkerRegistration {
                 name: $name,
-                factory: < $module as $crate::modules::module::Module >::make_module,
+                factory: < $module as $crate::modules::module::Worker >::make_worker,
                 is_default: true,
                 mandatory: true,
             }
@@ -77,9 +77,9 @@ macro_rules! register_module {
     };
     ($name:expr, $module:ty, enabled_by_default = $enabled_by_default:expr) => {
         ::inventory::submit! {
-            $crate::modules::registry::ModuleRegistration {
+            $crate::modules::registry::WorkerRegistration {
                 name: $name,
-                factory: < $module as $crate::modules::module::Module >::make_module,
+                factory: < $module as $crate::modules::module::Worker >::make_worker,
                 is_default: $enabled_by_default,
                 mandatory: false,
             }
@@ -87,16 +87,16 @@ macro_rules! register_module {
     };
     ($name:expr, $module:ty) => {
         ::inventory::submit! {
-            $crate::modules::registry::ModuleRegistration {
+            $crate::modules::registry::WorkerRegistration {
                 name: $name,
-                factory: < $module as $crate::modules::module::Module >::make_module,
+                factory: < $module as $crate::modules::module::Worker >::make_worker,
                 is_default: false,
                 mandatory: false,
             }
         }
     };
 }
-inventory::collect!(ModuleRegistration);
+inventory::collect!(WorkerRegistration);
 
 #[cfg(test)]
 mod tests {
@@ -122,15 +122,15 @@ mod tests {
         let _f = AdapterRegistrationEntry::<dyn Send + Sync>::factory(&reg);
     }
 
-    fn dummy_module_factory(_engine: Arc<Engine>, _config: Option<Value>) -> ModuleFuture {
+    fn dummy_worker_factory(_engine: Arc<Engine>, _config: Option<Value>) -> WorkerFuture {
         Box::pin(async { unimplemented!() })
     }
 
     #[test]
-    fn module_registration_fields() {
-        let reg = ModuleRegistration {
+    fn worker_registration_fields() {
+        let reg = WorkerRegistration {
             name: "test-module",
-            factory: dummy_module_factory,
+            factory: dummy_worker_factory,
             is_default: true,
             mandatory: false,
         };

@@ -15,7 +15,7 @@ fn default_redis_url() -> String {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct PubSubModuleConfig {
+pub struct PubSubWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
@@ -27,13 +27,13 @@ mod tests {
 
     #[test]
     fn default_pubsub_config() {
-        let config: PubSubModuleConfig = serde_json::from_value(json!({})).unwrap();
+        let config: PubSubWorkerConfig = serde_json::from_value(json!({})).unwrap();
         assert!(config.adapter.is_none());
     }
 
     #[test]
     fn pubsub_config_deny_unknown_fields() {
-        let result = serde_json::from_value::<PubSubModuleConfig>(json!({"unknown": true}));
+        let result = serde_json::from_value::<PubSubWorkerConfig>(json!({"unknown": true}));
         assert!(result.is_err());
     }
 }

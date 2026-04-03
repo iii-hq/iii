@@ -72,7 +72,7 @@ impl Default for FunctionQueueConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct QueueModuleConfig {
+pub struct QueueWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 
@@ -80,7 +80,7 @@ pub struct QueueModuleConfig {
     pub queue_configs: HashMap<String, FunctionQueueConfig>,
 }
 
-impl QueueModuleConfig {
+impl QueueWorkerConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         for (name, queue_config) in &self.queue_configs {
             if queue_config.r#type != "standard" && queue_config.r#type != "fifo" {
@@ -107,14 +107,14 @@ mod tests {
 
     #[test]
     fn default_config() {
-        let config = QueueModuleConfig::default();
+        let config = QueueWorkerConfig::default();
         assert!(config.adapter.is_none());
         assert!(config.queue_configs.is_empty());
     }
 
     #[test]
     fn deserialize_empty_json() {
-        let config: QueueModuleConfig = serde_json::from_str("{}").unwrap();
+        let config: QueueWorkerConfig = serde_json::from_str("{}").unwrap();
         assert!(config.adapter.is_none());
         assert!(config.queue_configs.is_empty());
     }
@@ -123,7 +123,7 @@ mod tests {
     fn deserialize_with_adapter() {
         let json =
             r#"{"adapter": {"name": "my::QueueAdapter", "config": {"url": "redis://localhost"}}}"#;
-        let config: QueueModuleConfig = serde_json::from_str(json).unwrap();
+        let config: QueueWorkerConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
         assert_eq!(adapter.name, "my::QueueAdapter");
         assert!(adapter.config.is_some());
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn deserialize_adapter_no_config() {
         let json = r#"{"adapter": {"name": "my::QueueAdapter"}}"#;
-        let config: QueueModuleConfig = serde_json::from_str(json).unwrap();
+        let config: QueueWorkerConfig = serde_json::from_str(json).unwrap();
         let adapter = config.adapter.unwrap();
         assert_eq!(adapter.name, "my::QueueAdapter");
         assert!(adapter.config.is_none());
@@ -141,17 +141,17 @@ mod tests {
     #[test]
     fn allows_queue_configs_field() {
         let json = r#"{"adapter": null, "queue_configs": {}}"#;
-        let result: Result<QueueModuleConfig, _> = serde_json::from_str(json);
+        let result: Result<QueueWorkerConfig, _> = serde_json::from_str(json);
         assert!(result.is_ok());
     }
 
     #[test]
     fn queue_module_config_deny_unknown_fields() {
         let json = r#"{"fake_key": true}"#;
-        let result: Result<QueueModuleConfig, _> = serde_json::from_str(json);
+        let result: Result<QueueWorkerConfig, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
-            "should reject unknown fields in QueueModuleConfig"
+            "should reject unknown fields in QueueWorkerConfig"
         );
     }
 
@@ -186,7 +186,7 @@ queue_configs:
 adapter:
   name: builtin
 "#;
-        let config: QueueModuleConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: QueueWorkerConfig = serde_yaml::from_str(yaml).unwrap();
 
         assert_eq!(config.queue_configs.len(), 2);
 
@@ -233,7 +233,7 @@ adapter:
                 ..Default::default()
             },
         );
-        let config = QueueModuleConfig {
+        let config = QueueWorkerConfig {
             adapter: None,
             queue_configs,
         };
@@ -256,7 +256,7 @@ adapter:
                 ..Default::default()
             },
         );
-        let config = QueueModuleConfig {
+        let config = QueueWorkerConfig {
             adapter: None,
             queue_configs,
         };
@@ -273,7 +273,7 @@ adapter:
                 ..Default::default()
             },
         );
-        let config = QueueModuleConfig {
+        let config = QueueWorkerConfig {
             adapter: None,
             queue_configs,
         };

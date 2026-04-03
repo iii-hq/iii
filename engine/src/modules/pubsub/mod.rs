@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
-pub use self::pubsub::PubSubCoreModule;
+pub use self::pubsub::PubSubWorker;
 pub use self::pubsub::PubSubInput;
 
 #[async_trait::async_trait]

@@ -34,11 +34,11 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        module::{AdapterFactory, ConfigurableModule, Module},
+        module::{AdapterFactory, ConfigurableWorker, Worker},
         stream::{
             StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
             adapters::StreamAdapter,
-            config::StreamModuleConfig,
+            config::StreamWorkerConfig,
             structs::{
                 EventData, StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
                 StreamListAllInput, StreamListAllResult, StreamListGroupsInput, StreamListInput,
@@ -56,8 +56,8 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct StreamCoreModule {
-    config: StreamModuleConfig,
+pub struct StreamWorker {
+    config: StreamWorkerConfig,
     #[cfg_attr(not(test), allow(dead_code))]
     pub adapter: Arc<dyn StreamAdapter>,
     engine: Arc<Engine>,
@@ -123,11 +123,11 @@ async fn ws_handler(
 }
 
 #[async_trait::async_trait]
-impl Module for StreamCoreModule {
+impl Worker for StreamWorker {
     fn name(&self) -> &'static str {
-        "StreamCoreModule"
+        "StreamWorker"
     }
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
@@ -136,13 +136,13 @@ impl Module for StreamCoreModule {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        tracing::info!("Destroying StreamCoreModule");
+        tracing::info!("Destroying StreamWorker");
         let _ = self.adapter.destroy().await;
         Ok(())
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing StreamCoreModule");
+        tracing::info!("Initializing StreamWorker");
 
         let socket_manager = Arc::new(StreamSocketManager::new(
             self.engine.clone(),
@@ -155,7 +155,7 @@ impl Module for StreamCoreModule {
         let addr: SocketAddr = raw_addr
             .parse()
             .map_err(|err| anyhow::anyhow!("invalid stream bind address {}: {}", raw_addr, err))?;
-        tracing::info!("Starting StreamCoreModule on {}", addr.to_string().purple());
+        tracing::info!("Starting StreamWorker on {}", addr.to_string().purple());
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|err| crate::modules::module::bind_address_error(addr, err))?;
@@ -219,15 +219,15 @@ impl Module for StreamCoreModule {
 }
 
 #[async_trait::async_trait]
-impl ConfigurableModule for StreamCoreModule {
-    type Config = StreamModuleConfig;
+impl ConfigurableWorker for StreamWorker {
+    type Config = StreamWorkerConfig;
     type Adapter = dyn StreamAdapter;
     type AdapterRegistration = super::registry::StreamAdapterRegistration;
     const DEFAULT_ADAPTER_NAME: &'static str = "kv";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StreamAdapter>>>> =
-            Lazy::new(|| SyncRwLock::new(StreamCoreModule::build_registry()));
+            Lazy::new(|| SyncRwLock::new(StreamWorker::build_registry()));
         &REGISTRY
     }
 
@@ -249,7 +249,7 @@ impl ConfigurableModule for StreamCoreModule {
     }
 }
 
-impl StreamCoreModule {
+impl StreamWorker {
     /// Invoke triggers for a given event type with condition checks
     async fn invoke_triggers(&self, event_data: StreamWrapperMessage) {
         let engine = self.engine.clone();
@@ -361,7 +361,7 @@ impl StreamCoreModule {
 }
 
 #[service(name = "stream")]
-impl StreamCoreModule {
+impl StreamWorker {
     #[function(id = "stream::set", description = "Set a value in a stream")]
     pub async fn set(&self, input: StreamSetInput) -> FunctionResult<SetResult, ErrorBody> {
         let cloned_input = input.clone();
@@ -826,9 +826,9 @@ impl StreamCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-stream",
-    StreamCoreModule,
+    StreamWorker,
     enabled_by_default = true
 );
 
@@ -853,7 +853,7 @@ mod tests {
         modules::stream::{
             StreamMetadata,
             adapters::{StreamAdapter, StreamConnection},
-            config::StreamModuleConfig,
+            config::StreamWorkerConfig,
             trigger::StreamTriggerConfig,
         },
         protocol::ErrorBody,
@@ -891,10 +891,10 @@ mod tests {
         }
     }
 
-    fn create_test_module() -> StreamCoreModule {
+    fn create_test_module() -> StreamWorker {
         crate::modules::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
-        let config = StreamModuleConfig {
+        let config = StreamWorkerConfig {
             port: 0, // Use 0 for testing (OS will assign port)
             host: "127.0.0.1".to_string(),
             auth_function: None,
@@ -908,7 +908,7 @@ mod tests {
         let adapter: Arc<dyn StreamAdapter> =
             Arc::new(crate::modules::stream::adapters::kv_store::BuiltinKvStoreAdapter::new(None));
 
-        StreamCoreModule::build(engine, config, adapter)
+        StreamWorker::build(engine, config, adapter)
     }
 
     struct FakeStreamAdapter {
@@ -1068,10 +1068,10 @@ mod tests {
         }
     }
 
-    fn create_module_with_adapter(adapter: Arc<dyn StreamAdapter>) -> StreamCoreModule {
+    fn create_module_with_adapter(adapter: Arc<dyn StreamAdapter>) -> StreamWorker {
         crate::modules::observability::metrics::ensure_default_meter();
         let engine = Arc::new(Engine::new());
-        let config = StreamModuleConfig {
+        let config = StreamWorkerConfig {
             port: 0,
             host: "127.0.0.1".to_string(),
             auth_function: None,
@@ -1081,7 +1081,7 @@ mod tests {
             }),
         };
 
-        StreamCoreModule::build(engine, config, adapter)
+        StreamWorker::build(engine, config, adapter)
     }
 
     #[tokio::test]
@@ -1969,9 +1969,9 @@ mod tests {
 
         let engine = Arc::new(Engine::new());
         let adapter: Arc<dyn StreamAdapter> = Arc::new(FakeStreamAdapter::default());
-        let module = StreamCoreModule::build(
+        let module = StreamWorker::build(
             engine,
-            StreamModuleConfig {
+            StreamWorkerConfig {
                 port,
                 host: "127.0.0.1".to_string(),
                 auth_function: None,

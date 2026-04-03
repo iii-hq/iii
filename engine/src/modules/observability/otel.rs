@@ -13,7 +13,7 @@
 //! - `otlp`: Export traces to an OTLP collector via gRPC
 //! - `memory`: Store traces in memory for API querying
 
-use super::config::{LogsExporterType, OtelExporterType, OtelModuleConfig};
+use super::config::{LogsExporterType, OtelExporterType, OtelWorkerConfig};
 use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
 use opentelemetry::{
@@ -42,13 +42,13 @@ use tracing_subscriber::registry::LookupSpan;
 const DEFAULT_MEMORY_MAX_SPANS: usize = 1000;
 
 /// Global OTEL configuration set from YAML config
-static GLOBAL_OTEL_CONFIG: OnceLock<OtelModuleConfig> = OnceLock::new();
+static GLOBAL_OTEL_CONFIG: OnceLock<OtelWorkerConfig> = OnceLock::new();
 
 /// Set the global OTEL configuration from the module.
 /// This should be called during module initialization, before logging is set up.
 ///
 /// Returns true if the config was set, false if it was already initialized.
-pub fn set_otel_config(config: OtelModuleConfig) -> bool {
+pub fn set_otel_config(config: OtelWorkerConfig) -> bool {
     if GLOBAL_OTEL_CONFIG.set(config).is_ok() {
         true
     } else {
@@ -60,7 +60,7 @@ pub fn set_otel_config(config: OtelModuleConfig) -> bool {
 }
 
 /// Get the global OTEL configuration if set.
-pub fn get_otel_config() -> Option<&'static OtelModuleConfig> {
+pub fn get_otel_config() -> Option<&'static OtelWorkerConfig> {
     GLOBAL_OTEL_CONFIG.get()
 }
 

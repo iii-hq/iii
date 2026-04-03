@@ -18,10 +18,10 @@ use crate::{
     protocol::{ErrorBody, Message},
     telemetry::{inject_baggage_from_context, inject_traceparent_from_context},
     trigger::{Trigger, TriggerRegistrator},
-    workers::Worker,
+    workers::WorkerConnection,
 };
 
-impl TriggerRegistrator for Worker {
+impl TriggerRegistrator for WorkerConnection {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -73,7 +73,7 @@ impl TriggerRegistrator for Worker {
     }
 }
 
-impl FunctionHandler for Worker {
+impl FunctionHandler for WorkerConnection {
     fn handle_function<'a>(
         &'a self,
         invocation_id: Option<Uuid>,
@@ -123,9 +123,9 @@ mod tests {
     use serde_json::json;
     use tokio::sync::mpsc;
 
-    fn make_worker() -> (Worker, mpsc::Receiver<Outbound>) {
+    fn make_worker() -> (WorkerConnection, mpsc::Receiver<Outbound>) {
         let (tx, rx) = mpsc::channel(16);
-        (Worker::new(tx), rx)
+        (WorkerConnection::new(tx), rx)
     }
 
     #[tokio::test]

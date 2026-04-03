@@ -16,7 +16,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{module::Module, registry::ModuleRegistration};
+use super::{module::Worker, registry::WorkerRegistration};
 use crate::engine::Engine;
 
 // =============================================================================
@@ -27,7 +27,7 @@ use crate::engine::Engine;
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     #[serde(default)]
-    pub workers: Vec<ModuleEntry>,
+    pub workers: Vec<WorkerEntry>,
 }
 
 impl EngineConfig {
@@ -94,11 +94,11 @@ impl EngineConfig {
     }
 }
 
-fn default_module_entries() -> Vec<ModuleEntry> {
-    inventory::iter::<ModuleRegistration>
+fn default_module_entries() -> Vec<WorkerEntry> {
+    inventory::iter::<WorkerRegistration>
         .into_iter()
         .filter(|registration| registration.is_default)
-        .map(|registration| ModuleEntry {
+        .map(|registration| WorkerEntry {
             name: Some(registration.name.to_string()),
             image: None,
             config: None,
@@ -108,7 +108,7 @@ fn default_module_entries() -> Vec<ModuleEntry> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ModuleEntry {
+pub struct WorkerEntry {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -122,29 +122,29 @@ pub struct ModuleEntry {
 // =============================================================================
 
 /// Factory function type for creating Modules (async)
-type ModuleFactory = Arc<
+type WorkerFactory = Arc<
     dyn Fn(
             Arc<Engine>,
             Option<Value>,
-        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Module>>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn Worker>>> + Send>>
         + Send
         + Sync,
 >;
 
 /// Info about a registered module
-struct ModuleInfo {
-    factory: ModuleFactory,
+struct WorkerInfo {
+    factory: WorkerFactory,
 }
 
 // =============================================================================
-// ModuleRegistry (unified registry for modules and adapters)
+// WorkerRegistry (unified registry for modules and adapters)
 // =============================================================================
 
-pub struct ModuleRegistry {
-    module_factories: RwLock<HashMap<String, ModuleInfo>>,
+pub struct WorkerRegistry {
+    module_factories: RwLock<HashMap<String, WorkerInfo>>,
 }
 
-impl ModuleRegistry {
+impl WorkerRegistry {
     pub fn new() -> Self {
         Self {
             module_factories: RwLock::new(HashMap::new()),
@@ -152,9 +152,9 @@ impl ModuleRegistry {
     }
 
     fn register_from_inventory(&self) {
-        for registration in inventory::iter::<ModuleRegistration> {
+        for registration in inventory::iter::<WorkerRegistration> {
             let factory = registration.factory;
-            let info = ModuleInfo {
+            let info = WorkerInfo {
                 factory: Arc::new(move |engine, config| (factory)(engine, config)),
             };
             self.module_factories
@@ -171,8 +171,8 @@ impl ModuleRegistry {
     /// Registers a module by type
     ///
     /// The module must implement `Module`. The registry uses `M::create()` to create instances.
-    pub fn register<M: Module + 'static>(&self, name: &str) {
-        let info = ModuleInfo {
+    pub fn register<M: Worker + 'static>(&self, name: &str) {
+        let info = WorkerInfo {
             factory: Arc::new(|engine, config| Box::pin(M::create(engine, config))),
         };
 
@@ -192,7 +192,7 @@ impl ModuleRegistry {
         name: &str,
         engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn Module>> {
+    ) -> anyhow::Result<Box<dyn Worker>> {
         // Try built-in registry first
         let factory = {
             let factories = self.module_factories.read().expect("RwLock poisoned");
@@ -211,7 +211,7 @@ impl ModuleRegistry {
                 info.name,
                 info.binary_path.display()
             );
-            let module = super::external::ExternalModule::new(info, config);
+            let module = super::external::ExternalWorker::new(info, config);
             return Ok(Box::new(module));
         }
 
@@ -229,13 +229,13 @@ impl ModuleRegistry {
     }
 }
 
-impl Default for ModuleRegistry {
+impl Default for WorkerRegistry {
     fn default() -> Self {
         Self::with_inventory()
     }
 }
 
-impl ModuleEntry {
+impl WorkerEntry {
     /// Returns the lookup key for this entry (name or image).
     pub fn lookup_key(&self) -> &str {
         if let Some(ref name) = self.name {
@@ -251,8 +251,8 @@ impl ModuleEntry {
     pub async fn create_module(
         &self,
         engine: Arc<Engine>,
-        registry: &Arc<ModuleRegistry>,
-    ) -> anyhow::Result<Box<dyn Module>> {
+        registry: &Arc<WorkerRegistry>,
+    ) -> anyhow::Result<Box<dyn Worker>> {
         let key = self.lookup_key();
         registry
             .create_module(key, engine, self.config.clone())
@@ -296,8 +296,8 @@ impl ModuleEntry {
 pub struct EngineBuilder {
     config: Option<EngineConfig>,
     engine: Arc<Engine>,
-    registry: Arc<ModuleRegistry>,
-    modules: Vec<Arc<dyn Module>>,
+    registry: Arc<WorkerRegistry>,
+    modules: Vec<Arc<dyn Worker>>,
 }
 
 impl EngineBuilder {
@@ -306,7 +306,7 @@ impl EngineBuilder {
         Self {
             config: None,
             engine: Arc::new(Engine::new()),
-            registry: Arc::new(ModuleRegistry::with_inventory()),
+            registry: Arc::new(WorkerRegistry::with_inventory()),
             modules: Vec::new(),
         }
     }
@@ -321,7 +321,7 @@ impl EngineBuilder {
     ///
     /// This allows you to register a module implementation that can then be used
     /// via `add_module` or in the config file.
-    pub fn register_module<M: Module + 'static>(self, name: &str) -> Self {
+    pub fn register_module<M: Worker + 'static>(self, name: &str) -> Self {
         self.registry.register::<M>(name);
         self
     }
@@ -335,7 +335,7 @@ impl EngineBuilder {
         }
 
         if let Some(ref mut cfg) = self.config {
-            cfg.workers.push(ModuleEntry {
+            cfg.workers.push(WorkerEntry {
                 name: Some(name.to_string()),
                 image: None,
                 config,
@@ -360,9 +360,9 @@ impl EngineBuilder {
             .filter_map(|entry| entry.name.clone())
             .collect();
 
-        for registration in inventory::iter::<ModuleRegistration> {
+        for registration in inventory::iter::<WorkerRegistration> {
             if registration.mandatory && !worker_names.contains(registration.name) {
-                workers.push(ModuleEntry {
+                workers.push(WorkerEntry {
                     name: Some(registration.name.to_string()),
                     image: None,
                     config: None,
@@ -794,17 +794,17 @@ workers:
     }
 
     // =========================================================================
-    // 4. ModuleRegistry tests
+    // 4. WorkerRegistry tests
     // =========================================================================
 
     #[test]
     fn test_module_registry_new_is_empty() {
         // A freshly created registry (without inventory) should be empty
-        let registry = ModuleRegistry::new();
+        let registry = WorkerRegistry::new();
         let factories = registry.module_factories.read().expect("RwLock poisoned");
         assert!(
             factories.is_empty(),
-            "New ModuleRegistry should have no registered modules"
+            "New WorkerRegistry should have no registered modules"
         );
     }
 
@@ -813,10 +813,10 @@ workers:
         // Register a module type and verify it exists in the registry
         use async_trait::async_trait;
 
-        struct DummyModule;
+        struct DummyWorker;
 
         #[async_trait]
-        impl Module for DummyModule {
+        impl Worker for DummyWorker {
             fn name(&self) -> &'static str {
                 "dummy"
             }
@@ -824,8 +824,8 @@ workers:
             async fn create(
                 _engine: Arc<Engine>,
                 _config: Option<Value>,
-            ) -> anyhow::Result<Box<dyn Module>> {
-                Ok(Box::new(DummyModule))
+            ) -> anyhow::Result<Box<dyn Worker>> {
+                Ok(Box::new(DummyWorker))
             }
 
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -833,12 +833,12 @@ workers:
             }
         }
 
-        let registry = ModuleRegistry::new();
-        registry.register::<DummyModule>("test::DummyModule");
+        let registry = WorkerRegistry::new();
+        registry.register::<DummyWorker>("test::DummyWorker");
 
         let factories = registry.module_factories.read().expect("RwLock poisoned");
         assert!(
-            factories.contains_key("test::DummyModule"),
+            factories.contains_key("test::DummyWorker"),
             "Registry should contain the registered module"
         );
     }
@@ -851,7 +851,7 @@ workers:
         struct AnotherDummy;
 
         #[async_trait]
-        impl Module for AnotherDummy {
+        impl Worker for AnotherDummy {
             fn name(&self) -> &'static str {
                 "another_dummy"
             }
@@ -859,7 +859,7 @@ workers:
             async fn create(
                 _engine: Arc<Engine>,
                 _config: Option<Value>,
-            ) -> anyhow::Result<Box<dyn Module>> {
+            ) -> anyhow::Result<Box<dyn Worker>> {
                 Ok(Box::new(AnotherDummy))
             }
 
@@ -868,7 +868,7 @@ workers:
             }
         }
 
-        let registry = ModuleRegistry::new();
+        let registry = WorkerRegistry::new();
         registry.register::<AnotherDummy>("test::AnotherDummy");
 
         let factories = registry.module_factories.read().expect("RwLock poisoned");
@@ -891,14 +891,14 @@ workers:
         struct ModB;
 
         #[async_trait]
-        impl Module for ModA {
+        impl Worker for ModA {
             fn name(&self) -> &'static str {
                 "mod_a"
             }
             async fn create(
                 _engine: Arc<Engine>,
                 _config: Option<Value>,
-            ) -> anyhow::Result<Box<dyn Module>> {
+            ) -> anyhow::Result<Box<dyn Worker>> {
                 Ok(Box::new(ModA))
             }
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -907,14 +907,14 @@ workers:
         }
 
         #[async_trait]
-        impl Module for ModB {
+        impl Worker for ModB {
             fn name(&self) -> &'static str {
                 "mod_b"
             }
             async fn create(
                 _engine: Arc<Engine>,
                 _config: Option<Value>,
-            ) -> anyhow::Result<Box<dyn Module>> {
+            ) -> anyhow::Result<Box<dyn Worker>> {
                 Ok(Box::new(ModB))
             }
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -922,7 +922,7 @@ workers:
             }
         }
 
-        let registry = ModuleRegistry::new();
+        let registry = WorkerRegistry::new();
         registry.register::<ModA>("test::ModA");
         registry.register::<ModB>("test::ModB");
 
@@ -933,7 +933,7 @@ workers:
     }
 
     // =========================================================================
-    // ModuleEntry
+    // WorkerEntry
     // =========================================================================
 
     #[test]
@@ -943,7 +943,7 @@ name: "my-module"
 config:
   key: "value"
 "#;
-        let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
+        let entry: WorkerEntry = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(entry.name.as_deref(), Some("my-module"));
         assert!(entry.config.is_some());
     }
@@ -951,7 +951,7 @@ config:
     #[test]
     fn test_module_entry_deserialize_no_config() {
         let yaml = r#"name: "my-module""#;
-        let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
+        let entry: WorkerEntry = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(entry.name.as_deref(), Some("my-module"));
         assert!(entry.config.is_none());
     }
@@ -959,7 +959,7 @@ config:
     #[test]
     fn test_module_entry_deserialize_with_image() {
         let yaml = r#"image: "docker.io/org/worker:latest""#;
-        let entry: ModuleEntry = serde_yaml::from_str(yaml).unwrap();
+        let entry: WorkerEntry = serde_yaml::from_str(yaml).unwrap();
         assert!(entry.name.is_none());
         assert_eq!(entry.image.as_deref(), Some("docker.io/org/worker:latest"));
     }
@@ -1010,7 +1010,7 @@ config:
 
     #[tokio::test]
     async fn test_create_module_unknown_name_fails() {
-        let registry = Arc::new(ModuleRegistry::new());
+        let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = registry
             .create_module("nonexistent-module", engine, None)
@@ -1027,14 +1027,14 @@ config:
         struct TestMod;
 
         #[async_trait]
-        impl Module for TestMod {
+        impl Worker for TestMod {
             fn name(&self) -> &'static str {
                 "test_mod"
             }
             async fn create(
                 _engine: Arc<Engine>,
                 _config: Option<Value>,
-            ) -> anyhow::Result<Box<dyn Module>> {
+            ) -> anyhow::Result<Box<dyn Worker>> {
                 Ok(Box::new(TestMod))
             }
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -1042,7 +1042,7 @@ config:
             }
         }
 
-        let registry = Arc::new(ModuleRegistry::new());
+        let registry = Arc::new(WorkerRegistry::new());
         registry.register::<TestMod>("test::TestMod");
 
         let engine = Arc::new(Engine::new());
@@ -1052,17 +1052,17 @@ config:
     }
 
     // =========================================================================
-    // ModuleEntry::create_module
+    // WorkerEntry::create_module
     // =========================================================================
 
     #[tokio::test]
     async fn test_module_entry_create_unknown_fails() {
-        let entry = ModuleEntry {
+        let entry = WorkerEntry {
             name: Some("unknown-module".to_string()),
             image: None,
             config: None,
         };
-        let registry = Arc::new(ModuleRegistry::new());
+        let registry = Arc::new(WorkerRegistry::new());
         let engine = Arc::new(Engine::new());
         let result = entry.create_module(engine, &registry).await;
         assert!(result.is_err());
@@ -1131,7 +1131,7 @@ workers:
     }
 
     // =========================================================================
-    // ModuleRegistry register overwrites
+    // WorkerRegistry register overwrites
     // =========================================================================
 
     #[test]
@@ -1142,11 +1142,11 @@ workers:
         struct ModV2;
 
         #[async_trait]
-        impl Module for ModV1 {
+        impl Worker for ModV1 {
             fn name(&self) -> &'static str {
                 "v1"
             }
-            async fn create(_: Arc<Engine>, _: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+            async fn create(_: Arc<Engine>, _: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
                 Ok(Box::new(ModV1))
             }
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -1155,11 +1155,11 @@ workers:
         }
 
         #[async_trait]
-        impl Module for ModV2 {
+        impl Worker for ModV2 {
             fn name(&self) -> &'static str {
                 "v2"
             }
-            async fn create(_: Arc<Engine>, _: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+            async fn create(_: Arc<Engine>, _: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
                 Ok(Box::new(ModV2))
             }
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -1167,7 +1167,7 @@ workers:
             }
         }
 
-        let registry = ModuleRegistry::new();
+        let registry = WorkerRegistry::new();
         registry.register::<ModV1>("test::Overwrite");
         registry.register::<ModV2>("test::Overwrite");
 
@@ -1186,19 +1186,19 @@ workers:
         static REGISTERED: AtomicUsize = AtomicUsize::new(0);
         static DESTROYED: AtomicUsize = AtomicUsize::new(0);
 
-        struct LifecycleModule;
+        struct LifecycleWorker;
 
         #[async_trait]
-        impl Module for LifecycleModule {
+        impl Worker for LifecycleWorker {
             fn name(&self) -> &'static str {
-                "LifecycleModule"
+                "LifecycleWorker"
             }
 
             async fn create(
                 _engine: Arc<Engine>,
                 _config: Option<Value>,
-            ) -> anyhow::Result<Box<dyn Module>> {
-                Ok(Box::new(LifecycleModule))
+            ) -> anyhow::Result<Box<dyn Worker>> {
+                Ok(Box::new(LifecycleWorker))
             }
 
             async fn initialize(&self) -> anyhow::Result<()> {
@@ -1221,7 +1221,7 @@ workers:
         DESTROYED.store(0, Ordering::SeqCst);
 
         let builder = EngineBuilder::new()
-            .register_module::<LifecycleModule>("test::Lifecycle")
+            .register_module::<LifecycleWorker>("test::Lifecycle")
             .add_module(
                 "test::Lifecycle",
                 Some(serde_json::json!({"enabled": true})),

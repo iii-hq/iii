@@ -21,10 +21,10 @@ use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     modules::{
-        module::{AdapterFactory, ConfigurableModule, Module},
+        module::{AdapterFactory, ConfigurableWorker, Worker},
         state::{
             adapters::StateAdapter,
-            config::StateModuleConfig,
+            config::StateWorkerConfig,
             structs::{
                 StateDeleteInput, StateEventData, StateEventType, StateGetGroupInput,
                 StateGetInput, StateListGroupsInput, StateListGroupsResult, StateSetInput,
@@ -38,18 +38,18 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct StateCoreModule {
+pub struct StateWorker {
     adapter: Arc<dyn StateAdapter>,
     engine: Arc<Engine>,
     pub triggers: Arc<StateTriggers>,
 }
 
 #[async_trait::async_trait]
-impl Module for StateCoreModule {
+impl Worker for StateWorker {
     fn name(&self) -> &'static str {
-        "StateCoreModule"
+        "StateWorker"
     }
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
@@ -58,13 +58,13 @@ impl Module for StateCoreModule {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        tracing::info!("Destroying StateCoreModule");
+        tracing::info!("Destroying StateWorker");
         self.adapter.destroy().await?;
         Ok(())
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing StateCoreModule");
+        tracing::info!("Initializing StateWorker");
 
         let _ = self
             .engine
@@ -81,15 +81,15 @@ impl Module for StateCoreModule {
 }
 
 #[async_trait::async_trait]
-impl ConfigurableModule for StateCoreModule {
-    type Config = StateModuleConfig;
+impl ConfigurableWorker for StateWorker {
+    type Config = StateWorkerConfig;
     type Adapter = dyn StateAdapter;
     type AdapterRegistration = super::registry::StateAdapterRegistration;
     const DEFAULT_ADAPTER_NAME: &'static str = "kv";
 
     async fn registry() -> &'static SyncRwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<SyncRwLock<HashMap<String, AdapterFactory<dyn StateAdapter>>>> =
-            Lazy::new(|| SyncRwLock::new(StateCoreModule::build_registry()));
+            Lazy::new(|| SyncRwLock::new(StateWorker::build_registry()));
         &REGISTRY
     }
 
@@ -110,7 +110,7 @@ impl ConfigurableModule for StateCoreModule {
     }
 }
 
-impl StateCoreModule {
+impl StateWorker {
     /// Invoke triggers for a given event type with condition checks
     async fn invoke_triggers(&self, event_data: StateEventData) {
         // Collect triggers into Vec to release the lock before spawning
@@ -235,7 +235,7 @@ impl StateCoreModule {
 }
 
 #[service(name = "state")]
-impl StateCoreModule {
+impl StateWorker {
     #[function(id = "state::set", description = "Set a value in state")]
     pub async fn set(&self, input: StateSetInput) -> FunctionResult<SetResult, ErrorBody> {
         crate::modules::telemetry::collector::track_state_set();
@@ -406,9 +406,9 @@ impl StateCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-state",
-    StateCoreModule,
+    StateWorker,
     enabled_by_default = true
 );
 
@@ -521,11 +521,11 @@ mod tests {
         }
     }
 
-    fn setup() -> (Arc<Engine>, StateCoreModule) {
+    fn setup() -> (Arc<Engine>, StateWorker) {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
         let adapter: Arc<dyn StateAdapter> = Arc::new(BuiltinKvStoreAdapter::new(None));
-        let module = StateCoreModule {
+        let module = StateWorker {
             adapter,
             engine: engine.clone(),
             triggers: Arc::new(StateTriggers::new()),
@@ -533,10 +533,10 @@ mod tests {
         (engine, module)
     }
 
-    fn setup_with_adapter(adapter: Arc<dyn StateAdapter>) -> (Arc<Engine>, StateCoreModule) {
+    fn setup_with_adapter(adapter: Arc<dyn StateAdapter>) -> (Arc<Engine>, StateWorker) {
         ensure_default_meter();
         let engine = Arc::new(crate::engine::Engine::new());
-        let module = StateCoreModule {
+        let module = StateWorker {
             adapter,
             engine: engine.clone(),
             triggers: Arc::new(StateTriggers::new()),

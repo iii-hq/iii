@@ -30,7 +30,7 @@ use tokio::sync::RwLock as TokioRwLock;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::module::Module,
+    modules::module::Worker,
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
@@ -219,7 +219,7 @@ fn should_trigger_for_level(trigger_level: &str, log_level: &str) -> bool {
 }
 
 // =============================================================================
-// OpenTelemetry Module
+// OpenTelemetry Worker
 // =============================================================================
 
 /// Trigger type ID for log events from the observability module
@@ -283,8 +283,8 @@ pub struct BaggageGetAllInput {}
 /// This module provides OTEL-native logging, traces, metrics, and logs access.
 /// It sets the global OTEL configuration from YAML before logging is initialized.
 #[derive(Clone)]
-pub struct OtelModule {
-    _config: config::OtelModuleConfig,
+pub struct OtelWorker {
+    _config: config::OtelWorkerConfig,
     triggers: Arc<OtelLogTriggers>,
     engine: Arc<Engine>,
     /// Shutdown signal sender for background tasks
@@ -328,7 +328,7 @@ fn build_span_tree_node(
 }
 
 #[service(name = "otel")]
-impl OtelModule {
+impl OtelWorker {
     // =========================================================================
     // OTEL-native Log Functions (recommended over legacy logger.*)
     // =========================================================================
@@ -512,7 +512,7 @@ impl OtelModule {
                 if !warned.get() {
                     tracing::warn!(
                         "Log storage not initialized - logs will not be stored. \
-                        Call otel::init_log_storage() or ensure OtelModule is initialized."
+                        Call otel::init_log_storage() or ensure OtelWorker is initialized."
                     );
                     warned.set(true);
                 }
@@ -1353,7 +1353,7 @@ impl OtelModule {
     }
 }
 
-impl TriggerRegistrator for OtelModule {
+impl TriggerRegistrator for OtelWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -1395,27 +1395,27 @@ impl TriggerRegistrator for OtelModule {
 }
 
 #[async_trait]
-impl Module for OtelModule {
+impl Worker for OtelWorker {
     fn name(&self) -> &'static str {
-        "OtelModule"
+        "OtelWorker"
     }
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
-        let otel_config: config::OtelModuleConfig = match config {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        let otel_config: config::OtelWorkerConfig = match config {
             Some(cfg) => serde_json::from_value(cfg)?,
-            None => config::OtelModuleConfig::default(),
+            None => config::OtelWorkerConfig::default(),
         };
 
         // Set the global OTEL config so logging can use it
         if !otel::set_otel_config(otel_config.clone()) {
             tracing::warn!(
-                "OtelModule created but global config was already set - using existing config"
+                "OtelWorker created but global config was already set - using existing config"
             );
         }
 
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 
-        Ok(Box::new(OtelModule {
+        Ok(Box::new(OtelWorker {
             _config: otel_config,
             triggers: Arc::new(OtelLogTriggers::new()),
             engine,
@@ -1493,30 +1493,30 @@ impl Module for OtelModule {
                 if let Some(storage) = otel::get_log_storage() {
                     let mut rx = storage.subscribe();
 
-                    tracing::debug!("[OtelModule] Log trigger subscriber started");
+                    tracing::debug!("[OtelWorker] Log trigger subscriber started");
 
                     loop {
                         tokio::select! {
                             result = shutdown_rx.changed() => {
                                 if result.is_err() {
-                                    tracing::debug!("[OtelModule] Shutdown channel closed");
+                                    tracing::debug!("[OtelWorker] Shutdown channel closed");
                                     break;
                                 }
                                 if *shutdown_rx.borrow() {
-                                    tracing::debug!("[OtelModule] Log trigger subscriber shutting down");
+                                    tracing::debug!("[OtelWorker] Log trigger subscriber shutting down");
                                     break;
                                 }
                             }
                             result = rx.recv() => {
                                 match result {
                                     Ok(log) => {
-                                        OtelModule::invoke_triggers_for_log(&triggers, &engine, &log).await;
+                                        OtelWorker::invoke_triggers_for_log(&triggers, &engine, &log).await;
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                                         tracing::warn!(skipped, "Log trigger subscriber lagged, some logs were skipped");
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::debug!("[OtelModule] Log broadcast channel closed");
+                                        tracing::debug!("[OtelWorker] Log broadcast channel closed");
                                         break;
                                     }
                                 }
@@ -1524,10 +1524,10 @@ impl Module for OtelModule {
                         }
                     }
 
-                    tracing::debug!("[OtelModule] Log trigger subscriber stopped");
+                    tracing::debug!("[OtelWorker] Log trigger subscriber stopped");
                 } else {
                     tracing::warn!(
-                        "[OtelModule] Log storage not available, log triggers will not work"
+                        "[OtelWorker] Log storage not available, log triggers will not work"
                     );
                 }
             });
@@ -1543,11 +1543,11 @@ impl Module for OtelModule {
                     tokio::select! {
                         result = shutdown_rx.changed() => {
                             if result.is_err() {
-                                tracing::debug!("[OtelModule] Shutdown channel closed");
+                                tracing::debug!("[OtelWorker] Shutdown channel closed");
                                 break;
                             }
                             if *shutdown_rx.borrow() {
-                                tracing::debug!("[OtelModule] Metrics retention task shutting down");
+                                tracing::debug!("[OtelWorker] Metrics retention task shutting down");
                                 break;
                             }
                         }
@@ -1572,11 +1572,11 @@ impl Module for OtelModule {
                     tokio::select! {
                         result = shutdown_rx.changed() => {
                             if result.is_err() {
-                                tracing::debug!("[OtelModule] Shutdown channel closed");
+                                tracing::debug!("[OtelWorker] Shutdown channel closed");
                                 break;
                             }
                             if *shutdown_rx.borrow() {
-                                tracing::debug!("[OtelModule] Alert evaluation task shutting down");
+                                tracing::debug!("[OtelWorker] Alert evaluation task shutting down");
                                 break;
                             }
                         }
@@ -1649,7 +1649,7 @@ impl Module for OtelModule {
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
-        tracing::info!("Shutting down OtelModule...");
+        tracing::info!("Shutting down OtelWorker...");
 
         // Signal all background tasks to stop
         let _ = self.shutdown_tx.send(true);
@@ -1661,14 +1661,14 @@ impl Module for OtelModule {
         otel::shutdown_otel();
         metrics::shutdown_metrics();
 
-        tracing::info!("OtelModule shutdown complete");
+        tracing::info!("OtelWorker shutdown complete");
         Ok(())
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-observability",
-    OtelModule,
+    OtelWorker,
     enabled_by_default = false
 );
 
@@ -1740,10 +1740,10 @@ mod tests {
         }
     }
 
-    fn make_test_module(engine: Arc<Engine>) -> OtelModule {
+    fn make_test_module(engine: Arc<Engine>) -> OtelWorker {
         let (shutdown_tx, _) = tokio::sync::watch::channel(false);
-        OtelModule {
-            _config: config::OtelModuleConfig::default(),
+        OtelWorker {
+            _config: config::OtelWorkerConfig::default(),
             triggers: Arc::new(OtelLogTriggers::new()),
             engine,
             shutdown_tx: Arc::new(shutdown_tx),

@@ -9,22 +9,22 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{config::ExecConfig, exec::Exec};
-use crate::{engine::Engine, modules::module::Module};
+use crate::{engine::Engine, modules::module::Worker};
 
 #[derive(Clone)]
-pub struct ExecCoreModule {
+pub struct ExecWorker {
     watcher: Exec,
 }
 
 #[async_trait::async_trait]
-impl Module for ExecCoreModule {
+impl Worker for ExecWorker {
     fn name(&self) -> &'static str {
         "ExecModule"
     }
     async fn create(
         _engine: Arc<Engine>,
         config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn Module>> {
+    ) -> anyhow::Result<Box<dyn Worker>> {
         let config: ExecConfig = config.map(serde_json::from_value).transpose()?.unwrap();
         let watcher = Exec::new(config);
 
@@ -65,9 +65,9 @@ impl Module for ExecCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-exec",
-    ExecCoreModule,
+    ExecWorker,
     enabled_by_default = false
 );
 
@@ -82,7 +82,7 @@ mod tests {
     #[tokio::test]
     async fn exec_core_module_create_and_lifecycle_work() {
         let engine = Arc::new(Engine::new());
-        let created = ExecCoreModule::create(
+        let created = ExecWorker::create(
             engine.clone(),
             Some(json!({
                 "watch": null,
@@ -93,7 +93,7 @@ mod tests {
         .expect("create exec module");
         assert_eq!(created.name(), "ExecModule");
 
-        let module = ExecCoreModule {
+        let module = ExecWorker {
             watcher: Exec::new(ExecConfig {
                 watch: None,
                 exec: Vec::new(),

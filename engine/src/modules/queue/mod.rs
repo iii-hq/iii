@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 pub use self::config::FunctionQueueConfig;
 pub use self::message::QueueMessage;
-pub use self::queue::QueueCoreModule;
+pub use self::queue::QueueWorker;
 pub use self::subscriber_config::SubscriberQueueConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

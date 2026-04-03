@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::module::Module,
+    modules::module::Worker,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
     workers::WorkerTelemetryMeta,
@@ -151,12 +151,12 @@ pub struct RegisterWorkerInput {
 }
 
 #[derive(Clone)]
-pub struct EngineFunctionsModule {
+pub struct EngineFunctionsWorker {
     engine: Arc<Engine>,
     triggers: Arc<DashMap<String, Trigger>>,
 }
 
-impl EngineFunctionsModule {
+impl EngineFunctionsWorker {
     pub fn new(engine: Arc<Engine>) -> Self {
         Self {
             engine,
@@ -298,7 +298,7 @@ impl EngineFunctionsModule {
     }
 }
 
-impl TriggerRegistrator for EngineFunctionsModule {
+impl TriggerRegistrator for EngineFunctionsWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -330,16 +330,16 @@ impl TriggerRegistrator for EngineFunctionsModule {
 }
 
 #[async_trait::async_trait]
-impl Module for EngineFunctionsModule {
+impl Worker for EngineFunctionsWorker {
     fn name(&self) -> &'static str {
-        "EngineFunctionsModule"
+        "EngineFunctionsWorker"
     }
 
     async fn create(
         engine: Arc<Engine>,
         _config: Option<Value>,
-    ) -> anyhow::Result<Box<dyn Module>> {
-        Ok(Box::new(EngineFunctionsModule {
+    ) -> anyhow::Result<Box<dyn Worker>> {
+        Ok(Box::new(EngineFunctionsWorker {
             engine,
             triggers: Arc::new(DashMap::new()),
         }))
@@ -350,7 +350,7 @@ impl Module for EngineFunctionsModule {
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing EngineFunctionsModule");
+        tracing::info!("Initializing EngineFunctionsWorker");
 
         let functions_trigger = TriggerType::new(
             TRIGGER_FUNCTIONS_AVAILABLE,
@@ -418,7 +418,7 @@ impl Module for EngineFunctionsModule {
                     }
                     changed = shutdown_rx.changed() => {
                         if changed.is_err() || *shutdown_rx.borrow() {
-                            tracing::info!("EngineFunctionsModule background tasks shutting down");
+                            tracing::info!("EngineFunctionsWorker background tasks shutting down");
                             break;
                         }
                     }
@@ -435,7 +435,7 @@ impl Module for EngineFunctionsModule {
 }
 
 #[service(name = "engine")]
-impl EngineFunctionsModule {
+impl EngineFunctionsWorker {
     #[function(
         id = "engine::channels::create",
         description = "Create a streaming channel pair"
@@ -543,9 +543,9 @@ impl EngineFunctionsModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-engine-fn",
-    EngineFunctionsModule,
+    EngineFunctionsWorker,
     mandatory
 );
 
@@ -602,10 +602,10 @@ mod tests {
         assert!(input.pid.is_none());
     }
 
-    fn setup_engine_and_module() -> (Arc<Engine>, EngineFunctionsModule) {
+    fn setup_engine_and_module() -> (Arc<Engine>, EngineFunctionsWorker) {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
-        let module = EngineFunctionsModule::new(engine.clone());
+        let module = EngineFunctionsWorker::new(engine.clone());
         (engine, module)
     }
 
@@ -755,7 +755,7 @@ mod tests {
 
         // Create a worker in the registry first
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let worker = crate::workers::Worker::new(tx);
+        let worker = crate::workers::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
         engine.worker_registry.register_worker(worker);
 
@@ -1146,7 +1146,7 @@ mod tests {
         }
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let worker = crate::workers::Worker::new(tx);
+        let worker = crate::workers::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
         worker.include_function_id("user::visible").await;
         engine.worker_registry.register_worker(worker);
@@ -1222,7 +1222,7 @@ mod tests {
             },
         );
 
-        let worker = crate::workers::Worker::new(tokio::sync::mpsc::channel(1).0);
+        let worker = crate::workers::WorkerConnection::new(tokio::sync::mpsc::channel(1).0);
         let worker_id = worker.id.to_string();
         engine.worker_registry.register_worker(worker);
 

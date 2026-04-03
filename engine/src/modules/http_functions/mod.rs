@@ -21,7 +21,7 @@ use crate::{
         http_invoker::{HttpEndpointParams, HttpInvoker, HttpInvokerConfig},
         method::HttpAuth,
     },
-    modules::module::Module,
+    modules::module::Worker,
     protocol::ErrorBody,
 };
 
@@ -30,7 +30,7 @@ use config::HttpFunctionsConfig;
 type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
 
 #[derive(Clone)]
-pub struct HttpFunctionsModule {
+pub struct HttpFunctionsWorker {
     engine: Arc<Engine>,
     http_invoker: Arc<HttpInvoker>,
     http_functions: Arc<DashMap<String, HttpFunctionConfig>>,
@@ -38,7 +38,7 @@ pub struct HttpFunctionsModule {
     config: HttpFunctionsConfig,
 }
 
-impl HttpFunctionsModule {
+impl HttpFunctionsWorker {
     fn create_handler_wrapper(
         &self,
         config: HttpFunctionConfig,
@@ -137,12 +137,12 @@ impl HttpFunctionsModule {
 }
 
 #[async_trait::async_trait]
-impl Module for HttpFunctionsModule {
+impl Worker for HttpFunctionsWorker {
     fn name(&self) -> &'static str {
-        "HttpFunctionsModule"
+        "HttpFunctionsWorker"
     }
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         let config: HttpFunctionsConfig = config
             .map(serde_json::from_value)
             .transpose()?
@@ -174,9 +174,9 @@ impl Module for HttpFunctionsModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-http-functions",
-    HttpFunctionsModule
+    HttpFunctionsWorker
 );
 
 #[cfg(test)]
@@ -296,9 +296,9 @@ mod tests {
         }
     }
 
-    fn build_module(engine: Arc<crate::engine::Engine>) -> HttpFunctionsModule {
+    fn build_module(engine: Arc<crate::engine::Engine>) -> HttpFunctionsWorker {
         let config = permissive_config();
-        HttpFunctionsModule {
+        HttpFunctionsWorker {
             engine,
             http_invoker: Arc::new(
                 HttpInvoker::new(HttpInvokerConfig {
@@ -335,23 +335,23 @@ mod tests {
         let engine = Arc::new(crate::engine::Engine::new());
         let config = serde_json::to_value(permissive_config()).expect("serialize config");
 
-        let module = HttpFunctionsModule::create(engine.clone(), Some(config))
+        let module = HttpFunctionsWorker::create(engine.clone(), Some(config))
             .await
             .expect("create http functions module");
-        assert_eq!(module.name(), "HttpFunctionsModule");
+        assert_eq!(module.name(), "HttpFunctionsWorker");
 
         module.initialize().await.expect("initialize module");
 
         assert!(
             engine
                 .service_registry
-                .get_service::<HttpFunctionsModule>("http_functions")
+                .get_service::<HttpFunctionsWorker>("http_functions")
                 .is_some()
         );
 
         let module = engine
             .service_registry
-            .get_service::<HttpFunctionsModule>("http_functions")
+            .get_service::<HttpFunctionsWorker>("http_functions")
             .expect("http functions service");
         assert!(Arc::strong_count(module.http_invoker()) >= 1);
         assert!(module.http_functions().is_empty());

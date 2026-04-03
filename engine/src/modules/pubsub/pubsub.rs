@@ -19,20 +19,20 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{PubSubAdapter, config::PubSubModuleConfig};
+use super::{PubSubAdapter, config::PubSubWorkerConfig};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    modules::module::{AdapterFactory, ConfigurableModule, Module},
+    modules::module::{AdapterFactory, ConfigurableWorker, Worker},
     protocol::ErrorBody,
     trigger::{Trigger, TriggerRegistrator, TriggerType},
 };
 
 #[derive(Clone)]
-pub struct PubSubCoreModule {
+pub struct PubSubWorker {
     adapter: Arc<dyn PubSubAdapter>,
     engine: Arc<Engine>,
-    _config: PubSubModuleConfig,
+    _config: PubSubWorkerConfig,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
@@ -42,7 +42,7 @@ pub struct PubSubInput {
 }
 
 #[service(name = "pubsub")]
-impl PubSubCoreModule {
+impl PubSubWorker {
     #[function(id = "publish", description = "Publishes an event")]
     pub async fn publish(&self, input: PubSubInput) -> FunctionResult<Option<Value>, ErrorBody> {
         let adapter = self.adapter.clone();
@@ -65,7 +65,7 @@ impl PubSubCoreModule {
     }
 }
 
-impl TriggerRegistrator for PubSubCoreModule {
+impl TriggerRegistrator for PubSubWorker {
     fn register_trigger(
         &self,
         trigger: Trigger,
@@ -132,11 +132,11 @@ impl TriggerRegistrator for PubSubCoreModule {
 }
 
 #[async_trait]
-impl Module for PubSubCoreModule {
+impl Worker for PubSubWorker {
     fn name(&self) -> &'static str {
         "PubSubModule"
     }
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
@@ -161,15 +161,15 @@ impl Module for PubSubCoreModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for PubSubCoreModule {
-    type Config = PubSubModuleConfig;
+impl ConfigurableWorker for PubSubWorker {
+    type Config = PubSubWorkerConfig;
     type Adapter = dyn PubSubAdapter;
     type AdapterRegistration = super::registry::PubSubAdapterRegistration;
     const DEFAULT_ADAPTER_NAME: &'static str = "local";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn PubSubAdapter>>>> =
-            Lazy::new(|| RwLock::new(PubSubCoreModule::build_registry()));
+            Lazy::new(|| RwLock::new(PubSubWorker::build_registry()));
         &REGISTRY
     }
 
@@ -190,9 +190,9 @@ impl ConfigurableModule for PubSubCoreModule {
     }
 }
 
-crate::register_module!(
+crate::register_worker!(
     "iii-pubsub",
-    PubSubCoreModule,
+    PubSubWorker,
     enabled_by_default = true
 );
 
@@ -207,7 +207,7 @@ mod tests {
     use crate::{
         engine::Engine,
         modules::{
-            module::{AdapterEntry, ConfigurableModule},
+            module::{AdapterEntry, ConfigurableWorker},
             observability::metrics::ensure_default_meter,
         },
     };
@@ -244,13 +244,13 @@ mod tests {
         }
     }
 
-    fn build_module() -> (Arc<Engine>, PubSubCoreModule, Arc<RecordingPubSubAdapter>) {
+    fn build_module() -> (Arc<Engine>, PubSubWorker, Arc<RecordingPubSubAdapter>) {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
         let adapter = Arc::new(RecordingPubSubAdapter::default());
-        let module = PubSubCoreModule::build(
+        let module = PubSubWorker::build(
             engine.clone(),
-            PubSubModuleConfig::default(),
+            PubSubWorkerConfig::default(),
             adapter.clone(),
         );
         (engine, module, adapter)
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn adapter_name_and_config_are_read_from_config() {
-        let config = PubSubModuleConfig {
+        let config = PubSubWorkerConfig {
             adapter: Some(AdapterEntry {
                 name: "custom::PubSub".to_string(),
                 config: Some(json!({ "url": "redis://example" })),
@@ -377,11 +377,11 @@ mod tests {
         };
 
         assert_eq!(
-            PubSubCoreModule::adapter_name_from_config(&config).as_deref(),
+            PubSubWorker::adapter_name_from_config(&config).as_deref(),
             Some("custom::PubSub")
         );
         assert_eq!(
-            PubSubCoreModule::adapter_config_from_config(&config),
+            PubSubWorker::adapter_config_from_config(&config),
             Some(json!({ "url": "redis://example" }))
         );
     }

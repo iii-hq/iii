@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use crate::{
     engine::Engine,
     modules::stream::{
-        StreamCoreModule, StreamIncomingMessage,
+        StreamWorker, StreamIncomingMessage,
         adapters::{StreamAdapter, StreamConnection},
         connection::SocketStreamConnection,
         structs::{StreamAuthContext, StreamOutbound},
@@ -25,7 +25,7 @@ pub struct StreamSocketManager {
     pub engine: Arc<Engine>,
     pub auth_function: Option<String>,
     adapter: Arc<dyn StreamAdapter>,
-    stream_module: Arc<StreamCoreModule>,
+    stream_module: Arc<StreamWorker>,
     triggers: Arc<StreamTriggers>,
 }
 
@@ -33,7 +33,7 @@ impl StreamSocketManager {
     pub fn new(
         engine: Arc<Engine>,
         adapter: Arc<dyn StreamAdapter>,
-        stream_module: Arc<StreamCoreModule>,
+        stream_module: Arc<StreamWorker>,
         auth_function: Option<String>,
         triggers: Arc<StreamTriggers>,
     ) -> Self {
@@ -175,10 +175,10 @@ mod tests {
         engine::{EngineTrait, Handler, RegisterFunctionRequest},
         function::FunctionResult,
         modules::{
-            module::ConfigurableModule,
+            module::ConfigurableWorker,
             observability::metrics::ensure_default_meter,
             stream::{
-                StreamOutboundMessage, StreamWrapperMessage, config::StreamModuleConfig,
+                StreamOutboundMessage, StreamWrapperMessage, config::StreamWorkerConfig,
                 structs::StreamIncomingMessageData,
             },
         },
@@ -341,12 +341,12 @@ mod tests {
 
     async fn spawn_server(
         adapter: Arc<TestSocketAdapter>,
-    ) -> (Arc<Engine>, Arc<StreamCoreModule>, JoinHandle<()>, String) {
+    ) -> (Arc<Engine>, Arc<StreamWorker>, JoinHandle<()>, String) {
         ensure_default_meter();
         let engine = Arc::new(Engine::new());
-        let module = Arc::new(StreamCoreModule::build(
+        let module = Arc::new(StreamWorker::build(
             engine.clone(),
-            StreamModuleConfig::default(),
+            StreamWorkerConfig::default(),
             adapter.clone(),
         ));
         let manager = Arc::new(StreamSocketManager::new(

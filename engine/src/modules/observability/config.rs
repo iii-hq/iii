@@ -188,7 +188,7 @@ pub struct RateLimitConfig {
 /// OpenTelemetry module configuration (for YAML deserialization)
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct OtelModuleConfig {
+pub struct OtelWorkerConfig {
     /// Whether OpenTelemetry export is enabled
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -322,7 +322,7 @@ mod tests {
         assert!(rule.enabled);
         assert_eq!(rule.cooldown_seconds, 60);
 
-        let config: OtelModuleConfig = serde_json::from_value(serde_json::json!({
+        let config: OtelWorkerConfig = serde_json::from_value(serde_json::json!({
             "exporter": "both",
             "metrics_exporter": "otlp",
             "logs_exporter": "both",
@@ -352,10 +352,10 @@ mod tests {
     #[test]
     fn otel_config_deny_unknown_fields() {
         let json = r#"{"enabled": true, "fake_key": "value"}"#;
-        let result: Result<OtelModuleConfig, _> = serde_json::from_str(json);
+        let result: Result<OtelWorkerConfig, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
-            "should reject unknown fields in OtelModuleConfig"
+            "should reject unknown fields in OtelWorkerConfig"
         );
     }
 

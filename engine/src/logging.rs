@@ -456,7 +456,7 @@ fn init_local_log(log_level: &str, otel_cfg: &OtelConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::config::{EngineConfig, ModuleEntry};
+    use crate::modules::config::{EngineConfig, WorkerEntry};
     use serial_test::serial;
     use tracing::callsite::Identifier;
     use tracing::field::{FieldSet, Visit};
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn test_extract_otel_config_reads_observability_module_config() {
         let cfg = EngineConfig {
-            workers: vec![ModuleEntry {
+            workers: vec![WorkerEntry {
                 name: Some("iii-observability".to_string()),
                 image: None,
                 config: Some(serde_json::json!({
