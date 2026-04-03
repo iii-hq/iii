@@ -53,7 +53,8 @@
                   "how-to/use-iii-in-the-browser",
                   "how-to/create-custom-trigger-type",
                   "how-to/configure-engine",
-                  "how-to/worker-rbac"
+                  "how-to/worker-rbac",
+                  "how-to/observability-and-logs"
                 ]
               },
               {
