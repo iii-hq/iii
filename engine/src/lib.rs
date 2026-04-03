@@ -16,7 +16,7 @@ pub mod services;
 pub mod telemetry;
 pub mod trigger;
 pub mod trigger_formats;
-pub mod workers;
+pub mod worker_connections;
 
 pub mod modules {
     pub mod bridge_client;

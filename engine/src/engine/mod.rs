@@ -34,7 +34,7 @@ use crate::{
         inject_baggage_from_context, inject_traceparent_from_context,
     },
     trigger::{Trigger, TriggerRegistry, TriggerType},
-    workers::{WorkerConnection, WorkerConnectionRegistry},
+    worker_connections::{WorkerConnection, WorkerConnectionRegistry},
 };
 
 /// Abstraction for enqueuing messages to named queues.
@@ -1340,7 +1340,7 @@ mod tests {
             observability::metrics::ensure_default_meter,
         },
         protocol::{HttpInvocationRef, Message},
-        workers::WorkerConnection,
+        worker_connections::WorkerConnection,
     };
 
     use super::{Engine, EngineTrait, Outbound};

@@ -1,4 +1,4 @@
-//! Example: Creating a custom Module with its own custom Adapter
+//! Example: Creating a custom Worker with its own custom Adapter
 //!
 //! Run with: `cargo run --example custom_queue_adapter`
 
@@ -15,7 +15,7 @@ use iii::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::{FunctionHandler, FunctionResult},
     modules::{
-        module::{AdapterEntry, AdapterFactory, ConfigurableModule, Module},
+        module::{AdapterEntry, AdapterFactory, ConfigurableWorker, Worker},
         registry::{AdapterFuture, AdapterRegistrationEntry},
     },
     protocol::ErrorBody,
@@ -189,40 +189,40 @@ iii::register_adapter!(<CustomQueueAdapterRegistration> "my::InMemoryQueueAdapte
 iii::register_adapter!(<CustomQueueAdapterRegistration> "my::LoggingQueueAdapter", make_logging_adapter);
 
 // =============================================================================
-// 3. Define your Module Config
+// 3. Define your Worker Config
 // =============================================================================
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct CustomQueueModuleConfig {
+pub struct CustomQueueWorkerConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 }
 
 // =============================================================================
-// 4. Create your custom Module
+// 4. Create your custom Worker
 // =============================================================================
 
 #[derive(Clone)]
-pub struct CustomQueueModule {
+pub struct CustomQueueWorker {
     adapter: Arc<dyn CustomQueueAdapter>,
     engine: Arc<Engine>,
-    _config: CustomQueueModuleConfig,
+    _config: CustomQueueWorkerConfig,
 }
 
 #[async_trait]
-impl Module for CustomQueueModule {
+impl Worker for CustomQueueWorker {
     fn name(&self) -> &'static str {
-        "CustomQueueModule"
+        "CustomQueueWorker"
     }
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
-    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Module>> {
+    async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
         Self::create_with_adapters(engine, config).await
     }
 
     async fn initialize(&self) -> anyhow::Result<()> {
-        tracing::info!("Initializing CustomQueueModule");
+        tracing::info!("Initializing CustomQueueWorker");
 
         // Register a function to emit to queues
         self.engine.register_function(
@@ -244,15 +244,15 @@ impl Module for CustomQueueModule {
 }
 
 #[async_trait]
-impl ConfigurableModule for CustomQueueModule {
-    type Config = CustomQueueModuleConfig;
+impl ConfigurableWorker for CustomQueueWorker {
+    type Config = CustomQueueWorkerConfig;
     type Adapter = dyn CustomQueueAdapter;
     type AdapterRegistration = CustomQueueAdapterRegistration;
     const DEFAULT_ADAPTER_NAME: &'static str = "my::InMemoryQueueAdapter";
 
     async fn registry() -> &'static RwLock<HashMap<String, AdapterFactory<Self::Adapter>>> {
         static REGISTRY: Lazy<RwLock<HashMap<String, AdapterFactory<dyn CustomQueueAdapter>>>> =
-            Lazy::new(|| RwLock::new(CustomQueueModule::build_registry()));
+            Lazy::new(|| RwLock::new(CustomQueueWorker::build_registry()));
         &REGISTRY
     }
 
@@ -273,7 +273,7 @@ impl ConfigurableModule for CustomQueueModule {
     }
 }
 
-impl FunctionHandler for CustomQueueModule {
+impl FunctionHandler for CustomQueueWorker {
     fn handle_function(
         &self,
         _invocation_id: Option<Uuid>,
@@ -306,17 +306,17 @@ impl FunctionHandler for CustomQueueModule {
 }
 
 // =============================================================================
-// 5. Register module and run
+// 5. Register worker and run
 // =============================================================================
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Register the custom module and add it to the engine using EngineBuilder
+    // Register the custom worker and add it to the engine using EngineBuilder
     EngineBuilder::new()
-        .register_module::<CustomQueueModule>("my::CustomQueueModule")
+        .register_module::<CustomQueueWorker>("my::CustomQueueWorker")
         .add_module(
             // instead load from config file
-            "my::CustomQueueModule",
+            "my::CustomQueueWorker",
             Some(serde_json::json!({
                 "adapter": {
                     "name": "my::LoggingQueueAdapter",
@@ -329,7 +329,7 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    tracing::info!("CustomQueueModule initialized successfully!");
+    tracing::info!("CustomQueueWorker initialized successfully!");
     tracing::info!("You can now use the 'custom_emit' function to emit to queues");
 
     // Keep the process running (in a real application, you'd start a server here)
@@ -339,11 +339,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 // =============================================================================
-// To use this module, you would add to config.yaml:
+// To use this worker, you would add to config.yaml:
 // =============================================================================
 //
 // workers:
-//   - name: my::CustomQueueModule
+//   - name: my::CustomQueueWorker
 //     config:
 //       adapter:
 //         name: my::LoggingQueueAdapter  # or my::InMemoryQueueAdapter

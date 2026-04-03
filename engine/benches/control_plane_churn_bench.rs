@@ -9,7 +9,7 @@ use iii::{
     function::{Function, FunctionResult, FunctionsRegistry},
     modules::observability::metrics::ensure_default_meter,
     trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
-    workers::{Worker, WorkerRegistry},
+    worker_connections::{WorkerConnection, WorkerConnectionRegistry},
 };
 use tokio::sync::mpsc;
 
@@ -81,13 +81,13 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
             &size,
             |b, &size| {
                 b.iter_batched(
-                    WorkerRegistry::new,
+                    WorkerConnectionRegistry::new,
                     |registry| {
                         let mut ids = Vec::with_capacity(size);
                         let mut _receivers = Vec::with_capacity(size);
                         for _ in 0..size {
                             let (tx, rx) = mpsc::channel::<Outbound>(1);
-                            let worker = Worker::new(tx);
+                            let worker = WorkerConnection::new(tx);
                             ids.push(worker.id);
                             _receivers.push(rx);
                             registry.register_worker(worker);

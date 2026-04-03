@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Instant};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::future::join_all;
 use iii::{
-    engine::Outbound, modules::observability::metrics::ensure_default_meter, workers::Worker,
+    engine::Outbound, modules::observability::metrics::ensure_default_meter, worker_connections::WorkerConnection,
 };
 use tokio::{runtime::Runtime, sync::mpsc};
 use uuid::Uuid;
@@ -15,7 +15,7 @@ fn add_remove_sequential_benchmark(c: &mut Criterion) {
 
     let rt = Runtime::new().expect("create tokio runtime");
     let (tx, _rx) = mpsc::channel::<Outbound>(64);
-    let worker = Worker::new(tx);
+    let worker = WorkerConnection::new(tx);
 
     c.bench_function("worker_invocation_tracking/add_remove_sequential", |b| {
         b.to_async(&rt).iter(|| async {
@@ -34,7 +34,7 @@ fn add_remove_concurrent_benchmark(c: &mut Criterion) {
 
     for concurrency in common::invocation_tracking_levels() {
         let (tx, _rx) = mpsc::channel::<Outbound>(64);
-        let worker = Arc::new(Worker::new(tx));
+        let worker = Arc::new(WorkerConnection::new(tx));
 
         group.throughput(Throughput::Elements(concurrency as u64));
         group.bench_with_input(
@@ -82,7 +82,7 @@ fn add_under_load_benchmark(c: &mut Criterion) {
 
     let rt = Runtime::new().expect("create tokio runtime");
     let (tx, _rx) = mpsc::channel::<Outbound>(64);
-    let worker = Worker::new(tx);
+    let worker = WorkerConnection::new(tx);
 
     // Pre-fill the invocations set to simulate a busy worker
     let pre_fill_count = 200;

@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::engine::Engine;
 use crate::modules::module::Worker;
-use crate::workers::WorkerTelemetryMeta;
+use crate::worker_connections::WorkerTelemetryMeta;
 
 use self::amplitude::{AmplitudeClient, AmplitudeEvent};
 use self::collector::collector;
@@ -795,7 +795,7 @@ mod tests {
         },
         services::Service,
         trigger::{Trigger, TriggerRegistrator, TriggerType},
-        workers::WorkerConnection,
+        worker_connections::WorkerConnection,
     };
 
     fn clear_ci_env_vars() {
@@ -1677,7 +1677,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
-        let mut worker1 = crate::workers::WorkerConnection::new(tx1);
+        let mut worker1 = crate::worker_connections::WorkerConnection::new(tx1);
         worker1.runtime = Some("node".to_string());
         worker1.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),
@@ -1688,7 +1688,7 @@ mod tests {
         engine.worker_registry.workers.insert(w1_id, worker1);
 
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-        let mut worker2 = crate::workers::WorkerConnection::new(tx2);
+        let mut worker2 = crate::worker_connections::WorkerConnection::new(tx2);
         worker2.runtime = Some("python".to_string());
         worker2.telemetry = None;
         let w2_id = worker2.id;
@@ -1712,7 +1712,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut worker = crate::workers::WorkerConnection::new(tx);
+        let mut worker = crate::worker_connections::WorkerConnection::new(tx);
         worker.runtime = None;
         worker.telemetry = None;
         let wid = worker.id;
@@ -1729,7 +1729,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx1, _rx1) = tokio::sync::mpsc::channel(1);
-        let mut worker1 = crate::workers::WorkerConnection::new(tx1);
+        let mut worker1 = crate::worker_connections::WorkerConnection::new(tx1);
         worker1.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         worker1.runtime = Some("node".to_string());
         worker1.telemetry = Some(WorkerTelemetryMeta {
@@ -1740,7 +1740,7 @@ mod tests {
         engine.worker_registry.workers.insert(worker1.id, worker1);
 
         let (tx2, _rx2) = tokio::sync::mpsc::channel(1);
-        let mut worker2 = crate::workers::WorkerConnection::new(tx2);
+        let mut worker2 = crate::worker_connections::WorkerConnection::new(tx2);
         worker2.id = uuid::Uuid::parse_str("ffffffff-ffff-ffff-ffff-ffffffffffff").unwrap();
         worker2.runtime = Some("node".to_string());
         worker2.telemetry = Some(WorkerTelemetryMeta {
@@ -1760,7 +1760,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut worker = crate::workers::WorkerConnection::new(tx);
+        let mut worker = crate::worker_connections::WorkerConnection::new(tx);
         worker.runtime = Some("node".to_string());
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: None,
@@ -1779,7 +1779,7 @@ mod tests {
         let engine = make_test_engine();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut worker = crate::workers::WorkerConnection::new(tx);
+        let mut worker = crate::worker_connections::WorkerConnection::new(tx);
         worker.runtime = Some("node".to_string());
         worker.telemetry = Some(WorkerTelemetryMeta {
             language: Some("typescript".to_string()),

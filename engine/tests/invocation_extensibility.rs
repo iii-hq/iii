@@ -83,7 +83,7 @@ async fn worker_pid_is_stored_and_listed() {
             engine_fn::EngineFunctionsWorker, module::Worker,
             observability::metrics::ensure_default_meter,
         },
-        workers::WorkerConnection,
+        worker_connections::WorkerConnection,
     };
 
     ensure_default_meter();

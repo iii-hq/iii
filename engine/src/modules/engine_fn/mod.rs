@@ -19,7 +19,7 @@ use crate::{
     modules::module::Worker,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
     trigger::{Trigger, TriggerRegistrator, TriggerType},
-    workers::WorkerTelemetryMeta,
+    worker_connections::WorkerTelemetryMeta,
 };
 
 pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
@@ -755,7 +755,7 @@ mod tests {
 
         // Create a worker in the registry first
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let worker = crate::workers::WorkerConnection::new(tx);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
         engine.worker_registry.register_worker(worker);
 
@@ -1146,7 +1146,7 @@ mod tests {
         }
 
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let worker = crate::workers::WorkerConnection::new(tx);
+        let worker = crate::worker_connections::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
         worker.include_function_id("user::visible").await;
         engine.worker_registry.register_worker(worker);
@@ -1222,7 +1222,7 @@ mod tests {
             },
         );
 
-        let worker = crate::workers::WorkerConnection::new(tokio::sync::mpsc::channel(1).0);
+        let worker = crate::worker_connections::WorkerConnection::new(tokio::sync::mpsc::channel(1).0);
         let worker_id = worker.id.to_string();
         engine.worker_registry.register_worker(worker);
 
