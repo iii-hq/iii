@@ -31,6 +31,16 @@ pub(crate) const INIT_HANDLE: u64 = 0;
 // Functions
 //--------------------------------------------------------------------------------------------------
 
+/// Returns `true` when the init binary is embedded (non-empty `INIT_BYTES`).
+///
+/// When `false`, `PassthroughFs` skips virtual init injection and serves any
+/// real `init.krun` on the rootfs disk as a normal file instead.
+/// Since `INIT_BYTES` length is known at compile time, the compiler optimizes
+/// away all dead branches guarded by this function.
+pub(crate) fn has_init() -> bool {
+    !INIT_BYTES.is_empty()
+}
+
 /// Build a synthetic `stat64` for the init binary.
 pub(crate) fn init_stat() -> stat64 {
     let mut st: stat64 = unsafe { std::mem::zeroed() };
@@ -140,4 +150,36 @@ pub(crate) fn read_init(
 /// Check if a name matches the init binary filename.
 pub(crate) fn is_init_name(name: &[u8]) -> bool {
     name == INIT_FILENAME
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_init_without_embed_feature() {
+        // Test builds don't use embed-init, so INIT_BYTES is empty.
+        assert!(!has_init(), "has_init() should be false without embed-init feature");
+        assert!(INIT_BYTES.is_empty());
+    }
+
+    #[test]
+    fn test_init_stat_zero_size_without_embed() {
+        let st = init_stat();
+        assert_eq!(st.st_size, 0, "st_size should be 0 when INIT_BYTES is empty");
+        assert_eq!(st.st_blocks, 0, "st_blocks should be 0 when INIT_BYTES is empty");
+    }
+
+    #[test]
+    fn test_create_init_file_succeeds_without_embed() {
+        let file = create_init_file();
+        assert!(file.is_ok(), "create_init_file should succeed even without embedded init");
+    }
+
+    #[test]
+    fn test_is_init_name() {
+        assert!(is_init_name(b"init.krun"));
+        assert!(!is_init_name(b"init.kru"));
+        assert!(!is_init_name(b"other.file"));
+    }
 }

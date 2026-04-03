@@ -9,6 +9,7 @@ members = [
   "crates/iii-init",
   "crates/iii-filesystem",
   "crates/iii-network",
+  "crates/iii-worker",
 ]
 
 [workspace.package]

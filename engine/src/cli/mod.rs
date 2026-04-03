@@ -8,16 +8,13 @@ pub mod advisory;
 pub mod download;
 pub mod error;
 pub mod exec;
-pub mod firmware;
 pub mod github;
-pub mod managed;
+pub mod managed_shim;
 pub mod platform;
 pub mod registry;
 pub mod state;
 pub mod telemetry;
 pub mod update;
-pub mod vm_boot;
-pub mod worker_manager;
 
 use colored::Colorize;
 

@@ -26,7 +26,7 @@ pub(crate) fn do_fsync(
     datasync: bool,
     handle: u64,
 ) -> io::Result<()> {
-    if handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
         return Ok(());
     }
 
@@ -71,7 +71,7 @@ pub(crate) fn do_fsyncdir(
 pub(crate) fn do_statfs(fs: &PassthroughFs, _ctx: Context, ino: u64) -> io::Result<statvfs64> {
     // Keep InodeFd guard alive so the fd isn't closed before fstatvfs uses it.
     let inode_fd;
-    let fd = if ino == init_binary::INIT_INODE || ino == 1 {
+    let fd = if (init_binary::has_init() && ino == init_binary::INIT_INODE) || ino == 1 {
         fs.root_fd.as_raw_fd()
     } else {
         inode_fd = super::inode::get_inode_fd(fs, ino)?;

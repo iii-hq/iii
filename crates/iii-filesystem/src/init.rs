@@ -10,3 +10,11 @@ pub const INIT_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/iii-init
 
 #[cfg(not(has_init_binary))]
 pub const INIT_BYTES: &[u8] = &[];
+
+/// Returns `true` if the init binary is embedded (non-empty `INIT_BYTES`).
+///
+/// Since `INIT_BYTES` is a compile-time constant, this is resolved at compile time
+/// and the compiler optimizes away all dead branches guarded by this function.
+pub const fn has_init() -> bool {
+    !INIT_BYTES.is_empty()
+}
