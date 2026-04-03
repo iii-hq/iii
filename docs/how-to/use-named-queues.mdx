@@ -84,7 +84,7 @@ modules:
 
     const receipt = await iii.trigger({
       function_id: 'orders::process-payment',
-      payload: { orderId: 'ord_789', amount: 149.99, currency: 'USD', transaction_id: 'txn-001' },
+      payload: { orderId: 'ord_789', amount: 149.99, currency: 'USD' },
       action: TriggerAction.Enqueue({ queue: 'payment' }),
     })
 
@@ -99,7 +99,7 @@ modules:
 
     receipt = iii.trigger({
         "function_id": "orders::process-payment",
-        "payload": {"orderId": "ord_789", "amount": 149.99, "currency": "USD", "transaction_id": "txn-001"},
+        "payload": {"orderId": "ord_789", "amount": 149.99, "currency": "USD"},
         "action": TriggerAction.Enqueue(queue="payment"),
     })
 
@@ -119,7 +119,6 @@ modules:
             "orderId": "ord_789",
             "amount": 149.99,
             "currency": "USD",
-            "transaction_id": "txn-001",
         }),
         action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
         timeout_ms: None,
@@ -142,7 +141,7 @@ modules:
     try {
       const receipt = await iii.trigger({
         function_id: 'orders::process-payment',
-        payload: { orderId: 'ord_789', amount: 149.99, transaction_id: 'txn-001' },
+        payload: { orderId: 'ord_789', amount: 149.99 },
         action: TriggerAction.Enqueue({ queue: 'payment' }),
       })
       console.log('Enqueued:', receipt.messageReceiptId)
@@ -158,7 +157,7 @@ modules:
     try:
         receipt = iii.trigger({
             "function_id": "orders::process-payment",
-            "payload": {"orderId": "ord_789", "amount": 149.99, "transaction_id": "txn-001"},
+            "payload": {"orderId": "ord_789", "amount": 149.99},
             "action": TriggerAction.Enqueue(queue="payment"),
         })
         print("Enqueued:", receipt["messageReceiptId"])
@@ -170,7 +169,7 @@ modules:
     ```rust
     match iii.trigger(TriggerRequest {
         function_id: "orders::process-payment".to_string(),
-        payload: json!({ "orderId": "ord_789", "amount": 149.99, "transaction_id": "txn-001" }),
+        payload: json!({ "orderId": "ord_789", "amount": 149.99 }),
         action: Some(TriggerAction::Enqueue { queue: "payment".to_string() }),
         timeout_ms: None,
     }).await {
