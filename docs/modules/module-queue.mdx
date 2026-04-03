@@ -119,6 +119,73 @@ Each entry in `queue_configs` defines an independent named queue with its own re
   When `type` is `fifo`, the engine sets `prefetch=1` regardless of the `concurrency` value. This ensures only one job is in-flight at a time, which is required for strict ordering. FIFO queues also retry failed jobs inline (blocking the queue) rather than in parallel.
 </Warning>
 
+## Standard vs FIFO Queues
+
+| Dimension | Standard | FIFO |
+|-----------|----------|------|
+| **Processing model** | Up to `concurrency` jobs in parallel | One job at a time (prefetch=1) |
+| **Ordering** | No guarantees — jobs may complete in any order | Strictly ordered within a message group |
+| **`message_group_field`** | Not required | Required — must be present and non-null in every payload |
+| **Throughput** | High — scales with `concurrency` | Lower — trades throughput for ordering |
+| **Use cases** | Email sends, image processing, notifications | Payments, ledger entries, state machines |
+| **Retries** | Retried independently, other jobs continue | Retried inline — blocks the queue until success or DLQ |
+
+### Standard queue flow
+
+Jobs are dequeued and processed concurrently. Each job is independent.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant E as Engine
+    participant Q as Queue
+    participant F1 as Worker 1
+    participant F2 as Worker 2
+    participant F3 as Worker 3
+
+    P->>E: Enqueue Job A
+    P->>E: Enqueue Job B
+    P->>E: Enqueue Job C
+    E->>Q: Store A, B, C
+
+    par Concurrent processing
+        Q->>F1: Job A
+        Q->>F2: Job B
+        Q->>F3: Job C
+    end
+
+    F2-->>Q: ACK (B finishes first)
+    F1-->>Q: ACK (A finishes second)
+    F3-->>Q: ACK (C finishes third)
+```
+
+### FIFO queue flow
+
+Jobs within the same message group are processed one at a time, strictly in order.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant E as Engine
+    participant Q as FIFO Queue
+    participant F as Worker
+
+    P->>E: Enqueue Job 1 (group: acct_A)
+    P->>E: Enqueue Job 2 (group: acct_A)
+    P->>E: Enqueue Job 3 (group: acct_A)
+    E->>Q: Store 1, 2, 3
+
+    Q->>F: Job 1
+    F-->>Q: ACK
+    Note over Q,F: Job 2 starts only after Job 1 completes
+
+    Q->>F: Job 2
+    F-->>Q: ACK
+
+    Q->>F: Job 3
+    F-->>Q: ACK
+```
+
 ## Adapters
 
 ### modules::queue::BuiltinQueueAdapter
@@ -265,35 +332,35 @@ iii trigger \
 
 ## Queue Flow
 
-### Named queue flow
+### Retry and dead-letter flow
+
+When a job fails, the engine retries it with exponential backoff. After all retries exhaust, the job moves to the DLQ.
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller
+    participant Q as Queue
     participant E as Engine
-    participant Q as Queue Adapter
     participant F as Target Function
+    participant DLQ as Dead Letter Queue
 
-    C->>E: trigger({ function_id, payload, action: Enqueue({ queue }) })
-    E->>E: Validate queue config & FIFO field
-    E->>Q: Enqueue job
-    Q-->>E: Job accepted
-    E-->>C: { messageReceiptId }
+    Q->>E: Job available (attempt 1)
+    E->>F: Invoke with payload
+    F-->>E: Error
 
-    loop Consumer
-        Q->>E: Job available
-        E->>F: Invoke with payload
-        alt Success
-            F-->>E: Return value
-            E->>Q: Ack
-        else Failure — attempt < max_retries
-            F-->>E: Error
-            E->>Q: Ack + republish with backoff delay
-        else Failure — attempts exhausted
-            F-->>E: Error
-            E->>Q: Route to DLQ
-        end
-    end
+    Note over E: Wait backoff_ms × 2^0 = 1s
+
+    Q->>E: Job available (attempt 2)
+    E->>F: Invoke with payload
+    F-->>E: Error
+
+    Note over E: Wait backoff_ms × 2^1 = 2s
+
+    Q->>E: Job available (attempt 3 / max_retries)
+    E->>F: Invoke with payload
+    F-->>E: Error
+
+    E->>DLQ: Route to dead-letter queue
+    Note over DLQ: Job preserved for inspection or redrive
 ```
 
 ### Topic-based queue flow (fan-out)
