@@ -327,6 +327,8 @@ modules:
           file_path: ./data/queue_store
 ```
 
+The API validates the request, fans work out to queues, and returns immediately:
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -344,6 +346,8 @@ sequenceDiagram
 
     Note over Client,API: Client gets a fast response
 ```
+
+Behind the scenes, each queue delivers to its consumer independently:
 
 ```mermaid
 sequenceDiagram
@@ -514,6 +518,8 @@ queue_configs:
     backoff_ms: 500
 ```
 
+Three transactions arrive — two for the same account, one for a different account. The FIFO queue groups them by `account_id`:
+
 ```mermaid
 sequenceDiagram
     participant API as transactions::submit
@@ -525,6 +531,8 @@ sequenceDiagram
 
     Note over Q: acct_A jobs are ordered; acct_B is independent
 ```
+
+The worker processes `acct_A` jobs strictly in order, while `acct_B` proceeds independently:
 
 ```mermaid
 sequenceDiagram
@@ -675,6 +683,8 @@ queue_configs:
     type: standard
     backoff_ms: 5000
 ```
+
+Three workers pull from the queue concurrently. When one hits a rate limit, it retries with exponential backoff while the others continue:
 
 ```mermaid
 sequenceDiagram
