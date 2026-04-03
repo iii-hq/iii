@@ -53,10 +53,7 @@ pub fn libkrunfw_archive_name() -> String {
     } else {
         "linux"
     };
-    format!(
-        "libkrunfw-{os_name}-{}.tar.gz",
-        std::env::consts::ARCH
-    )
+    format!("libkrunfw-{os_name}-{}.tar.gz", std::env::consts::ARCH)
 }
 
 /// Check whether libkrunfw firmware is available for the current platform.
@@ -125,10 +122,19 @@ mod tests {
     #[test]
     fn test_libkrunfw_firmware_filename() {
         let name = libkrunfw_firmware_filename();
-        assert!(name.starts_with("libkrunfw-"), "should start with 'libkrunfw-': {name}");
+        assert!(
+            name.starts_with("libkrunfw-"),
+            "should start with 'libkrunfw-': {name}"
+        );
         if cfg!(target_os = "macos") {
-            assert!(name.contains("darwin"), "macOS should have 'darwin': {name}");
-            assert!(name.ends_with(".dylib"), "macOS should end with '.dylib': {name}");
+            assert!(
+                name.contains("darwin"),
+                "macOS should have 'darwin': {name}"
+            );
+            assert!(
+                name.ends_with(".dylib"),
+                "macOS should end with '.dylib': {name}"
+            );
         } else {
             assert!(name.contains("linux"), "Linux should have 'linux': {name}");
             assert!(name.ends_with(".so"), "Linux should end with '.so': {name}");
@@ -138,10 +144,19 @@ mod tests {
     #[test]
     fn test_libkrunfw_archive_name() {
         let name = libkrunfw_archive_name();
-        assert!(name.starts_with("libkrunfw-"), "should start with 'libkrunfw-': {name}");
-        assert!(name.ends_with(".tar.gz"), "should end with '.tar.gz': {name}");
+        assert!(
+            name.starts_with("libkrunfw-"),
+            "should start with 'libkrunfw-': {name}"
+        );
+        assert!(
+            name.ends_with(".tar.gz"),
+            "should end with '.tar.gz': {name}"
+        );
         if cfg!(target_os = "macos") {
-            assert!(name.contains("darwin"), "macOS should have 'darwin': {name}");
+            assert!(
+                name.contains("darwin"),
+                "macOS should have 'darwin': {name}"
+            );
         } else {
             assert!(name.contains("linux"), "Linux should have 'linux': {name}");
         }

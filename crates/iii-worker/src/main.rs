@@ -253,8 +253,7 @@ mod tests {
 
     #[test]
     fn worker_list_parses() {
-        let cli =
-            Cli::try_parse_from(["iii-worker", "list"]).expect("should parse worker list");
+        let cli = Cli::try_parse_from(["iii-worker", "list"]).expect("should parse worker list");
         match cli.command {
             Commands::List => {}
             _ => panic!("expected List subcommand"),
@@ -280,11 +279,105 @@ mod tests {
 
     #[test]
     fn stop_all_parses() {
-        let cli =
-            Cli::try_parse_from(["iii-worker", "stop-all"]).expect("should parse stop-all");
+        let cli = Cli::try_parse_from(["iii-worker", "stop-all"]).expect("should parse stop-all");
         match cli.command {
             Commands::StopAll => {}
             _ => panic!("expected StopAll subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_dev_parses_with_path() {
+        let cli = Cli::try_parse_from(["iii-worker", "dev", ".", "--port", "5000"])
+            .expect("should parse worker dev with path");
+        match cli.command {
+            Commands::Dev { path, port, .. } => {
+                assert_eq!(path, ".");
+                assert_eq!(port, 5000);
+            }
+            _ => panic!("expected Dev subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_dev_parses_with_rebuild() {
+        let cli = Cli::try_parse_from([
+            "iii-worker",
+            "dev",
+            "/tmp/project",
+            "--rebuild",
+            "--name",
+            "my-worker",
+        ])
+        .expect("should parse worker dev with rebuild");
+        match cli.command {
+            Commands::Dev {
+                path,
+                rebuild,
+                name,
+                ..
+            } => {
+                assert_eq!(path, "/tmp/project");
+                assert!(rebuild);
+                assert_eq!(name, Some("my-worker".to_string()));
+            }
+            _ => panic!("expected Dev subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_remove_parses() {
+        let cli = Cli::try_parse_from(["iii-worker", "remove", "pdfkit"])
+            .expect("should parse worker remove");
+        match cli.command {
+            Commands::Remove { worker_name, .. } => {
+                assert_eq!(worker_name, "pdfkit");
+            }
+            _ => panic!("expected Remove subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_start_parses() {
+        let cli = Cli::try_parse_from(["iii-worker", "start", "pdfkit", "--port", "8080"])
+            .expect("should parse worker start");
+        match cli.command {
+            Commands::Start {
+                worker_name, port, ..
+            } => {
+                assert_eq!(worker_name, "pdfkit");
+                assert_eq!(port, 8080);
+            }
+            _ => panic!("expected Start subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_stop_parses() {
+        let cli = Cli::try_parse_from(["iii-worker", "stop", "pdfkit"])
+            .expect("should parse worker stop");
+        match cli.command {
+            Commands::Stop { worker_name, .. } => {
+                assert_eq!(worker_name, "pdfkit");
+            }
+            _ => panic!("expected Stop subcommand"),
+        }
+    }
+
+    #[test]
+    fn worker_logs_parses_with_follow() {
+        let cli = Cli::try_parse_from(["iii-worker", "logs", "image-resize", "--follow"])
+            .expect("should parse worker logs with follow");
+        match cli.command {
+            Commands::Logs {
+                worker_name,
+                follow,
+                ..
+            } => {
+                assert_eq!(worker_name, "image-resize");
+                assert!(follow);
+            }
+            _ => panic!("expected Logs subcommand"),
         }
     }
 }

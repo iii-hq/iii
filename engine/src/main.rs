@@ -147,10 +147,7 @@ async fn run_serve(cli: &Cli) -> anyhow::Result<()> {
         logging::init_log_from_config(Some(&cli.config));
     }
 
-    let engine = EngineBuilder::new()
-        .with_config(config)
-        .build()
-        .await?;
+    let engine = EngineBuilder::new().with_config(config).build().await?;
 
     // Start managed workers in background so engine boot is not blocked by image pulls.
     let engine_url = format!("ws://localhost:{}", DEFAULT_PORT);
@@ -402,8 +399,7 @@ mod tests {
 
     #[test]
     fn worker_parses_with_no_args() {
-        let cli =
-            Cli::try_parse_from(["iii", "worker"]).expect("should parse worker with no args");
+        let cli = Cli::try_parse_from(["iii", "worker"]).expect("should parse worker with no args");
         match cli.command {
             Some(Commands::Worker { args }) => {
                 assert!(args.is_empty());
@@ -414,9 +410,8 @@ mod tests {
 
     #[test]
     fn worker_dev_parses_passthrough() {
-        let cli =
-            Cli::try_parse_from(["iii", "worker", "dev", ".", "--rebuild", "--port", "5000"])
-                .expect("should parse worker dev with passthrough args");
+        let cli = Cli::try_parse_from(["iii", "worker", "dev", ".", "--rebuild", "--port", "5000"])
+            .expect("should parse worker dev with passthrough args");
         match cli.command {
             Some(Commands::Worker { args }) => {
                 assert_eq!(args, vec!["dev", ".", "--rebuild", "--port", "5000"]);

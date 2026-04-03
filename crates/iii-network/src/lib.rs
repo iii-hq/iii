@@ -23,6 +23,6 @@ pub use dns::DnsInterceptor;
 pub use network::SmoltcpNetwork;
 pub use proxy::spawn_tcp_proxy;
 pub use shared::{DEFAULT_QUEUE_CAPACITY, SharedState};
-pub use stack::{classify_frame, create_interface, smoltcp_poll_loop, FrameAction, PollLoopConfig};
+pub use stack::{FrameAction, PollLoopConfig, classify_frame, create_interface, smoltcp_poll_loop};
 pub use udp_relay::UdpRelay;
 pub use wake_pipe::WakePipe;

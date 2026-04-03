@@ -98,14 +98,9 @@ async fn resolve_worker_binary() -> Option<std::path::PathBuf> {
         None
     };
 
-    if let Err(e) = download::download_and_install(
-        &client,
-        spec,
-        asset,
-        checksum_url.as_deref(),
-        &managed_path,
-    )
-    .await
+    if let Err(e) =
+        download::download_and_install(&client, spec, asset, checksum_url.as_deref(), &managed_path)
+            .await
     {
         tracing::warn!(error = %e, "failed to download iii-worker");
         return None;

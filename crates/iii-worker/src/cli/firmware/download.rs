@@ -7,8 +7,11 @@
 
 use std::path::PathBuf;
 
-use super::constants::{LIBKRUNFW_VERSION, check_libkrunfw_platform_support, libkrunfw_archive_name, libkrunfw_filename, libkrunfw_firmware_filename};
 use super::constants::{III_INIT_FILENAME, iii_init_archive_name};
+use super::constants::{
+    LIBKRUNFW_VERSION, check_libkrunfw_platform_support, libkrunfw_archive_name,
+    libkrunfw_filename, libkrunfw_firmware_filename,
+};
 use super::resolve::{resolve_init_binary, resolve_libkrunfw_dir};
 use super::symlinks;
 
@@ -76,9 +79,8 @@ async fn download_libkrunfw() -> anyhow::Result<PathBuf> {
     let firmware_filename = libkrunfw_firmware_filename();
 
     let release_tag = format!("iii/v{version}");
-    let url = format!(
-        "https://github.com/iii-hq/iii/releases/download/{release_tag}/{archive_name}"
-    );
+    let url =
+        format!("https://github.com/iii-hq/iii/releases/download/{release_tag}/{archive_name}");
 
     tracing::info!(%url, "downloading libkrunfw from GitHub release");
 
@@ -87,10 +89,12 @@ async fn download_libkrunfw() -> anyhow::Result<PathBuf> {
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
 
-    let request = if let Ok(token) = std::env::var("III_GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+    let request = if let Ok(token) =
+        std::env::var("III_GITHUB_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN"))
     {
-        client.get(&url).header("Authorization", format!("token {token}"))
+        client
+            .get(&url)
+            .header("Authorization", format!("token {token}"))
     } else {
         client.get(&url)
     };
@@ -226,9 +230,8 @@ async fn download_init_binary() -> anyhow::Result<PathBuf> {
 
     // The iii-init release is published under the iii release tag
     let release_tag = format!("iii/v{version}");
-    let url = format!(
-        "https://github.com/iii-hq/iii/releases/download/{release_tag}/{archive_name}"
-    );
+    let url =
+        format!("https://github.com/iii-hq/iii/releases/download/{release_tag}/{archive_name}");
 
     tracing::info!(%url, "downloading iii-init from GitHub release");
 
@@ -238,10 +241,12 @@ async fn download_init_binary() -> anyhow::Result<PathBuf> {
         .build()?;
 
     // Support GitHub token for rate limiting
-    let request = if let Ok(token) = std::env::var("III_GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+    let request = if let Ok(token) =
+        std::env::var("III_GITHUB_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN"))
     {
-        client.get(&url).header("Authorization", format!("token {token}"))
+        client
+            .get(&url)
+            .header("Authorization", format!("token {token}"))
     } else {
         client.get(&url)
     };
@@ -352,7 +357,10 @@ mod tests {
                 // Without embedded bytes and no local install, the function attempts
                 // a download which will fail in test environments (no matching release).
                 // It should error with either a download failure or a connection error.
-                assert!(result.is_err(), "should error when not embedded and not installed");
+                assert!(
+                    result.is_err(),
+                    "should error when not embedded and not installed"
+                );
             }
         }
     }

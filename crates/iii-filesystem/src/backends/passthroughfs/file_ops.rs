@@ -16,13 +16,13 @@
 use std::{
     io,
     os::fd::{AsRawFd, FromRawFd},
-    sync::{atomic::Ordering, Arc, RwLock},
+    sync::{Arc, RwLock, atomic::Ordering},
 };
 
-use super::{inode, PassthroughFs};
+use super::{PassthroughFs, inode};
 use crate::{
-    backends::shared::{handle_table::HandleData, init_binary, platform},
     Context, OpenOptions, ZeroCopyReader, ZeroCopyWriter,
+    backends::shared::{handle_table::HandleData, init_binary, platform},
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -83,7 +83,10 @@ pub(crate) fn do_read(
     offset: u64,
 ) -> io::Result<usize> {
     // Virtual init.krun binary.
-    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init()
+        && handle == init_binary::INIT_HANDLE
+        && ino == init_binary::INIT_INODE
+    {
         return init_binary::read_init(w, &fs.init_file, size, offset);
     }
 
@@ -111,7 +114,10 @@ pub(crate) fn do_write(
     offset: u64,
     kill_priv: bool,
 ) -> io::Result<usize> {
-    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init()
+        && handle == init_binary::INIT_HANDLE
+        && ino == init_binary::INIT_INODE
+    {
         return Err(platform::eperm());
     }
 
@@ -144,7 +150,10 @@ pub(crate) fn do_write(
 /// Emulates POSIX close semantics by duplicating and closing the fd.
 /// Called on every guest `close()` (may fire multiple times if the fd was `dup`'d).
 pub(crate) fn do_flush(fs: &PassthroughFs, _ctx: Context, ino: u64, handle: u64) -> io::Result<()> {
-    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init()
+        && handle == init_binary::INIT_HANDLE
+        && ino == init_binary::INIT_INODE
+    {
         return Ok(());
     }
 
@@ -172,7 +181,10 @@ pub(crate) fn do_release(
     ino: u64,
     handle: u64,
 ) -> io::Result<()> {
-    if init_binary::has_init() && handle == init_binary::INIT_HANDLE && ino == init_binary::INIT_INODE {
+    if init_binary::has_init()
+        && handle == init_binary::INIT_HANDLE
+        && ino == init_binary::INIT_INODE
+    {
         return Ok(());
     }
 

@@ -66,10 +66,7 @@ pub fn exec_worker() -> Result<(), InitError> {
     CHILD_PID.store(child_pid, Ordering::SeqCst);
 
     // Move worker into memory-limited cgroup (best-effort, set up by mount.rs).
-    let _ = std::fs::write(
-        "/sys/fs/cgroup/worker/cgroup.procs",
-        child_pid.to_string(),
-    );
+    let _ = std::fs::write("/sys/fs/cgroup/worker/cgroup.procs", child_pid.to_string());
 
     // PID 1 supervisor loop: wait for children, reap orphans (INIT-07).
     let status = loop {

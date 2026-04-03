@@ -12,10 +12,10 @@
 
 use std::{ffi::CStr, io};
 
-use super::{inode, PassthroughFs};
+use super::{PassthroughFs, inode};
 use crate::{
-    backends::shared::{init_binary, name_validation, platform},
     Context,
+    backends::shared::{init_binary, name_validation, platform},
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -51,11 +51,7 @@ pub(crate) fn do_unlink(
                 libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
             )
         };
-        if fd >= 0 {
-            Some(fd)
-        } else {
-            None
-        }
+        if fd >= 0 { Some(fd) } else { None }
     };
 
     let ret = unsafe { libc::unlinkat(parent_fd.raw(), name.as_ptr(), 0) };

@@ -38,9 +38,7 @@ pub fn spawn_tcp_proxy(
     gateway_ipv4: Ipv4Addr,
 ) {
     handle.spawn(async move {
-        if let Err(e) =
-            tcp_proxy_task(dst, from_smoltcp, to_smoltcp, shared, gateway_ipv4).await
-        {
+        if let Err(e) = tcp_proxy_task(dst, from_smoltcp, to_smoltcp, shared, gateway_ipv4).await {
             tracing::debug!(dst = %dst, error = %e, "TCP proxy task ended");
         }
     });
