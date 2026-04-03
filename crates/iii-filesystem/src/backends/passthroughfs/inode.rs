@@ -3,7 +3,7 @@
 //! ## Lookup Strategy
 //!
 //! Linux lookup uses a "collapse" optimization: open -> statx(AT_EMPTY_PATH) -> done,
-//! yielding 2 syscalls instead of fstatat + open (without xattr, one less than microsandbox).
+//! yielding 2 syscalls instead of fstatat + open
 //! The stat is taken on the *opened* fd, eliminating TOCTOU between stat and open.
 //!
 //! macOS lookup uses fstatat -> inode table check -> register, with a separate fd open
